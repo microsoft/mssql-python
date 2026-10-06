@@ -1,6 +1,7 @@
 """Build and measure base/candidate in isolated directories on the same CI agent."""
 
 import argparse
+import ast
 import contextlib
 import faulthandler
 import hashlib
@@ -18,8 +19,20 @@ import sys
 import tarfile
 import tempfile
 import time
+import textwrap
 
-from .report import LEGS, MODES, validate, validate_ci_mode, validate_ci_header, ci_mode_reports
+from .report import (
+    LEGS,
+    MODES,
+    validate,
+    validate_ci_mode,
+    validate_ci_header,
+    ci_mode_reports,
+    validate_row_route,
+    expected_constructors,
+    validate_python_sources,
+    validate_samples,
+)
 from . import workloads
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -216,18 +229,141 @@ def verify_reused_source(source_root, revision):
         )
 
 
+# Closed, reviewed dispatch bodies: main666, f539, and the many-only successor.
+# Method/comment/docstring edits require review and an explicit fingerprint update.
+_LEGACY_PYTHON_ROUTE = "52681c15f92e85c01e0b43a9bd763872051fdc956701046534a5beb2467e6c3c"
+_LEGACY_FUSED_ROUTE = "d4c6671b89ace027c22585e761c4f4c3243e297be2162213d9bbb38d5bed03c6"
+_MANY_ONLY_ROUTE = "544d5b0ccbf9df1f0b6ec72c79ecbfa49a3517cab0437a5520940b8941966759"
+
+
+def python_source_identity(source_root, revision):
+    """Read a selected root's descriptive policy, never infer it from measurements."""
+    if not SHA.fullmatch(revision):
+        raise ValueError("Invalid Python source revision")
+    source = (source_root / "mssql_python" / "cursor.py").read_text(encoding="utf-8")
+    try:
+        tree = ast.parse(source)
+    except SyntaxError as error:
+        raise ValueError("Invalid Python route source syntax") from error
+    name = "_DEFAULT_NATIVE_ROW_ROUTE"
+    mentions = [node for node in ast.walk(tree) if isinstance(node, ast.Name) and node.id == name]
+    declarations = [
+        node
+        for node in tree.body
+        if isinstance(node, ast.Assign)
+        and len(node.targets) == 1
+        and isinstance(node.targets[0], ast.Name)
+        and node.targets[0].id == name
+    ]
+    if mentions and (len(mentions) != 1 or len(declarations) != 1):
+        raise ValueError("Malformed or duplicate Python route declaration")
+    classes = [
+        node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "Cursor"
+    ]
+    if len(classes) != 1 or classes[0].decorator_list:
+        raise ValueError("Missing, duplicate or decorated Cursor class")
+    methods = []
+    for method in ("fetchone", "fetchmany", "fetchval"):
+        nodes = [
+            node
+            for node in classes[0].body
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == method
+        ]
+        if len(nodes) != 1:
+            raise ValueError("Missing or duplicate fetch method")
+        if nodes[0].decorator_list or isinstance(nodes[0], ast.AsyncFunctionDef):
+            raise ValueError("Decorated or asynchronous fetch method is not a reviewed route")
+        methods.append(textwrap.dedent(ast.get_source_segment(source, nodes[0])))
+    # Check class-namespace bindings, not locals in methods or nested scopes.
+    route_names = {"fetchone", "fetchmany", "fetchval"}
+    pending = list(classes[0].body)
+    while pending:
+        node = pending.pop()
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            if node.name in route_names and (
+                isinstance(node, ast.ClassDef) or node not in classes[0].body
+            ):
+                raise ValueError("Rebound Python fetch method")
+            pending.extend(node.decorator_list)
+            if isinstance(node, ast.ClassDef):
+                pending.extend(node.bases + node.keywords)
+            else:
+                pending.append(node.args)
+                if node.returns is not None:
+                    pending.append(node.returns)
+            continue
+        if isinstance(node, ast.Lambda):
+            pending.append(node.args)
+            continue
+        if isinstance(node, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
+            continue
+        if (
+            isinstance(node, ast.Name)
+            and isinstance(node.ctx, (ast.Store, ast.Del))
+            and node.id in route_names
+            or isinstance(node, ast.alias)
+            and (node.asname or node.name.split(".")[0]) in route_names
+            or isinstance(node, (ast.ExceptHandler, ast.MatchAs, ast.MatchStar))
+            and node.name in route_names
+            or isinstance(node, ast.MatchMapping)
+            and node.rest in route_names
+        ):
+            raise ValueError("Rebound Python fetch method")
+        pending.extend(ast.iter_child_nodes(node))
+    fingerprint = hashlib.sha256(
+        json.dumps(methods, ensure_ascii=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    if fingerprint == _LEGACY_PYTHON_ROUTE:
+        values = (False, False, False)
+    elif fingerprint == _LEGACY_FUSED_ROUTE:
+        values = (True, True, True)
+    elif fingerprint == _MANY_ONLY_ROUTE:
+        values = (False, True, False)
+    else:
+        raise ValueError("Unknown Python fetch dispatch fingerprint")
+    expected = dict(version=1, methods=dict(zip(("fetchone", "fetchmany", "fetchval"), values)))
+    if declarations:
+        expression = declarations[0].value
+        # literal_eval alone silently accepts duplicate dictionary keys.
+        for node in ast.walk(expression):
+            if isinstance(node, ast.Dict):
+                keys = [ast.literal_eval(key) for key in node.keys]
+                if any(type(key) is not str for key in keys) or len(set(keys)) != len(keys):
+                    raise ValueError("Duplicate or invalid route declaration key")
+        route = ast.literal_eval(expression)
+        validate_row_route(route)
+        if route != expected:
+            raise ValueError("Python source-policy drift")
+    elif fingerprint == _MANY_ONLY_ROUTE:
+        raise ValueError("Missing Python route declaration")
+    return dict(
+        source_commit=revision,
+        python_cursor_sha256=hashlib.sha256(source.encode()).hexdigest(),
+        row_route=expected,
+    )
+
+
 def native_identity(source_root, revision, profiling):
     from mssql_python import ddbc_bindings
+    import mssql_python.cursor as cursor_module
 
+    if (
+        Path(cursor_module.__file__).resolve()
+        != (source_root / "mssql_python" / "cursor.py").resolve()
+    ):
+        raise ValueError("Python cursor is outside the selected checkout")
+    python_identity = python_source_identity(source_root, revision)
+    guarded = hasattr(ddbc_bindings, "DDBCSQLFetchRow")
+    validate_row_route(python_identity["row_route"], guarded)
     native_file = Path(ddbc_bindings.module.__file__).resolve()
     if not native_file.is_relative_to(source_root.resolve()):
         raise RuntimeError("Native binary is outside the selected checkout")
     return dict(
-        source_commit=revision,
+        **python_identity,
         native_file=str(native_file),
         native_sha256=hashlib.sha256(native_file.read_bytes()).hexdigest(),
         native_profiling=profiling,
-        guarded_row=hasattr(ddbc_bindings, "DDBCSQLFetchRow"),
+        guarded_row=guarded,
     )
 
 
@@ -280,9 +416,7 @@ def fetch_worker(args, mode):
                     constructors = (
                         result["cpp"].get("ddbc::FetchRow::construct_row", {}).get("calls", 0)
                     )
-                    if constructors != (
-                        workloads.SINGLE_ROW_COUNT if provenance["guarded_row"] else 0
-                    ):
+                    if constructors != expected_constructors(provenance, name.split("_")[1]):
                         raise RuntimeError("Native Row construction route was not established")
                 output[name] = {key: result[key] for key in ("wall_ms", "cpp", "py")}
                 output[name]["work"] = result["detail"]
@@ -513,6 +647,15 @@ def run_ci_report(args):
                     "base": roots["base-off" if mode == "latency" else "base-on"],
                     "candidate": roots["candidate-off"] if mode == "latency" else ROOT,
                 }
+                sources = {
+                    side: python_source_identity(paths[side], base if side == "base" else candidate)
+                    for side in ("base", "candidate")
+                }
+                for previous in modes.values():
+                    if "python_sources" in previous and previous["python_sources"] != sources:
+                        raise ValueError("Python source identity changed across modes")
+                report["python_sources"] = sources
+                validate_python_sources(report)
                 identity = None
                 for sample in range(6):
                     pair = {}
@@ -666,6 +809,14 @@ def run(args):
                 remaining(deadline, 900),
                 **build_options,
             )
+        if mode != "diagnostic":
+            report["python_sources"] = {
+                side: python_source_identity(paths[side], base if side == "base" else candidate)
+                for side in ("base", "candidate")
+            }
+            validate_python_sources(report)
+            report["unavailable_reason"] = "Collecting selected workload pairs"
+        identity = None
         for sample in range(args.warmups + args.samples):
             pair = {}
             order = ("base", "candidate") if sample % 2 == 0 else ("candidate", "base")
@@ -684,6 +835,20 @@ def run(args):
                 )
             if pair["base"]["environment"] != pair["candidate"]["environment"]:
                 raise RuntimeError("Base and candidate environments differ")
+            if mode != "diagnostic":
+                probe = dict(
+                    report, pairs=[*report["pairs"], pair], unavailable_reason="Collecting pairs"
+                )
+                if args.scenarios is None:
+                    validate_ci_mode(probe, mode)
+                else:
+                    validate_samples(probe, selected_cases=args.scenarios)
+                observed = {
+                    side: (pair[side]["provenance"], pair[side]["environment"]) for side in pair
+                }
+                if identity is not None and identity != observed:
+                    raise ValueError("Worker identity changed after warmup")
+                identity = observed
             if sample >= args.warmups:
                 report["pairs"].append(pair)
                 report_path.write_text(json.dumps(report, allow_nan=False), encoding="utf-8")

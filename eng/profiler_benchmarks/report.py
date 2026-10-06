@@ -168,16 +168,22 @@ def _validate(report, build_id=None, head=None, source=None, base=None):
     pairs = report.get("pairs")
     if not isinstance(pairs, list) or len(pairs) > samples:
         raise ValueError("Invalid sample pairs")
+    validate_python_sources(report)
     if report["status"] == "incomplete":
-        return report
+        if "python_sources" in report:
+            text(report.get("unavailable_reason"), limit=240)
+        return validate_samples(report)
     if len(pairs) != samples:
         raise ValueError("Incomplete sample pairs")
     return validate_samples(report)
 
 
-def validate_samples(report):
+def validate_samples(report, selected_cases=None):
     mode = measurement_mode(report)
     pairs = report["pairs"]
+    cases = cases_for(report) if selected_cases is None else selected_cases
+    if not cases or set(cases) - set(cases_for(report)):
+        raise ValueError("Invalid selected scenarios")
     environment = None
     work = {}
     provenance = {}
@@ -188,7 +194,7 @@ def validate_samples(report):
             sample = pair[side]
             if not isinstance(sample, dict):
                 raise ValueError("Invalid sample")
-            if mode != "diagnostic":
+            if mode != "diagnostic" or "python_sources" in report or "provenance" in sample:
                 if sample.get("mode") != mode or sample.get("status") != "complete":
                     raise ValueError("Incomplete or mismatched measurement mode")
                 native_identity = validate_native_identity(sample, report, side, mode)
@@ -216,7 +222,7 @@ def validate_samples(report):
             scenarios = sample["scenarios"]
             if not isinstance(scenarios, dict):
                 raise ValueError("Invalid scenarios object")
-            if set(scenarios) != set(cases_for(report)):
+            if set(scenarios) != set(cases):
                 raise ValueError("Scenario set incomplete or changed")
             for name, scenario in scenarios.items():
                 if not isinstance(scenario, dict):
@@ -247,7 +253,7 @@ def validate_samples(report):
                             raise ValueError("Native fetch route count mismatch")
                         constructor = stats.get("ddbc::FetchRow::construct_row", {})
                         if not isinstance(constructor, dict) or constructor.get("calls", 0) != (
-                            1000 if native_identity["guarded_row"] else 0
+                            expected_constructors(native_identity, method)
                         ):
                             raise ValueError("Native constructor route count mismatch")
                 for layer in ("cpp", "py"):
@@ -274,16 +280,84 @@ def validate_samples(report):
     return report
 
 
+def validate_row_route(route, guarded=None):
+    if (
+        type(route) is not dict
+        or set(route) != {"version", "methods"}
+        or type(route["version"]) is not int
+        or route["version"] != 1
+    ):
+        raise ValueError("Unsupported Python row route version or shape")
+    methods = route["methods"]
+    if (
+        type(methods) is not dict
+        or set(methods) != {"fetchone", "fetchmany", "fetchval"}
+        or any(type(value) is not bool for value in methods.values())
+    ):
+        raise ValueError("Invalid Python row route methods")
+    values = tuple(methods[name] for name in ("fetchone", "fetchmany", "fetchval"))
+    if values not in ((False, False, False), (True, True, True), (False, True, False)):
+        raise ValueError("Unsupported Python row route policy")
+    if guarded is not None and (type(guarded) is not bool or any(values) != guarded):
+        raise ValueError("Native binding contradicts Python row route")
+    return methods
+
+
+def expected_constructors(identity, method):
+    if "row_route" not in identity:
+        return 1000 if identity["guarded_row"] else 0
+    return 1000 if validate_row_route(identity["row_route"], identity["guarded_row"])[method] else 0
+
+
+def route_description(report, method):
+    descriptions = []
+    for side in ("base", "candidate"):
+        identity = report["pairs"][0][side]["provenance"]
+        descriptions.append(
+            f"{side}: binding={identity['guarded_row']}, default {method} native Row="
+            f"{bool(expected_constructors(identity, method))}"
+        )
+    return "; ".join(descriptions) + "."
+
+
+def validate_python_sources(report):
+    if "python_sources" not in report:
+        return
+    sources = report["python_sources"]
+    if type(sources) is not dict or set(sources) != {"base", "candidate"}:
+        raise ValueError("Missing Python source anchors")
+    for side, source in sources.items():
+        if type(source) is not dict or set(source) != {
+            "source_commit",
+            "python_cursor_sha256",
+            "row_route",
+        }:
+            raise ValueError("Invalid Python source anchor")
+        if source["source_commit"] != report["base_commit" if side == "base" else "source_commit"]:
+            raise ValueError("Python source revision mismatch")
+        if not isinstance(source["python_cursor_sha256"], str) or not re.fullmatch(
+            r"[0-9a-f]{64}", source["python_cursor_sha256"]
+        ):
+            raise ValueError("Invalid Python cursor digest")
+        validate_row_route(source["row_route"])
+
+
 def validate_native_identity(sample, report, side, mode):
     identity = sample.get("provenance")
-    if not isinstance(identity, dict) or set(identity) != {
-        "source_commit",
-        "native_file",
-        "native_sha256",
-        "native_profiling",
-        "guarded_row",
-    }:
+    legacy = {"source_commit", "native_file", "native_sha256", "native_profiling", "guarded_row"}
+    modern = legacy | {"python_cursor_sha256", "row_route"}
+    if not isinstance(identity, dict) or set(identity) not in (legacy, modern):
         raise ValueError("Missing native measurement identity")
+    if (set(identity) == modern) != ("python_sources" in report):
+        raise ValueError("Missing Python source anchors or worker route fields")
+    if set(identity) == modern:
+        validate_python_sources(report)
+        validate_row_route(identity["row_route"], identity["guarded_row"])
+        anchor = {
+            key: identity[key] for key in ("source_commit", "python_cursor_sha256", "row_route")
+        }
+        if anchor != report["python_sources"][side]:
+            raise ValueError("Python source-policy drift")
     if identity["source_commit"] != report["base_commit" if side == "base" else "source_commit"]:
         raise ValueError("Worker revision mismatch")
     text(identity["native_file"], limit=4096)
@@ -332,7 +406,9 @@ def validate_ci_header(report, build_id=None, head=None, source=None, base=None)
         raise ValueError("Unsupported CI measurement bundle version")
     if measurement_mode(report) != "diagnostic":
         raise ValueError("CI bundle root must be the diagnostic report")
-    validate(dict(report, status="incomplete", pairs=[]), build_id, head, source, base)
+    header = dict(report, status="incomplete", pairs=[])
+    header.pop("python_sources", None)
+    validate(header, build_id, head, source, base)
     if report["samples"] != 5 or report["warmups"] != 1:
         raise ValueError("CI bundle requires five pairs and one warmup")
     children = report.get("fetch_measurements")
@@ -367,7 +443,7 @@ def ci_mode_reports(report):
         except (KeyError, TypeError, ValueError) as error:
             errors[mode] = "Invalid mode data: " + str(error)[:180]
     on = [valid.get(mode) for mode in ("route", "diagnostic")]
-    if all(item is not None and item["status"] == "complete" for item in on):
+    if all(item is not None and item["pairs"] for item in on):
         if any(
             on[0]["pairs"][0][side][key] != on[1]["pairs"][0][side][key]
             for side in ("base", "candidate")
@@ -376,13 +452,22 @@ def ci_mode_reports(report):
             for mode in ("route", "diagnostic"):
                 valid.pop(mode)
                 errors[mode] = "Shared ON binary/environment identity mismatch"
+    anchored = [(mode, item) for mode, item in valid.items() if "python_sources" in item]
+    if anchored:
+        reference = next((item for mode, item in anchored if mode == "latency"), anchored[0][1])
+        for mode, item in list(valid.items()):
+            if item.get("python_sources") != reference["python_sources"] and (
+                item["pairs"] or "python_sources" in item
+            ):
+                valid.pop(mode)
+                errors[mode] = "Python source identity differs across modes"
     latency = valid.get("latency")
-    if latency is not None and latency["status"] == "complete":
+    if latency is not None and latency["pairs"]:
         for mode in ("route", "diagnostic"):
             item = valid.get(mode)
             if (
                 item is not None
-                and item["status"] == "complete"
+                and item["pairs"]
                 and item["pairs"][0]["base"]["environment"]
                 != latency["pairs"][0]["base"]["environment"]
             ):
@@ -486,7 +571,8 @@ def render_ci_reports(reports, head, build_id, issues=()):
                         for side in ("base", "candidate")
                     ]
                     notes.append(
-                        f"Native proof for {row['name']}: 1001 fetch calls per side/sample; Row constructions base/candidate {counts[0]}/{counts[1]}."
+                        f"Native proof for {row['name']}: 1001 fetch calls per side/sample; Row constructions base/candidate {counts[0]}/{counts[1]}. "
+                        + route_description(report, row["name"].split("_")[1])
                     )
             lines += [""] + notes
             lines.append(
@@ -949,7 +1035,16 @@ def render(reports, head, build_id, issues=(), default_mode="diagnostic"):
                     identity = report["pairs"][0][side]["provenance"]
                     lines.append(
                         f"- {environment_name(leg)} {side} native SHA256: `{identity['native_sha256']}`; "
-                        f"guarded Row entry available: {identity['guarded_row']}."
+                        f"guarded Row entry available: {identity['guarded_row']}. "
+                        + (
+                            "Default native Row routes: "
+                            + ", ".join(
+                                f"{method}={enabled}"
+                                for method, enabled in identity["row_route"]["methods"].items()
+                            )
+                            if "row_route" in identity
+                            else "Historical all-or-none route contract."
+                        )
                     )
     lines += [
         "",

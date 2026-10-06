@@ -1919,6 +1919,33 @@ class TestSingleRowMeasurementModes(unittest.TestCase):
             pairs=[dict(base=sample("base"), candidate=sample("candidate")) for _ in range(5)],
         )
 
+    def source_anchor(self, source_root, revision):
+        return dict(
+            source_commit=revision,
+            python_cursor_sha256=("1" if revision == "a" * 40 else "2") * 64,
+            row_route=dict(
+                version=1,
+                methods=dict(fetchone=False, fetchmany=revision != "a" * 40, fetchval=False),
+            ),
+        )
+
+    def new_sample_report(self, mode="latency", ratio=1.1):
+        report = self.sample_report(mode, ratio)
+        report["python_sources"] = {
+            side: self.source_anchor(
+                None, report["base_commit" if side == "base" else "source_commit"]
+            )
+            for side in ("base", "candidate")
+        }
+        for pair in report["pairs"]:
+            for side, sample in pair.items():
+                sample["provenance"].update(copy.deepcopy(report["python_sources"][side]))
+                if mode == "route":
+                    for name, case in sample["scenarios"].items():
+                        if not name.endswith("fetchmany"):
+                            case["cpp"].pop("ddbc::FetchRow::construct_row", None)
+        return report
+
     def test_modes_validate_and_keep_subthreshold_changes_visible(self):
         self.assertEqual(tuple(benchmark_workloads.single_row_registry()), reporting.FETCH_CASES)
         self.assertEqual(len(reporting.CASES), 22)
@@ -2162,6 +2189,10 @@ class TestSingleRowMeasurementModes(unittest.TestCase):
                 tempfile.TemporaryDirectory() as directory,
             ):
                 root = Path(directory)
+                source = root / "mssql_python" / "cursor.py"
+                source.parent.mkdir()
+                source.write_bytes((ROOT / "mssql_python" / "cursor.py").read_bytes())
+                cursor_module = SimpleNamespace(__file__=str(source))
                 native_file = root / "native.so"
                 native_file.write_bytes(b"fake binary identity; never loaded")
                 args = SimpleNamespace(
@@ -2179,9 +2210,12 @@ class TestSingleRowMeasurementModes(unittest.TestCase):
                     conn.__exit__.side_effect = RuntimeError("connection close failed")
                 conn.cursor.return_value.__enter__.return_value.fetchone.return_value = ("16.0",)
                 package = SimpleNamespace(
-                    ddbc_bindings=native, perf_timer=python, connect=MagicMock(return_value=conn)
+                    ddbc_bindings=native,
+                    perf_timer=python,
+                    cursor=cursor_module,
+                    connect=MagicMock(return_value=conn),
                 )
-                sample = self.sample_report(mode)["pairs"][0]["candidate"]
+                sample = self.new_sample_report(mode)["pairs"][0]["candidate"]
 
                 def workload(connection, ctx):
                     ctx.enable()
@@ -2190,15 +2224,20 @@ class TestSingleRowMeasurementModes(unittest.TestCase):
                     result = copy.deepcopy(sample["scenarios"][name])
                     result["detail"] = result.pop("work")
                     if failure == "counts":
-                        result["cpp"]["ddbc::FetchRow::construct_row"]["calls"] = 999
+                        result["cpp"]["ddbc::FetchRow::construct_row"] = dict(calls=999)
                     ctx.disable()
                     return result
 
                 cases = {name: workload for name in reporting.FETCH_CASES}
                 with (
-                    patch.dict(sys.modules, {"mssql_python": package}),
+                    patch.dict(
+                        sys.modules, {"mssql_python": package, "mssql_python.cursor": cursor_module}
+                    ),
                     patch.dict(os.environ, {"DB_CONNECTION_STRING": "test-only"}),
                     patch.object(controller, "check_build") as check,
+                    patch.object(controller.platform, "system", return_value="Linux"),
+                    patch.object(controller.platform, "machine", return_value="x86_64"),
+                    patch.object(controller.platform, "python_version", return_value="3.13.7"),
                     patch.object(benchmark_workloads, "single_row_registry", return_value=cases),
                 ):
                     if failure == "counts":
@@ -2237,7 +2276,7 @@ class TestSingleRowMeasurementModes(unittest.TestCase):
                     warmups=1,
                     scenarios=None,
                 )
-                sample = self.sample_report(mode)["pairs"][0]
+                sample = self.new_sample_report(mode)["pairs"][0]
                 calls = []
 
                 def measure(path, output, scenarios, timeout, **options):
@@ -2251,6 +2290,9 @@ class TestSingleRowMeasurementModes(unittest.TestCase):
                         controller, "resolve_revisions", return_value=("a" * 40, "b" * 40)
                     ),
                     patch.object(controller, "checkout"),
+                    patch.object(
+                        controller, "python_source_identity", side_effect=self.source_anchor
+                    ),
                     patch.object(controller, "build") as build,
                     patch.object(controller, "measure", side_effect=measure),
                 ):
@@ -2302,9 +2344,10 @@ class TestSingleRowMeasurementModes(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "profiling data"):
             reporting.validate(report)
 
-    def sample_bundle(self):
-        latency = self.sample_report("latency")
-        route = self.sample_report("route")
+    def sample_bundle(self, modern=False):
+        factory = self.new_sample_report if modern else self.sample_report
+        latency = factory("latency")
+        route = factory("route")
         diagnostic = copy.deepcopy(route)
         diagnostic.pop("mode")
         diagnostic["schema_version"] = 1
@@ -2466,7 +2509,7 @@ class TestSingleRowMeasurementModes(unittest.TestCase):
                     leg="Linux-SQL2022",
                 )
                 clock, builds, workers, archives = [0], [], [], []
-                bundle = self.sample_bundle()
+                bundle = self.sample_bundle(modern=True)
                 samples = {
                     "diagnostic": bundle["pairs"][0],
                     **{
@@ -2497,6 +2540,9 @@ class TestSingleRowMeasurementModes(unittest.TestCase):
                     patch.object(controller, "git", return_value="b" * 40),
                     patch.object(
                         controller, "run_process", side_effect=lambda *a, **k: archives.append(a[0])
+                    ),
+                    patch.object(
+                        controller, "python_source_identity", side_effect=self.source_anchor
                     ),
                     patch.object(controller, "build", side_effect=build),
                     patch.object(controller, "measure", side_effect=measure),
@@ -2572,7 +2618,7 @@ class TestSingleRowMeasurementModes(unittest.TestCase):
                     leg="Linux-SQL2022",
                 )
                 clock, workers, builds = [0], [], []
-                bundle = self.sample_bundle()
+                bundle = self.sample_bundle(modern=True)
                 samples = {
                     "diagnostic": bundle["pairs"][0],
                     **{
@@ -2606,6 +2652,9 @@ class TestSingleRowMeasurementModes(unittest.TestCase):
                     ),
                     patch.object(controller, "git", return_value="b" * 40),
                     patch.object(controller, "run_process"),
+                    patch.object(
+                        controller, "python_source_identity", side_effect=self.source_anchor
+                    ),
                     patch.object(controller, "build", side_effect=build),
                     patch.object(controller, "measure", side_effect=measure),
                     patch.dict(
@@ -2723,6 +2772,10 @@ class TestSingleRowMeasurementModes(unittest.TestCase):
         for fails in (False, True):
             with self.subTest(cleanup_failure=fails), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
+                source = root / "mssql_python" / "cursor.py"
+                source.parent.mkdir()
+                source.write_bytes((ROOT / "mssql_python" / "cursor.py").read_bytes())
+                cursor_module = SimpleNamespace(__file__=str(source))
                 binary = root / "native.so"
                 binary.write_bytes(b"fake-not-imported")
                 native = SimpleNamespace(
@@ -2754,9 +2807,18 @@ class TestSingleRowMeasurementModes(unittest.TestCase):
                 )
                 with (
                     patch.dict(
-                        sys.modules, {"mssql_python": SimpleNamespace(ddbc_bindings=native)}
+                        sys.modules,
+                        {
+                            "mssql_python": SimpleNamespace(
+                                ddbc_bindings=native, cursor=cursor_module
+                            ),
+                            "mssql_python.cursor": cursor_module,
+                        },
                     ),
                     patch.object(controller, "check_build") as check,
+                    patch.object(controller.platform, "system", return_value="Linux"),
+                    patch.object(controller.platform, "machine", return_value="x86_64"),
+                    patch.object(controller.platform, "python_version", return_value="3.13.7"),
                     patch.object(controller, "load_suite", return_value=(core, suite)),
                 ):
                     if fails:
@@ -2878,9 +2940,14 @@ class TestSingleRowMeasurementModes(unittest.TestCase):
     def test_ci_existing_publisher_consumes_bundle_without_latency_fallback(self):
         from unittest.mock import patch
 
-        for latency_available in (True, False):
-            with self.subTest(latency_available=latency_available):
-                bundle = self.sample_bundle()
+        for modern, latency_available in (
+            (False, True),
+            (False, False),
+            (True, True),
+            (True, False),
+        ):
+            with self.subTest(modern=modern, latency_available=latency_available):
+                bundle = self.sample_bundle(modern=modern)
                 if not latency_available:
                     bundle["fetch_measurements"]["latency"].update(
                         status="incomplete", pairs=[], unavailable_reason="OFF worker failed"
@@ -2956,7 +3023,7 @@ class TestSingleRowMeasurementModes(unittest.TestCase):
                     warmups=1,
                     leg="Linux-SQL2022",
                 )
-                bundle = self.sample_bundle()
+                bundle = self.sample_bundle(modern=True)
                 samples = {
                     "diagnostic": bundle["pairs"][0],
                     **{
@@ -3000,6 +3067,9 @@ class TestSingleRowMeasurementModes(unittest.TestCase):
                     ),
                     patch.object(controller, "git", return_value="b" * 40),
                     patch.object(controller, "run_process"),
+                    patch.object(
+                        controller, "python_source_identity", side_effect=self.source_anchor
+                    ),
                     patch.object(controller, "build"),
                     patch.object(controller, "measure", side_effect=measure),
                     patch.object(controller.shutil, "rmtree", side_effect=remove),
@@ -3028,3 +3098,325 @@ class TestSingleRowMeasurementModes(unittest.TestCase):
                     self.assertIn("finish deadline", saved["unavailable_reason"])
                 else:
                     self.assertIsNone(error)
+
+    def test_route_source_recognizer_exact_bytes_and_rejects_drift(self):
+        import ast
+
+        source = (ROOT / "mssql_python" / "cursor.py").read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        declaration = next(
+            node
+            for node in tree.body
+            if isinstance(node, ast.Assign)
+            and any(
+                isinstance(t, ast.Name) and t.id == "_DEFAULT_NATIVE_ROW_ROUTE"
+                for t in node.targets
+            )
+        )
+        literal = ast.get_source_segment(source, declaration)
+        route = {"version": 1, "methods": {"fetchone": False, "fetchmany": True, "fetchval": False}}
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "mssql_python" / "cursor.py"
+            target.parent.mkdir()
+            hashes = []
+            for text in (source, source.replace("\n", "\r\n"), "\n\n" + source):
+                target.write_bytes(text.encode())
+                observed = controller.python_source_identity(root, "b" * 40)
+                self.assertEqual(observed["row_route"], route)
+                hashes.append(observed["python_cursor_sha256"])
+            self.assertEqual(hashes[0], hashes[1])
+            self.assertNotEqual(hashes[0], hashes[2])
+            mutations = [
+                source.replace(literal, ""),
+                source + "\n" + literal,
+                source.replace(literal, "_DEFAULT_NATIVE_ROW_ROUTE: dict = " + repr(route)),
+                source.replace(literal, "ALIAS = _DEFAULT_NATIVE_ROW_ROUTE = " + repr(route)),
+                source.replace(literal, "_DEFAULT_NATIVE_ROW_ROUTE = dict(version=1)"),
+                source.replace(
+                    "    def fetchone(", "    @unreviewed_dispatch_wrapper\n    def fetchone("
+                ),
+                source.replace("    def fetchmany(", "    @staticmethod\n    def fetchmany("),
+                source.replace("    def fetchval(", "    @property\n    def fetchval("),
+                source.replace("    def fetchone(", "    async def fetchone("),
+                source.replace(
+                    "    def fetchone(", "    def fetchone(self): pass\n\n    def fetchone("
+                ),
+                source + "\nclass Cursor: pass\n",
+                source.replace("class Cursor:", "@unreviewed_dispatch_wrapper\nclass Cursor:"),
+                source.replace(
+                    "        Fetch the next row of a query result set.",
+                    "        Unknown changed method.",
+                ),
+                source + "\nprobe = _DEFAULT_NATIVE_ROW_ROUTE\n",
+                "invalid Python syntax !",
+            ]
+            for bad in (
+                {"version": True, "methods": route["methods"]},
+                {"version": 2, "methods": route["methods"]},
+                {"methods": route["methods"]},
+                {"version": 1, "methods": {"fetchone": 0, "fetchmany": True, "fetchval": False}},
+                {"version": 1, "methods": {"fetchone": True, "fetchmany": True, "fetchval": True}},
+                {"version": 1, "methods": {"fetchone": False, "fetchmany": True}},
+            ):
+                mutations.append(
+                    source.replace(literal, "_DEFAULT_NATIVE_ROW_ROUTE = " + repr(bad))
+                )
+            mutations.append(
+                source.replace(
+                    literal,
+                    "_DEFAULT_NATIVE_ROW_ROUTE = {'version':1,'version':1,'methods':"
+                    + repr(route["methods"])
+                    + "}",
+                )
+            )
+            mutations.append(
+                source.replace(
+                    literal,
+                    "_DEFAULT_NATIVE_ROW_ROUTE = {'version':1,'methods':{'fetchone':False,'fetchone':False,'fetchmany':True,'fetchval':False}}",
+                )
+            )
+            cursor_class = next(
+                node
+                for node in tree.body
+                if isinstance(node, ast.ClassDef) and node.name == "Cursor"
+            )
+            lines = source.splitlines(keepends=True)
+            for method in ("fetchone", "fetchmany", "fetchval"):
+                for binding in (
+                    f"{method} = replacement",
+                    f"{method}: object = replacement",
+                    f"{method}: object",
+                    f"alias = {method} = replacement",
+                    f"{method}, alias = replacements",
+                    f"{method} += replacement",
+                    f"del {method}",
+                    f"import replacement as {method}",
+                    f"from replacement import value as {method}",
+                    f"from replacement import {method}",
+                    f"for {method} in replacements: pass",
+                    f"with replacement as {method}: pass",
+                    f"if flag: {method} = replacement",
+                    f"({method} := replacement)",
+                    f"def helper(self, value=({method} := replacement)): pass",
+                    f"def helper(self) -> ({method} := replacement): pass",
+                    f"async def helper(self) -> ({method} := replacement): pass",
+                    f"def helper(self, value: ({method} := replacement)): pass",
+                    f"async def helper(self, value: ({method} := replacement)): pass",
+                    f"helper = lambda value=({method} := replacement): value",
+                    f"class Helper(({method} := replacement)): pass",
+                    f"try: pass\nexcept Exception as {method}: pass",
+                    f"match replacement:\n    case {{'value': {method}}}: pass",
+                    f"class {method}: pass",
+                    f"if flag:\n    def {method}(self): pass",
+                ):
+                    insertion = (
+                        "\n" + "\n".join("    " + line for line in binding.splitlines()) + "\n"
+                    )
+                    mutations.append(
+                        "".join(lines[: cursor_class.end_lineno])
+                        + insertion
+                        + "".join(lines[cursor_class.end_lineno :])
+                    )
+            for index, text in enumerate(mutations):
+                with self.subTest(mutation=index):
+                    self.assertNotEqual(text, source)
+                    target.write_bytes(text.encode())
+                    with self.assertRaises(ValueError):
+                        controller.python_source_identity(root, "b" * 40)
+
+    def test_versioned_route_standalone_and_fully_populated_bundles(self):
+        for modern in (False, True):
+            bundle = self.sample_bundle(modern=modern)
+            for mode in ("latency", "route"):
+                report = bundle["fetch_measurements"][mode]
+                reporting.validate(report)
+                self.assertIn("Python phases OFF", reporting.render([report], "c" * 40, 42))
+            reporting.validate(bundle)
+            valid, errors = reporting.ci_mode_reports(bundle)
+            self.assertEqual(set(valid), set(reporting.MODES))
+            self.assertEqual(errors, {})
+            body = reporting.render_ci_reports([bundle], "c" * 40, 42)
+            self.assertIn("Row constructions base/candidate 0/1000", body)
+            if modern:
+                self.assertIn("Row constructions base/candidate 0/0", body)
+                self.assertIn("binding=True, default fetchone native Row=False", body)
+            for policy in ((True, True, True), (False, True, False)) if modern else ():
+                # A future base chooses its own policy; candidate role does not select it.
+                future = copy.deepcopy(bundle)
+                for mode in reporting.MODES:
+                    report = future if mode == "diagnostic" else future["fetch_measurements"][mode]
+                    anchor = report["python_sources"]["base"]
+                    anchor["row_route"]["methods"] = dict(
+                        zip(("fetchone", "fetchmany", "fetchval"), policy)
+                    )
+                    for pair in report["pairs"]:
+                        sample = pair["base"]
+                        sample["provenance"].update(copy.deepcopy(anchor), guarded_row=True)
+                        if mode == "route":
+                            for name, case in sample["scenarios"].items():
+                                if anchor["row_route"]["methods"][name.split("_")[1]]:
+                                    case["cpp"]["ddbc::FetchRow::construct_row"] = dict(
+                                        calls=1000, total_us=10000, min_us=1, max_us=100
+                                    )
+                self.assertEqual(reporting.ci_mode_reports(future)[1], {})
+                self.assertIn(
+                    "Primary verdict: native OFF",
+                    reporting.render_ci_reports([future], "c" * 40, 42),
+                )
+
+    def test_versioned_route_rejects_bad_identity_policy_counts_and_partial_data(self):
+        for mutation in (
+            lambda r: r.pop("python_sources"),
+            lambda r: r["python_sources"].pop("base"),
+            lambda r: r["python_sources"]["candidate"].update(source_commit="f" * 40),
+            lambda r: r["python_sources"]["candidate"].update(python_cursor_sha256="bad"),
+            lambda r: r["pairs"][0]["candidate"]["provenance"].pop("row_route"),
+            lambda r: r["pairs"][0]["candidate"]["provenance"].pop("python_cursor_sha256"),
+            lambda r: r["pairs"][0]["candidate"]["provenance"].update(
+                python_cursor_sha256="f" * 64
+            ),
+            lambda r: r["pairs"][0]["candidate"]["provenance"].update(guarded_row=False),
+            lambda r: r["pairs"][0]["candidate"]["provenance"]["row_route"].update(version=True),
+            lambda r: r["pairs"][0]["candidate"]["provenance"]["row_route"].update(version=2),
+            lambda r: r["pairs"][0]["candidate"]["provenance"]["row_route"].pop("version"),
+            lambda r: r["pairs"][0]["candidate"]["provenance"]["row_route"]["methods"].pop(
+                "fetchval"
+            ),
+            lambda r: r["pairs"][0]["candidate"]["provenance"]["row_route"]["methods"].update(
+                fetchone=0
+            ),
+            lambda r: r["pairs"][0]["candidate"]["provenance"]["row_route"]["methods"].update(
+                fetchval=True
+            ),
+            lambda r: r["pairs"][0]["candidate"]["scenarios"]["numeric_fetchone"]["cpp"].update(
+                {"ddbc::FetchRow::construct_row": dict(calls=1000)}
+            ),
+            lambda r: r["pairs"][0]["candidate"]["scenarios"]["mixed_fetchmany"]["cpp"].pop(
+                "ddbc::FetchRow::construct_row"
+            ),
+            lambda r: r["pairs"][0]["candidate"]["scenarios"]["mixed_fetchone"].update(cpp={}),
+            lambda r: r["pairs"][0]["candidate"].update(status="running"),
+            lambda r: r["pairs"][1]["candidate"]["provenance"].update(native_sha256="f" * 64),
+        ):
+            for partial in (False, True):
+                with self.subTest(mutation=mutation, partial=partial):
+                    report = self.new_sample_report("route")
+                    if partial:
+                        report.update(
+                            status="incomplete",
+                            pairs=report["pairs"][:2],
+                            unavailable_reason="Deadline before next pair",
+                        )
+                    mutation(report)
+                    with self.assertRaises((ValueError, KeyError)):
+                        reporting.validate(report)
+        report = self.new_sample_report("route")
+        report.update(
+            status="incomplete",
+            pairs=report["pairs"][:2],
+            unavailable_reason="Deadline before next pair",
+        )
+        reporting.validate(report)
+        self.assertIn("Performance unavailable", reporting.render([report], "c" * 40, 42))
+
+    def test_versioned_route_partial_siblings_and_off_on_identity(self):
+        for defect in (
+            "native",
+            "python",
+            "missing-anchor",
+            "diagnostic-anchor",
+            "off-environment",
+        ):
+            bundle = self.sample_bundle(modern=True)
+            route = bundle["fetch_measurements"]["route"]
+            route.update(
+                status="incomplete", pairs=route["pairs"][:2], unavailable_reason="Deadline"
+            )
+            if defect == "native":
+                for pair in route["pairs"]:
+                    pair["candidate"]["provenance"]["native_sha256"] = "f" * 64
+            elif defect == "missing-anchor":
+                route.pop("python_sources")
+            elif defect == "diagnostic-anchor":
+                bundle["python_sources"]["candidate"]["python_cursor_sha256"] = "f" * 64
+            elif defect == "off-environment":
+                for item in (route, bundle):
+                    for pair in item["pairs"]:
+                        for sample in pair.values():
+                            sample["environment"]["python"] = "3.12.0"
+            else:
+                route["python_sources"]["candidate"]["python_cursor_sha256"] = "f" * 64
+                for pair in route["pairs"]:
+                    pair["candidate"]["provenance"]["python_cursor_sha256"] = "f" * 64
+            valid, errors = reporting.ci_mode_reports(bundle)
+            self.assertIn("latency", valid)
+            self.assertIn("diagnostic" if defect == "diagnostic-anchor" else "route", errors)
+            self.assertIn(
+                "Primary verdict: native OFF", reporting.render_ci_reports([bundle], "c" * 40, 42)
+            )
+
+    def test_versioned_controller_rejects_warmup_drift_and_keeps_subset_incomplete(self):
+        from unittest.mock import patch
+
+        for defect in (None, "warmup", "native-drift", "source-drift", "subset"):
+            with self.subTest(defect=defect), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                args = SimpleNamespace(
+                    base="a" * 40,
+                    candidate="b" * 40,
+                    output=root,
+                    mode="route",
+                    reuse_candidate=False,
+                    leg="Linux-SQL2022",
+                    samples=3,
+                    warmups=1,
+                    scenarios=["mixed_fetchmany"] if defect == "subset" else None,
+                )
+                calls = []
+                samples = self.new_sample_report("route")["pairs"][0]
+
+                def measure(path, output, scenarios, timeout, **options):
+                    result = copy.deepcopy(samples[path.name])
+                    calls.append(path.name)
+                    if defect == "warmup" and len(calls) == 1:
+                        result["scenarios"]["mixed_fetchmany"]["cpp"] = {}
+                    if len(calls) > 2 and path.name == "base":
+                        if defect == "native-drift":
+                            result["provenance"]["native_sha256"] = "f" * 64
+                        if defect == "source-drift":
+                            result["provenance"]["python_cursor_sha256"] = "f" * 64
+                    if scenarios:
+                        result["scenarios"] = {
+                            name: result["scenarios"][name] for name in scenarios
+                        }
+                    return result
+
+                with (
+                    patch.object(
+                        controller, "resolve_revisions", return_value=("a" * 40, "b" * 40)
+                    ),
+                    patch.object(controller, "checkout"),
+                    patch.object(controller, "build"),
+                    patch.object(
+                        controller, "python_source_identity", side_effect=self.source_anchor
+                    ),
+                    patch.object(controller, "measure", side_effect=measure),
+                ):
+                    if defect in (None, "subset"):
+                        controller.run(args)
+                    else:
+                        with self.assertRaises(ValueError):
+                            controller.run(args)
+                saved = json.loads((root / "report.json").read_text())
+                self.assertEqual(saved["status"], "complete" if defect is None else "incomplete")
+                if defect not in (None, "subset"):
+                    self.assertEqual(saved["pairs"], [])
+                    self.assertLessEqual(len(calls), 4)
+                if defect == "subset":
+                    self.assertEqual(len(saved["pairs"]), 3)
+                    self.assertEqual(
+                        set(saved["pairs"][0]["base"]["scenarios"]), {"mixed_fetchmany"}
+                    )
+                    with self.assertRaises(ValueError):
+                        reporting.validate(saved)

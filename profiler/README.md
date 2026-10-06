@@ -294,9 +294,11 @@ uses its public API, not a first-column-only native shortcut.
   profiling-enabled CI extension. Setup/execute and validation are outside the
   timed window; the API loop, result retention and EOF call are inside it.
 - `--mode route` uses native instrumentation ON with Python phases OFF. Each case
-  must record 1,001 native fetch calls and, when the guarded Row entry exists,
-  exactly 1,000 native Row constructions. An older base without that entry must
-  record no such constructions. This is route attribution, not production latency.
+  must record 1,001 native fetch calls. The version-1 default route contract requires
+  1,000 native Row constructions for `fetchmany(1)` and none for `fetchone` or
+  `fetchval` in the successor. Here `1` is a built-in integer for both numeric and
+  mixed shapes; this is not the numeric-column-only native fetching shortcut.
+  Legacy f539 requires 1,000 constructions for all three APIs; main666 requires none. This is route attribution, not production latency.
   Existing native regression tests separately cover converter fallback, all-column
   callbacks, repeated EOF, and customization failures.
 
@@ -350,7 +352,9 @@ The controller retains a **90-minute aggregate budget**, including a three-minut
 finish reserve; the pipeline step remains 100 minutes and its job 160 minutes.
 Archives/preflight, builds and workers receive bounded timeouts clipped to the
 remaining work budget. Fetch workers receive at most 30 seconds; diagnostic workers
-retain their six-minute cap. The fetch allowance is not yet runtime-qualified.
+retain their six-minute cap. All workers completed within the allowance in ADO180876
+on the two observed agents. That observation is not a future-host guarantee or
+qualification of this successor.
 The proposal already required 132 minutes if its build/worker caps and planning
 overhead were all consumed. Metadata operations also consume the shared deadline;
 they never extend it. Completing every mode is **not guaranteed**. Unused early time flows to later modes. Exhaustion or
@@ -375,11 +379,46 @@ The updated collector validates shared PR/build/base/merge identity, then each m
 independently. The primary performance verdict comes **only from OFF/OFF latency**.
 Native route counts/timings and both-ON diagnostics appear in separately labeled
 sections; neither replaces missing latency. Missing, malformed and unstarted modes
-are explicitly unavailable. Legacy readers can still read the diagnostic root;
-standalone schema-1/schema-2 reports and interactive Profiler defaults are unchanged.
+are explicitly unavailable. The updated reader accepts historical schema-1/schema-2
+reports as well as the additive route contract. Old strict five-key provenance readers
+reject new fetch workers; deploy producer and trusted consumer changes together rather
+than stripping fields. Interactive Profiler defaults remain unchanged.
 Fork reporting continues to use trusted base code. Existing artifact, download,
 comment-size and publisher time limits are not expanded.
 
-This wiring is source-only until approved exact-head CI runs it. Source/fake-boundary
+This successor is source-only until approved exact-head CI runs it. Source/fake-boundary
 controls and prior-head CI do not establish native correctness, completion within
 these allowances, or a speedup.
+
+### Default route identity
+
+`guarded_row` records native binding capability, not which Python API uses it.
+New workers carry exactly seven provenance fields: `source_commit`, `native_file`,
+`native_sha256`, `native_profiling`, `guarded_row`, `python_cursor_sha256`, and
+`row_route`. The latter is `{version: 1, methods: {fetchone: false, fetchmany: true,
+fetchval: false}}` for the successor. The private literal in `cursor.py` is descriptive;
+it is never consulted by fetching. `fetchval` still calls the dynamically resolved
+`self.fetchone()`. The private `_finish_fetchone` completion now observes `native=False`
+for default fetchone/fetchval instead of the previous eligible `native=True` route.
+
+The controller independently reads each selected source root before measurement and
+records `python_sources.base` and `.candidate` anchors (revision, cursor digest, route).
+Workers verify their imported cursor origin and match these anchors. A closed recognizer
+accepts only reviewed main666, f539 and successor method bodies. Its constants hash the
+LF-normalized, dedented source segments of fetchone/fetchmany/fetchval, in that order,
+as a compact ASCII-escaped JSON list. Decorated methods, duplicate methods or literal
+keys, and non-definition class-scope bindings of the three route names are rejected.
+The binding check does not inspect method locals or nested scopes; it is a narrow
+recognizer guard, not analysis of arbitrary dynamic Python namespace mutations. Method-body, comment or docstring edits require explicit fingerprint
+review/update; this maintenance coupling is deliberate, not a semantic or security proof.
+The whole cursor digest still binds all other source bytes. Neither side labels nor
+observed counts determine policy. Future bases with either reviewed route work identically.
+
+Warmups and retained/partial pairs must preserve source, policy, native and environment
+identity. OFF and ON modes share Python anchors, but have distinct native binaries;
+route and diagnostic workers share the exact ON identity even for available partial data.
+Unknown versions, missing new fields/anchors, source-policy drift or contradictory native
+capability make evidence unavailable. Historical schema-2 workers without either new field
+retain the strict all-or-none `guarded_row` expectation; historical artifacts are not rewritten.
+An absent constructor timer is acceptable only for an expected-zero method with positive
+1,001-call native fetch proof. It never supplies a missing timing or successful measurement.

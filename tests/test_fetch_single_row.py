@@ -781,7 +781,7 @@ def test_single_row_fusion_handles_post_fetch_factory_change(cursor, method, whe
         ):
             with pytest.raises(RuntimeError, match="factory changed after native advancement"):
                 cursor.fetchmany(1) if method == "fetchmany" else getattr(cursor, method)()
-            fused.assert_called_once()
+            assert fused.call_count == (1 if method == "fetchmany" else 0)
             assert Row._fast_create is factory
             assert cursor.rowcount == 1 and cursor.rownumber == 0
     finally:
@@ -797,6 +797,13 @@ def test_single_row_fusion_uses_native_constructor(cursor, method):
     cursor.execute("SELECT 42 AS number, CAST(N'text' AS NVARCHAR(10)) AS label")
     factory_code = Row._fast_create.__code__
     calls = []
+    completion = cursor._finish_fetchmany if method == "fetchmany" else cursor._finish_fetchone
+    native_flags = []
+
+    def finish(ret, data, native=False):
+        native_flags.append(native)
+        return completion(ret, data, native)
+
     previous_profile = sys.getprofile()
     phases_enabled = perf_timer.is_enabled()
 
@@ -806,22 +813,30 @@ def test_single_row_fusion_uses_native_constructor(cursor, method):
 
     perf_timer.disable()
     try:
-        with patch.object(
-            ddbc_bindings, "DDBCSQLFetchRow", wraps=ddbc_bindings.DDBCSQLFetchRow
-        ) as fused:
+        with (
+            patch.object(
+                ddbc_bindings, "DDBCSQLFetchRow", wraps=ddbc_bindings.DDBCSQLFetchRow
+            ) as fused,
+            patch.object(
+                cursor,
+                "_finish_fetchmany" if method == "fetchmany" else "_finish_fetchone",
+                side_effect=finish,
+            ),
+        ):
             sys.setprofile(profile)
             try:
                 result = cursor.fetchmany(1) if method == "fetchmany" else getattr(cursor, method)()
             finally:
                 sys.setprofile(previous_profile)
-            fused.assert_called_once()
+            assert fused.call_count == (1 if method == "fetchmany" else 0)
         if method == "fetchval":
             assert result == 42
         else:
             row = result[0] if method == "fetchmany" else result
             assert type(row) is Row
             assert tuple(row) == (42, "text")
-        assert calls == []
+        assert calls == ([] if method == "fetchmany" else ["call"])
+        assert native_flags == [method == "fetchmany"]
         assert cursor.rowcount == 1 and cursor.rownumber == 0
     finally:
         if phases_enabled:
@@ -868,7 +883,7 @@ def test_single_row_late_allocator_preserves_factory_global_lookup(cursor, metho
             ) as fused,
         ):
             result = cursor.fetchmany(1) if method == "fetchmany" else getattr(cursor, method)()
-            fused.assert_called_once()
+            assert fused.call_count == (1 if method == "fetchmany" else 0)
         if method == "fetchval":
             assert result == 1
         else:
@@ -924,12 +939,12 @@ def test_single_row_fusion_native_counters_in_subprocess(conn_str, method):
                     p.reset()
                     p.enable()
                     assert fetch() == (1 if method == "fetchval" else (1, 11, "text"))
-                    assert calls("ddbc::FetchRow::construct_row") == 1
+                    assert calls("ddbc::FetchRow::construct_row") == (1 if method == "fetchmany" else 0)
                     assert calls(fetch_timer) == 1
                     assert fetch() == (2 if method == "fetchval" else (2, 12, "text"))
                     assert fetch() is None
                     assert fetch() is None
-                    assert calls("ddbc::FetchRow::construct_row") == 2
+                    assert calls("ddbc::FetchRow::construct_row") == (2 if method == "fetchmany" else 0)
                     assert calls(fetch_timer) == 4
                     assert perf_timer.get_stats() == {}
                     assert cursor.rowcount == 2 and cursor.rownumber == 1
