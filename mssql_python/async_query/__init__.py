@@ -10,8 +10,8 @@ Warning:
 """
 
 from ._native import load_py_core
-from .async_connection import _AsyncConnection  # pyright: ignore[reportPrivateUsage]
-from .async_cursor import _AsyncCursor  # pyright: ignore[reportPrivateUsage]
+from .async_connection import _AsyncConnection as _AsyncConnection
+from .async_cursor import _AsyncCursor as _AsyncCursor
 from .exception_translator import (
     DataError,
     DatabaseError,
