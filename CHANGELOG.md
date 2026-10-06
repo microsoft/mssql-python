@@ -165,8 +165,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
   `sql_variant` stores them as `numeric`, and because `numeric` outranks
   `money`/`varchar` in data-type precedence, `WHERE money_or_varchar_col = ?` can
   add a `CONVERT_IMPLICIT` on the column side that turns an index seek into a scan.
-  `executemany` intentionally keeps its batch `VARCHAR` string binding (GH-503);
-  the remaining money-range case there is tracked in #745.
+  The `executemany` auto-detect path is covered separately by GH-745.
 - **GH-725:** The `timeout` parameter of `connect()` / `Connection(...)` now
   correctly sets the **login (connection-attempt) timeout**
   (`SQL_ATTR_LOGIN_TIMEOUT`), matching pyodbc and its own docstring. Previously
