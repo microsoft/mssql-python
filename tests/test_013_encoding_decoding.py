@@ -3312,34 +3312,6 @@ def test_big5_encoding_chinese_traditional(db_connection):
         cursor.close()
 
 
-def test_euc_kr_encoding_korean(db_connection):
-    """Test EUC-KR encoding for Korean characters."""
-    db_connection.setencoding(encoding="euc-kr", ctype=SQL_CHAR)
-    db_connection.setdecoding(SQL_CHAR, encoding="euc-kr", ctype=SQL_CHAR)
-
-    cursor = db_connection.cursor()
-    try:
-        cursor.execute("CREATE TABLE #test_euckr (id INT, data VARCHAR(200))")
-
-        korean_tests = [
-            ("안녕하세요", "Hello"),
-            ("서울", "Seoul"),
-            ("한글", "Hangul"),
-        ]
-
-        for korean_text, meaning in korean_tests:
-            if is_encoding_compatible_with_data("euc-kr", korean_text):
-                cursor.execute("DELETE FROM #test_euckr")
-                cursor.execute("INSERT INTO #test_euckr VALUES (?, ?)", 1, korean_text)
-                cursor.execute("SELECT data FROM #test_euckr WHERE id = 1")
-                result = cursor.fetchone()
-            else:
-                pass
-
-    finally:
-        cursor.close()
-
-
 # ====================================================================================
 # SINGLE-BYTE ENCODING TESTS (Latin-1, CP1252, ISO-8859-*, etc.)
 # ====================================================================================
@@ -6863,6 +6835,33 @@ def test_shift_jis_encoding_japanese(db_connection):
 
     finally:
         cursor.close()
+
+
+def test_euc_kr_encoding_korean_varchar(conn_str):
+    """Preserve Korean VARCHAR storage with the legacy SQL_CHAR/EUC-KR settings."""
+    korean_strings = ["안녕하세요", "서울", "한글"]
+    with connect(conn_str) as conn:
+        with pytest.warns(UserWarning, match="UTF-16LE.*SQL_C_WCHAR"):
+            conn.setencoding(encoding="euc-kr", ctype=SQL_CHAR)
+        conn.setdecoding(SQL_CHAR, encoding="euc-kr", ctype=SQL_CHAR)
+
+        with conn.cursor() as cursor:
+            # CP949 contains the EUC-KR characters used here; avoid the database's default code page.
+            cursor.execute(
+                "CREATE TABLE #test_euc_kr_varchar "
+                "(id INT, data VARCHAR(200) COLLATE Korean_Wansung_CI_AS)"
+            )
+            for index, text in enumerate(korean_strings):
+                cursor.execute("INSERT INTO #test_euc_kr_varchar VALUES (?, ?)", index, text)
+
+            cursor.execute(
+                "SELECT data, CONVERT(VARBINARY(200), data), CONVERT(NVARCHAR(200), data) "
+                "FROM #test_euc_kr_varchar ORDER BY id"
+            )
+            rows = cursor.fetchall()
+            # Keep the narrow fetch, but verify fidelity without Windows ANSI code-page conversion.
+            assert [row[1] for row in rows] == [text.encode("euc-kr") for text in korean_strings]
+            assert [row[2] for row in rows] == korean_strings
 
 
 def test_euc_kr_encoding_korean(db_connection):
