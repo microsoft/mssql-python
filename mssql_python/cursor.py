@@ -705,9 +705,9 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             - i: The index of the parameter in the list.
             - decimal_as_numeric: When True, bind a Decimal as SQL_NUMERIC regardless of
               value, skipping the MONEY/SMALLMONEY-range VARCHAR shortcut. The execute()
-              path sets this so a money-range Decimal compared against a numeric column
-              does not overflow (GH-740). executemany() leaves it False because it
-              string-binds Decimals for the whole batch (GH-503).
+              path and executemany() auto-detect path set this so a money-range Decimal
+              compared against a numeric column does not overflow (GH-740, GH-745).
+              setinputsizes DECIMAL/NUMERIC still string-binds (GH-503).
         Returns:
             - A tuple containing the SQL type, C type, column size, and decimal digits.
         """
@@ -843,11 +843,11 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                     f"The maximum precision supported by SQL Server is 38, but got {precision}."
                 )
 
-            # Detect MONEY / SMALLMONEY range. Skipped on the execute() path
-            # (decimal_as_numeric=True), where a money-range Decimal must bind as
-            # SQL_NUMERIC so a comparison against a smaller numeric column returns no
-            # match instead of overflowing (GH-740). executemany keeps the VARCHAR
-            # shortcut because it string-binds Decimals for the batch (GH-503).
+            # Detect MONEY / SMALLMONEY range. Skipped when decimal_as_numeric=True
+            # (execute() and executemany auto-detect), where a money-range Decimal must
+            # bind as SQL_NUMERIC so a comparison against a smaller numeric column
+            # returns no match instead of overflowing (GH-740, GH-745). The
+            # setinputsizes DECIMAL path still string-binds (GH-503).
             if not decimal_as_numeric and SMALLMONEY_MIN <= param <= SMALLMONEY_MAX:
                 logger.debug("_map_sql_type: DECIMAL -> SMALLMONEY - index=%d", i)
                 # smallmoney
@@ -2364,6 +2364,53 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
         return columnwise, row_count
 
+    @staticmethod
+    def _decimal_sql_precision_scale(value: decimal.Decimal) -> Tuple[int, int]:
+        """Return SQL NUMERIC (precision, scale) for a finite Decimal.
+
+        Matches the precision/scale rules used by _map_sql_type / _get_numeric_data.
+        """
+        decimal_as_tuple = value.as_tuple()
+        digits_tuple = decimal_as_tuple.digits
+        num_digits = len(digits_tuple)
+        exponent = decimal_as_tuple.exponent
+        if isinstance(exponent, str):
+            raise ValueError("Cannot bind non-finite Decimal (NaN/Infinity) as SQL NUMERIC")
+        if exponent >= 0:
+            precision = num_digits + exponent
+            scale = 0
+        elif (-1 * exponent) <= num_digits:
+            precision = num_digits
+            scale = exponent * -1
+        else:
+            precision = exponent * -1
+            scale = exponent * -1
+        return precision, scale
+
+    def _batch_decimal_precision_scale(self, column) -> Tuple[int, int]:
+        """Derive one NUMERIC(precision, scale) that fits every Decimal in a column.
+
+        Used by executemany so money-range Decimals can bind as SQL_NUMERIC with a
+        single batch-wide type (GH-745) without shrinking any row's digits.
+
+        Non-finite Decimals (NaN/Infinity) raise ValueError rather than being
+        skipped. Callers must enforce SQL Server's precision limit (<= 38).
+        """
+        max_scale = 0
+        max_int_digits = 0
+        found = False
+        for value in column:
+            if not isinstance(value, decimal.Decimal):
+                continue
+            # Propagate non-finite errors; do not silently skip them.
+            precision, scale = self._decimal_sql_precision_scale(value)
+            found = True
+            max_scale = max(max_scale, scale)
+            max_int_digits = max(max_int_digits, precision - scale)
+        if not found:
+            return 0, 0
+        return max(max_int_digits + max_scale, 1), max_scale
+
     def _compute_column_type(self, column):
         """
         Determine representative value and integer min/max for a column.
@@ -2392,6 +2439,11 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         max_decimal_formatted_len = 0
         for v in non_nulls:
             if isinstance(v, decimal.Decimal):
+                # Non-finite Decimals have a string exponent ('n'/'N'/'F'); comparing
+                # that to int raises TypeError before the NUMERIC ValueError path.
+                # Reject early with the same message used by _decimal_sql_precision_scale.
+                if not v.is_finite():
+                    raise ValueError("Cannot bind non-finite Decimal (NaN/Infinity) as SQL NUMERIC")
                 max_decimal_formatted_len = max(max_decimal_formatted_len, len(format(v, "f")))
             if not sample_value:
                 sample_value = v
@@ -2407,7 +2459,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                     # If length comparison fails, keep the current sample_value
                     pass
             elif isinstance(v, decimal.Decimal) and isinstance(sample_value, decimal.Decimal):
-                # For Decimal objects, prefer the one that requires higher precision or scale
+                # Both values are finite (checked above). Prefer higher precision/scale.
                 v_tuple = v.as_tuple()
                 sample_tuple = sample_value.as_tuple()
 
@@ -2547,6 +2599,9 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 )
 
         # Prepare parameter type information
+        # Columns configured via setinputsizes keep declared columnSize/decimalDigits
+        # through the post-conversion widen pass (bufferSize may still grow).
+        explicit_inputsize_cols = set()
         with perf_phase("py::executemany::param_type_detection"):
             for col_index in range(param_count):
                 column = (
@@ -2558,6 +2613,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
                 if self._inputsizes and col_index < len(self._inputsizes):
                     # Use explicitly set input sizes
+                    explicit_inputsize_cols.add(col_index)
                     sql_type, c_type, column_size, decimal_digits = self._inputsizes[col_index]
 
                     # Default is_dae to False
@@ -2578,12 +2634,25 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                             is_dae = True
 
                     # Sanitize precision/scale for numeric types
+                    numeric_buffer_size = 0
                     if sql_type in (
                         ddbc_sql_const.SQL_DECIMAL.value,
                         ddbc_sql_const.SQL_NUMERIC.value,
                     ):
                         column_size = max(1, min(int(column_size) if column_size > 0 else 18, 38))
                         decimal_digits = min(max(0, decimal_digits), column_size)
+                        # Provisional SQL_C_CHAR stride: size only from values that
+                        # are already Decimal. Do NOT convert non-Decimals here —
+                        # that bypasses the protected conversion loop below and can
+                        # leak MemoryError/RuntimeError (and value-bearing messages).
+                        # After conversion, bufferSize is widened from the produced
+                        # fixed-point text (same path that sanitizes failures).
+                        max_encoded = 0
+                        for row in seq_of_parameters:
+                            value = row[col_index]
+                            if isinstance(value, decimal.Decimal):
+                                max_encoded = max(max_encoded, len(format(value, "f")))
+                        numeric_buffer_size = max(max_encoded, column_size + 3, 1)
 
                     # For binary data columns with mixed content, we need to find max size
                     if sql_type in (
@@ -2614,6 +2683,8 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                     paraminfo.columnSize = column_size
                     paraminfo.decimalDigits = decimal_digits
                     paraminfo.isDAE = is_dae
+                    if numeric_buffer_size:
+                        paraminfo.bufferSize = numeric_buffer_size
 
                     # Ensure we never have SQL_C_DEFAULT (0) for C-type
                     if paraminfo.paramCType == 0:
@@ -2631,6 +2702,18 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                         column
                     )
 
+                    # GH-745: auto-detected Decimal columns bind as SQL_NUMERIC (skipping
+                    # the money-range VARCHAR shortcut) so a money-range value compared
+                    # against a smaller numeric column does not overflow. executemany still
+                    # string-binds via SQL_C_CHAR below; setinputsizes DECIMAL stays on the
+                    # GH-503 string path above.
+                    # Only force NUMERIC when every non-NULL value in the column is Decimal;
+                    # a heterogeneous column keeps the prior sample-driven path.
+                    non_null_values = [v for v in column if v is not None]
+                    decimal_as_numeric = bool(non_null_values) and all(
+                        isinstance(v, decimal.Decimal) for v in non_null_values
+                    )
+
                     dummy_row = list(sample_row)
                     paraminfo = self._create_parameter_types_list(
                         sample_value,
@@ -2639,6 +2722,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                         col_index,
                         min_val=min_val,
                         max_val=max_val,
+                        decimal_as_numeric=decimal_as_numeric,
                     )
 
                     # GH-610: all-NULL columns now pass SQL_UNKNOWN_TYPE to C++,
@@ -2656,9 +2740,26 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                         ddbc_sql_const.SQL_NUMERIC.value,
                     ):
                         paraminfo.paramCType = ddbc_sql_const.SQL_C_CHAR.value
-                        # Ensure columnSize accommodates the longest string representation
-                        if max_decimal_len > paraminfo.columnSize:
-                            paraminfo.columnSize = max_decimal_len
+                        # One NUMERIC(precision, scale) must fit every Decimal in the
+                        # batch (GH-745). Sample-only precision/scale is not enough.
+                        # columnSize is NUMERIC precision for SQLBindParameter, not a
+                        # string buffer length — do not widen it with max_decimal_len.
+                        batch_precision, batch_scale = self._batch_decimal_precision_scale(column)
+                        if batch_precision > 38:
+                            raise ValueError(
+                                "Precision of the numeric value is too high. "
+                                "The maximum precision supported by SQL Server is 38, "
+                                f"but got {batch_precision}."
+                            )
+                        if batch_precision > paraminfo.columnSize:
+                            paraminfo.columnSize = batch_precision
+                        if batch_scale > paraminfo.decimalDigits:
+                            paraminfo.decimalDigits = batch_scale
+                        # SQL_C_CHAR array stride is separate from SQL precision.
+                        # Fixed-point strings need room for sign, '.', and a leading
+                        # zero (e.g. Decimal("1E-38") -> 40 chars with precision 38).
+                        # Size from the longest encoded value in the batch.
+                        paraminfo.bufferSize = max(max_decimal_len, 1)
 
                     # Correct column size for Decimal columns sent as SQL_VARCHAR (GH-557).
                     # The sample value's formatted string may be shorter than another
@@ -2765,8 +2866,58 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                                 raise ValueError(err_msg) from None
                 processed_parameters.append(processed_row)
 
-        # Now transpose the processed parameters
         with perf_phase("py::executemany::param_processing"):
+            # Derive/widen SQL_C_CHAR bufferSize and (for auto-detect only) SQL
+            # NUMERIC precision/scale from text produced by the protected conversion.
+            # setinputsizes previously sized by converting independently (leaking raw
+            # MemoryError/RuntimeError); the auto-detect path already had a
+            # Decimal-only provisional size. Post-conversion strings are authoritative
+            # for precision on auto-detect (e.g. Decimal("1e15.00") + "2e16"). Explicit
+            # setinputsizes columnSize/decimalDigits stay as declared; bufferSize still
+            # grows so the CHAR array fits.
+            for col_index, ptype in enumerate(parameters_type):
+                if ptype.paramSQLType not in (
+                    ddbc_sql_const.SQL_DECIMAL.value,
+                    ddbc_sql_const.SQL_NUMERIC.value,
+                ):
+                    continue
+                max_encoded = 0
+                max_scale = 0
+                max_int_digits = 0
+                found_numeric_text = False
+                for row in processed_parameters:
+                    val = row[col_index]
+                    if not isinstance(val, str):
+                        continue
+                    max_encoded = max(max_encoded, len(val))
+                    try:
+                        as_decimal = decimal.Decimal(val)
+                    except decimal.DecimalException:
+                        continue
+                    if not as_decimal.is_finite():
+                        continue
+                    precision, scale = self._decimal_sql_precision_scale(as_decimal)
+                    found_numeric_text = True
+                    max_scale = max(max_scale, scale)
+                    max_int_digits = max(max_int_digits, precision - scale)
+                if max_encoded:
+                    prior = getattr(ptype, "bufferSize", 0) or 0
+                    ptype.bufferSize = max(prior, max_encoded, 1)
+                # Honor explicit setinputsizes precision/scale; only auto-detect widens.
+                if found_numeric_text and col_index not in explicit_inputsize_cols:
+                    batch_precision = max(max_int_digits + max_scale, 1)
+                    if batch_precision > 38:
+                        raise ValueError(
+                            "Precision of the numeric value is too high. "
+                            "The maximum precision supported by SQL Server is 38, "
+                            f"but got {batch_precision}."
+                        )
+                    if batch_precision > ptype.columnSize:
+                        ptype.columnSize = batch_precision
+                    if max_scale > ptype.decimalDigits:
+                        ptype.decimalDigits = max_scale
+
+            # Now transpose the processed parameters
             columnwise_params, row_count = self._transpose_rowwise_to_columnwise(
                 processed_parameters
             )
