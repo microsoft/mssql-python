@@ -746,7 +746,7 @@ def test_native_row_guard_does_not_invoke_metaclass_hooks():
 
 @pytest.mark.parametrize("method", ("fetchone", "fetchmany", "fetchval"))
 @pytest.mark.parametrize("when", ("maps", "final_argument"))
-def test_single_row_fusion_handles_post_fetch_factory_change(cursor, method, when="maps"):
+def test_single_row_fusion_handles_post_fetch_factory_change(cursor, method, when):
     from mssql_python import ddbc_bindings
     from mssql_python.row import Row
 
