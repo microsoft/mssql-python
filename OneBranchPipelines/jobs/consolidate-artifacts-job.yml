@@ -125,12 +125,16 @@ jobs:
         displayName: 'Consolidate Windows symbols (optional)'
         continueOnError: true
       
-      # Include mssql-py-core version file for traceability
+      # Stage the actual RS payload using THIS producer source's immutable pins.
+      # Downstream Conda jobs consume this artifact, never their checkout's NuGet pin.
       - bash: |
           set -e
-          cp $(Build.SourcesDirectory)/eng/versions/mssql-py-core.version $(ob_outputDirectory)/dist/
-          echo "mssql-py-core version: $(cat $(ob_outputDirectory)/dist/mssql-py-core.version)"
-        displayName: 'Include mssql-py-core version'
+          python3 "$(Build.SourcesDirectory)/eng/scripts/download_mssql_python_rs_wheels.py" \
+            --output-dir "$(ob_outputDirectory)/rs-wheels"
+          cp "$(Build.SourcesDirectory)/eng/versions/mssql-python-rs.version" "$(ob_outputDirectory)/dist/"
+          cp "$(Build.SourcesDirectory)/eng/versions/mssql-python-rs-nuget.version" "$(ob_outputDirectory)/dist/"
+          echo "mssql-python-rs version: $(cat "$(ob_outputDirectory)/dist/mssql-python-rs.version")"
+        displayName: 'Stage source-pinned mssql-python-rs wheels and transport receipt'
       
       # Verify consolidation
       - bash: |

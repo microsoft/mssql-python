@@ -4,6 +4,7 @@ psutil
 pybind11
 pyodbc
 pytest
+pytest-asyncio
 setuptools
 wheel
 zstandard

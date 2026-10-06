@@ -8,7 +8,15 @@ This directory contains benchmark scripts for testing the performance of various
 Comprehensive benchmarks using the richbench framework for detailed performance analysis.
 
 ### 2. `perf-benchmarking.py` - Real-World Query Benchmarks
-Standalone script that tests real-world queries against AdventureWorks2022 database with statistical analysis.
+
+Direct `pyodbc` and `mssql_python` comparisons against AdventureWorks2022.
+
+### 3. Profiler benchmark comparisons
+
+Profiler benchmarks are engineering infrastructure, separate from these standalone
+scripts and from the runtime profiler. See
+[`eng/profiler_benchmarks/README.md`](../eng/profiler_benchmarks/README.md).
+Their reviewer-facing output is the impact-first **PR Performance Report**.
 
 ## Why Benchmarks?
 - To measure the efficiency of `pyodbc` and `mssql_python` in handling database operations.

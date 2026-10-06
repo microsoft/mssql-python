@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 
 import mssql_python
+import mssql_python_odbc
 from mssql_python.odbc_provider import (
     NATIVE_PROVIDER_ENV_VAR,
     PROVIDER_MSODBCSQL18,
@@ -228,7 +229,7 @@ def test_get_info_before_and_after_resolve(monkeypatch):
     info = ProviderManager.get_info()
     assert info["id"] == PROVIDER_MSODBCSQL18
     assert info["package"] == "mssql_python_odbc"
-    assert info["version"] == "18.6.2.1"
+    assert info["version"] == mssql_python_odbc.__version__
     _assert_classic_driver_filename(info["driver_path"])
     assert info["source"] == "default"
     assert info["frozen"] is False

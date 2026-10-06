@@ -12,20 +12,32 @@ The driver is compatible with all the Python versions >= 3.10
 > **Important Note:**
 >
 > ### ODBC Driver Distribution
-> The ODBC driver binaries used by `mssql-python` are distributed exclusively through a dedicated companion package:
+> For **pip/PyPI installations**, the ODBC driver binaries used by `mssql-python` are distributed through a dedicated companion distribution:
 >
 > - Package: `mssql-python-odbc`
 > - Import name: `mssql_python_odbc`
-> - Current version: **18.6.2.1**
+> - Source dependency version (release preparation): **18.6.2.2**
 >
-> `mssql-python` depends on `mssql-python-odbc==18.6.2.1`. The ODBC driver is loaded lazily when the first connection is created. `pip install mssql-python` transparently pulls the companion package alongside it — no separate install step is required.
+> Builds from this source pin `mssql-python-odbc==18.6.2.2`, a packaging-only revision that separates glibc (manylinux) and Alpine/musl (musllinux) wheel contents without changing the native driver binaries. This release preparation does not publish the package. Already-published `mssql-python` releases that pin `mssql-python-odbc==18.6.2.1` retain that dependency; they do not automatically adopt the new revision. The ODBC driver is loaded lazily when the first connection is created. `pip install mssql-python` transparently pulls the companion version required by the selected release — no separate install step is required.
 >
-> Starting with v1.13.0, the bundled `libs/` fallback that shipped in v1.12.0 has been removed. Creating a connection will fail if `mssql-python-odbc` is not installed. If you install `mssql-python` from a private index or with `--no-deps`, make sure `mssql-python-odbc==18.6.2.1` is installed alongside it.
+> Starting with v1.13.0, the bundled `libs/` fallback that shipped in v1.12.0 has been removed. For pip installations, creating a connection will fail if `mssql-python-odbc` is not installed. If you install `mssql-python` from a private index or with `--no-deps`, make sure the exact `mssql-python-odbc` version specified in that release's dependency metadata is installed alongside it.
+>
+> The **temporary Conda candidate** instead combines the code and ODBC payload in one `mssql-python` Conda package. It does not require a separately installed Conda ODBC package. This is not an announcement of public channel availability or release qualification; see the [Conda installation, migration, and readiness guide](conda/README.md).
+>
+> ### Rust Runtime Distribution
+> Bulk copy and the alternate Rust ODBC provider are supplied by `mssql-python-rs`,
+> which imports as `mssql_py_core`. `mssql-python` depends on the exact compatible
+> runtime version and does not duplicate its native files. Private indexes and
+> `--no-deps` installations must provide that companion distribution separately.
 >
 > ### ODBC Provider Selection (opt-in)
-> `mssql-python` also supports selecting an alternate native ODBC provider before the first connection, via the `mssql_python.native_provider` module property or the `MSSQL_PYTHON_NATIVE_PROVIDER` environment variable (which takes precedence). A conflicting property assignment emits a `RuntimeWarning`. The default, `"msodbcsql18"`, is unchanged; opting into `"mssql-odbc"` requires the `mssql-python-rs` package (which bundles the Rust ODBC driver alongside the Rust TDS core). Call `mssql_python.get_native_provider_info()` to check the selected provider, source, package version, and resolved driver path.
+> `mssql-python` also supports selecting an alternate native ODBC provider before the first connection, via the `mssql_python.native_provider` module property or the `MSSQL_PYTHON_NATIVE_PROVIDER` environment variable (which takes precedence). A conflicting property assignment emits a `RuntimeWarning`. The default, `"msodbcsql18"`, is unchanged; opting into `"mssql-odbc"` uses the Rust driver installed by `mssql-python-rs`. Call `mssql_python.get_native_provider_info()` to check the selected provider, source, package version, and resolved driver path.
 
 ## Installation
+
+The pip commands below describe the public release. The temporary combined Conda
+candidate has a separate platform matrix and Linux compatibility floor; it is not
+covered by the public release's production-readiness statement above.
  
 **Windows:** mssql-python can be installed with [pip](http://pypi.python.org/pypi/pip)
 ```bash
@@ -59,6 +71,33 @@ tdnf distro-sync && tdnf install -y libtool-ltdl krb5-libs glibc-iconv
 
 pip install mssql-python
 ```
+
+**Conda candidate:** Obtain the exact candidate channel and version from its owner;
+these changes do not publish packages to the public `microsoft` channel. The candidate
+combines the binding, ODBC Driver 18 and required RS bulk-copy core into one package,
+while preserving each native provider's private libraries. Historical embedded-core
+inputs are distinguished by their metadata and ownership, not version strings. Linux requires
+**glibc >=2.34** for that complete payload; `krb5`, OpenSSL, and `libltdl` resolve from
+`conda-forge`, so the system package steps above are not required. Windows uses SChannel.
+On macOS, encrypted connections still require system OpenSSL from Homebrew
+(`brew install openssl`) or MacPorts, not Conda OpenSSL. Windows ARM64 dependencies
+resolve from `defaults`; handle channel terms separately, without automatic acceptance.
+Use a fresh environment and replace the placeholders with the owner-provided values:
+```bash
+# Windows x64, macOS, and Linux
+conda install -c "<candidate-channel>" -c microsoft -c conda-forge --strict-channel-priority --override-channels "mssql-python=<candidate-version>"
+
+# Windows ARM64
+conda install -c "<candidate-channel>" -c microsoft -c defaults --override-channels "mssql-python=<candidate-version>"
+```
+
+**Conda release status:** Validate-only release and staged publication tooling are included
+in this repository; neither publishes packages automatically. Production publication
+requires separately configured credentials, permissions and shared publishing-resource
+checks, explicit authorization, and release qualification.
+Static audits and import checks do not certify SQL, certificate-verified TLS, authentication,
+bulk copy, or optional features across the full matrix. Validate-only success does not
+authorize production publication.
 
 ## Key Features
 ### Supported Platforms
@@ -112,6 +151,25 @@ By adhering to the DB API 2.0 specification, the mssql-python module ensures com
  
 The driver offers a suite of Pythonic enhancements that streamline database interactions, making it easier for developers to execute queries, manage connections, and handle data more efficiently.
  
+### Text encoding
+
+SQL statements and Python `str` parameters always use UTF-16LE. Text parameters are
+bound as ODBC `SQL_C_WCHAR` on every supported platform, for both `execute()` and
+`executemany()`, including calls that use `setinputsizes()`. Declaring a `VARCHAR`
+SQL type does not switch to narrow C buffers; SQL Server performs the conversion
+to the destination column's character set.
+
+`Connection.setencoding()` retains requested settings for compatibility, but does
+not change statement encoding or parameter binding. Requests that pass validation
+but differ from `encoding="utf-16le", ctype=SQL_WCHAR` emit `UserWarning`, including
+an explicitly requested or automatically selected `SQL_CHAR`. Invalid codec names,
+invalid ctypes, and incompatible combinations (such as UTF-8 with `SQL_WCHAR`)
+raise `ProgrammingError` before any warning is emitted or settings are stored.
+`getencoding()` returns the requested settings, not the effective binding. For
+example, requesting ASCII with `SQL_CHAR` does not cause non-ASCII parameters to
+raise encoding errors. Use `setencoding()` with no arguments to restore the
+supported defaults. `setdecoding()` independently controls how result data is read.
+
 ## Getting Started Examples
 Connect to SQL Server and execute a simple query:
  

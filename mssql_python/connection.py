@@ -540,6 +540,7 @@ class Connection:
                 "ctype": ConstantsDDBC.SQL_WCHAR.value,
             },
         }
+        self._decoding_generation = 0
 
         # Auth type for acquiring fresh tokens at bulk copy time.
         # We intentionally do NOT cache the token — a fresh one is acquired
@@ -782,6 +783,7 @@ class Connection:
 
         # Initialize output converters dictionary and its lock for thread safety
         self._output_converters = {}
+        self._converters_generation = 0
         self._converters_lock = threading.Lock()
 
         # Initialize encoding/decoding settings lock for thread safety
@@ -1181,15 +1183,24 @@ class Connection:
 
     def setencoding(self, encoding: Optional[str] = None, ctype: Optional[int] = None) -> None:
         """
-        Sets the text encoding for SQL statements and text parameters.
+        Records the requested text encoding settings for compatibility.
 
-        Since Python 3 only has str (which is Unicode), this method configures
-        how text is encoded when sending to the database.
+        SQL statements and str parameters are always sent as UTF-16LE; text
+        parameters are bound as SQL_C_WCHAR on every platform. This applies to
+        execute() and executemany(), with or without setinputsizes(). This method
+        does not change that behavior or enforce the requested codec.
+
+        Requests that pass validation but differ from UTF-16LE with SQL_WCHAR emit
+        UserWarning. Invalid codec names, invalid ctypes, and incompatible
+        combinations (such as UTF-8 with SQL_WCHAR) raise ProgrammingError before
+        any warning is emitted or settings are stored. Accepted settings are still
+        returned by getencoding(), not the effective binding. Use setdecoding()
+        separately to configure how results are read.
 
         Args:
-            encoding (str, optional): The encoding to use. This must be a valid Python
+            encoding (str, optional): The requested encoding. This must be a valid Python
                 encoding that converts text to bytes. If None, defaults to 'utf-16le'.
-            ctype (int, optional): The C data type to use when passing data:
+            ctype (int, optional): The requested C data type:
                 SQL_CHAR or SQL_WCHAR. If not provided, SQL_WCHAR is used for
                 UTF-16 variants (see UTF16_ENCODINGS constant). SQL_CHAR is used
                 for all other encodings.
@@ -1198,15 +1209,20 @@ class Connection:
             None
 
         Raises:
-            ProgrammingError: If the encoding is not valid or not supported.
+            ProgrammingError: If the encoding or ctype is invalid, or their
+                combination is incompatible.
             InterfaceError: If the connection is closed.
 
-        Example:
-            # For databases that only communicate with UTF-8
-            cnxn.setencoding(encoding='utf-8')
+        Warns:
+            UserWarning: If the request passes validation but its encoding or
+                ctype cannot be honored.
 
-            # For explicitly using SQL_CHAR
-            cnxn.setencoding(encoding='utf-8', ctype=mssql_python.SQL_CHAR)
+        Example:
+            # Restore the supported default.
+            cnxn.setencoding()
+
+            # Warns: parameters still use UTF-16LE / SQL_C_WCHAR.
+            cnxn.setencoding(encoding='cp1252', ctype=mssql_python.SQL_CHAR)
         """
         logger.debug(
             "setencoding: Configuring encoding=%s, ctype=%s",
@@ -1274,20 +1290,35 @@ class Connection:
         if ctype == ConstantsDDBC.SQL_WCHAR.value:
             _validate_utf16_wchar_compatibility(encoding, ctype, "SQL_WCHAR")
 
+        if encoding != "utf-16le" or ctype != ConstantsDDBC.SQL_WCHAR.value:
+            warnings.warn(
+                "setencoding() does not change SQL statement encoding or text parameter binding: "
+                "statements and str parameters always use UTF-16LE, and text parameters are "
+                "bound as SQL_C_WCHAR. The requested settings are retained by getencoding() "
+                "for compatibility but are not applied. Use setencoding() with no arguments "
+                "to restore the supported defaults.",
+                UserWarning,
+                stacklevel=2,
+            )
+
         # Store the encoding settings (thread-safe with lock)
         with self._encoding_lock:
             self._encoding_settings = {"encoding": encoding, "ctype": ctype}
 
         # Log with sanitized values for security
         logger.info(
-            "Text encoding set to %s with ctype %s",
+            "Requested text encoding stored as %s with ctype %s",
             sanitize_user_input(encoding),
             sanitize_user_input(str(ctype)),
         )
 
     def getencoding(self) -> Dict[str, Union[str, int]]:
         """
-        Gets the current text encoding settings (thread-safe).
+        Gets the requested text encoding settings (thread-safe).
+
+        These settings are retained for compatibility. They do not describe the
+        effective binding: SQL statements and str parameters always use UTF-16LE,
+        and text parameters are bound as SQL_C_WCHAR.
 
         Returns:
             dict: A dictionary containing 'encoding' and 'ctype' keys.
@@ -1319,6 +1350,9 @@ class Connection:
     ) -> None:
         """
         Sets the text decoding used when reading SQL_CHAR and SQL_WCHAR from the database.
+
+        Existing cursors refresh their cached SQL_CHAR/SQL_WCHAR decoding settings
+        before their next fetch.
 
         This method configures how text data is decoded when reading from the database.
         In Python 3, all text is Unicode (str), so this primarily affects the encoding
@@ -1443,6 +1477,7 @@ class Connection:
         # Store the decoding settings for the specified sqltype (thread-safe with lock)
         with self._encoding_lock:
             self._decoding_settings[sqltype] = {"encoding": encoding, "ctype": ctype}
+            self._decoding_generation += 1
 
         # Log with sanitized values for security
         sqltype_name = {
@@ -1647,6 +1682,8 @@ class Connection:
 
         Thread-safe implementation that protects the converters dictionary with a lock.
 
+        Changes apply on the next fetch, including for an already executed result set.
+
         ⚠️ WARNING: Registering an output converter will cause the supplied Python function
         to be executed on every matching database value. Do not register converters from
         untrusted sources, as this can result in arbitrary code execution and security
@@ -1687,6 +1724,7 @@ class Connection:
         """
         with self._converters_lock:
             self._output_converters[sqltype] = func
+            self._converters_generation += 1
             # Pass to the underlying connection if native implementation supports it
             if hasattr(self._conn, "add_output_converter"):
                 self._conn.add_output_converter(sqltype, func)
@@ -1717,6 +1755,8 @@ class Connection:
 
         Thread-safe implementation that protects the converters dictionary with a lock.
 
+        Existing cursors use the updated converters on their next fetch.
+
         Args:
             sqltype (int or type): The SQL type value to remove the converter for
 
@@ -1726,6 +1766,7 @@ class Connection:
         with self._converters_lock:
             if sqltype in self._output_converters:
                 del self._output_converters[sqltype]
+                self._converters_generation += 1
                 # Pass to the underlying connection if native implementation supports it
                 if hasattr(self._conn, "remove_output_converter"):
                     self._conn.remove_output_converter(sqltype)
@@ -1737,11 +1778,14 @@ class Connection:
 
         Thread-safe implementation that protects the converters dictionary with a lock.
 
+        Existing cursors stop applying converters on their next fetch.
+
         Returns:
             None
         """
         with self._converters_lock:
             self._output_converters.clear()
+            self._converters_generation += 1
             # Pass to the underlying connection if native implementation supports it
             if hasattr(self._conn, "clear_output_converters"):
                 self._conn.clear_output_converters()
@@ -2179,21 +2223,35 @@ class Connection:
         # Close the connection even if cursor cleanup had issues
         try:
             if self._conn:
-                if not self.autocommit:
-                    # If autocommit is disabled, rollback any uncommitted changes
-                    # This is important to ensure no partial transactions remain
-                    # For autocommit True, this is not necessary as each statement is
-                    # committed immediately
+                autocommit_error = None
+                rollback_error = None
+                manual_commit = False
+                try:
+                    manual_commit = not self._conn.get_autocommit()
+                except RuntimeError as e:
+                    autocommit_error = e
+                if manual_commit:
+                    # End caller work before native close. Pooled connections are
+                    # additionally restored to autocommit by native check-in,
+                    # which atomically discards them if sanitation fails.
                     logger.debug("Rolling back uncommitted changes before closing connection.")
                     try:
                         self._conn.rollback()
                     except RuntimeError as e:
-                        # Handle C++ layer RuntimeError with proper DB-API exception mapping
-                        _raise_connection_error(e)
+                        rollback_error = e
                 # TODO: Check potential race conditions in case of multithreaded scenarios
                 # Close the connection
-                self._conn.close()
-                self._conn = None
+                try:
+                    self._conn.close(manual_commit and rollback_error is None)
+                except RuntimeError as e:
+                    _raise_connection_error(e)
+                finally:
+                    self._conn = None
+                if rollback_error is not None:
+                    # Preserve prior DB-API error mapping after deterministic cleanup.
+                    _raise_connection_error(rollback_error)
+                if autocommit_error is not None:
+                    _raise_connection_error(autocommit_error)
         except Exception as e:
             logger.error(f"Error closing database connection: {e}")
             # Re-raise the connection close error as it's more critical

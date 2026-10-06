@@ -34,6 +34,9 @@ class ConnectionPool {
     // Returns a connection to the pool for reuse
     void release(std::shared_ptr<Connection> conn);
 
+    // Permanently removes a checked-out connection and releases its capacity.
+    void discard(std::shared_ptr<Connection> conn);
+
     // Closes all connections in the pool, releasing resources
     void close();
 
@@ -71,7 +74,8 @@ class ConnectionPoolManager {
     std::shared_ptr<Connection> acquireConnection(
         const std::u16string& conn_str, const py::dict& attrs_before = py::dict(),
         const std::u16string& pool_key = std::u16string(),
-        const py::object& token_factory = py::object());
+        const py::object& token_factory = py::object(),
+        std::weak_ptr<ConnectionPool>* originating_pool = nullptr);
 
     // Arms (true) or disarms (false) new-pool creation. Disarming, done under
     // _manager_mutex, guarantees that any acquireConnection() serialized after
@@ -80,7 +84,13 @@ class ConnectionPoolManager {
 
     // Returns a connection to its original pool, identified by pool_key
     // (the same key passed to acquireConnection).
-    void returnConnection(const std::u16string& pool_key, std::shared_ptr<Connection> conn);
+    void returnConnection(const std::u16string& pool_key,
+                          const std::weak_ptr<ConnectionPool>& originating_pool,
+                          std::shared_ptr<Connection> conn);
+
+    // Discards a connection from the exact pool generation that issued it.
+    void discardConnection(const std::weak_ptr<ConnectionPool>& originating_pool,
+                           std::shared_ptr<Connection> conn);
 
     // Closes all pools and their connections
     void closePools();

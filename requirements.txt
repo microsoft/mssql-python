@@ -1,6 +1,7 @@
 # Testing dependencies
 pytest
 pytest-cov
+pytest-asyncio
 zstandard
 coverage
 unittest-xml-reporting
