@@ -41,6 +41,34 @@ TASK_NAMES = {
     "scalar_fetchval": "10,000 scalar values / fetchval() (debug disabled)",
 }
 CASES = tuple(TASK_NAMES)
+MODES = ("diagnostic", "latency", "route")
+FETCH_CASES = tuple(
+    f"{shape}_{method}"
+    for shape in ("numeric", "mixed")
+    for method in ("fetchone", "fetchmany", "fetchval")
+)
+TASK_NAMES.update(
+    {
+        name: f"1,000 {name.split('_')[0]} rows / "
+        + ("fetchmany(1)" if name.endswith("fetchmany") else name.split("_")[1] + "()")
+        for name in FETCH_CASES
+    }
+)
+
+
+def measurement_mode(report):
+    version = report.get("schema_version")
+    if version == 1 and "mode" not in report:
+        return "diagnostic"
+    if version == 2 and report.get("mode") in ("latency", "route"):
+        return report["mode"]
+    raise ValueError("Unsupported measurement schema or mode")
+
+
+def cases_for(report):
+    return CASES if measurement_mode(report) == "diagnostic" else FETCH_CASES
+
+
 MAX_BYTES = 8 * 1024 * 1024
 MAX_COMMENT_CHARS = 60000
 MAX_DIAGNOSTIC_ROWS = 20
@@ -114,8 +142,9 @@ def validate(report, build_id=None, head=None, source=None, base=None):
 
 
 def _validate(report, build_id=None, head=None, source=None, base=None):
-    if not isinstance(report, dict) or report.get("schema_version") != 1:
+    if not isinstance(report, dict):
         raise ValueError("Unsupported report schema")
+    mode = measurement_mode(report)
     if report.get("leg") not in LEGS or report.get("status") not in ("complete", "incomplete"):
         raise ValueError("Invalid report status or leg")
     if type(report.get("build_id")) is not int or report["build_id"] < 0:
@@ -143,8 +172,15 @@ def _validate(report, build_id=None, head=None, source=None, base=None):
         return report
     if len(pairs) != samples:
         raise ValueError("Incomplete sample pairs")
+    return validate_samples(report)
+
+
+def validate_samples(report):
+    mode = measurement_mode(report)
+    pairs = report["pairs"]
     environment = None
     work = {}
+    provenance = {}
     for pair in pairs:
         if not isinstance(pair, dict) or set(pair) != {"base", "candidate"}:
             raise ValueError("Invalid paired sample")
@@ -152,6 +188,13 @@ def _validate(report, build_id=None, head=None, source=None, base=None):
             sample = pair[side]
             if not isinstance(sample, dict):
                 raise ValueError("Invalid sample")
+            if mode != "diagnostic":
+                if sample.get("mode") != mode or sample.get("status") != "complete":
+                    raise ValueError("Incomplete or mismatched measurement mode")
+                native_identity = validate_native_identity(sample, report, side, mode)
+                if side in provenance and provenance[side] != native_identity:
+                    raise ValueError("Native identity changed between samples")
+                provenance[side] = native_identity
             env = sample["environment"]
             if not isinstance(env, dict) or set(env) != {
                 "os",
@@ -173,7 +216,7 @@ def _validate(report, build_id=None, head=None, source=None, base=None):
             scenarios = sample["scenarios"]
             if not isinstance(scenarios, dict):
                 raise ValueError("Invalid scenarios object")
-            if set(scenarios) != set(CASES):
+            if set(scenarios) != set(cases_for(report)):
                 raise ValueError("Scenario set incomplete or changed")
             for name, scenario in scenarios.items():
                 if not isinstance(scenario, dict):
@@ -185,12 +228,34 @@ def _validate(report, build_id=None, head=None, source=None, base=None):
                 if name in work and work[name] != identity:
                     raise ValueError(f"Workload changed for {name}")
                 work[name] = identity
+                if mode != "diagnostic":
+                    if scenario["py"] or (mode == "latency" and scenario["cpp"]):
+                        raise ValueError("Recording contaminated the measurement mode")
+                    shape, method = name.split("_")
+                    if scenario["work"] != f"Rows: 1000; shape: {shape}; API: {method}; EOF: 1":
+                        raise ValueError("Single-row workload identity mismatch")
+                    if mode == "route":
+                        timer = (
+                            "ddbc::FetchMany_wrap"
+                            if method == "fetchmany"
+                            else "ddbc::FetchOne_wrap"
+                        )
+                        stats = scenario["cpp"]
+                        if not isinstance(stats, dict) or not isinstance(stats.get(timer), dict):
+                            raise ValueError("Missing native fetch route evidence")
+                        if stats[timer].get("calls") != 1001:
+                            raise ValueError("Native fetch route count mismatch")
+                        constructor = stats.get("ddbc::FetchRow::construct_row", {})
+                        if not isinstance(constructor, dict) or constructor.get("calls", 0) != (
+                            1000 if native_identity["guarded_row"] else 0
+                        ):
+                            raise ValueError("Native constructor route count mismatch")
                 for layer in ("cpp", "py"):
                     stats = scenario[layer]
                     if (
                         not isinstance(stats, dict)
                         or len(stats) > 300
-                        or (layer == "cpp" and not stats)
+                        or (layer == "cpp" and mode != "latency" and not stats)
                     ):
                         raise ValueError("Missing or oversized profiling data")
                     for label, counter in stats.items():
@@ -207,6 +272,236 @@ def _validate(report, build_id=None, head=None, source=None, base=None):
                         if not counter["min_us"] <= counter["max_us"] <= counter["total_us"]:
                             raise ValueError("Inconsistent phase totals")
     return report
+
+
+def validate_native_identity(sample, report, side, mode):
+    identity = sample.get("provenance")
+    if not isinstance(identity, dict) or set(identity) != {
+        "source_commit",
+        "native_file",
+        "native_sha256",
+        "native_profiling",
+        "guarded_row",
+    }:
+        raise ValueError("Missing native measurement identity")
+    if identity["source_commit"] != report["base_commit" if side == "base" else "source_commit"]:
+        raise ValueError("Worker revision mismatch")
+    text(identity["native_file"], limit=4096)
+    if not isinstance(identity["native_sha256"], str) or not re.fullmatch(
+        r"[0-9a-f]{64}", identity["native_sha256"]
+    ):
+        raise ValueError("Invalid native binary digest")
+    if (
+        identity["native_profiling"] is not (mode != "latency")
+        or type(identity["guarded_row"]) is not bool
+    ):
+        raise ValueError("Invalid native measurement configuration")
+    return identity
+
+
+def validate_ci_mode(report, mode):
+    if measurement_mode(report) != mode:
+        raise ValueError("CI measurement mode mismatch")
+    validate(report)
+    if report["status"] == "incomplete":
+        text(report["unavailable_reason"], limit=240)
+        validate_samples(report)
+    identities = {}
+    for pair in report["pairs"]:
+        for side, sample in pair.items():
+            if sample.get("status") != "complete" or sample.get("mode") != mode:
+                raise ValueError("Incomplete or mismatched worker mode")
+            identity = validate_native_identity(sample, report, side, mode)
+            if side in identities and identities[side] != identity:
+                raise ValueError("Native identity changed between samples")
+            identities[side] = identity
+    return report
+
+
+def has_ci_bundle(report):
+    return isinstance(report, dict) and (
+        "measurement_bundle_version" in report or "fetch_measurements" in report
+    )
+
+
+def validate_ci_header(report, build_id=None, head=None, source=None, base=None):
+    if (
+        type(report.get("measurement_bundle_version")) is not int
+        or report["measurement_bundle_version"] != 1
+    ):
+        raise ValueError("Unsupported CI measurement bundle version")
+    if measurement_mode(report) != "diagnostic":
+        raise ValueError("CI bundle root must be the diagnostic report")
+    validate(dict(report, status="incomplete", pairs=[]), build_id, head, source, base)
+    if report["samples"] != 5 or report["warmups"] != 1:
+        raise ValueError("CI bundle requires five pairs and one warmup")
+    children = report.get("fetch_measurements")
+    if not isinstance(children, dict) or set(children) - {"latency", "route"}:
+        raise ValueError("Invalid CI measurement children")
+    return report
+
+
+def ci_mode_reports(report):
+    validate_ci_header(report)
+    valid, errors = {}, {}
+    for mode in ("latency", "route", "diagnostic"):
+        item = report if mode == "diagnostic" else report["fetch_measurements"].get(mode)
+        try:
+            if not isinstance(item, dict):
+                raise ValueError("Missing mode")
+            for key in (
+                "build_id",
+                "head_commit",
+                "source_commit",
+                "base_commit",
+                "leg",
+                "samples",
+                "warmups",
+            ):
+                if item.get(key) != report[key]:
+                    raise ValueError("Mode provenance mismatch: " + key)
+            validate_ci_mode(item, mode)
+            valid[mode] = item
+            if item["status"] != "complete":
+                errors[mode] = item["unavailable_reason"]
+        except (KeyError, TypeError, ValueError) as error:
+            errors[mode] = "Invalid mode data: " + str(error)[:180]
+    on = [valid.get(mode) for mode in ("route", "diagnostic")]
+    if all(item is not None and item["status"] == "complete" for item in on):
+        if any(
+            on[0]["pairs"][0][side][key] != on[1]["pairs"][0][side][key]
+            for side in ("base", "candidate")
+            for key in ("provenance", "environment")
+        ):
+            for mode in ("route", "diagnostic"):
+                valid.pop(mode)
+                errors[mode] = "Shared ON binary/environment identity mismatch"
+    latency = valid.get("latency")
+    if latency is not None and latency["status"] == "complete":
+        for mode in ("route", "diagnostic"):
+            item = valid.get(mode)
+            if (
+                item is not None
+                and item["status"] == "complete"
+                and item["pairs"][0]["base"]["environment"]
+                != latency["pairs"][0]["base"]["environment"]
+            ):
+                valid.pop(mode)
+                errors[mode] = "Environment differs from the latency comparison"
+    return valid, errors
+
+
+def render_ci_reports(reports, head, build_id, issues=()):
+    modes = {mode: [] for mode in MODES}
+    reasons = {}
+    seen = set()
+    for report in reports:
+        leg = report["leg"]
+        if leg in seen:
+            raise ValueError("Duplicate performance report leg")
+        seen.add(leg)
+        if has_ci_bundle(report):
+            valid, errors = ci_mode_reports(report)
+        else:
+            validate(report)
+            valid = {measurement_mode(report): report}
+            errors = {
+                mode: "Mode not supplied by this legacy artifact"
+                for mode in MODES
+                if mode not in valid
+            }
+        for mode, item in valid.items():
+            if item["status"] == "complete":
+                modes[mode].append(item)
+        for mode, reason in errors.items():
+            reasons[leg, mode] = reason
+    latency_issues = list(issues) + [
+        leg + " (" + reasons.get((leg, "latency"), "missing latency measurement") + ")"
+        for leg in LEGS
+        if not any(r["leg"] == leg for r in modes["latency"])
+    ]
+    primary = render(modes["latency"], head, build_id, latency_issues, default_mode="latency")
+    primary = primary.replace(
+        "## PR Performance Report",
+        "## PR Performance Report\n\n**Primary verdict: native OFF / Python phases OFF latency only.**",
+        1,
+    )
+    lines = [
+        "",
+        "### Measurement availability",
+        "",
+        "| Environment | Latency OFF/OFF | Route ON/OFF | Diagnostics ON/ON |",
+        "|---|---|---|---|",
+    ]
+    for leg in LEGS:
+        cells = []
+        for mode in ("latency", "route", "diagnostic"):
+            complete = any(item["leg"] == leg for item in modes[mode])
+            cells.append(
+                "Complete"
+                if complete
+                else "Unavailable: " + escape(reasons.get((leg, mode), "artifact missing"))
+            )
+        lines.append("| " + environment_name(leg) + " | " + " | ".join(cells) + " |")
+    for mode, label in (
+        (
+            "route",
+            "Native route attribution (instrumented, Python phases OFF; not production latency)",
+        ),
+        ("diagnostic", "Legacy diagnostics (native and Python phases ON; not production latency)"),
+    ):
+        lines += ["", "<details>", "<summary>" + label + "</summary>", ""]
+        if not modes[mode]:
+            lines.append("Unavailable. No latency inference is made from this section.")
+        for report in modes[mode]:
+            lines += [
+                "",
+                "#### " + environment_name(report["leg"]),
+                "",
+                "| Task | Before ms | After ms | Paired change | Ratio median [min, max] |",
+                "|---|---:|---:|---:|---:|",
+            ]
+            notes = []
+            for row in comparisons(report):
+                lines.append(
+                    f"| {TASK_NAMES[row['name']]} | {row['base_ms']:.3f} | {row['candidate_ms']:.3f} | {row['change_pct']:+.1f}% | {row['ratio']:.3f} [{row['ratio_min']:.3f}, {row['ratio_max']:.3f}] |"
+                )
+                if mode == "diagnostic" and (row["phases"] or row["counts"]):
+                    phases = "; ".join(
+                        f"{escape(label)} {delta:+.3f} ms" for delta, label in row["phases"]
+                    )
+                    counts_text = "; ".join(escape(count) for count in row["counts"])
+                    notes.append(
+                        "Inclusive phase changes: "
+                        + (phases or "none recorded")
+                        + ". Call changes: "
+                        + (counts_text or "none recorded")
+                        + "."
+                    )
+                if mode == "route":
+                    counts = [
+                        report["pairs"][0][side]["scenarios"][row["name"]]["cpp"]
+                        .get("ddbc::FetchRow::construct_row", {})
+                        .get("calls", 0)
+                        for side in ("base", "candidate")
+                    ]
+                    notes.append(
+                        f"Native proof for {row['name']}: 1001 fetch calls per side/sample; Row constructions base/candidate {counts[0]}/{counts[1]}."
+                    )
+            lines += [""] + notes
+            lines.append(
+                "Raw paired counters and worker/native identities are retained in the artifact; inclusive phases must not be summed."
+            )
+        lines += ["", "</details>"]
+    appendix = "\n".join(lines)
+    if len(primary) + len(appendix) + 1 > MAX_COMMENT_CHARS:
+        appendix = "\n".join(
+            line for line in lines if not line.startswith("Inclusive phase changes:")
+        )
+        appendix += "\nExpanded phase details exceed the comment budget; full counters remain in the raw artifact."
+    if len(primary) + len(appendix) + 1 > MAX_COMMENT_CHARS:
+        raise ValueError("CI performance comment exceeds its bounded size")
+    return primary + "\n" + appendix
 
 
 def assess(evidence, artifact_urls, load_artifact, issues=()):
@@ -238,15 +533,13 @@ def assess(evidence, artifact_urls, load_artifact, issues=()):
     # Match coverage's trust boundary: select the exact PR-head build and treat
     # its bounded artifacts as data without requiring an identical producer tree.
     reports = []
+    ci_requested = False
     for leg, url in artifact_urls.items():
         try:
-            report = validate(
-                artifact_report(load_artifact(url)),
-                build_id,
-                evidence.head,
-                source,
-                evidence.base,
-            )
+            report = artifact_report(load_artifact(url))
+            ci_requested = ci_requested or has_ci_bundle(report)
+            validator = validate_ci_header if has_ci_bundle(report) else validate
+            validator(report, build_id, evidence.head, source, evidence.base)
             if report["leg"] != leg:
                 raise ValueError("Artifact leg mismatch")
             reports.append(report)
@@ -261,7 +554,8 @@ def assess(evidence, artifact_urls, load_artifact, issues=()):
             issues.append(leg + " (invalid artifact)")
 
     try:
-        return render(reports, evidence.head, build_id, issues)
+        renderer = render_ci_reports if ci_requested else render
+        return renderer(reports, evidence.head, build_id, issues)
     except ValueError:
         return unavailable("Performance report rendering failed.")
 
@@ -269,7 +563,7 @@ def assess(evidence, artifact_urls, load_artifact, issues=()):
 def comparisons(report):
     """Do not add inclusive phase totals together or treat them as wall-clock time."""
     output = []
-    for name in CASES:
+    for name in cases_for(report):
         base = [pair["base"]["scenarios"][name] for pair in report["pairs"]]
         candidate = [pair["candidate"]["scenarios"][name] for pair in report["pairs"]]
         ratios = [new["wall_ms"] / old["wall_ms"] for old, new in zip(base, candidate)]
@@ -319,6 +613,9 @@ def comparisons(report):
                 base_ms=old,
                 candidate_ms=new,
                 change_pct=(ratio - 1) * 100,
+                ratio=ratio,
+                ratio_min=min(ratios),
+                ratio_max=max(ratios),
                 status=status,
                 phases=phases,
                 counts=sorted(changed_counts)[:3],
@@ -349,8 +646,12 @@ def issue_reason(leg, issues):
     return global_issues[0] if global_issues else "incomplete benchmark"
 
 
-def render(reports, head, build_id, issues=()):
+def render(reports, head, build_id, issues=(), default_mode="diagnostic"):
     url = f"https://dev.azure.com/sqlclientdrivers/public/_build/results?buildId={build_id}"
+    modes = {measurement_mode(r) for r in reports}
+    if len(modes) > 1:
+        raise ValueError("Cannot combine different measurement modes")
+    mode = next(iter(modes), default_mode)
     by_leg = {r["leg"]: r for r in reports}
     if len(by_leg) != len(reports):
         raise ValueError("Duplicate performance report leg")
@@ -425,6 +726,12 @@ def render(reports, head, build_id, issues=()):
         )
         verdict = "✅ No regression detected"
 
+    if mode == "route" and completed:
+        verdict = "Native route attribution (instrumented)"
+        opening = (
+            "Instrumented paired timings below describe the verified native route, not production latency. "
+            + opening
+        )
     improvement_tasks = len({row["name"] for _, row in improvements})
     regression_tasks = len({row["name"] for _, row in regressions})
     lines = [
@@ -442,13 +749,25 @@ def render(reports, head, build_id, issues=()):
         f"<kbd>{len(completed)}/{len(LEGS)} ENVIRONMENTS</kbd>",
         "",
     ]
+    if mode != "diagnostic":
+        lines += [
+            "**Measurement:** "
+            + (
+                "native instrumentation OFF / Python phases OFF; controlled fetch-loop latency."
+                if mode == "latency"
+                else "native instrumentation ON / Python phases OFF; route attribution, not production latency."
+            ),
+            "",
+        ]
     if noisy:
         noisy_tasks = len({row["name"] for _, row in noisy})
         lines += [
             f"<kbd>{noisy_tasks} INCONSISTENT SLOWDOWN" f"{'S' if noisy_tasks != 1 else ''}</kbd>",
             "",
         ]
-    affected_tasks = [name for name in CASES if any(row["name"] == name for _, row in highlighted)]
+    affected_tasks = [
+        name for name in TASK_NAMES if any(row["name"] == name for _, row in highlighted)
+    ]
     if highlighted and len(affected_tasks) <= MAX_FINGERPRINT_TASKS:
         affected_legs = [leg for leg in LEGS if any(item_leg == leg for item_leg, _ in highlighted)]
         by_signal = {(leg, row["name"]): row for leg, row in highlighted}
@@ -476,7 +795,9 @@ def render(reports, head, build_id, issues=()):
         lines.append("")
     if regressions:
         lines.append(
-            "The largest recorded phase increases for these tasks are shown below. "
+            "Paired fetch-loop timings are shown below. Phase attribution is unavailable in latency mode."
+            if mode == "latency"
+            else "The largest recorded phase increases for these tasks are shown below. "
             "Phase timings are supporting evidence, not root-cause proof."
         )
         if noisy:
@@ -537,7 +858,11 @@ def render(reports, head, build_id, issues=()):
             diagnostics += 1
             phases = "; ".join(f"{escape(label)} {delta:+.3f} ms" for delta, label in row["phases"])
             counts = "; ".join(escape(label) for label in row["counts"])
-            detail = phases or "no measured phase delta"
+            detail = phases or (
+                "phase attribution unavailable (recording OFF)"
+                if mode == "latency"
+                else "no measured phase delta"
+            )
             if counts:
                 detail += f". Call changes: {counts}"
             lines.append(f"**{TASK_NAMES[row['name']]}:** {detail}.")
@@ -564,8 +889,12 @@ def render(reports, head, build_id, issues=()):
         lines += [
             "",
             f"### {environment_name(leg)}",
-            "| Database task | Before | After | Paired change | Result |",
-            "|---|---:|---:|---:|---|",
+            (
+                "| Database task | Before | After | Paired change | Result |"
+                if mode == "diagnostic"
+                else "| Database task | Before | After | Paired change | Ratio median [min, max] | Result |"
+            ),
+            "|---|---:|---:|---:|---|" if mode == "diagnostic" else "|---|---:|---:|---:|---:|---|",
         ]
         for row in rows:
             result = {
@@ -576,7 +905,13 @@ def render(reports, head, build_id, issues=()):
             }[row["status"]]
             lines.append(
                 f"| {TASK_NAMES[row['name']]} | {row['base_ms']:.3f} ms | "
-                f"{row['candidate_ms']:.3f} ms | {row['change_pct']:+.1f}% | {result} |"
+                f"{row['candidate_ms']:.3f} ms | {row['change_pct']:+.1f}% | "
+                + (
+                    f"{row['ratio']:.3f} [{row['ratio_min']:.3f}, {row['ratio_max']:.3f}] | "
+                    if mode != "diagnostic"
+                    else ""
+                )
+                + f"{result} |"
             )
     lines += [
         "",
@@ -587,7 +922,11 @@ def render(reports, head, build_id, issues=()):
         "",
     ]
     lines += [
-        f"[ADO build {build_id}]({url})",
+        (
+            f"[ADO build {build_id}]({url})"
+            if build_id or mode == "diagnostic"
+            else "Local paired comparison (no ADO build)"
+        ),
         "",
         f"PR head: `{head}`",
     ]
@@ -595,7 +934,7 @@ def render(reports, head, build_id, issues=()):
         first = next(iter(completed.values()))[0]
         lines += [
             f"Base: `{first['base_commit']}`",
-            f"Measured merge: `{first['source_commit']}`",
+            f"Measured {'merge' if mode == 'diagnostic' else 'source'}: `{first['source_commit']}`",
             "",
         ]
         for leg, (report, _) in completed.items():
@@ -605,6 +944,13 @@ def render(reports, head, build_id, issues=()):
                 f"{escape(env['architecture'])}, SQL {escape(env['sql_version'])}; "
                 f"{report['samples']} paired comparisons and {report['warmups']} warmup."
             )
+            if mode != "diagnostic":
+                for side in ("base", "candidate"):
+                    identity = report["pairs"][0][side]["provenance"]
+                    lines.append(
+                        f"- {environment_name(leg)} {side} native SHA256: `{identity['native_sha256']}`; "
+                        f"guarded Row entry available: {identity['guarded_row']}."
+                    )
     lines += [
         "",
         "A consistent change requires more than 20% median paired movement, at least "
@@ -619,9 +965,15 @@ def render(reports, head, build_id, issues=()):
         lines += ["", "Unavailable or rejected data: " + ", ".join(escape(x) for x in issues)]
     lines += [
         "",
-        "Both revisions use profiling-enabled builds on the same agent and database, "
-        "with alternating order and discarded warmups. Results are diagnostic and do "
-        "not represent production-wheel latency.",
+        (
+            "Both revisions use native-instrumentation-OFF builds with Python phases OFF on "
+            "the same agent and database, alternating order and discarded warmups. This is "
+            "controlled fetch-loop latency, not a customer-production or pyodbc comparison."
+            if mode == "latency"
+            else "Both revisions use profiling-enabled builds on the same agent and database, "
+            "with alternating order and discarded warmups. Results are diagnostic and do "
+            "not represent production-wheel latency."
+        ),
         "",
         "Raw samples and logs are attached to the ADO run as `profiler-*` artifacts.",
         "",
@@ -648,17 +1000,20 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("reports", nargs="+", type=Path)
     args = parser.parse_args()
-    reports = [validate(json.loads(path.read_text(encoding="utf-8"))) for path in args.reports]
+    reports = [json.loads(path.read_text(encoding="utf-8")) for path in args.reports]
+    for report in reports:
+        (validate_ci_header if has_ci_bundle(report) else validate)(report)
     first = reports[0]
     for report in reports[1:]:
-        validate(
+        (validate_ci_header if has_ci_bundle(report) else validate)(
             report,
             build_id=first["build_id"],
             head=first["head_commit"],
             source=first["source_commit"],
             base=first["base_commit"],
         )
-    print(render(reports, first["head_commit"], first["build_id"]))
+    renderer = render_ci_reports if any(has_ci_bundle(report) for report in reports) else render
+    print(renderer(reports, first["head_commit"], first["build_id"]))
 
 
 if __name__ == "__main__":

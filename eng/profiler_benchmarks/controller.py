@@ -3,6 +3,7 @@
 import argparse
 import contextlib
 import faulthandler
+import hashlib
 import importlib.util
 import io
 import json
@@ -11,13 +12,14 @@ from pathlib import Path, PurePosixPath
 import platform
 import re
 import signal
+import shutil
 import subprocess
 import sys
 import tarfile
 import tempfile
 import time
 
-from .report import LEGS
+from .report import LEGS, MODES, validate, validate_ci_mode, validate_ci_header, ci_mode_reports
 from . import workloads
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -28,18 +30,33 @@ BENCHMARK_TIMEOUT = 90 * 60
 LOCAL_BENCHMARK_TIMEOUT = 105 * 60
 WORKER_TIMEOUT = 6 * 60
 WINDOWS = os.name == "nt"
+FETCH_WORKER_TIMEOUT = 30
+CI_FINISH_RESERVE = 180
 
 
-def git(*args):
-    return subprocess.check_output(["git", "-C", str(ROOT), *args], text=True).strip()
+class ProcessCleanupError(RuntimeError):
+    """Further work is unsafe until the previous process tree is reaped."""
 
 
-def resolve_revisions(base, candidate):
-    candidate = git("rev-parse", "--verify", "--end-of-options", f"{candidate}^{{commit}}")
+def git(*args, timeout=None):
+    return subprocess.check_output(
+        ["git", "-C", str(ROOT), *args], text=True, timeout=timeout
+    ).strip()
+
+
+def resolve_revisions(base, candidate, timeout=None):
+    options = {"timeout": timeout} if timeout is not None else {}
+    candidate = git(
+        "rev-parse", "--verify", "--end-of-options", f"{candidate}^{{commit}}", **options
+    )
     # ADO validates refs/pull/N/merge. Its first parent is the exact target snapshot,
     # not whichever main build happened to finish most recently.
     base = git(
-        "rev-parse", "--verify", "--end-of-options", f"{base or candidate + '^1'}^{{commit}}"
+        "rev-parse",
+        "--verify",
+        "--end-of-options",
+        f"{base or candidate + '^1'}^{{commit}}",
+        **options,
     )
     return base, candidate
 
@@ -90,16 +107,19 @@ def terminate_process_tree(process):
     process.wait(timeout=5)
 
 
-def build(path, log, timeout=900):
-    env = dict(os.environ, ENABLE_PROFILING="1")
+def build(path, log, timeout=900, profiling=True):
+    env = dict(os.environ, ENABLE_PROFILING="1" if profiling else "0")
     # build scripts find Python via PATH; keep the controller's interpreter.
     env["PATH"] = str(Path(sys.executable).parent) + os.pathsep + env["PATH"]
     command = ["cmd", "/c", "build.bat"] if os.name == "nt" else ["bash", "build.sh"]
+    run_process(command, log, timeout, cwd=path / "mssql_python/pybind", env=env)
+
+
+def run_process(command, log, timeout, **options):
     with log.open("w", encoding="utf-8") as output:
         process = subprocess.Popen(
             command,
-            cwd=path / "mssql_python/pybind",
-            env=env,
+            **options,
             stdout=output,
             stderr=subprocess.STDOUT,
             start_new_session=not WINDOWS,
@@ -108,7 +128,10 @@ def build(path, log, timeout=900):
         try:
             returncode = process.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
-            terminate_process_tree(process)
+            try:
+                terminate_process_tree(process)
+            except (OSError, RuntimeError, subprocess.TimeoutExpired) as error:
+                raise ProcessCleanupError("Could not reap the timed-out process tree") from error
             raise
         if returncode:
             raise subprocess.CalledProcessError(returncode, command)
@@ -145,10 +168,150 @@ def load_suite():
     return core, workloads
 
 
+class _FetchContext:
+    """Controller-only recording policy; the interactive Profiler stays unchanged."""
+
+    def __init__(self, mode, native, python):
+        if mode not in ("latency", "route") or (native is not None) != (mode == "route"):
+            raise ValueError("Invalid fetch recording configuration")
+        self.native, self.python = native, python
+
+    def disable(self):
+        self.python.disable()
+        self.python.disable_timeline()
+        if self.native is not None:
+            self.native.disable()
+            self.native.disable_timeline()
+
+    def enable(self):
+        self.disable()
+        self.python.reset()
+        if self.native is not None:
+            self.native.reset()
+            self.native.enable()
+
+    def collect(self):
+        if self.python.is_enabled():
+            raise RuntimeError("Python phases became enabled during a fetch measurement")
+        self.disable()
+        py = self.python.get_stats()
+        if py:
+            raise RuntimeError("Python phase samples contaminate the fetch route")
+        return self.native.get_stats() if self.native is not None else {}, py
+
+
+def verify_reused_source(source_root, revision):
+    if source_root.resolve() == ROOT.resolve():
+        if git("rev-parse", "HEAD", timeout=5) != revision:
+            raise ValueError("Reused checkout revision changed")
+        git(
+            "diff",
+            "--exit-code",
+            "--quiet",
+            revision,
+            "--",
+            "mssql_python",
+            "mssql_python_odbc",
+            timeout=5,
+        )
+
+
+def native_identity(source_root, revision, profiling):
+    from mssql_python import ddbc_bindings
+
+    native_file = Path(ddbc_bindings.module.__file__).resolve()
+    if not native_file.is_relative_to(source_root.resolve()):
+        raise RuntimeError("Native binary is outside the selected checkout")
+    return dict(
+        source_commit=revision,
+        native_file=str(native_file),
+        native_sha256=hashlib.sha256(native_file.read_bytes()).hexdigest(),
+        native_profiling=profiling,
+        guarded_row=hasattr(ddbc_bindings, "DDBCSQLFetchRow"),
+    )
+
+
+def fetch_worker(args, mode):
+    if mode not in ("latency", "route") or not SHA.fullmatch(args.revision or ""):
+        raise ValueError("Fetch measurement requires a mode and exact revision")
+    verify_reused_source(args.source_root, args.revision)
+    check_build(args.source_root, profiling=mode == "route")
+    import mssql_python
+    from mssql_python import ddbc_bindings, perf_timer
+
+    provenance = native_identity(args.source_root, args.revision, mode == "route")
+    cases = workloads.single_row_registry()
+    chosen = args.scenarios if args.scenarios is not None else list(cases)
+    if not chosen or set(chosen) - set(cases):
+        raise ValueError("Unknown or empty single-row workload selection")
+    ctx = _FetchContext(mode, ddbc_bindings.profiling if mode == "route" else None, perf_timer)
+    output = {}
+
+    def checkpoint(active=None, environment=None):
+        args.output.write_text(
+            json.dumps(
+                dict(
+                    status="running" if environment is None else "complete",
+                    active_scenario=active,
+                    mode=mode,
+                    provenance=provenance,
+                    scenarios=output,
+                    environment=environment,
+                ),
+                allow_nan=False,
+            ),
+            encoding="utf-8",
+        )
+
+    checkpoint()
+    try:
+        with mssql_python.connect(os.environ["DB_CONNECTION_STRING"]) as conn:
+            for name in chosen:
+                checkpoint(name)
+                result = cases[name](conn, ctx)
+                if mode == "route":
+                    timer = (
+                        "ddbc::FetchMany_wrap"
+                        if name.endswith("fetchmany")
+                        else "ddbc::FetchOne_wrap"
+                    )
+                    if result["cpp"].get(timer, {}).get("calls") != workloads.SINGLE_ROW_COUNT + 1:
+                        raise RuntimeError("Native fetch call count does not match the workload")
+                    constructors = (
+                        result["cpp"].get("ddbc::FetchRow::construct_row", {}).get("calls", 0)
+                    )
+                    if constructors != (
+                        workloads.SINGLE_ROW_COUNT if provenance["guarded_row"] else 0
+                    ):
+                        raise RuntimeError("Native Row construction route was not established")
+                output[name] = {key: result[key] for key in ("wall_ms", "cpp", "py")}
+                output[name]["work"] = result["detail"]
+                checkpoint()
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT CAST(SERVERPROPERTY('ProductVersion') AS VARCHAR(80))")
+                sql_version = cursor.fetchone()[0]
+            environment = dict(
+                os=platform.system(),
+                architecture=platform.machine().lower(),
+                python=platform.python_version(),
+                sql_version=sql_version,
+            )
+    finally:
+        ctx.disable()
+    checkpoint(environment=environment)
+
+
 def worker(args):
+    mode = getattr(args, "mode", "diagnostic")
+    if mode != "diagnostic":
+        return fetch_worker(args, mode)
     # Import the chosen driver FIRST, then the SAME workload/controller for both
     # revisions. Never mix two native extensions into one interpreter.
+    revision = getattr(args, "revision", None)
+    if revision:
+        verify_reused_source(args.source_root, revision)
     check_build(args.source_root, profiling=True)
+    provenance = native_identity(args.source_root, revision, True) if revision else None
     core, workloads = load_suite()
 
     cases = workloads.registry()
@@ -192,13 +355,21 @@ def worker(args):
             python=platform.python_version(),
             sql_version=sql_version,
         )
-        args.output.write_text(
-            json.dumps(dict(environment=environment, scenarios=output), allow_nan=False),
-            encoding="utf-8",
-        )
+    result = dict(environment=environment, scenarios=output)
+    if provenance is not None:
+        result.update(status="complete", mode="diagnostic", provenance=provenance)
+    args.output.write_text(json.dumps(result, allow_nan=False), encoding="utf-8")
 
 
-def measure(path, output, scenarios, timeout=WORKER_TIMEOUT):
+def measure(
+    path,
+    output,
+    scenarios,
+    timeout=WORKER_TIMEOUT,
+    mode="diagnostic",
+    revision=None,
+    isolated=False,
+):
     command = [
         sys.executable,
         "-u",
@@ -210,11 +381,18 @@ def measure(path, output, scenarios, timeout=WORKER_TIMEOUT):
         "--output",
         str(output),
     ]
+    if mode != "diagnostic" or revision is not None:
+        command += ["--mode", mode, "--revision", revision]
     if scenarios:
         command += ["--scenarios", *scenarios]
     output.unlink(missing_ok=True)
-    with output.with_suffix(".log").open("w", encoding="utf-8") as log:
-        subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, timeout=timeout, check=True)
+    if isolated:
+        run_process(command, output.with_suffix(".log"), timeout)
+    else:
+        with output.with_suffix(".log").open("w", encoding="utf-8") as log:
+            subprocess.run(
+                command, stdout=log, stderr=subprocess.STDOUT, timeout=timeout, check=True
+            )
     return json.loads(output.read_text(encoding="utf-8"))
 
 
@@ -225,7 +403,215 @@ def remaining(deadline, limit):
     return min(seconds, limit)
 
 
+def write_report(path, report):
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(json.dumps(report, allow_nan=False), encoding="utf-8")
+    temporary.replace(path)
+
+
+def run_ci_report(args):
+    if not args.reuse_candidate or args.mode != "diagnostic" or args.scenarios is not None:
+        raise ValueError(
+            "--ci-report requires --reuse-candidate and the complete default workload sets"
+        )
+    if args.samples != 5 or args.warmups != 1:
+        raise ValueError("--ci-report requires five pairs and one warmup pair")
+    finish_deadline = time.monotonic() + BENCHMARK_TIMEOUT
+    deadline = finish_deadline - CI_FINISH_RESERVE
+    base, candidate = resolve_revisions(args.base, args.candidate, timeout=remaining(deadline, 30))
+    if candidate != git("rev-parse", "HEAD", timeout=remaining(deadline, 30)):
+        raise ValueError("--ci-report must reuse checkout HEAD")
+    head = os.environ.get("SYSTEM_PULLREQUEST_SOURCECOMMITID", candidate)
+    if not SHA.fullmatch(head):
+        raise ValueError("Invalid PR head identity")
+    args.output.mkdir(parents=True, exist_ok=True)
+    report_path = args.output / "report.json"
+    common = dict(
+        status="incomplete",
+        leg=args.leg,
+        base_commit=base,
+        source_commit=candidate,
+        head_commit=head,
+        build_id=int(os.environ.get("BUILD_BUILDID", "0")),
+        samples=5,
+        warmups=1,
+    )
+    modes = {
+        mode: dict(
+            common,
+            schema_version=1 if mode == "diagnostic" else 2,
+            pairs=[],
+            unavailable_reason="Not started: waiting for earlier modes",
+        )
+        for mode in MODES
+    }
+    for mode in ("latency", "route"):
+        modes[mode]["mode"] = mode
+    bundle = modes["diagnostic"]
+    bundle.update(
+        measurement_bundle_version=1,
+        fetch_measurements={mode: modes[mode] for mode in ("latency", "route")},
+    )
+    validate_ci_header(bundle)
+    write_report(report_path, bundle)
+    on_identities = {}
+    failures = (
+        subprocess.CalledProcessError,
+        subprocess.TimeoutExpired,
+        TimeoutError,
+        ValueError,
+        KeyError,
+        TypeError,
+        OSError,
+    )
+    directory = tempfile.mkdtemp(prefix="profiler-ci-bundle-")
+    safe_to_clean = True
+    try:
+        roots = {name: Path(directory) / name for name in ("base-off", "candidate-off", "base-on")}
+        on_ready = False
+        for mode in ("latency", "route", "diagnostic"):
+            report = modes[mode]
+            stage = "admission"
+            try:
+                remaining(deadline, 1)
+                if mode == "diagnostic" and not on_ready:
+                    raise ValueError("Shared ON build unavailable")
+                builds = (
+                    (("base-off", base), ("candidate-off", candidate))
+                    if mode == "latency"
+                    else (("base-on", base),) if mode == "route" else ()
+                )
+                for name, revision in builds:
+                    stage = "archive " + name
+                    report["unavailable_reason"] = "Incomplete: " + stage
+                    write_report(report_path, bundle)
+                    run_process(
+                        [
+                            sys.executable,
+                            "-m",
+                            "eng.profiler_benchmarks.controller",
+                            "--archive-source",
+                            revision,
+                            "--source-root",
+                            str(roots[name]),
+                        ],
+                        args.output / ("archive-" + name + ".log"),
+                        remaining(deadline, 60),
+                    )
+                    stage = "build " + name
+                    report["unavailable_reason"] = "Incomplete: " + stage
+                    write_report(report_path, bundle)
+                    build(
+                        roots[name],
+                        args.output / ("build-" + name + ".log"),
+                        remaining(deadline, 900),
+                        profiling=mode != "latency",
+                    )
+                if mode == "route":
+                    on_ready = True
+                paths = {
+                    "base": roots["base-off" if mode == "latency" else "base-on"],
+                    "candidate": roots["candidate-off"] if mode == "latency" else ROOT,
+                }
+                identity = None
+                for sample in range(6):
+                    pair = {}
+                    for side in (
+                        ("base", "candidate") if sample % 2 == 0 else ("candidate", "base")
+                    ):
+                        stage = f"{mode} pair {sample} {side}"
+                        report["unavailable_reason"] = "Incomplete: " + stage
+                        write_report(report_path, bundle)
+                        pair[side] = measure(
+                            paths[side],
+                            args.output / f"{mode}-{side}-{sample}.json",
+                            None,
+                            remaining(
+                                deadline,
+                                WORKER_TIMEOUT if mode == "diagnostic" else FETCH_WORKER_TIMEOUT,
+                            ),
+                            mode=mode,
+                            revision=base if side == "base" else candidate,
+                            isolated=True,
+                        )
+                    probe = dict(report, pairs=[*report["pairs"], pair])
+                    validate_ci_mode(probe, mode)
+                    observed = {
+                        side: (pair[side]["provenance"], pair[side]["environment"]) for side in pair
+                    }
+                    if identity is not None and observed != identity:
+                        raise ValueError("Worker identity changed after warmup")
+                    identity = observed
+                    if mode != "latency":
+                        for side in pair:
+                            if side in on_identities and on_identities[side] != observed[side]:
+                                raise ValueError("Shared ON worker identity mismatch")
+                            on_identities[side] = observed[side]
+                    if sample:
+                        report["pairs"].append(pair)
+                        write_report(report_path, bundle)
+                remaining(deadline, 1)
+                report["status"] = "complete"
+                validate_ci_mode(report, mode)
+                report.pop("unavailable_reason", None)
+            except ProcessCleanupError:
+                safe_to_clean = False
+                bundle["cleanup_required"] = directory
+                for pending in modes.values():
+                    if pending["status"] != "complete":
+                        pending["unavailable_reason"] = (
+                            "Not completed: prior process cleanup failed"
+                        )
+                report["status"] = "incomplete"
+                report["unavailable_reason"] = (
+                    "Process cleanup failed; further modes were not started"
+                )
+                write_report(report_path, bundle)
+                raise
+            except failures as error:
+                report["status"] = "incomplete"
+                detail = (
+                    str(error)[:140]
+                    if isinstance(error, ValueError)
+                    else "see raw worker/build evidence"
+                )
+                report["unavailable_reason"] = f"{stage}: {type(error).__name__}: {detail}"
+                print(report["unavailable_reason"], file=sys.stderr, flush=True)
+            finally:
+                write_report(report_path, bundle)
+    finally:
+        if safe_to_clean:
+            try:
+                shutil.rmtree(directory)
+            except OSError as error:
+                bundle["status"] = "incomplete"
+                bundle["cleanup_required"] = directory
+                bundle["unavailable_reason"] = (
+                    "Build-directory cleanup failed; retained evidence requires cleanup"
+                )
+                write_report(report_path, bundle)
+                raise ProcessCleanupError("CI build-directory cleanup failed") from error
+    _, errors = ci_mode_reports(bundle)
+    for mode, reason in errors.items():
+        modes[mode]["status"] = "incomplete"
+        modes[mode]["unavailable_reason"] = reason
+    write_report(report_path, bundle)
+    if time.monotonic() > finish_deadline:
+        bundle["status"] = "incomplete"
+        bundle["unavailable_reason"] = "Aggregate finish deadline exceeded during finalization"
+        write_report(report_path, bundle)
+    if any(report["status"] != "complete" for report in modes.values()):
+        raise RuntimeError("CI performance report is incomplete; see per-mode reasons and raw logs")
+
+
 def run(args):
+    mode = getattr(args, "mode", "diagnostic")
+    if mode not in MODES:
+        raise ValueError("Unknown measurement mode")
+    if mode == "latency" and args.reuse_candidate:
+        raise ValueError(
+            "Latency requires fresh native-OFF builds; cannot reuse the CI profiling build"
+        )
     base, candidate = resolve_revisions(args.base, args.candidate)
     args.output.mkdir(parents=True, exist_ok=True)
     report_path = args.output / "report.json"
@@ -234,7 +620,7 @@ def run(args):
     if not SHA.fullmatch(head):
         head = candidate
     report = dict(
-        schema_version=1,
+        schema_version=1 if mode == "diagnostic" else 2,
         status="incomplete",
         leg=args.leg,
         base_commit=base,
@@ -245,6 +631,8 @@ def run(args):
         warmups=args.warmups,
         pairs=[],
     )
+    if mode != "diagnostic":
+        report["mode"] = mode
     report_path.write_text(json.dumps(report), encoding="utf-8")
     timeout = BENCHMARK_TIMEOUT if args.reuse_candidate else LOCAL_BENCHMARK_TIMEOUT
     deadline = time.monotonic() + timeout
@@ -270,8 +658,14 @@ def run(args):
                 )
                 continue
             checkout(revision, paths[side])
-            print(f"Building profiling {side}: {revision}", flush=True)
-            build(paths[side], args.output / f"build-{side}.log", remaining(deadline, 900))
+            print(f"Building {mode} {side}: {revision}", flush=True)
+            build_options = {"profiling": mode != "latency"} if mode != "diagnostic" else {}
+            build(
+                paths[side],
+                args.output / f"build-{side}.log",
+                remaining(deadline, 900),
+                **build_options,
+            )
         for sample in range(args.warmups + args.samples):
             pair = {}
             order = ("base", "candidate") if sample % 2 == 0 else ("candidate", "base")
@@ -282,6 +676,11 @@ def run(args):
                     args.output / f"{side}-{sample}.json",
                     args.scenarios,
                     remaining(deadline, WORKER_TIMEOUT),
+                    **(
+                        {"mode": mode, "revision": base if side == "base" else candidate}
+                        if mode != "diagnostic"
+                        else {}
+                    ),
                 )
             if pair["base"]["environment"] != pair["candidate"]["environment"]:
                 raise RuntimeError("Base and candidate environments differ")
@@ -290,6 +689,8 @@ def run(args):
                 report_path.write_text(json.dumps(report, allow_nan=False), encoding="utf-8")
     if args.scenarios is None:
         report["status"] = "complete"
+        if mode != "diagnostic":
+            validate(report)
     report_path.write_text(json.dumps(report, allow_nan=False), encoding="utf-8")
     print(f"Paired profiler report: {report_path}", flush=True)
 
@@ -303,6 +704,19 @@ def main():
     parser.add_argument("--samples", type=int, default=5)
     parser.add_argument("--warmups", type=int, default=1)
     parser.add_argument("--scenarios", nargs="+", help="Local subset; CI runs the full registry")
+    parser.add_argument(
+        "--mode",
+        choices=MODES,
+        default="diagnostic",
+        help="diagnostic: both recorders; latency: native OFF/Python OFF; route: native ON/Python OFF",
+    )
+    parser.add_argument("--revision", help=argparse.SUPPRESS)
+    parser.add_argument(
+        "--ci-report",
+        action="store_true",
+        help="Bounded latency-first CI report with route and legacy diagnostics",
+    )
+    parser.add_argument("--archive-source", help=argparse.SUPPRESS)
     parser.add_argument("--worker", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--source-root", type=Path, help=argparse.SUPPRESS)
     parser.add_argument(
@@ -316,11 +730,19 @@ def main():
         help="Verify native compile configuration and recording OFF, then exit",
     )
     args = parser.parse_args()
-    if args.check_build:
+    if args.ci_report and (args.worker or args.archive_source or args.check_build):
+        parser.error("--ci-report cannot be combined with worker, archive or build-check modes")
+    if args.archive_source:
+        if not SHA.fullmatch(args.archive_source) or args.source_root is None:
+            parser.error("--archive-source requires an exact revision and --source-root")
+        checkout(args.archive_source, args.source_root)
+    elif args.check_build:
         check_build(ROOT, profiling=args.check_build == "on")
     elif args.worker:
         if args.source_root is None or args.output is None:
             parser.error("--worker requires --source-root and --output")
+        if args.mode != "diagnostic" and not SHA.fullmatch(args.revision or ""):
+            parser.error("Fetch measurement workers require an exact --revision")
         # Dumps contain stack locations, not locals or connection strings. The
         # parent still kills/reaps the worker at its deadline if it cannot finish.
         faulthandler.enable()
@@ -337,7 +759,10 @@ def main():
             or not 1 <= args.warmups <= 3
         ):
             parser.error("Choose a leg, 3-15 measured pairs and 1-3 warmup pairs")
-        run(args)
+        if args.ci_report:
+            run_ci_report(args)
+        else:
+            run(args)
 
 
 if __name__ == "__main__":

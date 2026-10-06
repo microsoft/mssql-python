@@ -209,3 +209,69 @@ def registry():
     result["lob_varchar_256k_fetchall"] = (lob_fetch, False)
     result["scalar_fetchval"] = (scalar_fetchval, True)
     return result
+
+
+SINGLE_ROW_COUNT = 1000
+
+
+def single_row_fetch(conn, ctx, method, shape):
+    """Time one API through EOF; validate every column outside the timed window."""
+    from mssql_python.logging import logger
+
+    if method not in ("fetchone", "fetchmany", "fetchval") or shape not in ("numeric", "mixed"):
+        raise ValueError("Unknown single-row workload")
+    if logger.is_debug_enabled:
+        raise ValueError("Single-row measurements require debug logging OFF")
+    second = "n + 10" if shape == "numeric" else "CAST(N'text' AS NVARCHAR(10))"
+    query = (
+        "WITH digits(n) AS (SELECT n FROM (VALUES (0),(1),(2),(3),(4),(5),(6),(7),(8),(9)) d(n)), "
+        "numbers(n) AS (SELECT a.n + 10*b.n + 100*c.n FROM digits a CROSS JOIN digits b "
+        "CROSS JOIN digits c) "
+        f"SELECT n AS number, {second} AS value FROM numbers ORDER BY n"
+    )
+    with conn.cursor() as cursor:
+        cursor.execute(query)
+        try:
+            ctx.enable()
+            start = time.perf_counter()
+            if method == "fetchmany":
+                values = [cursor.fetchmany(1) for _ in range(SINGLE_ROW_COUNT)]
+                eof = cursor.fetchmany(1)
+            elif method == "fetchval":
+                values = [cursor.fetchval() for _ in range(SINGLE_ROW_COUNT)]
+                eof = cursor.fetchval()
+            else:
+                values = [cursor.fetchone() for _ in range(SINGLE_ROW_COUNT)]
+                eof = cursor.fetchone()
+            wall_ms = (time.perf_counter() - start) * 1000
+            cpp, py = ctx.collect()
+            if method == "fetchmany":
+                assert eof == [] and all(len(batch) == 1 for batch in values)
+                values = [batch[0] for batch in values]
+            else:
+                assert eof is None, "Single-row fetch did not reach EOF"
+            for n, value in enumerate(values):
+                if method == "fetchval":
+                    assert type(value) is int and value == n
+                else:
+                    expected = (n, n + 10 if shape == "numeric" else "text")
+                    assert tuple(value) == expected
+                    assert tuple(map(type, value)) == tuple(map(type, expected))
+            assert not cursor.messages, "Clean single-row fetch produced diagnostics"
+            return dict(
+                title=f"{shape} / {method}",
+                wall_ms=wall_ms,
+                cpp=cpp,
+                py=py,
+                detail=f"Rows: {SINGLE_ROW_COUNT}; shape: {shape}; API: {method}; EOF: 1",
+            )
+        finally:
+            ctx.disable()
+
+
+def single_row_registry():
+    return {
+        f"{shape}_{method}": partial(single_row_fetch, method=method, shape=shape)
+        for shape in ("numeric", "mixed")
+        for method in ("fetchone", "fetchmany", "fetchval")
+    }

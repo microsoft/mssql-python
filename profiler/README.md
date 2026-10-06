@@ -275,3 +275,111 @@ void MyFunction(...) {
 
 `PERF_TIMER` compiles to nothing unless the build has `ENABLE_PROFILING`, so
 adding timers costs nothing in released builds.
+
+
+### Explicit single-row comparison modes
+
+The paired controller retains its existing `diagnostic` default: native and Python
+recording are enabled, so the guarded Row path deliberately uses the split route.
+That report is not a latency measurement of ordinary fused fetching.
+
+Two opt-in modes use the same six read-only workloads: `numeric_fetchone`,
+`numeric_fetchmany`, `numeric_fetchval`, and their `mixed_` equivalents. Each fetches
+1,000 ordered rows plus EOF; numeric rows contain two INT columns, mixed rows contain
+INT and NVARCHAR. `fetchmany` always requests the built-in integer `1`. `fetchval`
+uses its public API, not a first-column-only native shortcut.
+
+- `--mode latency` builds both revisions with native instrumentation OFF and keeps
+  Python phases OFF. It rejects `--reuse-candidate` rather than silently timing the
+  profiling-enabled CI extension. Setup/execute and validation are outside the
+  timed window; the API loop, result retention and EOF call are inside it.
+- `--mode route` uses native instrumentation ON with Python phases OFF. Each case
+  must record 1,001 native fetch calls and, when the guarded Row entry exists,
+  exactly 1,000 native Row constructions. An older base without that entry must
+  record no such constructions. This is route attribution, not production latency.
+  Existing native regression tests separately cover converter fallback, all-column
+  callbacks, repeated EOF, and customization failures.
+
+For example, after obtaining approval for the required builds and database work:
+
+```console
+python -m eng.profiler_benchmarks.controller --mode latency --base <base-sha> --candidate <pr-sha> --leg Linux-SQL2022 --output <latency-results>
+python -m eng.profiler_benchmarks.controller --mode route --base <base-sha> --candidate <pr-sha> --leg Linux-SQL2022 --output <route-results>
+```
+
+Run these separately, not concurrently. No extra CI arm or automatic execution is
+introduced. Each invocation retains the controller's existing bounded sample,
+worker and overall time limits. Use distinct output directories; subset runs remain
+incomplete and cannot produce a full report. The standalone interactive Profiler's
+recording and timeline defaults are unchanged.
+
+These modes emit schema version 2 with explicit mode, worker revision, actual native
+binary path/SHA256 and compile-capability identity. The validator rejects mixed modes,
+changed binaries, missing/failed samples, unexpected recording, and wrong route counts.
+Schema version 1 remains the existing 22-workload diagnostic report. Failed runs stay
+incomplete/unavailable; missing timings are never replaced with zero. Raw samples
+retain every paired observation. Tables show signed subthreshold changes and median
+candidate/base ratios with their observed min/max range, not confidence intervals.
+The classification policy remains **more than 20% median paired change, at least
+1 ms between median times, and at least 80% of pairs beyond the relative threshold**.
+A subthreshold change is not a proven win or proof of no effect. Neither mode adds a
+pyodbc comparison or changes production fetch behavior.
+
+
+### Latency-first PR CI report
+
+The existing Ubuntu/SQL Server 2022 and Ubuntu/SQL Server 2025 PR legs invoke
+`--reuse-candidate --ci-report`. Windows profiling remains disabled. The aggregate
+runs OFF/OFF latency first, ON/OFF native-route attribution second, and the original
+22-workload ON/ON diagnostics last. The six numeric/mixed workloads in each fetch
+mode and all legacy workloads retain **five measured pairs and one warmup pair**.
+Each mode alternates base/candidate order independently, using separate workers.
+
+The aggregate builds isolated base-OFF, candidate-OFF and base-ON directories and
+reuses the already tested candidate-ON build. Route and diagnostic workers must
+attest the same ON binary paths, SHA256 digests, source revisions and environments.
+Each reused-checkout worker also checks HEAD and tracked driver/provider source
+cleanliness before importing the driver. The reused build is never rebuilt or
+toggled in place. Per leg this permits at most
+three performance-step builds, 36 measurement workers and 408 workload executions
+(including warmups), rather than one build, 12 workers and 264 executions. Both
+active legs together add at most four builds, 48 workers and 288 executions. No new
+matrix arm, pyodbc comparison or database setup is introduced.
+
+The controller retains a **90-minute aggregate budget**, including a three-minute
+finish reserve; the pipeline step remains 100 minutes and its job 160 minutes.
+Archives/preflight, builds and workers receive bounded timeouts clipped to the
+remaining work budget. Fetch workers receive at most 30 seconds; diagnostic workers
+retain their six-minute cap. The fetch allowance is not yet runtime-qualified.
+The proposal already required 132 minutes if its build/worker caps and planning
+overhead were all consumed. Metadata operations also consume the shared deadline;
+they never extend it. Completing every mode is **not guaranteed**. Unused early time flows to later modes. Exhaustion or
+failure leaves that mode unavailable with a stage/reason and its raw checkpoints;
+there are no retries, trimmed workload sets, reduced pair counts or zero substitutes.
+Unsafe process cleanup aborts subsequent work and reports the retained temporary
+root rather than removing files beneath an unreaped worker.
+
+There is still exactly one `report.json` per existing artifact. Its root remains the
+schema-1 diagnostic report and its `status` describes diagnostics only. The additive
+`measurement_bundle_version: 1` extension contains `fetch_measurements.latency` and
+`fetch_measurements.route` (schema 2). Each mode has an independent complete/incomplete
+status. Root and child checkpoints are written atomically; an incomplete aggregate
+exits nonzero, while the pipeline's existing failure-tolerant artifact publication
+retains independently valid modes. The finish deadline is checked after final
+validation and the atomic write. An overrun gets one corrective incomplete checkpoint
+and a nonzero exit, preserving completed latency/route measurements without a recheck
+loop. Raw build logs and mode-prefixed worker JSON/log files stay in the same artifact,
+without nested files named `report.json`.
+
+The updated collector validates shared PR/build/base/merge identity, then each mode
+independently. The primary performance verdict comes **only from OFF/OFF latency**.
+Native route counts/timings and both-ON diagnostics appear in separately labeled
+sections; neither replaces missing latency. Missing, malformed and unstarted modes
+are explicitly unavailable. Legacy readers can still read the diagnostic root;
+standalone schema-1/schema-2 reports and interactive Profiler defaults are unchanged.
+Fork reporting continues to use trusted base code. Existing artifact, download,
+comment-size and publisher time limits are not expanded.
+
+This wiring is source-only until approved exact-head CI runs it. Source/fake-boundary
+controls and prior-head CI do not establish native correctness, completion within
+these allowances, or a speedup.

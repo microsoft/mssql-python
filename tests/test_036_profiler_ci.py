@@ -13,6 +13,8 @@ import subprocess
 import sys
 import tarfile
 import time
+import tempfile
+import unittest
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 from urllib.error import URLError
@@ -1859,3 +1861,1170 @@ def test_comment_workflow_separates_same_repo_and_fork_trust():
         "head.ref" not in workflow
         and "head.sha }}" not in workflow.split("ref:", 1)[1].split("persist", 1)[0]
     )
+
+
+class TestSingleRowMeasurementModes(unittest.TestCase):
+    """Pure fake-boundary contracts; these do not qualify native timing."""
+
+    def sample_report(self, mode="latency", ratio=0.9):
+        def counter(calls):
+            return dict(calls=calls, total_us=10000, min_us=1, max_us=100)
+
+        def sample(side):
+            guarded = side == "candidate"
+            cases = {}
+            for name in reporting.FETCH_CASES:
+                shape, method = name.split("_")
+                cpp = {}
+                if mode == "route":
+                    timer = (
+                        "ddbc::FetchMany_wrap" if method == "fetchmany" else "ddbc::FetchOne_wrap"
+                    )
+                    cpp[timer] = counter(1001)
+                    if guarded:
+                        cpp["ddbc::FetchRow::construct_row"] = counter(1000)
+                cases[name] = dict(
+                    wall_ms=100 * (ratio if guarded else 1),
+                    cpp=cpp,
+                    py={},
+                    work=f"Rows: 1000; shape: {shape}; API: {method}; EOF: 1",
+                )
+            return dict(
+                status="complete",
+                mode=mode,
+                provenance=dict(
+                    source_commit=("b" if guarded else "a") * 40,
+                    native_file="/source/native.so",
+                    native_sha256=("d" if guarded else "e") * 64,
+                    native_profiling=mode == "route",
+                    guarded_row=guarded,
+                ),
+                environment=dict(
+                    os="Linux", architecture="x86_64", python="3.13.7", sql_version="16.0"
+                ),
+                scenarios=cases,
+            )
+
+        return dict(
+            schema_version=2,
+            mode=mode,
+            status="complete",
+            leg="Linux-SQL2022",
+            base_commit="a" * 40,
+            source_commit="b" * 40,
+            head_commit="c" * 40,
+            build_id=42,
+            samples=5,
+            warmups=1,
+            pairs=[dict(base=sample("base"), candidate=sample("candidate")) for _ in range(5)],
+        )
+
+    def test_modes_validate_and_keep_subthreshold_changes_visible(self):
+        self.assertEqual(tuple(benchmark_workloads.single_row_registry()), reporting.FETCH_CASES)
+        self.assertEqual(len(reporting.CASES), 22)
+        for mode in ("latency", "route"):
+            for ratio in (0.9, 1.1):
+                with self.subTest(mode=mode, ratio=ratio):
+                    report = self.sample_report(mode, ratio)
+                    reporting.validate(report)
+                    self.assertTrue(
+                        all(row["status"] == "ok" for row in reporting.comparisons(report))
+                    )
+                    body = reporting.render([report], "c" * 40, 42)
+                    self.assertIn(f"{(ratio - 1) * 100:+.1f}%", body)
+                    self.assertIn("Python phases OFF", body)
+                    self.assertIn("All database tasks and timings", body)
+                    self.assertIn(f"{ratio:.3f} [{ratio:.3f}, {ratio:.3f}]", body)
+                    self.assertIn("1,000 mixed rows / fetchmany(1)", body)
+                    if mode == "route":
+                        self.assertIn("not production latency", body)
+
+    def test_threshold_policy_is_unchanged(self):
+        self.assertEqual((reporting.THRESHOLD, reporting.MIN_DELTA_MS), (0.20, 1.0))
+        for ratio, expected in (
+            (0.8, "ok"),
+            (0.79, "improvement"),
+            (1.2, "ok"),
+            (1.21, "regression"),
+        ):
+            with self.subTest(ratio=ratio):
+                self.assertEqual(
+                    reporting.comparisons(self.sample_report(ratio=ratio))[0]["status"], expected
+                )
+        report = self.sample_report(ratio=1.3)
+        for pair in report["pairs"][:2]:
+            pair["candidate"]["scenarios"]["numeric_fetchone"]["wall_ms"] = 100
+        self.assertEqual(reporting.comparisons(report)[0]["status"], "noisy")
+        report["pairs"][1]["candidate"]["scenarios"]["numeric_fetchone"]["wall_ms"] = 130
+        self.assertEqual(reporting.comparisons(report)[0]["status"], "regression")
+        for pair in report["pairs"]:
+            pair["base"]["scenarios"]["numeric_fetchone"]["wall_ms"] = 1
+            pair["candidate"]["scenarios"]["numeric_fetchone"]["wall_ms"] = 1.5
+        self.assertEqual(reporting.comparisons(report)[0]["status"], "ok")
+
+    def test_schema_rejects_mismatched_or_missing_evidence(self):
+        mutations = (
+            lambda sample: sample.update(mode="diagnostic"),
+            lambda sample: sample.update(status="running"),
+            lambda sample: sample.pop("provenance"),
+            lambda sample: sample["provenance"].update(native_profiling=True),
+            lambda sample: sample["provenance"].update(source_commit="f" * 40),
+            lambda sample: sample["provenance"].update(native_sha256="invalid"),
+            lambda sample: sample["scenarios"]["mixed_fetchval"].update(py={"py::fetch": {}}),
+            lambda sample: sample["scenarios"]["mixed_fetchval"].update(cpp={"ddbc::fetch": {}}),
+            lambda sample: sample["scenarios"].pop("numeric_fetchmany"),
+            lambda sample: sample["scenarios"]["mixed_fetchval"].update(wall_ms=0),
+            lambda sample: sample["scenarios"]["mixed_fetchval"].update(work="Rows: 1"),
+        )
+        for index, mutate in enumerate(mutations):
+            with self.subTest(mutation=index):
+                report = self.sample_report()
+                mutate(report["pairs"][0]["candidate"])
+                with self.assertRaises(ValueError):
+                    reporting.validate(report)
+        report = self.sample_report()
+        report["pairs"][1]["candidate"]["provenance"]["native_sha256"] = "f" * 64
+        with self.assertRaisesRegex(ValueError, "changed between samples"):
+            reporting.validate(report)
+        with self.assertRaisesRegex(ValueError, "different measurement modes"):
+            reporting.render([self.sample_report(), self.sample_report("route")], "c" * 40, 42)
+
+    def test_route_requires_actual_counts_not_only_timers(self):
+        for label, calls in (("ddbc::FetchOne_wrap", 1000), ("ddbc::FetchRow::construct_row", 0)):
+            with self.subTest(label=label):
+                report = self.sample_report("route")
+                report["pairs"][0]["candidate"]["scenarios"]["numeric_fetchone"]["cpp"][label][
+                    "calls"
+                ] = calls
+                with self.assertRaises(ValueError):
+                    reporting.validate(report)
+        report = self.sample_report("route")
+        report["pairs"][0]["base"]["scenarios"]["mixed_fetchval"]["cpp"] = {}
+        with self.assertRaises(ValueError):
+            reporting.validate(report)
+
+    def test_incomplete_measurement_is_unavailable_not_zero(self):
+        for mode in ("latency", "route"):
+            report = self.sample_report(mode)
+            report.update(status="incomplete", pairs=[])
+            reporting.validate(report)
+            body = reporting.render([report], "c" * 40, 42)
+            self.assertIn("Performance unavailable", body)
+            self.assertNotIn("0.000 ms", body)
+
+    def test_context_never_enables_python_and_rejects_contamination(self):
+        with self.assertRaises(ValueError):
+            controller._FetchContext("latency", MagicMock(), MagicMock())
+        for mode in ("latency", "route"):
+            with self.subTest(mode=mode):
+                native = MagicMock() if mode == "route" else None
+                python = MagicMock()
+                python.is_enabled.return_value = False
+                python.get_stats.return_value = {}
+                if native is not None:
+                    native.get_stats.return_value = {"timer": 1}
+                ctx = controller._FetchContext(mode, native, python)
+                ctx.enable()
+                python.enable.assert_not_called()
+                python.enable_timeline.assert_not_called()
+                python.reset.assert_called_once()
+                cpp, py = ctx.collect()
+                self.assertEqual(py, {})
+                self.assertEqual(cpp, {"timer": 1} if native is not None else {})
+                python.is_enabled.return_value = True
+                with self.assertRaisesRegex(RuntimeError, "became enabled"):
+                    ctx.collect()
+                python.is_enabled.return_value = False
+                python.get_stats.return_value = {"py::unexpected": {}}
+                with self.assertRaisesRegex(RuntimeError, "contaminate"):
+                    ctx.collect()
+                ctx.disable()
+                if native is not None:
+                    native.enable.assert_called_once()
+                    native.disable_timeline.assert_called()
+
+    def test_six_workloads_time_only_fetch_and_validate_full_results(self):
+        from unittest.mock import patch
+
+        for name, workload in benchmark_workloads.single_row_registry().items():
+            with self.subTest(name=name):
+                shape, method = name.split("_")
+                cursor = MagicMock()
+                cursor.messages = []
+                rows = [(n, n + 10 if shape == "numeric" else "text") for n in range(1000)]
+                values = (
+                    list(range(1000))
+                    if method == "fetchval"
+                    else [[row] for row in rows] if method == "fetchmany" else rows
+                )
+                fetch = getattr(cursor, method)
+                fetch.side_effect = values + ([[]] if method == "fetchmany" else [None])
+                conn = MagicMock()
+                conn.cursor.return_value.__enter__.return_value = cursor
+                ctx = MagicMock()
+                ctx.collect.return_value = ({}, {})
+
+                def clock():
+                    cursor.execute.assert_called_once()
+                    ctx.enable.assert_called_once()
+                    ctx.collect.assert_not_called()
+                    self.assertIn(fetch.call_count, (0, 1001))
+                    return 2.0 if fetch.call_count else 1.0
+
+                package = SimpleNamespace(logger=SimpleNamespace(is_debug_enabled=False))
+                with (
+                    patch.dict(sys.modules, {"mssql_python.logging": package}),
+                    patch.object(benchmark_workloads.time, "perf_counter", clock),
+                ):
+                    result = workload(conn, ctx)
+                self.assertEqual(result["wall_ms"], 1000)
+                self.assertEqual(fetch.call_count, 1001)
+                if method == "fetchmany":
+                    self.assertTrue(
+                        all(
+                            call.args == (1,) and type(call.args[0]) is int
+                            for call in fetch.call_args_list
+                        )
+                    )
+                for other in {"fetchone", "fetchmany", "fetchval"} - {method}:
+                    getattr(cursor, other).assert_not_called()
+                ctx.disable.assert_called_once()
+                conn.cursor.return_value.__exit__.assert_called_once()
+
+    def test_workloads_fail_closed_and_disable_context(self):
+        from unittest.mock import patch
+
+        for failure in ("type", "value", "eof", "warning", "fetch", "enable", "debug"):
+            with self.subTest(failure=failure):
+                cursor = MagicMock()
+                cursor.messages = [("01000", "warning")] if failure == "warning" else []
+                rows = [(n, "text") for n in range(1000)]
+                if failure == "type":
+                    rows[0] = (0.0, "text")
+                if failure == "value":
+                    rows[0] = (0, "wrong")
+                cursor.fetchone.side_effect = (
+                    RuntimeError("fetch")
+                    if failure == "fetch"
+                    else rows + ([rows[0]] if failure == "eof" else [None])
+                )
+                conn = MagicMock()
+                conn.cursor.return_value.__enter__.return_value = cursor
+                ctx = MagicMock()
+                ctx.collect.return_value = ({}, {})
+                if failure == "enable":
+                    ctx.enable.side_effect = RuntimeError("enable")
+                package = SimpleNamespace(
+                    logger=SimpleNamespace(is_debug_enabled=failure == "debug")
+                )
+                with patch.dict(sys.modules, {"mssql_python.logging": package}):
+                    with self.assertRaises((AssertionError, RuntimeError, ValueError)):
+                        benchmark_workloads.single_row_fetch(conn, ctx, "fetchone", "mixed")
+                if failure == "debug":
+                    conn.cursor.assert_not_called()
+                else:
+                    ctx.disable.assert_called_once()
+                    conn.cursor.return_value.__exit__.assert_called_once()
+
+    def test_off_build_and_worker_mode_are_explicit(self):
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)
+            process = MagicMock()
+            process.wait.return_value = 0
+            with patch.object(controller.subprocess, "Popen", return_value=process) as start:
+                controller.build(path, path / "build.log", profiling=False)
+                self.assertEqual(start.call_args.kwargs["env"]["ENABLE_PROFILING"], "0")
+            with patch.object(controller.subprocess, "run") as run:
+                output = path / "sample.json"
+                run.side_effect = lambda *a, **k: output.write_text('{"status":"complete"}')
+                controller.measure(path, output, None, mode="latency", revision="a" * 40)
+                command = run.call_args.args[0]
+                self.assertEqual(command[command.index("--mode") + 1], "latency")
+                self.assertEqual(command[command.index("--revision") + 1], "a" * 40)
+            with patch.object(controller, "resolve_revisions") as resolve:
+                with self.assertRaisesRegex(ValueError, "cannot reuse"):
+                    controller.run(SimpleNamespace(mode="latency", reuse_candidate=True))
+                resolve.assert_not_called()
+
+    def test_worker_provenance_route_counts_and_failure_checkpoint(self):
+        from unittest.mock import patch
+
+        for mode, failure in (
+            ("latency", None),
+            ("route", None),
+            ("route", "counts"),
+            ("latency", "close"),
+        ):
+            with (
+                self.subTest(mode=mode, failure=failure),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                native_file = root / "native.so"
+                native_file.write_bytes(b"fake binary identity; never loaded")
+                args = SimpleNamespace(
+                    source_root=root, revision="b" * 40, scenarios=None, output=root / "sample.json"
+                )
+                native = SimpleNamespace(
+                    module=SimpleNamespace(__file__=str(native_file)), DDBCSQLFetchRow=object()
+                )
+                if mode == "route":
+                    native.profiling = MagicMock()
+                python = MagicMock()
+                conn = MagicMock()
+                conn.__enter__.return_value = conn
+                if failure == "close":
+                    conn.__exit__.side_effect = RuntimeError("connection close failed")
+                conn.cursor.return_value.__enter__.return_value.fetchone.return_value = ("16.0",)
+                package = SimpleNamespace(
+                    ddbc_bindings=native, perf_timer=python, connect=MagicMock(return_value=conn)
+                )
+                sample = self.sample_report(mode)["pairs"][0]["candidate"]
+
+                def workload(connection, ctx):
+                    ctx.enable()
+                    # Measurement results here are fake; native count validation is real.
+                    name = json.loads(args.output.read_text())["active_scenario"]
+                    result = copy.deepcopy(sample["scenarios"][name])
+                    result["detail"] = result.pop("work")
+                    if failure == "counts":
+                        result["cpp"]["ddbc::FetchRow::construct_row"]["calls"] = 999
+                    ctx.disable()
+                    return result
+
+                cases = {name: workload for name in reporting.FETCH_CASES}
+                with (
+                    patch.dict(sys.modules, {"mssql_python": package}),
+                    patch.dict(os.environ, {"DB_CONNECTION_STRING": "test-only"}),
+                    patch.object(controller, "check_build") as check,
+                    patch.object(benchmark_workloads, "single_row_registry", return_value=cases),
+                ):
+                    if failure == "counts":
+                        with self.assertRaisesRegex(RuntimeError, "route was not established"):
+                            controller.fetch_worker(args, mode)
+                    elif failure == "close":
+                        with self.assertRaisesRegex(RuntimeError, "connection close failed"):
+                            controller.fetch_worker(args, mode)
+                    else:
+                        controller.fetch_worker(args, mode)
+                check.assert_called_once_with(root, profiling=mode == "route")
+                result = json.loads(args.output.read_text())
+                self.assertEqual(result["status"], "running" if failure else "complete")
+                self.assertEqual(result["provenance"]["native_profiling"], mode == "route")
+                self.assertEqual(len(result["provenance"]["native_sha256"]), 64)
+                self.assertEqual(result["provenance"]["source_commit"], "b" * 40)
+                self.assertEqual(len(result["scenarios"]), 0 if failure == "counts" else 6)
+                python.enable.assert_not_called()
+                if mode == "route":
+                    native.profiling.disable.assert_called()
+
+    def test_controller_pairs_use_selected_mode_and_fail_incomplete(self):
+        from unittest.mock import patch
+
+        for mode, fail in (("latency", False), ("route", False), ("latency", True)):
+            with self.subTest(mode=mode, fail=fail), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                args = SimpleNamespace(
+                    base="a" * 40,
+                    candidate="b" * 40,
+                    output=root,
+                    mode=mode,
+                    reuse_candidate=False,
+                    leg="Linux-SQL2022",
+                    samples=3,
+                    warmups=1,
+                    scenarios=None,
+                )
+                sample = self.sample_report(mode)["pairs"][0]
+                calls = []
+
+                def measure(path, output, scenarios, timeout, **options):
+                    calls.append((path.name, options))
+                    if fail:
+                        raise RuntimeError("missing measurement")
+                    return copy.deepcopy(sample[path.name])
+
+                with (
+                    patch.object(
+                        controller, "resolve_revisions", return_value=("a" * 40, "b" * 40)
+                    ),
+                    patch.object(controller, "checkout"),
+                    patch.object(controller, "build") as build,
+                    patch.object(controller, "measure", side_effect=measure),
+                ):
+                    if fail:
+                        with self.assertRaisesRegex(RuntimeError, "missing measurement"):
+                            controller.run(args)
+                    else:
+                        controller.run(args)
+                self.assertEqual(build.call_count, 2)
+                self.assertTrue(
+                    all(
+                        call.kwargs == {"profiling": mode != "latency"}
+                        for call in build.call_args_list
+                    )
+                )
+                for side, options in calls:
+                    self.assertEqual(
+                        options, dict(mode=mode, revision=("a" if side == "base" else "b") * 40)
+                    )
+                result = reporting.validate(json.loads((root / "report.json").read_text()))
+                self.assertEqual(result["status"], "incomplete" if fail else "complete")
+                if not fail:
+                    self.assertEqual(
+                        [side for side, _ in calls], ["base", "candidate", "candidate", "base"] * 2
+                    )
+                    self.assertEqual(len(result["pairs"]), 3)
+
+    def test_legacy_diagnostic_schema_still_requires_native_samples(self):
+        report = self.sample_report()
+        report.pop("mode")
+        report["schema_version"] = 1
+        for pair in report["pairs"]:
+            for sample in pair.values():
+                sample.pop("mode")
+                sample.pop("provenance")
+                sample["scenarios"] = {
+                    name: dict(
+                        wall_ms=100,
+                        work="Rows: 1",
+                        cpp={"ddbc::query": dict(calls=1, total_us=10, min_us=10, max_us=10)},
+                        py={},
+                    )
+                    for name in reporting.CASES
+                }
+        reporting.validate(report)
+        self.assertEqual(len(reporting.comparisons(report)), 22)
+        self.assertIn("profiling-enabled builds", reporting.render([report], "c" * 40, 42))
+        report["pairs"][0]["base"]["scenarios"]["fetchone"]["cpp"] = {}
+        with self.assertRaisesRegex(ValueError, "profiling data"):
+            reporting.validate(report)
+
+    def sample_bundle(self):
+        latency = self.sample_report("latency")
+        route = self.sample_report("route")
+        diagnostic = copy.deepcopy(route)
+        diagnostic.pop("mode")
+        diagnostic["schema_version"] = 1
+        for pair in diagnostic["pairs"]:
+            for sample in pair.values():
+                sample["mode"] = "diagnostic"
+                cell = sample["scenarios"]["numeric_fetchone"]
+                sample["scenarios"] = {name: copy.deepcopy(cell) for name in reporting.CASES}
+        diagnostic.update(
+            measurement_bundle_version=1, fetch_measurements=dict(latency=latency, route=route)
+        )
+        return diagnostic
+
+    def test_ci_bundle_all_mode_outcomes_have_latency_only_verdicts(self):
+        for bits in range(8):
+            with self.subTest(completeness=bits):
+                bundle = self.sample_bundle()
+                for index, mode in enumerate(("latency", "route", "diagnostic")):
+                    report = bundle if mode == "diagnostic" else bundle["fetch_measurements"][mode]
+                    if not bits & (1 << index):
+                        report.update(
+                            status="incomplete",
+                            pairs=[],
+                            unavailable_reason="Not started: budget exhausted",
+                        )
+                valid, reasons = reporting.ci_mode_reports(bundle)
+                self.assertEqual(len(valid), 3)
+                self.assertEqual(len(reasons), 3 - bits.bit_count())
+                body = reporting.render_ci_reports([bundle], "c" * 40, 42)
+                self.assertIn("Primary verdict: native OFF / Python phases OFF latency only", body)
+                self.assertIn("Diagnostics ON/ON", body)
+                self.assertEqual("Performance unavailable" in body, not bool(bits & 1))
+                self.assertNotIn("Performance improved", body)
+                self.assertLessEqual(len(body), reporting.MAX_COMMENT_CHARS)
+                if bits & 2:
+                    self.assertIn("1001 fetch calls per side/sample", body)
+                    section = body.split("<summary>Native route attribution", 1)[1].split(
+                        "</details>", 1
+                    )[0]
+                    self.assertGreater(section.index("Native proof for"), section.rindex("| 1,000"))
+                if bits != 7:
+                    self.assertIn("Unavailable: Not started: budget exhausted", body)
+
+    def test_ci_bundle_rejects_bad_siblings_and_shared_on_drift(self):
+        for defect in ("missing", "mode", "commit", "counter", "identity", "environment"):
+            with self.subTest(defect=defect):
+                bundle = self.sample_bundle()
+                route = bundle["fetch_measurements"]["route"]
+                if defect == "missing":
+                    bundle["fetch_measurements"].pop("route")
+                elif defect == "mode":
+                    route["mode"] = "latency"
+                elif defect == "commit":
+                    route["source_commit"] = "f" * 40
+                elif defect == "counter":
+                    route["pairs"][0]["candidate"]["scenarios"]["mixed_fetchmany"]["cpp"] = {}
+                elif defect == "identity":
+                    for pair in route["pairs"]:
+                        pair["candidate"]["provenance"]["native_sha256"] = "f" * 64
+                else:
+                    for pair in route["pairs"]:
+                        for sample in pair.values():
+                            sample["environment"]["python"] = "3.12.0"
+                valid, reasons = reporting.ci_mode_reports(bundle)
+                self.assertIn("latency", valid)
+                self.assertNotIn("route", valid)
+                self.assertIn("route", reasons)
+                if defect in ("identity", "environment"):
+                    self.assertNotIn("diagnostic", valid)
+                body = reporting.render_ci_reports([bundle], "c" * 40, 42)
+                self.assertIn("Unavailable:", body)
+                self.assertIn("1,000 mixed rows / fetchmany(1)", body)
+        bundle = self.sample_bundle()
+        for pair in bundle["pairs"]:
+            for side in ("base", "candidate"):
+                for cell in pair[side]["scenarios"].values():
+                    cell["cpp"] = {
+                        "ddbc::"
+                        + str(n)
+                        + "_"
+                        * 150: dict(
+                            calls=1 if side == "base" else 2,
+                            total_us=100 if side == "base" else 200,
+                            min_us=1,
+                            max_us=10,
+                        )
+                        for n in range(3)
+                    }
+        body = reporting.render_ci_reports([bundle], "c" * 40, 42)
+        self.assertLessEqual(len(body), reporting.MAX_COMMENT_CHARS)
+        self.assertIn("raw artifact", body)
+        for version in (None, True, 2):
+            bundle = self.sample_bundle()
+            bundle["measurement_bundle_version"] = version
+            with self.assertRaises(ValueError):
+                reporting.validate_ci_header(bundle)
+        bundle = self.sample_bundle()
+        bundle.pop("measurement_bundle_version")
+        with self.assertRaises(ValueError):
+            reporting.validate_ci_header(bundle)
+
+    def test_ci_bundle_existing_artifact_and_assessment_preserve_trust(self):
+        bundle = self.sample_bundle()
+        reporting.validate(bundle)  # The legacy schema-1 diagnostic root still works.
+
+        def archive(value, duplicate=False):
+            buf = io.BytesIO()
+            with zipfile.ZipFile(buf, "w") as output:
+                output.writestr("profiler-Linux-SQL2022/report.json", json.dumps(value))
+                output.writestr("profiler-Linux-SQL2022/route-base-0.json", "{}")
+                if duplicate:
+                    output.writestr("route/report.json", "{}")
+            return buf.getvalue()
+
+        self.assertEqual(reporting.artifact_report(archive(bundle)), bundle)
+        with self.assertRaisesRegex(ValueError, "exactly one"):
+            reporting.artifact_report(archive(bundle, True))
+        evidence = reporting.AssessmentEvidence(
+            build=dict(id=42, sourceVersion="b" * 40),
+            head="c" * 40,
+            base="a" * 40,
+            merge_commit=dict(sha="b" * 40, parents=[dict(sha="a" * 40), dict(sha="c" * 40)]),
+            base_commit=dict(sha="a" * 40),
+        )
+        body = reporting.assess(
+            evidence, {"Linux-SQL2022": "fake-artifact"}, lambda url: archive(bundle)
+        )
+        self.assertIn("Primary verdict: native OFF", body)
+        self.assertIn("Row constructions base/candidate 0/1000", body)
+        bundle["fetch_measurements"]["latency"].update(
+            status="incomplete", pairs=[], unavailable_reason="OFF build failed"
+        )
+        body = reporting.assess(
+            evidence, {"Linux-SQL2022": "fake-artifact"}, lambda url: archive(bundle)
+        )
+        self.assertIn("Performance unavailable", body)
+        self.assertIn("OFF build failed", body)
+        bundle["head_commit"] = "f" * 40
+        body = reporting.assess(
+            evidence, {"Linux-SQL2022": "fake-artifact"}, lambda url: archive(bundle)
+        )
+        self.assertIn("Performance unavailable", body)
+        self.assertNotIn("Row constructions base/candidate 0/1000", body)
+
+    def test_ci_orchestration_counts_order_reuse_and_budget_exhaustion(self):
+        from unittest.mock import patch
+
+        for slow in (False, True):
+            with self.subTest(slow=slow), tempfile.TemporaryDirectory() as directory:
+                args = SimpleNamespace(
+                    output=Path(directory),
+                    mode="diagnostic",
+                    base="a" * 40,
+                    candidate="b" * 40,
+                    reuse_candidate=True,
+                    scenarios=None,
+                    samples=5,
+                    warmups=1,
+                    leg="Linux-SQL2022",
+                )
+                clock, builds, workers, archives = [0], [], [], []
+                bundle = self.sample_bundle()
+                samples = {
+                    "diagnostic": bundle["pairs"][0],
+                    **{
+                        mode: report["pairs"][0]
+                        for mode, report in bundle["fetch_measurements"].items()
+                    },
+                }
+
+                def build(path, log, timeout, profiling=True):
+                    builds.append((path, profiling))
+                    clock[0] += 900 if slow else 1
+
+                def measure(path, output, scenarios, timeout, **options):
+                    mode = options["mode"]
+                    side = "base" if options["revision"] == "a" * 40 else "candidate"
+                    workers.append((mode, side, path, options["isolated"]))
+                    duration = (360 if mode == "diagnostic" else 30) if slow else 1
+                    clock[0] += min(timeout, duration)
+                    if duration > timeout:
+                        raise subprocess.TimeoutExpired("fake-worker", timeout)
+                    return copy.deepcopy(samples[mode][side])
+
+                with (
+                    patch.object(controller.time, "monotonic", side_effect=lambda: clock[0]),
+                    patch.object(
+                        controller, "resolve_revisions", return_value=("a" * 40, "b" * 40)
+                    ),
+                    patch.object(controller, "git", return_value="b" * 40),
+                    patch.object(
+                        controller, "run_process", side_effect=lambda *a, **k: archives.append(a[0])
+                    ),
+                    patch.object(controller, "build", side_effect=build),
+                    patch.object(controller, "measure", side_effect=measure),
+                    patch.dict(
+                        os.environ,
+                        {"BUILD_BUILDID": "42", "SYSTEM_PULLREQUEST_SOURCECOMMITID": "c" * 40},
+                    ),
+                ):
+                    if slow:
+                        with self.assertRaisesRegex(RuntimeError, "incomplete"):
+                            controller.run_ci_report(args)
+                    else:
+                        controller.run_ci_report(args)
+                result = json.loads((args.output / "report.json").read_text())
+                self.assertEqual([flag for _, flag in builds], [False, False, True])
+                self.assertEqual(len(archives), 3)
+                self.assertTrue(all("--archive-source" in command for command in archives))
+                self.assertTrue(all(isolated for _, _, _, isolated in workers))
+                self.assertEqual(
+                    [mode for mode, *_ in workers[:24]], ["latency"] * 12 + ["route"] * 12
+                )
+                for mode in ("latency", "route"):
+                    selected = [(side, path) for kind, side, path, _ in workers if kind == mode]
+                    self.assertEqual(
+                        [side for side, _ in selected],
+                        ["base", "candidate", "candidate", "base"] * 3,
+                    )
+                on_paths = {
+                    (mode, side): path for mode, side, path, _ in workers if mode != "latency"
+                }
+                for side in ("base", "candidate"):
+                    self.assertEqual(on_paths["route", side], on_paths["diagnostic", side])
+                valid, reasons = reporting.ci_mode_reports(result)
+                self.assertEqual(valid["latency"]["status"], "complete")
+                self.assertEqual(valid["route"]["status"], "complete")
+                self.assertEqual(result["status"], "incomplete" if slow else "complete")
+                self.assertLessEqual(
+                    clock[0], controller.BENCHMARK_TIMEOUT - controller.CI_FINISH_RESERVE
+                )
+                if slow:
+                    self.assertIn("Timeout", reasons["diagnostic"])
+                    self.assertLess(len(workers), 36)
+                else:
+                    self.assertEqual(len(workers), 36)
+                    self.assertEqual(
+                        sum(22 if mode == "diagnostic" else 6 for mode, *_ in workers), 408
+                    )
+                    self.assertTrue(all(len(report["pairs"]) == 5 for report in valid.values()))
+                self.assertFalse((args.output / "report.tmp").exists())
+
+    def test_ci_failures_do_not_retry_or_fabricate_siblings(self):
+        from unittest.mock import patch
+
+        for failure in (
+            "off-build",
+            "on-build",
+            "latency",
+            "route",
+            "diagnostic",
+            "identity",
+            "exhausted",
+        ):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as directory:
+                args = SimpleNamespace(
+                    output=Path(directory),
+                    mode="diagnostic",
+                    base="a" * 40,
+                    candidate="b" * 40,
+                    reuse_candidate=True,
+                    scenarios=None,
+                    samples=5,
+                    warmups=1,
+                    leg="Linux-SQL2022",
+                )
+                clock, workers, builds = [0], [], []
+                bundle = self.sample_bundle()
+                samples = {
+                    "diagnostic": bundle["pairs"][0],
+                    **{
+                        mode: report["pairs"][0]
+                        for mode, report in bundle["fetch_measurements"].items()
+                    },
+                }
+
+                def build(path, log, timeout, profiling=True):
+                    builds.append(path.name)
+                    if failure == ("on-build" if profiling else "off-build"):
+                        raise subprocess.CalledProcessError(1, "fake-build")
+                    if failure == "exhausted":
+                        clock[0] = controller.BENCHMARK_TIMEOUT
+
+                def measure(path, output, scenarios, timeout, **options):
+                    mode = options["mode"]
+                    workers.append(mode)
+                    if mode == failure:
+                        raise subprocess.CalledProcessError(1, "fake-worker")
+                    side = "base" if options["revision"] == "a" * 40 else "candidate"
+                    result = copy.deepcopy(samples[mode][side])
+                    if failure == "identity" and mode == "diagnostic":
+                        result["provenance"]["native_sha256"] = "f" * 64
+                    return result
+
+                with (
+                    patch.object(controller.time, "monotonic", side_effect=lambda: clock[0]),
+                    patch.object(
+                        controller, "resolve_revisions", return_value=("a" * 40, "b" * 40)
+                    ),
+                    patch.object(controller, "git", return_value="b" * 40),
+                    patch.object(controller, "run_process"),
+                    patch.object(controller, "build", side_effect=build),
+                    patch.object(controller, "measure", side_effect=measure),
+                    patch.dict(
+                        os.environ,
+                        {"BUILD_BUILDID": "42", "SYSTEM_PULLREQUEST_SOURCECOMMITID": "c" * 40},
+                    ),
+                ):
+                    with self.assertRaisesRegex(RuntimeError, "incomplete"):
+                        controller.run_ci_report(args)
+                result = json.loads((args.output / "report.json").read_text())
+                valid, reasons = reporting.ci_mode_reports(result)
+                self.assertTrue(reasons)
+                self.assertEqual(len(builds), len(set(builds)))
+                self.assertLessEqual(len(workers), 36)
+                if failure in ("latency", "route", "diagnostic"):
+                    self.assertEqual(workers.count(failure), 1)
+                if failure in ("off-build", "latency"):
+                    self.assertEqual(valid["route"]["status"], "complete")
+                    self.assertEqual(valid["diagnostic"]["status"], "complete")
+                elif failure in ("on-build", "route", "diagnostic", "identity"):
+                    self.assertEqual(valid["latency"]["status"], "complete")
+                if failure == "on-build":
+                    self.assertNotIn("diagnostic", workers)
+                    self.assertIn("Shared ON build unavailable", reasons["diagnostic"])
+                if failure == "exhausted":
+                    self.assertEqual(workers, [])
+                for mode, reason in reasons.items():
+                    self.assertTrue(reason)
+                    self.assertEqual(valid[mode]["status"], "incomplete")
+
+    def test_ci_atomic_write_preserves_last_report_and_cleanup_aborts(self):
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output = root / "report.json"
+            controller.write_report(output, {"status": "incomplete"})
+            original = output.read_bytes()
+            with self.assertRaises(ValueError):
+                controller.write_report(output, {"wall_ms": float("nan")})
+            self.assertEqual(output.read_bytes(), original)
+            process = MagicMock()
+            process.wait.side_effect = subprocess.TimeoutExpired("fake-process", 1)
+            with (
+                patch.object(controller.subprocess, "Popen", return_value=process),
+                patch.object(
+                    controller, "terminate_process_tree", side_effect=OSError("cannot reap")
+                ) as reap,
+            ):
+                with self.assertRaises(controller.ProcessCleanupError):
+                    controller.run_process(["fake-worker"], root / "worker.log", 1)
+                reap.assert_called_once_with(process)
+            args = SimpleNamespace(
+                output=root,
+                mode="diagnostic",
+                base="a" * 40,
+                candidate="b" * 40,
+                reuse_candidate=True,
+                scenarios=None,
+                samples=5,
+                warmups=1,
+                leg="Linux-SQL2022",
+            )
+            retained = root / "retained-build-root"
+            retained.mkdir()
+            with (
+                patch.object(controller, "resolve_revisions", return_value=("a" * 40, "b" * 40)),
+                patch.object(controller, "git", return_value="b" * 40),
+                patch.object(controller.tempfile, "mkdtemp", return_value=str(retained)),
+                patch.object(
+                    controller,
+                    "run_process",
+                    side_effect=controller.ProcessCleanupError("cannot reap"),
+                ) as launch,
+                patch.object(controller.shutil, "rmtree") as remove,
+                patch.dict(os.environ, {"SYSTEM_PULLREQUEST_SOURCECOMMITID": "c" * 40}),
+            ):
+                with self.assertRaises(controller.ProcessCleanupError):
+                    controller.run_ci_report(args)
+                remove.assert_not_called()
+                self.assertEqual(launch.call_count, 1)
+            result = json.loads(output.read_text())
+            self.assertEqual(result["cleanup_required"], str(retained))
+            self.assertEqual(result["fetch_measurements"]["latency"]["status"], "incomplete")
+            self.assertIn("cleanup", result["fetch_measurements"]["route"]["unavailable_reason"])
+
+    def test_ci_source_wiring_keeps_matrix_deadlines_and_trust(self):
+        pipeline = (ROOT / "eng/pipelines/pr-validation-pipeline.yml").read_text(encoding="utf-8")
+        self.assertEqual(pipeline.count("--ci-report"), 1)
+        linux = pipeline.split("- job: PytestOnLinux\n", 1)[1].split("\n- job:", 1)[0]
+        self.assertIn('--reuse-candidate --ci-report --leg "$(profilerLeg)"', linux)
+        self.assertIn("timeoutInMinutes: 100", linux)
+        self.assertIn("timeoutInMinutes: 160", linux)
+        self.assertIn("artifact: profiler-$(profilerLeg)", linux)
+        self.assertIn("eq(variables['distroName'], 'Ubuntu-SQL2025')", linux)
+        windows = pipeline.split("# Hosted Windows timings", 1)[1].split("- job:", 1)[0]
+        self.assertIn("condition: false", windows)
+        self.assertNotIn("--ci-report", windows)
+        self.assertEqual(
+            (
+                controller.BENCHMARK_TIMEOUT,
+                controller.LOCAL_BENCHMARK_TIMEOUT,
+                controller.WORKER_TIMEOUT,
+                controller.FETCH_WORKER_TIMEOUT,
+            ),
+            (5400, 6300, 360, 30),
+        )
+        workflow = (ROOT / ".github/workflows/pr-profiler-report.yml").read_text(encoding="utf-8")
+        self.assertIn("timeout-minutes: 230", workflow)
+        self.assertIn("github.event.pull_request.base.sha", workflow)
+
+    def test_ci_diagnostic_worker_attests_actual_binary_after_cleanup(self):
+        from unittest.mock import patch
+
+        for fails in (False, True):
+            with self.subTest(cleanup_failure=fails), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                binary = root / "native.so"
+                binary.write_bytes(b"fake-not-imported")
+                native = SimpleNamespace(
+                    module=SimpleNamespace(__file__=str(binary)), DDBCSQLFetchRow=object()
+                )
+                manager = MagicMock()
+                profiler = manager.__enter__.return_value
+                profiler.run.return_value = [
+                    dict(
+                        wall_ms=1,
+                        cpp={"ddbc::query": dict(calls=1, total_us=1, min_us=1, max_us=1)},
+                        py={},
+                        detail="Rows: 1",
+                    )
+                ]
+                profiler._conn.cursor.return_value.__enter__.return_value.fetchone.return_value = (
+                    "16.0",
+                )
+                if fails:
+                    manager.__exit__.side_effect = RuntimeError("profiler cleanup failed")
+                core = SimpleNamespace(Profiler=MagicMock(return_value=manager))
+                suite = SimpleNamespace(registry=lambda: {"connect": (object(), False)})
+                args = SimpleNamespace(
+                    source_root=root,
+                    mode="diagnostic",
+                    revision="b" * 40,
+                    scenarios=None,
+                    output=root / "diagnostic.json",
+                )
+                with (
+                    patch.dict(
+                        sys.modules, {"mssql_python": SimpleNamespace(ddbc_bindings=native)}
+                    ),
+                    patch.object(controller, "check_build") as check,
+                    patch.object(controller, "load_suite", return_value=(core, suite)),
+                ):
+                    if fails:
+                        with self.assertRaisesRegex(RuntimeError, "profiler cleanup failed"):
+                            controller.worker(args)
+                    else:
+                        controller.worker(args)
+                check.assert_called_once_with(root, profiling=True)
+                sample = json.loads(args.output.read_text())
+                self.assertEqual(sample["status"], "running" if fails else "complete")
+                if not fails:
+                    self.assertEqual(sample["mode"], "diagnostic")
+                    self.assertEqual(sample["provenance"]["native_file"], str(binary.resolve()))
+                    self.assertEqual(sample["provenance"]["source_commit"], "b" * 40)
+                    self.assertTrue(sample["provenance"]["native_profiling"])
+                    self.assertEqual(len(sample["provenance"]["native_sha256"]), 64)
+                manager.__exit__.assert_called_once()
+
+    def test_ci_rejects_scope_changes_before_work(self):
+        from unittest.mock import patch
+
+        for change in (
+            {"samples": 3},
+            {"warmups": 2},
+            {"scenarios": ["numeric_fetchone"]},
+            {"mode": "route"},
+            {"reuse_candidate": False},
+        ):
+            args = SimpleNamespace(
+                samples=5, warmups=1, scenarios=None, mode="diagnostic", reuse_candidate=True
+            )
+            args.__dict__.update(change)
+            with (
+                self.subTest(change=change),
+                patch.object(controller, "resolve_revisions") as resolve,
+            ):
+                with self.assertRaises(ValueError):
+                    controller.run_ci_report(args)
+                resolve.assert_not_called()
+
+        command = [
+            "controller",
+            "--reuse-candidate",
+            "--ci-report",
+            "--leg",
+            "Linux-SQL2022",
+            "--output",
+            "unused-fake-output",
+        ]
+        with (
+            patch.object(sys, "argv", command),
+            patch.object(controller, "run_ci_report") as run,
+            patch.object(controller, "run") as legacy,
+        ):
+            controller.main()
+            self.assertTrue(run.call_args.args[0].ci_report)
+            legacy.assert_not_called()
+        with (
+            patch.object(sys, "argv", command + ["--worker"]),
+            patch.object(controller, "worker") as worker,
+        ):
+            with self.assertRaises(SystemExit):
+                controller.main()
+            worker.assert_not_called()
+
+    def test_ci_reused_source_and_filesystem_cleanup_fail_closed(self):
+        from unittest.mock import patch
+
+        with patch.object(controller, "git", return_value="b" * 40) as git:
+            controller.verify_reused_source(controller.ROOT, "b" * 40)
+            self.assertEqual(git.call_count, 2)
+            self.assertIn("--exit-code", git.call_args.args)
+        with patch.object(controller, "git", return_value="a" * 40):
+            with self.assertRaisesRegex(ValueError, "revision changed"):
+                controller.verify_reused_source(controller.ROOT, "b" * 40)
+        with patch.object(
+            controller, "git", side_effect=["b" * 40, subprocess.CalledProcessError(1, "git diff")]
+        ):
+            with self.assertRaises(subprocess.CalledProcessError):
+                controller.verify_reused_source(controller.ROOT, "b" * 40)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            retained = root / "build-root"
+            retained.mkdir()
+            args = SimpleNamespace(
+                output=root,
+                mode="diagnostic",
+                base="a" * 40,
+                candidate="b" * 40,
+                reuse_candidate=True,
+                scenarios=None,
+                samples=5,
+                warmups=1,
+                leg="Linux-SQL2022",
+            )
+            with (
+                patch.object(controller, "resolve_revisions", return_value=("a" * 40, "b" * 40)),
+                patch.object(controller, "git", return_value="b" * 40),
+                patch.object(controller.tempfile, "mkdtemp", return_value=str(retained)),
+                patch.object(
+                    controller,
+                    "run_process",
+                    side_effect=subprocess.CalledProcessError(1, "fake-archive"),
+                ),
+                patch.object(
+                    controller.shutil, "rmtree", side_effect=OSError("cannot remove root")
+                ),
+                patch.dict(os.environ, {"SYSTEM_PULLREQUEST_SOURCECOMMITID": "c" * 40}),
+            ):
+                with self.assertRaisesRegex(
+                    controller.ProcessCleanupError, "build-directory cleanup"
+                ):
+                    controller.run_ci_report(args)
+            result = json.loads((root / "report.json").read_text())
+            self.assertEqual(result["status"], "incomplete")
+            self.assertEqual(result["cleanup_required"], str(retained))
+            self.assertIn("cleanup failed", result["unavailable_reason"])
+
+    def test_ci_existing_publisher_consumes_bundle_without_latency_fallback(self):
+        from unittest.mock import patch
+
+        for latency_available in (True, False):
+            with self.subTest(latency_available=latency_available):
+                bundle = self.sample_bundle()
+                if not latency_available:
+                    bundle["fetch_measurements"]["latency"].update(
+                        status="incomplete", pairs=[], unavailable_reason="OFF worker failed"
+                    )
+                data = {}
+                for leg in reporting.LEGS:
+                    value = set_leg(bundle, leg)
+                    value["fetch_measurements"] = {
+                        mode: set_leg(child, leg)
+                        for mode, child in value["fetch_measurements"].items()
+                    }
+                    data[leg] = zip_data([("report.json", json.dumps(value))])
+                artifacts = [
+                    {
+                        "name": "profiler-" + leg,
+                        "resource": {"downloadUrl": "https://dev.azure.com/" + leg},
+                    }
+                    for leg in data
+                ]
+                posted, clock = [], [0]
+                with (
+                    patch.object(
+                        publisher,
+                        "publish",
+                        side_effect=lambda number, head, body, base=None: posted.append(body),
+                    ),
+                    patch.object(publisher, "github", side_effect=pr_topology()),
+                    patch.object(
+                        publisher,
+                        "api",
+                        side_effect=lambda url: {
+                            "value": artifacts if "/artifacts?" in url else [ado_build()]
+                        },
+                    ),
+                    patch.object(
+                        publisher,
+                        "fetch",
+                        side_effect=lambda url, **kwargs: data[url.rsplit("/", 1)[-1]],
+                    ),
+                    patch.object(publisher.time, "monotonic", side_effect=lambda: clock[0]),
+                    patch.object(
+                        publisher.time,
+                        "sleep",
+                        side_effect=lambda seconds: clock.__setitem__(0, clock[0] + seconds),
+                    ),
+                ):
+                    publisher.run(123, "c" * 40, 4)
+                self.assertEqual(len(posted), 2)
+                body = posted[-1]
+                self.assertEqual(body.count(reporting.MARKER), 1)
+                self.assertEqual(body.count("## PR Performance Report"), 1)
+                self.assertIn("Primary verdict: native OFF", body)
+                self.assertIn("Row constructions base/candidate 0/1000", body)
+                self.assertIn("Legacy diagnostics", body)
+                self.assertEqual("Performance unavailable" in body, not latency_available)
+                if not latency_available:
+                    self.assertIn("OFF worker failed", body)
+                    self.assertNotIn("Performance improved", body)
+
+    def test_ci_finalization_deadline_is_checked_after_validation_and_write(self):
+        from unittest.mock import patch
+
+        for delayed in (None, "validation", "write"):
+            with self.subTest(delayed=delayed), tempfile.TemporaryDirectory() as directory:
+                args = SimpleNamespace(
+                    output=Path(directory),
+                    mode="diagnostic",
+                    base="a" * 40,
+                    candidate="b" * 40,
+                    reuse_candidate=True,
+                    scenarios=None,
+                    samples=5,
+                    warmups=1,
+                    leg="Linux-SQL2022",
+                )
+                bundle = self.sample_bundle()
+                samples = {
+                    "diagnostic": bundle["pairs"][0],
+                    **{
+                        mode: report["pairs"][0]
+                        for mode, report in bundle["fetch_measurements"].items()
+                    },
+                }
+                clock, cleaned, final_writes = [0], [False], [0]
+                original_remove = controller.shutil.rmtree
+                original_validate = controller.ci_mode_reports
+                original_write = controller.write_report
+
+                def remove(path):
+                    original_remove(path)
+                    cleaned[0] = True
+
+                def validate(value):
+                    result = original_validate(value)
+                    if cleaned[0] and delayed == "validation":
+                        clock[0] = controller.BENCHMARK_TIMEOUT + 1
+                    return result
+
+                def write(path, value):
+                    original_write(path, value)
+                    if cleaned[0]:
+                        final_writes[0] += 1
+                        if delayed == "write":
+                            clock[0] = controller.BENCHMARK_TIMEOUT + final_writes[0]
+                        elif delayed is None:
+                            clock[0] = controller.BENCHMARK_TIMEOUT
+
+                def measure(path, output, scenarios, timeout, **options):
+                    side = "base" if options["revision"] == "a" * 40 else "candidate"
+                    return copy.deepcopy(samples[options["mode"]][side])
+
+                error = None
+                with (
+                    patch.object(controller.time, "monotonic", side_effect=lambda: clock[0]),
+                    patch.object(
+                        controller, "resolve_revisions", return_value=("a" * 40, "b" * 40)
+                    ),
+                    patch.object(controller, "git", return_value="b" * 40),
+                    patch.object(controller, "run_process"),
+                    patch.object(controller, "build"),
+                    patch.object(controller, "measure", side_effect=measure),
+                    patch.object(controller.shutil, "rmtree", side_effect=remove),
+                    patch.object(controller, "ci_mode_reports", side_effect=validate),
+                    patch.object(controller, "write_report", side_effect=write),
+                    patch.dict(
+                        os.environ,
+                        {"BUILD_BUILDID": "42", "SYSTEM_PULLREQUEST_SOURCECOMMITID": "c" * 40},
+                    ),
+                ):
+                    try:
+                        controller.run_ci_report(args)
+                    except RuntimeError as failure:
+                        error = str(failure)
+                saved = json.loads((args.output / "report.json").read_text())
+                self.assertTrue(cleaned[0])
+                self.assertEqual(final_writes[0], 2 if delayed else 1)
+                self.assertEqual(saved["status"], "incomplete" if delayed else "complete")
+                self.assertEqual(len(saved["pairs"]), 5)
+                for mode in ("latency", "route"):
+                    self.assertEqual(saved["fetch_measurements"][mode]["status"], "complete")
+                    self.assertEqual(len(saved["fetch_measurements"][mode]["pairs"]), 5)
+                if delayed:
+                    self.assertIsNotNone(error)
+                    self.assertIn("incomplete", error)
+                    self.assertIn("finish deadline", saved["unavailable_reason"])
+                else:
+                    self.assertIsNone(error)

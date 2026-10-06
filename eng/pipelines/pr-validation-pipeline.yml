@@ -1009,7 +1009,7 @@ jobs:
           ACCEPT_EULA=Y apt-get install -y --no-install-recommends git unixodbc unixodbc-dev libodbc2 libodbcinst2 odbcinst msodbcsql18
           git config --global --add safe.directory /workspace
           odbcinst -q -d -n "ODBC Driver 18 for SQL Server"
-          python -m eng.profiler_benchmarks.controller --reuse-candidate --leg "$(profilerLeg)" --output profiler-results
+          python -m eng.profiler_benchmarks.controller --reuse-candidate --ci-report --leg "$(profilerLeg)" --output profiler-results
         '
       else
         echo "Skipping performance benchmarks on $(distroName) (only runs on Ubuntu with local SQL Server)"
