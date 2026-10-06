@@ -367,7 +367,9 @@ int main() {
                 calls.clear();
                 connection = acquire();
                 expectCalls({"alive"});
+                calls.clear();
                 connection->setAutocommit(true);
+                expectCalls({});
                 calls.clear();
                 connection->close(true);
                 expectCalls({});
@@ -375,6 +377,84 @@ int main() {
             }
             require(logins == 1, "Empty leases did not reuse the physical connection");
         });
+        run("new login and repeated setters do not establish clean proof", [] {
+            auto connection = acquire();
+            calls.clear();
+            connection->setAutocommit(true);
+            connection->setAutocommit(true);
+            expectCalls({"on", "on"});
+            connection->close();
+            connection = acquire();
+            calls.clear();
+            connection->setAutocommit(true);
+            expectCalls({});
+            connection->close();
+        });
+        run("manual mode is never elided; only successful sanitation restores proof", [] {
+            warm();
+            auto connection = acquire();
+            calls.clear();
+            connection->setAutocommit(false);
+            connection->setAutocommit(false);
+            connection->setAutocommit(true);
+            connection->setAutocommit(true);
+            expectCalls({"off", "off", "on", "on"});
+            connection->close();
+            connection = acquire();
+            calls.clear();
+            connection->setAutocommit(true);
+            expectCalls({});
+            connection->close();
+        });
+        run("failed setter preserves metadata invalidation and sanitation requirement", [] {
+            warm();
+            auto connection = acquire();
+            auto statement = connection->allocStatementHandle();
+            auto generation = statement->resultMetadata.snapshot().generation;
+            statement->resultMetadata.publish(generation, std::make_shared<ResultMetadata>());
+            calls.clear();
+            failNext = "on";
+            expectFailure([&] { connection->setAutocommit(true); });
+            expectCalls({"on"});
+            auto snapshot = statement->resultMetadata.snapshot();
+            require(!snapshot.metadata && snapshot.generation == generation + 1,
+                    "Setter did not invalidate metadata before ODBC failure");
+            statement.reset();
+            calls.clear();
+            connection->setAutocommit(true);
+            expectCalls({"on"});
+            calls.clear();
+            connection->close();
+            expectCalls({"get", "reset", "allocate_statement", "rollback_batch", "free"});
+        });
+#ifdef ENABLE_PROFILING
+        run("autocommit profiler distinguishes full, eligible and skipped setters", [] {
+            auto connection = acquire();
+            auto& counter = mssql_profiling::PerformanceCounter::instance();
+            counter.reset();
+            counter.enable();
+            connection->setAutocommit(true);
+            counter.disable();
+            auto stats = counter.get_stats();
+            require(stats["ddbc::Connection::setAutocommit::full_path"]["calls"].cast<int>() == 1,
+                    "Full setter was not counted");
+            require(!stats.contains("ddbc::Connection::setAutocommit::skip"),
+                    "New login incorrectly counted as a skip");
+            connection->close();
+            connection = acquire();
+            counter.reset();
+            counter.enable();
+            connection->setAutocommit(true);
+            counter.disable();
+            stats = counter.get_stats();
+            require(stats["ddbc::Connection::setAutocommit::proof_eligible"]["calls"].cast<int>() == 1 &&
+                    stats["ddbc::Connection::setAutocommit::skip"]["calls"].cast<int>() == 1 &&
+                    !stats.contains("ddbc::Connection::setAutocommit::full_path"),
+                    "Proven setter was not counted as eligible and skipped");
+            connection->close();
+            counter.reset();
+        });
+#endif
         run("timeout=30 is applied before login and preserves repeated empty-lease fast path", [] {
             py::dict attrs;
             attrs[py::int_(SQL_ATTR_LOGIN_TIMEOUT)] = py::int_(30);
@@ -528,6 +608,9 @@ int main() {
                     "Pool sanitation must invalidate result metadata exactly once");
             checkParked();
             connection = acquire();
+            calls.clear();
+            connection->setAutocommit(true);
+            expectCalls({"on"});
             startWork(statement);
             calls.clear();
             connection->close();
@@ -600,6 +683,9 @@ int main() {
                 connection->close();
                 connection = acquire();
                 calls.clear();
+                connection->setAutocommit(true);
+                expectCalls({"on"});
+                calls.clear();
                 connection->close();
                 expectCalls({"get", "reset", "allocate_statement", "rollback_batch", "free"});
             });
@@ -622,6 +708,9 @@ int main() {
             auto connection = acquire(true, attrs);
             connection->close();
             connection = acquire();
+            calls.clear();
+            connection->setAutocommit(true);
+            expectCalls({"on"});
             calls.clear();
             connection->close();
             expectCalls({"get", "reset", "allocate_statement", "rollback_batch", "free"});
@@ -653,6 +742,11 @@ int main() {
             run("failed native operation invalidates clean proof", [operation] {
                 warm();
                 auto connection = acquire();
+                if (std::string(operation) == "on") {
+                    // A proven ON->ON is deliberately skipped; inject failure
+                    // only after an operation invalidates that proof.
+                    auto statement = connection->allocStatementHandle();
+                }
                 failNext = operation;
                 expectFailure([&] {
                     if (std::string(operation) == "commit") {

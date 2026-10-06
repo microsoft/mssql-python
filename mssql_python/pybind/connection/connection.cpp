@@ -333,11 +333,14 @@ void Connection::setAutocommit(bool enable) {
         ThrowStdException("Connection handle not allocated");
     }
     clearResultMetadata();
-#ifdef ENABLE_PROFILING
+    // Only successful native sanitation with no retained statement/raw handle
+    // aliases proves ON. A new login or _autocommit alone is not proof.
     if (enable && _dbcHandle->get() && _poolClean && !_poolProofDisabled) {
         PERF_EVENT("Connection::setAutocommit::proof_eligible");
+        PERF_EVENT("Connection::setAutocommit::skip");
+        _autocommit = true;
+        return;
     }
-#endif
     PERF_EVENT("Connection::setAutocommit::full_path");
     SQLINTEGER value = enable ? SQL_AUTOCOMMIT_ON : SQL_AUTOCOMMIT_OFF;
     LOG("Setting autocommit=%d", enable);

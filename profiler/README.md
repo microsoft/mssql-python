@@ -54,8 +54,12 @@ Targeted contention names (all prefixed `ddbc::`):
   `SQLResetStmt::{SQL_CLOSE_call,SQL_RESET_PARAMS_call,SQL_ATTR_PARAMSET_SIZE_call}`.
 - `Connection::setAutocommit::SQLSetConnectAttr_call` and
   `SQLExecDirect::SQLExecDirect_call` time raw calls while the GIL is released.
-- `Connection::setAutocommit::{proof_eligible,full_path}` are zero-duration
+- `Connection::setAutocommit::{proof_eligible,skip,full_path}` are zero-duration
   events, not spans. Eligibility is native sanitation proof, not a Python cache.
+  The autocommit candidate skips only proven ON-to-ON setters after metadata
+  invalidation; manual mode, new logins, retained statement aliases, raw handle
+  exposure and unproven/failed operations retain the ODBC path. Python still
+  forwards every public setter to native code.
 - `CaptureFetchDiagnostics::{no_data,success_with_info}` and
   `AppendDiagRecords::{state_no_data,record_no_data,record_error,record_read,
   internal_truncation,record_appended}` are zero-duration outcome events.
