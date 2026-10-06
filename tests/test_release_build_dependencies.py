@@ -6,6 +6,27 @@ WORKFLOW = ROOT / ".github" / "workflows" / "refresh-build-dependencies.yml"
 RELEASE_PIPELINE = ROOT / "OneBranchPipelines" / "stages" / "build-linux-single-stage.yml"
 
 
+def _compile_command(workflow, output):
+    commands = [
+        line.strip()
+        for line in workflow.splitlines()
+        if "uv pip compile" in line and output in line
+    ]
+    assert (
+        len(commands) == 1
+    ), f"Expected exactly one compile command for {output}, found {len(commands)}: {commands}"
+    return commands[0]
+
+
+def _platform_matrix_item(workflow, name):
+    compile_platform = workflow.split("  compile-platform:", maxsplit=1)[1]
+    matrix = compile_platform.split("\n    steps:", maxsplit=1)[0]
+    marker = f"          - name: {name}\n"
+    items = matrix.split(marker)
+    assert len(items) == 2, f"Expected exactly one {name} matrix item"
+    return items[1].split("\n          - name:", maxsplit=1)[0]
+
+
 def test_lock_generation_preserves_python_markers():
     workflow = WORKFLOW.read_text(encoding="utf-8")
 
@@ -13,20 +34,18 @@ def test_lock_generation_preserves_python_markers():
         "eng/requirements-build-linux.txt",
         "eng/requirements-test-linux.txt",
     ):
-        command = next(
-            line for line in workflow.splitlines() if "uv pip compile" in line and output in line
-        )
-        assert "--universal" in command
+        assert "--universal" in _compile_command(workflow, output)
 
-    assert re.search(r"name: macos\b.*?universal: --universal", workflow, re.DOTALL)
-    assert re.search(r"name: windows\b.*?universal: --universal", workflow, re.DOTALL)
-    assert re.search(r"name: odbc\b.*?universal: \"\"", workflow, re.DOTALL)
-    platform_command = next(
-        line
-        for line in workflow.splitlines()
-        if "uv pip compile" in line and "matrix.output" in line
-    )
-    assert "${{ matrix.universal }}" in platform_command
+    for name, universal in (
+        ("macos", "--universal"),
+        ("windows", "--universal"),
+        ("odbc", '""'),
+    ):
+        item = _platform_matrix_item(workflow, name)
+        values = [line.strip() for line in item.splitlines() if "universal:" in line]
+        assert values == [f"universal: {universal}"]
+
+    assert "${{ matrix.universal }}" in _compile_command(workflow, "matrix.output")
 
 
 def test_asyncio_backport_is_only_installed_below_python_311():
@@ -42,8 +61,7 @@ def test_asyncio_backport_is_only_installed_below_python_311():
             line for line in lock.splitlines() if line.startswith("backports-asyncio-runner==")
         )
         assert re.fullmatch(
-            r"backports-asyncio-runner==1\.2\.0 ; "
-            r"python_(?:full_)?version < ['\"]3\.11['\"] \\",
+            r"backports-asyncio-runner==[^ ;]+ ; python_(?:full_)?version < ['\"]3\.11['\"] \\",
             requirement,
         )
 

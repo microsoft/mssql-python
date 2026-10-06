@@ -124,7 +124,7 @@ class PipelineContractTests(unittest.TestCase):
             "OneBranchPipelines/stages/build-linux-single-stage.yml",
         ):
             self.assertEqual(pipeline.count(f"/workspace/{path}"), 2)
-        self.assertNotIn("cp -r /workspace/eng ", pipeline)
+        self.assertNotRegex(pipeline, r"\bcp\s+-r\s+/workspace/eng(?:\s|$)")
 
     def test_runner_uses_busybox_compatible_timeout_options(self):
         runner = RUNNER.read_text(encoding="utf-8")
