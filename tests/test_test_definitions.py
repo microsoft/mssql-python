@@ -14,7 +14,15 @@ def _scope_test_definitions(scope):
             if node.name.startswith("test_"):
                 yield node
         elif isinstance(node, ast.ClassDef):
-            if node.name.startswith("Test"):
+            if node.name.startswith("Test") or any(
+                isinstance(base, ast.Name)
+                and base.id == "TestCase"
+                or isinstance(base, ast.Attribute)
+                and isinstance(base.value, ast.Name)
+                and base.value.id == "unittest"
+                and base.attr == "TestCase"
+                for base in node.bases
+            ):
                 yield node
         elif not isinstance(node, ast.Lambda):
             yield from _scope_test_definitions(node)
@@ -50,8 +58,13 @@ def test_test_names_are_unique_within_each_scope():
     [
         ("async def test_example():\n    pass\n", "test_example"),
         ("class TestExample:\n    def test_method(self):\n        pass\n", "TestExample"),
+        ("class RunnerTests(TestCase):\n    def test_method(self):\n        pass\n", "RunnerTests"),
+        (
+            "class RunnerTests(unittest.TestCase):\n    def test_method(self):\n        pass\n",
+            "RunnerTests",
+        ),
     ],
-    ids=["function", "test-class"],
+    ids=["function", "test-class", "testcase", "qualified-testcase"],
 )
 @pytest.mark.parametrize(
     "block",
@@ -89,12 +102,20 @@ def test_duplicate_guard_checks_control_flow(block, in_class, definition, name):
 
 
 @pytest.mark.parametrize("in_class", [False, True], ids=["module", "class"])
-def test_duplicate_guard_checks_redefined_test_classes(in_class):
+@pytest.mark.parametrize(
+    "declaration, name",
+    [
+        ("TestExample", "TestExample"),
+        ("RunnerTests(TestCase)", "RunnerTests"),
+        ("PipelineContractTests(unittest.TestCase)", "PipelineContractTests"),
+    ],
+)
+def test_duplicate_guard_checks_redefined_test_classes(in_class, declaration, name):
     source = (
-        "class TestExample:\n"
+        f"class {declaration}:\n"
         "    def test_first(self):\n"
         "        pass\n"
-        "class TestExample:\n"
+        f"class {declaration}:\n"
         "    def test_second(self):\n"
         "        pass\n"
     )
@@ -102,15 +123,18 @@ def test_duplicate_guard_checks_redefined_test_classes(in_class):
         source = "class TestContainer:\n" + indent(source, "    ")
     assert _duplicate_test_names(ast.parse(source)) == [
         (
-            "5: TestExample replaces line 2 in TestContainer"
+            f"5: {name} replaces line 2 in TestContainer"
             if in_class
-            else "4: TestExample replaces line 1 in <module>"
+            else f"4: {name} replaces line 1 in <module>"
         )
     ]
 
 
-def test_duplicate_guard_keeps_namespaces_separate():
-    tree = ast.parse("""
+@pytest.mark.parametrize(
+    "declaration", ["TestNested", "RunnerTests(TestCase)", "RunnerTests(unittest.TestCase)"]
+)
+def test_duplicate_guard_keeps_namespaces_separate(declaration):
+    source = """
 def test_example():
     def test_example():
         pass
@@ -137,7 +161,8 @@ if enabled:
         class TestNested:
             def test_example(self):
                 pass
-""")
+"""
+    tree = ast.parse(source.replace("class TestNested:", f"class {declaration}:"))
     assert _duplicate_test_names(tree) == []
 
 
