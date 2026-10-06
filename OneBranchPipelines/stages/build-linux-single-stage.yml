@@ -324,13 +324,24 @@ stages:
                     cp -r /workspace/tests $TEST_DIR/ || echo "WARNING: No tests directory";
                     # Some tests read repo-side helper scripts/workflows (e.g. .github/scripts/prepare_fork_coverage_comment.py).
                     cp -r /workspace/.github $TEST_DIR/ || echo "WARNING: No .github directory";
+                    # Keep the isolated wheel test fixture narrow, but include the files
+                    # required by the mssql-odbc runner contract tests.
+                    mkdir -p $TEST_DIR/eng/scripts $TEST_DIR/eng/pipelines $TEST_DIR/eng/versions;
+                    mkdir -p $TEST_DIR/OneBranchPipelines/stages;
+                    cp /workspace/eng/scripts/run-mssql-odbc-tests.sh /workspace/eng/scripts/verify_mssql_odbc_provider.py $TEST_DIR/eng/scripts/;
+                    cp /workspace/eng/pipelines/mssql-odbc-daily-validation-pipeline.yml $TEST_DIR/eng/pipelines/;
+                    cp /workspace/eng/versions/mssql-python-rs-nuget.version $TEST_DIR/eng/versions/;
+                    cp /workspace/OneBranchPipelines/stages/build-linux-single-stage.yml $TEST_DIR/OneBranchPipelines/stages/;
                     cp /workspace/pytest.ini $TEST_DIR/ || echo "WARNING: No pytest.ini";
                     
                     # Step 8: Run pytest (stops on first failure)
                     if [ -d $TEST_DIR/tests ]; then
                       echo "Running pytest for ${PYBIN}...";
+                      # Release-lock tests validate repository workflows and lock files,
+                      # not the installed wheel; run them in source-checkout validation.
                       DB_CONNECTION_STRING="Server=$SQL_IP;Database=master;Uid=SA;Pwd=$DB_PASSWORD;TrustServerCertificate=yes" \
-                        $PY -m pytest $TEST_DIR/tests -v --maxfail=1 || {
+                        $PY -m pytest $TEST_DIR/tests -v --maxfail=1 \
+                          --ignore=tests/test_release_build_dependencies.py || {
                           echo "ERROR: Tests failed for ${PYBIN}";
                           exit 1;
                         };
@@ -394,13 +405,24 @@ stages:
                     cp -r /workspace/tests $TEST_DIR/ || echo "WARNING: No tests directory";
                     # Some tests read repo-side helper scripts/workflows (e.g. .github/scripts/prepare_fork_coverage_comment.py).
                     cp -r /workspace/.github $TEST_DIR/ || echo "WARNING: No .github directory";
+                    # Keep the isolated wheel test fixture narrow, but include the files
+                    # required by the mssql-odbc runner contract tests.
+                    mkdir -p $TEST_DIR/eng/scripts $TEST_DIR/eng/pipelines $TEST_DIR/eng/versions;
+                    mkdir -p $TEST_DIR/OneBranchPipelines/stages;
+                    cp /workspace/eng/scripts/run-mssql-odbc-tests.sh /workspace/eng/scripts/verify_mssql_odbc_provider.py $TEST_DIR/eng/scripts/;
+                    cp /workspace/eng/pipelines/mssql-odbc-daily-validation-pipeline.yml $TEST_DIR/eng/pipelines/;
+                    cp /workspace/eng/versions/mssql-python-rs-nuget.version $TEST_DIR/eng/versions/;
+                    cp /workspace/OneBranchPipelines/stages/build-linux-single-stage.yml $TEST_DIR/OneBranchPipelines/stages/;
                     cp /workspace/pytest.ini $TEST_DIR/ || echo "WARNING: No pytest.ini";
                     
                     # Step 8: Run pytest (stops on first failure)
                     if [ -d $TEST_DIR/tests ]; then
                       echo "Running pytest for ${PYBIN}...";
+                      # Release-lock tests validate repository workflows and lock files,
+                      # not the installed wheel; run them in source-checkout validation.
                       DB_CONNECTION_STRING="Server=$SQL_IP;Database=master;Uid=SA;Pwd=$DB_PASSWORD;TrustServerCertificate=yes" \
-                        $PY -m pytest $TEST_DIR/tests -v --maxfail=1 || {
+                        $PY -m pytest $TEST_DIR/tests -v --maxfail=1 \
+                          --ignore=tests/test_release_build_dependencies.py || {
                           echo "ERROR: Tests failed for ${PYBIN}";
                           exit 1;
                         };
