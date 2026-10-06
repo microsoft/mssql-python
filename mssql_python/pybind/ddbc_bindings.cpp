@@ -6413,6 +6413,55 @@ SQLRETURN FetchSingleRow(SqlHandlePtr StatementHandle, py::list& row,
     return ret;
 }
 
+// Python completion retains return validation, counters, maps and custom factory ordering.
+py::object FetchRow_wrap(SqlHandlePtr statement, py::list& data,
+                         const std::string& charEncoding, const std::string& wcharEncoding,
+                         int charCtype, py::handle messages, bool many,
+                         const py::function& complete, const py::object& planToken,
+                         const py::tuple& attributes, const py::str& rowGlobalName,
+                         const py::str& newName, const py::str& setattrName) {
+    SQLRETURN ret = many
+        ? FetchMany_wrap(statement, data, 1, charEncoding, wcharEncoding, charCtype, messages)
+        : FetchOne_wrap(statement, data, charEncoding, wcharEncoding, charCtype, messages);
+    py::object result = complete(ret, data, true);
+    if (!PyTuple_CheckExact(result.ptr()) || PyTuple_GET_SIZE(result.ptr()) != 8 ||
+        PyTuple_GET_ITEM(result.ptr(), 0) != planToken.ptr()) {
+        return result;
+    }
+    if (many && PyList_GET_SIZE(data.ptr()) != 1) {
+        throw py::value_error("A single-row construction plan requires exactly one fetched row");
+    }
+    py::tuple plan = borrow<py::tuple>(result.ptr());
+    py::object values = many ? borrow(PyList_GET_ITEM(data.ptr(), 0)) : borrow(data.ptr());
+    py::object factory = borrow(PyTuple_GET_ITEM(plan.ptr(), 6));
+    py::object row;
+    PyObject* factoryRowType = nullptr;
+    if (PyFunction_Check(factory.ptr())) {
+        factoryRowType = PyDict_GetItemWithError(PyFunction_GetGlobals(factory.ptr()),
+                                                 rowGlobalName.ptr());
+        if (!factoryRowType && PyErr_Occurred()) {
+            throw py::error_already_set();
+        }
+    }
+    // Final argument evaluation or plan allocation can change the captured factory in place.
+    if (PyFunction_Check(factory.ptr()) &&
+        PyFunction_GetCode(factory.ptr()) == PyTuple_GET_ITEM(plan.ptr(), 7) &&
+        factoryRowType == PyTuple_GET_ITEM(plan.ptr(), 1) &&
+        RowFactory::has_default_row_allocation(factoryRowType, newName, setattrName)) {
+        PERF_TIMER("FetchRow::construct_row");
+        row = RowFactory::construct_row(values, plan[1].cast<py::type>(), plan[2],
+                                         plan[3], plan[4], plan[5], attributes);
+    } else {
+        row = factory(values, plan[2], plan[3], plan[4], plan[5]);
+    }
+    if (!many) {
+        return row;
+    }
+    py::list rows(1);
+    PyList_SET_ITEM(rows.ptr(), 0, row.release().ptr());
+    return rows;
+}
+
 // Wrap SQLMoreResults
 SQLRETURN SQLMoreResults_wrap(SqlHandlePtr StatementHandle) {
     PERF_TIMER("SQLMoreResults_wrap");
@@ -6726,6 +6775,23 @@ PYBIND11_MODULE(ddbc_bindings, m) {
           py::arg("column_map"), py::arg("cursor"),
           py::arg("column_map_lower") = py::none(),
           py::arg("column_names") = py::none());
+
+    // Owned by binding defaults and released with the module; no static Python handles.
+    const py::tuple rowAttributes = py::make_tuple(
+        "_values", "_column_map", "_cursor", "_column_map_lower", "_column_names");
+    m.def("construct_row", &RowFactory::construct_row,
+          "Build one compatible Row with checked ownership",
+          py::arg("values"), py::arg("row_class"), py::arg("column_map"), py::arg("cursor"),
+          py::arg("column_map_lower") = py::none(), py::arg("column_names") = py::none(),
+          py::arg("attributes") = rowAttributes);
+    m.def("DDBCSQLFetchRow", &FetchRow_wrap,
+          "Fetch and construct one compatible Row with ordered Python completion",
+          py::arg("statement"), py::arg("data"), py::arg("char_encoding"),
+          py::arg("wchar_encoding"), py::arg("char_ctype"), py::arg("messages"),
+          py::arg("many"), py::arg("complete"), py::arg("plan_token"),
+          py::arg("attributes") = rowAttributes, py::arg("row_global_name") = py::str("Row"),
+          py::arg("new_name") = py::str("__new__"),
+          py::arg("setattr_name") = py::str("__setattr__"));
 
     // Expose logger bridge function to Python
     m.def("update_log_level", &mssql_python::logging::LoggerBridge::updateLevel,

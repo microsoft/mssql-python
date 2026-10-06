@@ -198,6 +198,55 @@ row-array configuration/cleanup. Row user attributes, weakrefs and substituted
 factories remain supported, as do dynamic `fetchone` overrides. No
 first-column-only `fetchval` route is introduced.
 
+The experimental shared `DDBCSQLFetchRow` entry performs the original native fetch,
+then calls the extracted Python completion body for return checking, row counters
+and map acquisition. An eligible completion returns a private construction plan;
+the same native call builds the Row and returns it (or a one-element list for
+`fetchmany(1)`). Unsupported/customized completion constructs the already-fetched
+values in Python. It never refetches. `fetchval()` still dispatches through
+`self.fetchone()` and all-column conversions remain in the completion body.
+
+Eligibility inspects raw class dictionaries and the original factory code without
+executing allocation/assignment descriptors or metaclass hooks. It is checked
+before fetching and again after map acquisition. The captured factory code and
+Row global are checked again in native code after final argument evaluation;
+late changes call that captured factory on the fetched values, without refetching.
+A final native raw-type/dictionary guard also rejects newly installed allocation or
+assignment hooks without invoking them. The captured Python factory then preserves
+`Row.__new__(Row)` lookup order, including a descriptor changing the second `Row`.
+In-place factory changes, custom
+allocation/assignment, converters and UUID policies retain their fallback behavior.
+The original `Row._fast_create` body is unchanged. Constructor attribute names are
+an immutable tuple owned by binding defaults, prepared once per module rather
+than five Python string allocations per row; no static owning Python handles or
+Row layout offsets are used. Native construction still uses `__new__` validation
+and normal checked attribute assignment, preserving descriptor callbacks.
+
+This is a shared fetch-and-construction call, **not** an all-native cursor:
+completion still re-enters Python, and eligible rows allocate a small plan tuple.
+The ordinary real-source frame trace removes one `_fast_create` frame but adds
+two `_native_row_eligible` frames and one `_finish_fetch*` frame: net **two more
+Python frames**. The outer Python-to-native call count is unchanged, and completion
+adds a native-to-Python crossing. This is not reduced Python dispatch or fewer
+crossings. These costs may outweigh native assignment work; no speedup or slowdown
+is established without measurement. Larger requests, integer subclasses and substituted low-level
+fetch bindings retain the original entry. Native numeric/non-numeric routing and
+cleanup are unchanged.
+
+When Python phase profiling is active, the original split entry is used so
+`cpp_call` and `row_wrap` retain their existing boundaries. With Python phases off,
+`ddbc::FetchRow::construct_row` attributes native construction when native profiling
+is available. Timing the split Python-profiled path is not evidence of fused-path
+latency; comparisons must identify which route actually ran.
+
+The isolated `test_single_row_fusion_native_counters_in_subprocess` cases enable
+native counters with Python phases disabled. For each API they require two native
+Row constructions for two rows, none at EOF, and none for converter fallback while
+all-column callbacks still run. These three cases skip on native profiling-OFF
+builds; the constructor-frame tests still run there. Split-route profiling alone
+cannot qualify fusion. These are future exact-source CI contracts, not local
+runtime measurements.
+
 Use profiling-enabled builds to check operation counts and normal uninstrumented
 Release builds for latency comparisons. These routes are optimization hypotheses,
 not a measured speedup; source-only checks do not establish native correctness.

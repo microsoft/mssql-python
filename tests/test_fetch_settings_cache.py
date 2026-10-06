@@ -617,7 +617,7 @@ def assert_row_instance_capabilities(row):
     return reference
 
 
-@pytest.mark.parametrize("construction", ("direct", "python_fast", "native"))
+@pytest.mark.parametrize("construction", ("direct", "python_fast", "native", "native_single"))
 def test_constructed_row_preserves_instance_capabilities(construction):
     values = [42]
     column_map = {"number": 0}
@@ -625,6 +625,8 @@ def test_constructed_row_preserves_instance_capabilities(construction):
         row = Row(values, column_map)
     elif construction == "python_fast":
         row = Row._fast_create(values, column_map, None)
+    elif construction == "native_single":
+        row = mssql_python.ddbc_bindings.construct_row(values, Row, column_map, None)
     else:
         row = mssql_python.ddbc_bindings.construct_rows([values], Row, column_map, None)[0]
     assert row._values is values
@@ -643,8 +645,12 @@ def test_fetched_row_preserves_instance_capabilities(connection, method):
     assert reference() is None
 
 
-@pytest.mark.parametrize("size", (0, 1, 3))
-def test_construct_rows_repeated_calls_release_references(size):
+@pytest.mark.parametrize(
+    ("size", "single"),
+    ((0, False), (1, False), (3, False), (1, True)),
+    ids=("0", "1", "3", "native-single"),
+)
+def test_construct_rows_repeated_calls_release_references(size, single):
     values = [[index] for index in range(size)]
     column_map = {"Number": 0}
     column_map_lower = {"number": 0}
@@ -653,9 +659,16 @@ def test_construct_rows_repeated_calls_release_references(size):
     tracked = (values, column_map, column_map_lower, column_names, cursor, *values)
     references = [sys.getrefcount(value) for value in tracked]
     for _ in range(10):
-        rows = mssql_python.ddbc_bindings.construct_rows(
-            values, Row, column_map, cursor, column_map_lower, column_names
-        )
+        if single:
+            rows = [
+                mssql_python.ddbc_bindings.construct_row(
+                    values[0], Row, column_map, cursor, column_map_lower, column_names
+                )
+            ]
+        else:
+            rows = mssql_python.ddbc_bindings.construct_rows(
+                values, Row, column_map, cursor, column_map_lower, column_names
+            )
         assert len(rows) == size
         assert all(row._values is values[index] for index, row in enumerate(rows))
         assert all(row._column_map is column_map for row in rows)
@@ -667,6 +680,14 @@ def test_construct_rows_repeated_calls_release_references(size):
 
 
 def test_construct_rows_releases_partial_batch_on_attribute_error():
+    _assert_construct_row_attribute_failure(single=False)
+
+
+def test_construct_single_row_releases_references_on_attribute_error():
+    _assert_construct_row_attribute_failure(single=True)
+
+
+def _assert_construct_row_attribute_failure(single):
     class FailingRow(Row):
         __slots__ = ()
 
@@ -687,9 +708,14 @@ def test_construct_rows_releases_partial_batch_on_attribute_error():
     references = [sys.getrefcount(value) for value in tracked]
     for _ in range(10):
         with pytest.raises(RuntimeError, match="injected slot assignment failure"):
-            mssql_python.ddbc_bindings.construct_rows(
-                values, FailingRow, column_map, cursor, None, column_names
-            )
+            if single:
+                mssql_python.ddbc_bindings.construct_row(
+                    values[-1], FailingRow, column_map, cursor, None, column_names
+                )
+            else:
+                mssql_python.ddbc_bindings.construct_rows(
+                    values, FailingRow, column_map, cursor, None, column_names
+                )
         assert [sys.getrefcount(value) for value in tracked] == references
 
 

@@ -4,7 +4,7 @@ import os
 import subprocess
 import sys
 import textwrap
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -601,6 +601,360 @@ def test_single_row_native_failure_recovery_in_subprocess(conn_str, failure):
     environment["DB_CONNECTION_STRING"] = conn_str
     result = subprocess.run(
         [sys.executable, "-c", script, failure],
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=45,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("mutation", ("new", "setattr", "code", "abstract", "descriptor"))
+def test_fast_row_inplace_customization(monkeypatch, mutation):
+    import weakref
+    from mssql_python import ddbc_bindings
+    from mssql_python.row import Row
+
+    factory = Row._fast_create
+    events = []
+
+    def custom_new(cls):
+        events.append("new")
+        return object.__new__(cls)
+
+    def custom_setattr(self, name, value):
+        events.append(name)
+        object.__setattr__(self, name, value)
+
+    def custom_factory(values, column_map, cursor, column_map_lower=None, column_names=None):
+        raise RuntimeError("customized factory code")
+
+    def fail_descriptor(self, value):
+        events.append(weakref.ref(self))
+        raise RuntimeError("customized descriptor")
+
+    if mutation == "new":
+        monkeypatch.setattr(Row, "__new__", staticmethod(custom_new))
+    elif mutation == "setattr":
+        monkeypatch.setattr(Row, "__setattr__", custom_setattr)
+    elif mutation == "code":
+        monkeypatch.setattr(factory, "__code__", custom_factory.__code__)
+    elif mutation == "abstract":
+        monkeypatch.setattr(Row, "__abstractmethods__", frozenset({"required"}), raising=False)
+    else:
+        monkeypatch.setattr(Row, "_column_names", property(fset=fail_descriptor))
+
+    assert Row._fast_create is factory
+    with patch.object(ddbc_bindings, "construct_row", wraps=ddbc_bindings.construct_row) as native:
+        if mutation in ("code", "descriptor"):
+            with pytest.raises(RuntimeError, match="customized"):
+                factory([42], {"number": 0}, None)
+        elif mutation == "abstract":
+            with pytest.raises(TypeError, match="abstract"):
+                factory([42], {"number": 0}, None)
+        else:
+            assert factory([42], {"number": 0}, None).number == 42
+        native.assert_not_called()
+    if mutation == "new":
+        assert events == ["new"]
+    elif mutation == "setattr":
+        assert events == ["_values", "_column_map", "_cursor", "_column_map_lower", "_column_names"]
+    elif mutation == "descriptor":
+        assert len(events) == 1 and events[0]() is None
+
+
+@pytest.mark.parametrize("method", ("fetchone", "fetchmany", "fetchval"))
+@pytest.mark.parametrize("failure", ("maps", "factory"))
+def test_single_row_construction_failure_keeps_fetch_position(cursor, method, failure):
+    from mssql_python import ddbc_bindings
+
+    cursor.execute("SELECT n AS number FROM (VALUES (1), (2)) AS v(n) ORDER BY n")
+    from mssql_python.row import Row
+
+    bridge_name = "DDBCSQLFetchRow"
+    bridge = ddbc_bindings.DDBCSQLFetchRow
+
+    def fetch():
+        value = cursor.fetchmany(1) if method == "fetchmany" else getattr(cursor, method)()
+        return value[0][0] if method == "fetchmany" else value if method == "fetchval" else value[0]
+
+    def fail(*args):
+        assert cursor.rowcount == 1
+        assert cursor.rownumber == 0
+        assert cursor._next_row_index == 1
+        raise RuntimeError("injected post-fetch failure")
+
+    failed_stage = Mock(side_effect=fail)
+    failure_patch = (
+        patch.object(cursor, "_get_column_and_converter_maps", failed_stage)
+        if failure == "maps"
+        else patch.object(Row, "_column_names", property(fset=failed_stage))
+    )
+    with patch.object(ddbc_bindings, bridge_name, wraps=bridge) as native_fetch, failure_patch:
+        with pytest.raises(RuntimeError, match="injected post-fetch failure"):
+            fetch()
+        native_fetch.assert_called_once()
+        failed_stage.assert_called_once()
+    assert fetch() == 2
+    assert cursor.rowcount == 2
+    assert cursor.rownumber == 1
+
+
+@pytest.mark.parametrize("target", ("__new__", "__setattr__"))
+def test_native_row_guard_does_not_invoke_descriptors(monkeypatch, target):
+    from mssql_python.cursor import _native_row_eligible
+    from mssql_python.row import Row
+
+    events = []
+
+    class Descriptor:
+        def __get__(self, instance, owner):
+            events.append("lookup")
+            if target == "__new__":
+                if len(events) > 1:
+                    raise RuntimeError("duplicate allocator lookup")
+
+                def allocate(cls):
+                    events.append("allocate")
+                    return object.__new__(cls)
+
+                return allocate
+            return lambda name, value: object.__setattr__(instance, name, value)
+
+    monkeypatch.setattr(Row, target, Descriptor())
+    assert not _native_row_eligible(Row)
+    assert events == []
+    row = Row._fast_create([42], {"number": 0}, None)
+    assert row.number == 42
+    assert events == (["lookup", "allocate"] if target == "__new__" else ["lookup"] * 5)
+
+
+def test_native_row_guard_does_not_invoke_metaclass_hooks():
+    from mssql_python.cursor import _native_row_eligible
+    from mssql_python.row import Row
+
+    class Meta(type):
+        def __getattribute__(cls, name):
+            raise AssertionError("guard must not inspect substituted class through metaclass")
+
+    class CustomRow(Row, metaclass=Meta):
+        pass
+
+    assert not _native_row_eligible(CustomRow)
+
+
+@pytest.mark.parametrize("method", ("fetchone", "fetchmany", "fetchval"))
+@pytest.mark.parametrize("when", ("maps", "final_argument"))
+def test_single_row_fusion_handles_post_fetch_factory_change(cursor, method, when="maps"):
+    from mssql_python import ddbc_bindings
+    from mssql_python.row import Row
+
+    original_maps = cursor._get_column_and_converter_maps
+    factory = Row._fast_create
+
+    def replacement(values, column_map, cursor, column_map_lower=None, column_names=None):
+        raise RuntimeError("factory changed after native advancement")
+
+    def maps():
+        factory.__code__ = replacement.__code__
+        return original_maps()
+
+    def names(self):
+        factory.__code__ = replacement.__code__
+        return self.__dict__["_cached_result_columns"]
+
+    cursor.execute("SELECT n AS number FROM (VALUES (1), (2)) AS v(n) ORDER BY n")
+    cursor._get_column_and_converter_maps()
+    change = (
+        patch.object(cursor, "_get_column_and_converter_maps", side_effect=maps)
+        if when == "maps"
+        else patch.object(type(cursor), "_cached_result_columns", property(names), create=True)
+    )
+    old_code = factory.__code__
+    try:
+        with (
+            change,
+            patch.object(
+                ddbc_bindings, "DDBCSQLFetchRow", wraps=ddbc_bindings.DDBCSQLFetchRow
+            ) as fused,
+        ):
+            with pytest.raises(RuntimeError, match="factory changed after native advancement"):
+                cursor.fetchmany(1) if method == "fetchmany" else getattr(cursor, method)()
+            fused.assert_called_once()
+            assert Row._fast_create is factory
+            assert cursor.rowcount == 1 and cursor.rownumber == 0
+    finally:
+        factory.__code__ = old_code
+    assert cursor.fetchone().number == 2
+
+
+@pytest.mark.parametrize("method", ("fetchone", "fetchmany", "fetchval"))
+def test_single_row_fusion_uses_native_constructor(cursor, method):
+    from mssql_python import ddbc_bindings, perf_timer
+    from mssql_python.row import Row
+
+    cursor.execute("SELECT 42 AS number, CAST(N'text' AS NVARCHAR(10)) AS label")
+    factory_code = Row._fast_create.__code__
+    calls = []
+    previous_profile = sys.getprofile()
+    phases_enabled = perf_timer.is_enabled()
+
+    def profile(frame, event, arg):
+        if event == "call" and frame.f_code is factory_code:
+            calls.append(event)
+
+    perf_timer.disable()
+    try:
+        with patch.object(
+            ddbc_bindings, "DDBCSQLFetchRow", wraps=ddbc_bindings.DDBCSQLFetchRow
+        ) as fused:
+            sys.setprofile(profile)
+            try:
+                result = cursor.fetchmany(1) if method == "fetchmany" else getattr(cursor, method)()
+            finally:
+                sys.setprofile(previous_profile)
+            fused.assert_called_once()
+        if method == "fetchval":
+            assert result == 42
+        else:
+            row = result[0] if method == "fetchmany" else result
+            assert type(row) is Row
+            assert tuple(row) == (42, "text")
+        assert calls == []
+        assert cursor.rowcount == 1 and cursor.rownumber == 0
+    finally:
+        if phases_enabled:
+            perf_timer.enable()
+
+
+@pytest.mark.parametrize("method", ("fetchone", "fetchmany", "fetchval"))
+def test_single_row_late_allocator_preserves_factory_global_lookup(cursor, method):
+    from mssql_python import ddbc_bindings
+    from mssql_python.row import Row
+
+    original_row = Row
+
+    class ChangedRow(original_row):
+        pass
+
+    events = []
+    factory = original_row._fast_create
+    assert "__new__" not in vars(original_row)
+
+    class Allocator:
+        def __get__(self, instance, owner):
+            events.append("new_lookup")
+            factory.__globals__["Row"] = ChangedRow
+
+            def allocate(cls):
+                events.append("allocate:" + cls.__name__)
+                return object.__new__(cls)
+
+            return allocate
+
+    def names(self):
+        events.append("names_lookup")
+        original_row.__new__ = Allocator()
+        return self.__dict__["_cached_result_columns"]
+
+    cursor.execute("SELECT n AS number FROM (VALUES (1), (2)) AS v(n) ORDER BY n")
+    cursor._get_column_and_converter_maps()
+    try:
+        with (
+            patch.object(type(cursor), "_cached_result_columns", property(names), create=True),
+            patch.object(
+                ddbc_bindings, "DDBCSQLFetchRow", wraps=ddbc_bindings.DDBCSQLFetchRow
+            ) as fused,
+        ):
+            result = cursor.fetchmany(1) if method == "fetchmany" else getattr(cursor, method)()
+            fused.assert_called_once()
+        if method == "fetchval":
+            assert result == 1
+        else:
+            row = result[0] if method == "fetchmany" else result
+            assert type(row) is ChangedRow
+            assert row.number == 1
+        assert events == ["names_lookup", "new_lookup", "allocate:ChangedRow"]
+        assert cursor.rowcount == 1 and cursor.rownumber == 0
+    finally:
+        factory.__globals__["Row"] = original_row
+        if "__new__" in vars(original_row):
+            delattr(original_row, "__new__")
+    assert cursor.fetchone().number == 2
+
+
+@pytest.mark.parametrize("method", ("fetchone", "fetchmany", "fetchval"))
+def test_single_row_fusion_native_counters_in_subprocess(conn_str, method):
+    from mssql_python import ddbc_bindings
+
+    if not hasattr(ddbc_bindings, "profiling"):
+        pytest.skip("requires a profiling-enabled native build; Python phases remain disabled")
+    script = textwrap.dedent("""
+        import os
+        import sys
+        import mssql_python
+        from mssql_python import ddbc_bindings as ddbc, perf_timer
+
+        method = sys.argv[1]
+        p = ddbc.profiling
+        perf_timer.disable()
+        perf_timer.reset()
+        p.disable()
+        query = (
+            "SELECT n AS a, n + 10 AS b, CAST(N'text' AS NVARCHAR(10)) AS label "
+            "FROM (VALUES (1), (2)) AS v(n) ORDER BY n"
+        )
+        fetch_timer = "ddbc::FetchMany_wrap" if method == "fetchmany" else "ddbc::FetchOne_wrap"
+
+        def calls(name):
+            return p.get_stats().get(name, {}).get("calls", 0)
+
+        with mssql_python.connect(os.environ["DB_CONNECTION_STRING"]) as connection:
+            with connection.cursor() as cursor:
+                def fetch():
+                    if method == "fetchval":
+                        return cursor.fetchval()
+                    result = cursor.fetchmany(1) if method == "fetchmany" else cursor.fetchone()
+                    row = result[0] if result and method == "fetchmany" else result
+                    return tuple(row) if row else None
+
+                try:
+                    cursor.execute(query)
+                    p.reset()
+                    p.enable()
+                    assert fetch() == (1 if method == "fetchval" else (1, 11, "text"))
+                    assert calls("ddbc::FetchRow::construct_row") == 1
+                    assert calls(fetch_timer) == 1
+                    assert fetch() == (2 if method == "fetchval" else (2, 12, "text"))
+                    assert fetch() is None
+                    assert fetch() is None
+                    assert calls("ddbc::FetchRow::construct_row") == 2
+                    assert calls(fetch_timer) == 4
+                    assert perf_timer.get_stats() == {}
+                    assert cursor.rowcount == 2 and cursor.rownumber == 1
+
+                    p.disable()
+                    converted = []
+                    def convert(value):
+                        converted.append(value)
+                        return value + 100
+                    connection.add_output_converter(mssql_python.SQL_INTEGER, convert)
+                    cursor.execute(query)
+                    p.reset()
+                    p.enable()
+                    assert fetch() == (101 if method == "fetchval" else (101, 111, "text"))
+                    assert converted == [1, 11]
+                    assert calls("ddbc::FetchRow::construct_row") == 0
+                    assert calls(fetch_timer) == 1
+                    assert perf_timer.get_stats() == {}
+                finally:
+                    p.disable()
+        """)
+    environment = os.environ.copy()
+    environment["DB_CONNECTION_STRING"] = conn_str
+    result = subprocess.run(
+        [sys.executable, "-c", script, method],
         env=environment,
         capture_output=True,
         text=True,
