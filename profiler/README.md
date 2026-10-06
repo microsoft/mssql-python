@@ -148,8 +148,12 @@ Ordinary nested workload timers and other threads are not suppressed.
 
 `fetchone()` and the default iterator/`fetchval()` path share the native
 single-row helper. Full result column counts are cached per metadata generation,
-separately from prefix `SQLGetData` metadata. Direct `DDBCSQLNumResultCols` calls
-remain uncached. `fetchval()` still calls `fetchone()` and constructs the full
+separately from prefix `SQLGetData` metadata. `fetchmany(1)` reuses that count for
+all result shapes, while still validating count and names before fetching. Cold
+`fetchmany(1)` can make two count calls (eager validation and `DescribeColumns`);
+subsequent size-one calls, including EOF, do not reacquire it within the same
+generation. Larger batches and direct `DDBCSQLNumResultCols` calls retain their
+uncached count behavior. `fetchval()` still calls `fetchone()` and constructs the full
 row, including converters for columns beyond the first.
 
 `ddbc::FetchSingleRow::SQL_UNBIND` counts attempted unbinds in that helper. A successful
@@ -170,6 +174,29 @@ requires a built-in `int` request of one, exactly one returned row, the canonica
 and substituted factories retain batch wrapping. The existing
 `py::fetchone::{cpp_call,row_wrap}` and `py::fetchmany::{cpp_call,row_wrap}` phases
 use paired start/stop calls, avoiding context-manager entry/exit when disabled.
+
+Row-wise integer, bit and floating-point values use checked CPython constructors
+and append operations. This removes generic scalar marshalling, not the scalar
+allocations themselves. The public `DDBCSQLGetData` destination still retains its
+identity, preexisting elements and completed cells on a later-column error; it
+is not replaced with a presized, partially initialized list.
+
+Bounded narrow-character GetData decodes the driver buffer directly through
+Python's codec API. Successful decoding avoids an intermediate bytes object,
+bound `decode` method and Python call arguments. Codec failures retain the logged
+bytes fallback, including codec names containing an embedded NUL rather than
+silently truncating them for the C API. Allocation failures now propagate instead
+of being mistaken for codec failures. The decoded value is still appended before
+debug logging; if a custom string's length raises during logging, the existing
+decoded cell and subsequent bytes fallback are retained. Wide text and LOB
+streaming are unchanged.
+
+Mixed INT/NVARCHAR is intentionally not routed through the numeric specialization:
+bound and GetData paths differ on malformed UTF-16, `SQL_NO_TOTAL`, truncation
+continuation and diagnostic timing. The unbind witness does not justify removing
+row-array configuration/cleanup. Row user attributes, weakrefs and substituted
+factories remain supported, as do dynamic `fetchone` overrides. No
+first-column-only `fetchval` route is introduced.
 
 Use profiling-enabled builds to check operation counts and normal uninstrumented
 Release builds for latency comparisons. These routes are optimization hypotheses,

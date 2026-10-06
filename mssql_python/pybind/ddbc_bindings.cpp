@@ -3111,6 +3111,24 @@ SQLSMALLINT SQLNumResultCols_wrap(SqlHandlePtr statementHandle, py::handle messa
 
 namespace {
 
+SQLSMALLINT CachedResultColumnCount(const SqlHandlePtr& handle, py::handle messages) {
+    const auto snapshot = handle->resultMetadata.snapshot();
+    if (snapshot.fullColumnCount >= 0) {
+        return snapshot.fullColumnCount;
+    }
+    const auto count = SQLNumResultCols_wrap(handle, messages);
+    handle->resultMetadata.publishFullColumnCount(snapshot.generation, count);
+    return count;
+}
+
+// Adopt a new cell reference even if appending to the caller's list fails.
+void AppendFetchedCell(py::list& row, PyObject* value) {
+    auto owned = steal(value);
+    if (!owned || PyList_Append(row.ptr(), owned.ptr()) < 0) {
+        throw py::error_already_set();
+    }
+}
+
 py::dict GetFetchColumnMetadata(const py::list& columns, size_t index) {
     return columns[index].cast<py::dict>();
 }
@@ -3696,22 +3714,36 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                                 // Use Python's codec system to decode bytes.
                                 const std::string decodeEncoding =
                                     GetEffectiveCharDecoding(effectiveCharEnc);
-                                py::bytes raw_bytes(reinterpret_cast<char*>(dataBuffer.data()),
-                                                    static_cast<size_t>(dataLen));
+                                py::object decoded;
                                 try {
-                                    py::object decoded =
-                                        raw_bytes.attr("decode")(decodeEncoding, "strict");
-                                    row.append(decoded);
+                                    // bytes.decode rejects embedded NULs; the C codec API does not.
+                                    if (decodeEncoding.find('\0') != std::string::npos) {
+                                        PyErr_SetString(PyExc_ValueError, "embedded null character");
+                                        throw py::error_already_set();
+                                    }
+                                    decoded = steal(PyUnicode_Decode(
+                                        reinterpret_cast<const char*>(dataBuffer.data()),
+                                        static_cast<Py_ssize_t>(dataLen),
+                                        decodeEncoding.c_str(), "strict"));
+                                    if (!decoded) throw py::error_already_set();
+                                    if (PyList_Append(row.ptr(), decoded.ptr()) < 0)
+                                        throw py::error_already_set();
                                     LOG("SQLGetData: CHAR column %d decoded with '%s', %zu bytes "
                                         "-> %zu chars",
                                         i, decodeEncoding.c_str(), (size_t)dataLen,
                                         py::len(decoded));
                                 } catch (const py::error_already_set& e) {
+                                    if (e.matches(PyExc_MemoryError)) throw;
                                     LOG_ERROR(
                                         "SQLGetData: Failed to decode CHAR column %d with '%s': %s",
                                         i, decodeEncoding.c_str(), e.what());
-                                    // Return raw bytes as fallback
-                                    row.append(raw_bytes);
+                                    // Preserve the existing codec-error bytes fallback.
+                                    decoded = steal(PyBytes_FromStringAndSize(
+                                        reinterpret_cast<const char*>(dataBuffer.data()),
+                                        static_cast<Py_ssize_t>(dataLen)));
+                                    if (!decoded) throw py::error_already_set();
+                                    if (PyList_Append(row.ptr(), decoded.ptr()) < 0)
+                                        throw py::error_already_set();
                                 }
                             } else {
                                 // Buffer too small, fallback to streaming
@@ -3847,7 +3879,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                 ret = SQLGetData_ptr(hStmt, i, SQL_C_LONG, &intValue, 0, &indicator);
                 CaptureFetchDiagnostics(hStmt, ret, messages);
                 if (SQL_SUCCEEDED(ret) && indicator != SQL_NULL_DATA) {
-                    row.append(static_cast<int>(intValue));
+                    AppendFetchedCell(row, PyLong_FromLong(intValue));
                 } else {
                     row.append(py::none());
                 }
@@ -3863,7 +3895,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                     break;
                 }
                 if (SQL_SUCCEEDED(ret)) {
-                    row.append(static_cast<int>(smallIntValue));
+                    AppendFetchedCell(row, PyLong_FromLong(smallIntValue));
                 } else {
                     LOG("SQLGetData: Error retrieving SQL_SMALLINT for column "
                         "%d - SQLRETURN=%d",
@@ -3882,7 +3914,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                     break;
                 }
                 if (SQL_SUCCEEDED(ret)) {
-                    row.append(realValue);
+                    AppendFetchedCell(row, PyFloat_FromDouble(realValue));
                 } else {
                     LOG("SQLGetData: Error retrieving SQL_REAL for column %d - "
                         "SQLRETURN=%d",
@@ -3962,7 +3994,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                     break;
                 }
                 if (SQL_SUCCEEDED(ret)) {
-                    row.append(doubleValue);
+                    AppendFetchedCell(row, PyFloat_FromDouble(doubleValue));
                 } else {
                     LOG("SQLGetData: Error retrieving SQL_DOUBLE/FLOAT for "
                         "column %d - SQLRETURN=%d",
@@ -3981,7 +4013,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                     break;
                 }
                 if (SQL_SUCCEEDED(ret)) {
-                    row.append(static_cast<long long>(bigintValue));
+                    AppendFetchedCell(row, PyLong_FromLongLong(bigintValue));
                 } else {
                     LOG("SQLGetData: Error retrieving SQL_BIGINT for column %d "
                         "- SQLRETURN=%d",
@@ -4152,7 +4184,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                     break;
                 }
                 if (SQL_SUCCEEDED(ret)) {
-                    row.append(static_cast<int>(tinyIntValue));
+                    AppendFetchedCell(row, PyLong_FromLong(tinyIntValue));
                 } else {
                     LOG("SQLGetData: Error retrieving SQL_TINYINT for column "
                         "%d - SQLRETURN=%d",
@@ -4171,7 +4203,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                     break;
                 }
                 if (SQL_SUCCEEDED(ret)) {
-                    row.append(static_cast<bool>(bitValue));
+                    AppendFetchedCell(row, PyBool_FromLong(bitValue != 0));
                 } else {
                     LOG("SQLGetData: Error retrieving SQL_BIT for column %d - "
                         "SQLRETURN=%d",
@@ -4985,8 +5017,10 @@ SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetch
     SQLRETURN ret = SQL_ERROR;
     ResultMetadataFailureGuard metadataFailure(StatementHandle->resultMetadata, ret);
     SQLHSTMT hStmt = StatementHandle->get();
-    // Retrieve column count
-    SQLSMALLINT numCols = SQLNumResultCols_wrap(StatementHandle, messages);
+    // Keep count/name validation before advancing, including the size-one route.
+    SQLSMALLINT numCols = fetchSize == 1
+                             ? CachedResultColumnCount(StatementHandle, messages)
+                             : SQLNumResultCols_wrap(StatementHandle, messages);
 
     // Retrieve column metadata
     auto snapshot = StatementHandle->resultMetadata.snapshot();
@@ -6365,12 +6399,7 @@ SQLRETURN FetchSingleRow(SqlHandlePtr StatementHandle, py::list& row,
     if (SQL_SUCCEEDED(ret)) {
         SQLSMALLINT colCount = knownColumnCount;
         if (colCount < 0) {
-            const auto snapshot = StatementHandle->resultMetadata.snapshot();
-            colCount = snapshot.fullColumnCount;
-            if (colCount < 0) {
-                colCount = SQLNumResultCols_wrap(StatementHandle, messages);
-                StatementHandle->resultMetadata.publishFullColumnCount(snapshot.generation, colCount);
-            }
+            colCount = CachedResultColumnCount(StatementHandle, messages);
         }
         ret = SQLGetData_wrap(StatementHandle, colCount, row, charEncoding, wcharEncoding,
                               charCtype, messages);
