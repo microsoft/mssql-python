@@ -622,6 +622,45 @@ static void PreResolveUnknownNullTypes(SqlHandle& handle, SQLHANDLE hStmt,
     }
 }
 
+static SQLRETURN PreResolveUdtTypes(SQLHANDLE hStmt, std::vector<ParamInfo>& paramInfos) {
+    bool hasUdt = false;
+    for (const auto& info : paramInfos) {
+        if (info.paramSQLType == SQL_SS_UDT) {
+            hasUdt = true;
+            break;
+        }
+    }
+    if (!hasUdt) return SQL_SUCCESS;
+
+    // UDT identity lives in the IPD, not in the scalar describe cache. Describe
+    // unbound records on each execution, including reused statements and DAE rows.
+    SQLRETURN rc = SQLFreeStmt_ptr(hStmt, SQL_RESET_PARAMS);
+    if (!SQL_SUCCEEDED(rc)) {
+        LOG("PreResolveUdtTypes: SQL_RESET_PARAMS failed, rc=%d", rc);
+        return rc;
+    }
+    for (size_t i = 0; i < paramInfos.size(); ++i) {
+        if (paramInfos[i].paramSQLType != SQL_SS_UDT) continue;
+        SQLSMALLINT type, digits, nullable;
+        SQLULEN size;
+        {
+            py::gil_scoped_release release;
+            rc = SQLDescribeParam_ptr(hStmt, static_cast<SQLUSMALLINT>(i + 1),
+                                      &type, &size, &digits, &nullable);
+        }
+        if (!SQL_SUCCEEDED(rc)) {
+            LOG("PreResolveUdtTypes: SQLDescribeParam failed for param[%zu], rc=%d", i, rc);
+            return rc;
+        }
+        // ODBC requires SQL_SS_LENGTH_UNLIMITED (0), not a byte count above
+        // 8000, for large UDTs. Type detection has already selected streaming.
+        if (paramInfos[i].columnSize > MAX_INLINE_BINARY) {
+            paramInfos[i].columnSize = 0;
+        }
+    }
+    return SQL_SUCCESS;
+}
+
 // Given a list of parameters and their ParamInfo, calls SQLBindParameter on
 // each of them with appropriate arguments
 SQLRETURN BindParameters(SqlHandle& handle, SQLHANDLE hStmt, const py::list& params,
@@ -637,6 +676,8 @@ SQLRETURN BindParameters(SqlHandle& handle, SQLHANDLE hStmt, const py::list& par
         ThrowStdException("Parameter count does not match parameter metadata count");
     }
 
+    SQLRETURN describeRc = PreResolveUdtTypes(hStmt, paramInfos);
+    if (!SQL_SUCCEEDED(describeRc)) return describeRc;
     // GH-627: resolve unknown NULL param SQL types before binding any param.
     PreResolveUnknownNullTypes(handle, hStmt, paramInfos, &params);
     for (int paramIndex = 0; paramIndex < params.size(); paramIndex++) {
@@ -2268,14 +2309,10 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
                            (SQLPOINTER)SQL_CONCUR_READ_ONLY, 0);
     }
 
-    // The encoding-settings dict has the form {"encoding": str, "ctype": int}.
-    // Note: the Python layer's SQL_C_CHAR constant is numerically -8, the same
-    // as ODBC's SQL_C_WCHAR. As a result, the only path that genuinely uses
-    // byte-level character encoding is when the user explicitly opts in via
-    // setencoding(..., ctype=mssql_python.SQL_CHAR) (which sends ctype=1, the
-    // real ODBC SQL_CHAR). We default to utf-8 and only honor the dict's
-    // encoding when ctype == 1 (real ODBC SQL_CHAR). Otherwise the user's
-    // "encoding" value is meant for the wide-char path and we leave it alone.
+    // This codec only applies to parameters already typed as real SQL_C_CHAR (1).
+    // Public text parameter detection uses SQL_C_WCHAR (-8), including the
+    // Python layer's legacy SQL_C_CHAR alias. setencoding() does not change
+    // paramCType and warns when the requested settings cannot be applied.
     std::string charEncoding = "utf-8";
     if (encoding_settings.contains("ctype") && encoding_settings.contains("encoding")) {
         int ctype = encoding_settings["ctype"].cast<int>();
@@ -2434,6 +2471,8 @@ SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list&
     std::vector<std::shared_ptr<void>> tempBuffers;
 
     try {
+        SQLRETURN describeRc = PreResolveUdtTypes(hStmt, paramInfos);
+        if (!SQL_SUCCEEDED(describeRc)) return describeRc;
         // GH-627: resolve unknown NULL array param SQL types before binding any param.
         PreResolveUnknownNullTypes(handle, hStmt, paramInfos);
         size_t reservedParameterBytes = 0;
@@ -3122,10 +3161,13 @@ SQLRETURN SQLExecuteMany_wrap(const SqlHandlePtr statementHandle, const std::u16
     }
     LOG("SQLExecuteMany: Parameter analysis - hasDAE=%s", hasDAE ? "true" : "false");
 
-    // Extract char encoding from encodingSettings dictionary
+    // Match SQLExecute_wrap: a wide-char codec must never encode narrow buffers.
     std::string charEncoding = "utf-8";  // default
-    if (encodingSettings.contains("encoding")) {
-        charEncoding = encodingSettings["encoding"].cast<std::string>();
+    if (encodingSettings.contains("ctype") && encodingSettings.contains("encoding")) {
+        int ctype = encodingSettings["ctype"].cast<int>();
+        if (ctype == SQL_C_CHAR) {
+            charEncoding = encodingSettings["encoding"].cast<std::string>();
+        }
     }
 
     if (!hasDAE) {
