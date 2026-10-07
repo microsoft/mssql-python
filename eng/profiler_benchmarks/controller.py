@@ -231,9 +231,16 @@ def verify_reused_source(source_root, revision):
 
 # Closed, reviewed dispatch bodies: main666, f539, and the many-only successor.
 # Method/comment/docstring edits require review and an explicit fingerprint update.
-_LEGACY_PYTHON_ROUTE = "52681c15f92e85c01e0b43a9bd763872051fdc956701046534a5beb2467e6c3c"
-_LEGACY_FUSED_ROUTE = "d4c6671b89ace027c22585e761c4f4c3243e297be2162213d9bbb38d5bed03c6"
-_MANY_ONLY_ROUTE = "544d5b0ccbf9df1f0b6ec72c79ecbfa49a3517cab0437a5520940b8941966759"
+# These reviewed method-source SHA256 digests are not credentials.
+_LEGACY_PYTHON_ROUTE = (
+    "52681c15f92e85c01e0b43a9bd763872051fdc956701046534a5beb2467e6c3c"  # DevSkim: ignore DS173237
+)
+_LEGACY_FUSED_ROUTE = (
+    "d4c6671b89ace027c22585e761c4f4c3243e297be2162213d9bbb38d5bed03c6"  # DevSkim: ignore DS173237
+)
+_MANY_ONLY_ROUTE = (
+    "544d5b0ccbf9df1f0b6ec72c79ecbfa49a3517cab0437a5520940b8941966759"  # DevSkim: ignore DS173237
+)
 
 
 def python_source_identity(source_root, revision):

@@ -672,8 +672,8 @@ def test_single_row_construction_failure_keeps_fetch_position(cursor, method, fa
     cursor.execute("SELECT n AS number FROM (VALUES (1), (2)) AS v(n) ORDER BY n")
     from mssql_python.row import Row
 
-    bridge_name = "DDBCSQLFetchRow"
-    bridge = ddbc_bindings.DDBCSQLFetchRow
+    bridge_name = "DDBCSQLFetchRow" if method == "fetchmany" else "DDBCSQLFetchOne"
+    bridge = getattr(ddbc_bindings, bridge_name)
 
     def fetch():
         value = cursor.fetchmany(1) if method == "fetchmany" else getattr(cursor, method)()
