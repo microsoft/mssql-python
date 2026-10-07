@@ -17,6 +17,8 @@ import pytest
 import platform
 import threading
 import os
+import subprocess
+import sys
 
 # Import ddbc_bindings with error handling
 try:
@@ -49,6 +51,41 @@ def test_fetchmany_rejects_unsafe_size_before_handle_access(fetch_size):
 def test_arrow_batch_rejects_unsafe_size_before_handle_access(batch_size):
     with pytest.raises(RuntimeError, match="Arrow batch size"):
         ddbc.DDBCSQLFetchArrowBatch(None, [], batch_size, 0)
+
+
+@pytest.mark.skipif(not DDBC_AVAILABLE, reason="ddbc_bindings not available")
+@pytest.mark.parametrize(
+    ("scenario", "message"),
+    [
+        ("oversized_rows", "more rows than the allocated fetch buffers"),
+        ("odd_wchar", "invalid byte length"),
+        ("oversized_indicator", "exceeds the allocated fetch buffer"),
+    ],
+)
+def test_driver_fetch_validation_rejects_malformed_lengths(scenario, message):
+    with pytest.raises(RuntimeError, match=message):
+        ddbc._test_fetch_validation(scenario)
+
+
+@pytest.mark.skipif(not DDBC_AVAILABLE, reason="ddbc_bindings not available")
+def test_sql_no_total_fetch_makes_progress_in_isolated_process():
+    code = """
+import mssql_python.ddbc_bindings as ddbc
+ret, indicator, calls, size = ddbc._test_fetch_validation("sql_no_total_progress")
+assert ret == 0
+assert indicator == 2
+assert calls == 2
+assert size == 2
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=os.path.dirname(os.path.dirname(__file__)),
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 @pytest.mark.skipif(not DDBC_AVAILABLE, reason="ddbc_bindings not available")
