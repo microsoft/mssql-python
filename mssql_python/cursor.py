@@ -1348,9 +1348,9 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
     def _get_sql_to_c_type_map(cls):
         if cls._SQL_TO_C_TYPE is None:
             cls._SQL_TO_C_TYPE = {
-                ddbc_sql_const.SQL_CHAR.value: ddbc_sql_const.SQL_CHAR.value,
-                ddbc_sql_const.SQL_VARCHAR.value: ddbc_sql_const.SQL_CHAR.value,
-                ddbc_sql_const.SQL_LONGVARCHAR.value: ddbc_sql_const.SQL_CHAR.value,
+                ddbc_sql_const.SQL_CHAR.value: ddbc_sql_const.SQL_C_CHAR.value,
+                ddbc_sql_const.SQL_VARCHAR.value: ddbc_sql_const.SQL_C_CHAR.value,
+                ddbc_sql_const.SQL_LONGVARCHAR.value: ddbc_sql_const.SQL_C_CHAR.value,
                 ddbc_sql_const.SQL_WCHAR.value: ddbc_sql_const.SQL_C_WCHAR.value,
                 ddbc_sql_const.SQL_WVARCHAR.value: ddbc_sql_const.SQL_C_WCHAR.value,
                 ddbc_sql_const.SQL_WLONGVARCHAR.value: ddbc_sql_const.SQL_C_WCHAR.value,
@@ -2613,6 +2613,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         # Prepare parameter type information
         with perf_phase("py::executemany::param_type_detection"):
             for col_index in range(param_count):
+                requires_row_fallback = False
                 column = (
                     [row[col_index] for row in seq_of_parameters]
                     if hasattr(seq_of_parameters, "__getitem__")
@@ -2634,39 +2635,37 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                     ):
                         c_type = ddbc_sql_const.SQL_C_CHAR.value
 
-                    # Check every compatible value before selecting array binding. Use
-                    # the SQL type because the public SQL_C_CHAR enum aliases SQL_C_WCHAR.
-                    if sql_type in (
+                    # Text values stay on the driver's wide binding path. Bytes supplied
+                    # for narrow SQL text types use real SQL_C_CHAR in scalar execution.
+                    narrow_text_type = sql_type in (
                         ddbc_sql_const.SQL_CHAR.value,
                         ddbc_sql_const.SQL_VARCHAR.value,
                         ddbc_sql_const.SQL_LONGVARCHAR.value,
-                    ):
-                        text_values = [value for value in column if isinstance(value, str)]
-                        text_is_large = any(
-                            _encoded_length_exceeds(
-                                value,
-                                encoding_settings["encoding"],
-                                MAX_INLINE_CHAR,
-                            )
-                            for value in text_values
-                        )
-                        binary_is_large = any(
-                            len(value) > MAX_INLINE_BINARY
-                            for value in column
-                            if isinstance(value, (bytes, bytearray))
-                        )
-                        is_dae = text_is_large or binary_is_large
-                    elif sql_type in (
+                    )
+                    wide_text_type = sql_type in (
                         ddbc_sql_const.SQL_WCHAR.value,
                         ddbc_sql_const.SQL_WVARCHAR.value,
                         ddbc_sql_const.SQL_WLONGVARCHAR.value,
                         ddbc_sql_const.SQL_SS_XML.value,
-                    ):
-                        is_dae = any(
+                    )
+                    if narrow_text_type or wide_text_type:
+                        text_values = [value for value in column if isinstance(value, str)]
+                        binary_values = [
+                            value for value in column if isinstance(value, (bytes, bytearray))
+                        ]
+                        text_is_large = any(
                             sum(2 if ord(char) > 0xFFFF else 1 for char in value) > MAX_INLINE_CHAR
-                            for value in column
-                            if isinstance(value, str)
+                            for value in text_values
                         )
+                        binary_is_large = narrow_text_type and any(
+                            len(value) > MAX_INLINE_BINARY for value in binary_values
+                        )
+                        requires_row_fallback = bool(
+                            narrow_text_type and text_values and binary_values
+                        )
+                        if narrow_text_type and binary_values and not text_values:
+                            c_type = ddbc_sql_const.SQL_CHAR.value
+                        is_dae = text_is_large or binary_is_large
 
                     # Sanitize precision/scale for numeric types
                     if sql_type in (
@@ -2790,7 +2789,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                         paraminfo.columnSize = max(max_binary_size, 1)
 
                     parameters_type.append(paraminfo)
-                if paraminfo.isDAE:
+                if paraminfo.isDAE or requires_row_fallback:
                     any_dae = True
 
         if any_dae:

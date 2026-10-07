@@ -296,6 +296,12 @@ inline void ApplyInputSizeOverride(PyObject* params, PyObject* inputSize, Py_ssi
         }
     }
 
+    if ((PyBytes_Check(obj) || PyByteArray_Check(obj)) &&
+        (info.paramSQLType == SQL_CHAR || info.paramSQLType == SQL_VARCHAR ||
+         info.paramSQLType == SQL_LONGVARCHAR)) {
+        info.paramCType = SQL_C_CHAR;
+    }
+
     if (info.paramCType == SQL_C_WCHAR &&
         (PyBytes_Check(obj) || PyByteArray_Check(obj))) {
         throw py::type_error("bytes values cannot be bound as SQL_C_WCHAR");
@@ -315,13 +321,16 @@ inline void ApplyInputSizeOverride(PyObject* params, PyObject* inputSize, Py_ssi
             MAX_INLINE_BINARY;
     info.isDAE = textNeedsDAE || binaryNeedsDAE;
     if (info.isDAE) {
-        info.columnSize = 0;
-        if (textNeedsDAE) {
-            if (info.paramSQLType == SQL_CHAR || info.paramSQLType == SQL_VARCHAR) {
-                info.paramSQLType = SQL_LONGVARCHAR;
-            } else if (info.paramSQLType == SQL_WCHAR || info.paramSQLType == SQL_WVARCHAR) {
-                info.paramSQLType = SQL_WLONGVARCHAR;
-            }
+        info.columnSize =
+            textNeedsDAE
+                ? static_cast<SQLULEN>(actualTextLength)
+                : static_cast<SQLULEN>(PyBytes_Check(obj) ? PyBytes_GET_SIZE(obj)
+                                                          : PyByteArray_GET_SIZE(obj));
+        if (info.paramSQLType == SQL_CHAR || info.paramSQLType == SQL_VARCHAR) {
+            info.paramSQLType = SQL_LONGVARCHAR;
+        } else if (textNeedsDAE &&
+                   (info.paramSQLType == SQL_WCHAR || info.paramSQLType == SQL_WVARCHAR)) {
+            info.paramSQLType = SQL_WLONGVARCHAR;
         } else if (info.paramSQLType == SQL_BINARY || info.paramSQLType == SQL_VARBINARY) {
             info.paramSQLType = SQL_LONGVARBINARY;
         }
@@ -499,7 +508,7 @@ inline std::vector<ParamInfo> DetectParamTypes(PyObject* params, PyObject* input
                 // Long SQL types prevent a zero DAE ColumnSize from being interpreted
                 // as a fixed-width VARCHAR/NVARCHAR precision by the driver.
                 info.isDAE = true;
-                info.columnSize = 0;
+                info.columnSize = utf16_len;
                 info.utf16Len = utf16_len;
                 info.dataPtr = borrow(obj);
                 info.paramSQLType = is_unicode ? SQL_WLONGVARCHAR : SQL_LONGVARCHAR;
@@ -521,7 +530,7 @@ inline std::vector<ParamInfo> DetectParamTypes(PyObject* params, PyObject* input
             info.decimalDigits = 0;
             if (length > MAX_INLINE_BINARY) {
                 info.isDAE = true;
-                info.columnSize = 0;
+                info.columnSize = static_cast<SQLULEN>(length);
                 info.dataPtr = borrow(obj);
                 info.paramSQLType = SQL_LONGVARBINARY;
             } else {
