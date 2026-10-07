@@ -2601,8 +2601,8 @@ SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list&
                                                   std::to_string(paramIndex));
                             }
                             SQLWCHAR* destination = wcharArray + i * elementWidth;
-                            std::copy_n(reinterpret_cast<const SQLWCHAR*>(encodedData),
-                                        wcharLength, destination);
+                            std::copy_n(encodedData, static_cast<size_t>(encodedSize),
+                                        reinterpret_cast<char*>(destination));
                             destination[wcharLength] = 0;
                             strLenOrIndArray[i] = SQL_NTS;
                         }
