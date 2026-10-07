@@ -296,6 +296,11 @@ inline void ApplyInputSizeOverride(PyObject* params, PyObject* inputSize, Py_ssi
         }
     }
 
+    if (info.paramCType == SQL_C_WCHAR &&
+        (PyBytes_Check(obj) || PyByteArray_Check(obj))) {
+        throw py::type_error("bytes values cannot be bound as SQL_C_WCHAR");
+    }
+
     Py_ssize_t actualTextLength = 0;
     if (PyUnicode_Check(obj)) {
         actualTextLength = info.paramCType == SQL_C_CHAR

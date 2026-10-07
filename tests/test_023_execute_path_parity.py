@@ -339,6 +339,13 @@ def test_executemany_setinputsizes_scans_mixed_text_values_for_dae(cursor):
     assert cursor.fetchall() == [(value,), ("x",)]
 
 
+def test_setinputsizes_rejects_bytes_for_wide_character_binding(cursor):
+    """Wide-character overrides require text rather than raw encoded bytes."""
+    cursor.setinputsizes([(ddbc_sql_const.SQL_WVARCHAR.value, 1, 0)])
+    with pytest.raises(TypeError, match="SQL_C_WCHAR"):
+        cursor.execute("SELECT ?", [b"x" * 8001])
+
+
 @pytest.mark.parametrize("sql_type", [None, ddbc_sql_const.SQL_VARCHAR.value])
 def test_time_isoformat_must_return_string(cursor, sql_type):
     """Native time normalization rejects a broken subclass contract on either path."""
