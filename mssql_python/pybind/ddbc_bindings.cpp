@@ -3602,6 +3602,14 @@ static py::object FetchLobColumnDataImpl(
             ValidateWideCharByteLength(actualRead);
         }
 
+        const size_t terminatorBytes = isBinary ? 0 : (isWideChar ? sizeof(SQLWCHAR) : 1);
+        const size_t payloadCapacity = DAE_CHUNK_SIZE - terminatorBytes;
+        if (ret == SQL_SUCCESS && actualRead >= 0 &&
+            static_cast<size_t>(actualRead) > payloadCapacity) {
+            ThrowStdException("LOB data indicator exceeds the fetch buffer capacity");
+        }
+        const bool continueForTruncation =
+            ret == SQL_SUCCESS_WITH_INFO && hasTruncationDiagnostic(hStmt);
         size_t bytesRead = 0;
         if (actualRead >= 0) {
             bytesRead = static_cast<size_t>(actualRead);
@@ -3611,11 +3619,8 @@ static py::object FetchLobColumnDataImpl(
         } else {
             bytesRead = DAE_CHUNK_SIZE;
         }
-        if (ret == SQL_SUCCESS_WITH_INFO && bytesRead == 0) {
-            if (hasTruncationDiagnostic(hStmt)) {
-                ThrowStdException("LOB fetch truncation made no progress");
-            }
-            break;
+        if (continueForTruncation && bytesRead == 0) {
+            ThrowStdException("LOB fetch truncation made no progress");
         }
 
         // For character data, trim trailing null terminators
@@ -3658,7 +3663,8 @@ static py::object FetchLobColumnDataImpl(
             std::copy_n(chunk.data(), bytesRead, buffer.data() + previousSize);
             LOG("FetchLobColumnData: Appended %zu bytes at loop %d", bytesRead, loopCount);
         }
-        if (ret == SQL_SUCCESS) {
+        if (ret == SQL_SUCCESS ||
+            (ret == SQL_SUCCESS_WITH_INFO && !continueForTruncation)) {
             LOG("FetchLobColumnData: SQL_SUCCESS - no more data at loop %d", loopCount);
             break;
         }
@@ -5805,6 +5811,25 @@ py::object RunFetchValidationTest(const std::string& scenario) {
         testGetDataResultIndex = 0;
         FetchLobColumnDataImpl(nullptr, 1, SQL_C_BINARY, false, true, "", py::none(),
                                false, TestSQLGetData, TestHasTruncationDiagnostic);
+    } else if (scenario == "oversized_lob_success") {
+        testGetDataResults = {
+            {static_cast<SQLRETURN>(SQL_SUCCESS),
+             static_cast<SQLLEN>(DAE_CHUNK_SIZE + 1)},
+        };
+        testGetDataResultIndex = 0;
+        FetchLobColumnDataImpl(nullptr, 1, SQL_C_BINARY, false, true, "", py::none(),
+                               false, TestSQLGetData, TestHasTruncationDiagnostic);
+    } else if (scenario == "lob_unrelated_warning_progress") {
+        testGetDataResults = {
+            {static_cast<SQLRETURN>(SQL_SUCCESS_WITH_INFO), static_cast<SQLLEN>(1)},
+        };
+        testGetDataResultIndex = 0;
+        py::bytes value =
+            FetchLobColumnDataImpl(nullptr, 1, SQL_C_BINARY, false, true, "",
+                                   py::none(), false, TestSQLGetData,
+                                   TestHasUnrelatedWarning)
+                .cast<py::bytes>();
+        return py::make_tuple(py::len(value), testGetDataResultIndex);
     } else if (scenario == "odd_direct_wchar") {
         ValidateWideCharByteLength(3);
     } else if (scenario == "odd_lob_wchar") {
