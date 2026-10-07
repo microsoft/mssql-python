@@ -14,6 +14,7 @@ Resource Management:
 import decimal
 import logging
 import uuid
+import codecs
 import datetime
 import warnings
 from typing import List, Mapping, Union, Any, Optional, Tuple, Sequence, TYPE_CHECKING, Iterable
@@ -54,6 +55,22 @@ MONEY_MAX: decimal.Decimal = decimal.Decimal("922337203685477.5807")
 # Bound each native fetch allocation; Arrow initially reserves 42 bytes per variable-width row.
 MAX_NATIVE_ROW_COUNT: int = 1_000_000
 MAX_NATIVE_PARAMETER_SIZE: int = 256 * 1024 * 1024
+
+
+def _encoded_length_exceeds(value: str, encoding: str, limit: int) -> bool:
+    encoder = codecs.getincrementalencoder(encoding)(errors="strict")
+    total = 0
+    chunk_size = 4096
+    for offset in range(0, len(value), chunk_size):
+        end = min(offset + chunk_size, len(value))
+        total += len(encoder.encode(value[offset:end], final=end == len(value)))
+        if total > limit:
+            return True
+    if not value:
+        total += len(encoder.encode("", final=True))
+    return total > limit
+
+
 # SQL BIGINT is a signed 64-bit integer. Ints outside this range have no BIGINT
 # encoding and must be rejected at detect time on both paths (see _map_sql_type).
 BIGINT_MIN: int = -(2**63)
@@ -2620,8 +2637,12 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                     if sample_value is not None:
                         if isinstance(sample_value, str):
                             if c_type == ddbc_sql_const.SQL_C_CHAR.value:
-                                text_size = max(
-                                    len(value.encode(encoding_settings["encoding"]))
+                                is_dae = column_size > MAX_INLINE_CHAR or any(
+                                    _encoded_length_exceeds(
+                                        value,
+                                        encoding_settings["encoding"],
+                                        MAX_INLINE_CHAR,
+                                    )
                                     for value in column
                                     if isinstance(value, str)
                                 )
@@ -2631,7 +2652,9 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                                     for value in column
                                     if isinstance(value, str)
                                 )
-                            is_dae = column_size > MAX_INLINE_CHAR or text_size > MAX_INLINE_CHAR
+                                is_dae = (
+                                    column_size > MAX_INLINE_CHAR or text_size > MAX_INLINE_CHAR
+                                )
                         elif isinstance(sample_value, (bytes, bytearray)) and column_size > 8000:
                             is_dae = True
 

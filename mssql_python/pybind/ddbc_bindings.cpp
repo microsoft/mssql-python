@@ -535,6 +535,78 @@ static SQLRETURN stream_dae_chunks(const void* data, size_t total_bytes, PutData
     return SQL_SUCCESS;
 }
 
+template <typename PutDataFn>
+static SQLRETURN stream_unicode_dae_chunks(PyObject* value, const std::string& encoding,
+                                           PutDataFn put_data_fn) {
+    py::object encoderFactory =
+        py::module_::import("codecs").attr("getincrementalencoder")(encoding);
+    py::object encoder = encoderFactory("strict");
+    const Py_ssize_t length = PyUnicode_GET_LENGTH(value);
+    constexpr Py_ssize_t chunkSize = 4096;
+    for (Py_ssize_t offset = 0; offset < length; offset += chunkSize) {
+        const Py_ssize_t end = std::min(offset + chunkSize, length);
+        py::object chunk = steal(PyUnicode_Substring(value, offset, end));
+        if (!chunk) throw py::error_already_set();
+        py::object encoded = encoder.attr("encode")(chunk, end == length);
+        char* data = nullptr;
+        Py_ssize_t size = 0;
+        if (PyBytes_AsStringAndSize(encoded.ptr(), &data, &size) != 0) {
+            throw py::error_already_set();
+        }
+        if (size > 0) {
+            SQLRETURN rc = put_data_fn(data, static_cast<SQLLEN>(size));
+            if (!SQL_SUCCEEDED(rc)) return rc;
+        }
+    }
+    if (length == 0) {
+        py::object encoded = encoder.attr("encode")(py::str(), true);
+        char* data = nullptr;
+        Py_ssize_t size = 0;
+        if (PyBytes_AsStringAndSize(encoded.ptr(), &data, &size) != 0) {
+            throw py::error_already_set();
+        }
+        if (size > 0) return put_data_fn(data, static_cast<SQLLEN>(size));
+    }
+    return SQL_SUCCESS;
+}
+
+static SQLRETURN StreamDAEParameter(SQLHSTMT hStmt, const ParamInfo& info,
+                                    const std::string& charEncoding) {
+    PyObject* value = info.dataPtr.ptr();
+    if (!value || value == Py_None) {
+        py::gil_scoped_release release;
+        return SQLPutData_ptr(hStmt, nullptr, 0);
+    }
+
+    auto putImmutableData = [&](SQLPOINTER data, SQLLEN length) {
+        py::gil_scoped_release release;
+        return SQLPutData_ptr(hStmt, data, length);
+    };
+    if (PyUnicode_Check(value)) {
+        if (info.paramCType == SQL_C_WCHAR) {
+            return stream_unicode_dae_chunks(value, "utf-16-le", putImmutableData);
+        }
+        if (info.paramCType == SQL_C_CHAR) {
+            return stream_unicode_dae_chunks(value, charEncoding, putImmutableData);
+        }
+        ThrowStdException("DAE only supports text C types for str values");
+    }
+    if (PyBytes_Check(value)) {
+        return stream_dae_chunks(PyBytes_AS_STRING(value),
+                                 static_cast<size_t>(PyBytes_GET_SIZE(value)),
+                                 putImmutableData);
+    }
+    if (PyByteArray_Check(value)) {
+        auto putMutableData = [&](SQLPOINTER data, SQLLEN length) {
+            return SQLPutData_ptr(hStmt, data, length);
+        };
+        return stream_dae_chunks(PyByteArray_AS_STRING(value),
+                                 static_cast<size_t>(PyByteArray_GET_SIZE(value)),
+                                 putMutableData);
+    }
+    ThrowStdException("DAE only supports str, bytes, or bytearray values");
+}
+
 // GH-610: Resolve SQL type for a NULL parameter using per-handle cache.
 // On cache miss, calls SQLDescribeParam and stores the result.
 static DescribedParamInfo ResolveNullParamType(SqlHandle& handle, SQLHANDLE hStmt, int paramIndex) {
@@ -2377,10 +2449,6 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
     // GIL is released around each ODBC call to match slow-path concurrency.
     if (rc == SQL_NEED_DATA) {
         SQLPOINTER paramToken = nullptr;
-        auto putData = [&](SQLPOINTER data, SQLLEN len) {
-            py::gil_scoped_release release;
-            return SQLPutData_ptr(hStmt, data, len);
-        };
         while (true) {
             {
                 py::gil_scoped_release release;
@@ -2399,58 +2467,8 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
             if (matchedInfo < first || matchedInfo >= last) {
                 ThrowStdException("SQLExecute: unrecognized paramToken from SQLParamData");
             }
-            PyObject* pyObj = matchedInfo->dataPtr.ptr();
-            if (!pyObj || pyObj == Py_None) {
-                py::gil_scoped_release release;
-                SQLPutData_ptr(hStmt, nullptr, 0);
-                continue;
-            }
-
-            if (PyUnicode_Check(pyObj)) {
-                if (matchedInfo->paramCType == SQL_C_WCHAR) {
-                    std::u16string u16 =
-                        borrow<py::str>(pyObj).cast<std::u16string>();
-                    rc = stream_dae_chunks(
-                        reinterpretU16stringAsSqlWChar(u16),
-                        u16.size() * sizeof(SQLWCHAR),
-                        putData);
-                    if (!SQL_SUCCEEDED(rc)) return rc;
-                } else if (matchedInfo->paramCType == SQL_C_CHAR) {
-                    std::string encodedStr;
-                    py::object encoded = borrow(pyObj)
-                                             .attr("encode")(charEncoding, "strict");
-                    encodedStr = encoded.cast<std::string>();
-                    rc = stream_dae_chunks(encodedStr.data(), encodedStr.size(), putData);
-                    if (!SQL_SUCCEEDED(rc)) return rc;
-                } else {
-                    ThrowStdException("SQLExecute: unsupported C type for str in DAE");
-                }
-            } else if (PyBytes_Check(pyObj) || PyByteArray_Check(pyObj)) {
-                // matchedInfo->dataPtr holds a strong ref to pyObj for the whole loop.
-                const char* dataPtr = nullptr;
-                size_t totalBytes = 0;
-                std::string bytesStorage;  // only used for the bytearray copy below
-
-                if (PyBytes_Check(pyObj)) {
-                    // bytes is immutable and kept alive by the strong ref above, so stream
-                    // straight from its internal buffer with no copy. This is the large-blob
-                    // DAE path, so skipping a full payload copy is the whole point.
-                    dataPtr = PyBytes_AS_STRING(pyObj);
-                    totalBytes = static_cast<size_t>(PyBytes_GET_SIZE(pyObj));
-                } else {
-                    // bytearray is mutable and the GIL is released mid-stream, so copy to a
-                    // stable buffer before streaming.
-                    bytesStorage.assign(PyByteArray_AS_STRING(pyObj),
-                                        static_cast<size_t>(PyByteArray_GET_SIZE(pyObj)));
-                    dataPtr = bytesStorage.data();
-                    totalBytes = bytesStorage.size();
-                }
-
-                rc = stream_dae_chunks(dataPtr, totalBytes, putData);
-                if (!SQL_SUCCEEDED(rc)) return rc;
-            } else {
-                ThrowStdException("SQLExecute: DAE only supported for str or bytes");
-            }
+            rc = StreamDAEParameter(hStmt, *matchedInfo, charEncoding);
+            if (!SQL_SUCCEEDED(rc)) return rc;
         }
         if (!SQL_SUCCEEDED(rc) && rc != SQL_NO_DATA) return rc;
     }
@@ -3245,11 +3263,23 @@ SQLRETURN SQLExecuteMany_wrap(const SqlHandlePtr statementHandle, const std::u16
         return rc;
     } else {
         LOG("SQLExecuteMany: Using DAE (data-at-execution) - row_count=%zu",
-            columnwise_params.size());
-        size_t rowCount = columnwise_params.size();
+            paramSetSize);
+        if (columnwise_params.size() != paramInfos.size()) {
+            ThrowStdException("Parameter count does not match parameter metadata count");
+        }
+        rc = SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_PARAMSET_SIZE, (SQLPOINTER)1, 0);
+        if (!SQL_SUCCEEDED(rc)) return rc;
+        size_t rowCount = paramSetSize;
         for (size_t rowIndex = 0; rowIndex < rowCount; ++rowIndex) {
             LOG("SQLExecuteMany: Processing DAE row %zu of %zu", rowIndex + 1, rowCount);
-            py::list rowParams = columnwise_params[rowIndex];
+            py::list rowParams;
+            for (py::handle column : columnwise_params) {
+                py::sequence values = py::reinterpret_borrow<py::sequence>(column);
+                if (static_cast<size_t>(py::len(values)) != paramSetSize) {
+                    ThrowStdException("Parameter column length does not match parameter set size");
+                }
+                rowParams.append(values[rowIndex]);
+            }
 
             std::vector<std::shared_ptr<void>> paramBuffers;
             rc = BindParameters(*statementHandle, hStmt, rowParams, paramInfos,
@@ -3284,47 +3314,15 @@ SQLRETURN SQLExecuteMany_wrap(const SqlHandlePtr statementHandle, const std::u16
                     return rc;
                 }
 
-                py::object* py_obj_ptr = reinterpret_cast<py::object*>(token);
-                if (!py_obj_ptr) {
-                    LOG("SQLExecuteMany: NULL token pointer in DAE - chunk=%zu", dae_chunk_count);
-                    return SQL_ERROR;
+                const ParamInfo* matchedInfo = reinterpret_cast<const ParamInfo*>(token);
+                const ParamInfo* first = paramInfos.data();
+                const ParamInfo* last = first + paramInfos.size();
+                if (matchedInfo < first || matchedInfo >= last) {
+                    ThrowStdException(
+                        "SQLExecuteMany: unrecognized paramToken from SQLParamData");
                 }
-
-                if (py::isinstance<py::str>(*py_obj_ptr)) {
-                    std::string data = py_obj_ptr->cast<std::string>();
-                    SQLLEN data_len = static_cast<SQLLEN>(data.size());
-                    LOG("SQLExecuteMany: Sending string DAE data - chunk=%zu, "
-                        "length=%lld",
-                        dae_chunk_count, static_cast<long long>(data_len));
-                    rc = [&] {
-                        py::gil_scoped_release release;
-                        return SQLPutData_ptr(hStmt, (SQLPOINTER)data.c_str(), data_len);
-                    }();
-                    if (!SQL_SUCCEEDED(rc) && rc != SQL_NEED_DATA) {
-                        LOG("SQLExecuteMany: SQLPutData(string) failed - "
-                            "chunk=%zu, rc=%d",
-                            dae_chunk_count, rc);
-                    }
-                } else if (py::isinstance<py::bytes>(*py_obj_ptr) ||
-                           py::isinstance<py::bytearray>(*py_obj_ptr)) {
-                    std::string data = py_obj_ptr->cast<std::string>();
-                    SQLLEN data_len = static_cast<SQLLEN>(data.size());
-                    LOG("SQLExecuteMany: Sending bytes/bytearray DAE data - "
-                        "chunk=%zu, length=%lld",
-                        dae_chunk_count, static_cast<long long>(data_len));
-                    rc = [&] {
-                        py::gil_scoped_release release;
-                        return SQLPutData_ptr(hStmt, (SQLPOINTER)data.c_str(), data_len);
-                    }();
-                    if (!SQL_SUCCEEDED(rc) && rc != SQL_NEED_DATA) {
-                        LOG("SQLExecuteMany: SQLPutData(bytes) failed - "
-                            "chunk=%zu, rc=%d",
-                            dae_chunk_count, rc);
-                    }
-                } else {
-                    LOG("SQLExecuteMany: Unsupported DAE data type - chunk=%zu", dae_chunk_count);
-                    return SQL_ERROR;
-                }
+                rc = StreamDAEParameter(hStmt, *matchedInfo, charEncoding);
+                if (!SQL_SUCCEEDED(rc)) return rc;
                 dae_chunk_count++;
             }
             LOG("SQLExecuteMany: DAE completed for row %zu - total_chunks=%zu, "
