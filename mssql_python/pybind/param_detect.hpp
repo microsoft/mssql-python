@@ -205,12 +205,28 @@ inline Py_ssize_t UnicodeUtf16Length(PyObject* value) {
 }
 
 inline Py_ssize_t EncodedUnicodeLength(PyObject* value, const std::string& encoding) {
-    py::object encoded =
-        steal(PyUnicode_AsEncodedString(value, encoding.c_str(), "strict"));
-    if (!encoded) {
-        throw py::error_already_set();
+    py::object encoderFactory =
+        py::module_::import("codecs").attr("getincrementalencoder")(encoding);
+    py::object encoder = encoderFactory("strict");
+    const Py_ssize_t length = PyUnicode_GET_LENGTH(value);
+    constexpr Py_ssize_t chunkSize = 4096;
+    Py_ssize_t total = 0;
+    for (Py_ssize_t offset = 0; offset < length; offset += chunkSize) {
+        const Py_ssize_t end = std::min(offset + chunkSize, length);
+        py::object chunk = steal(PyUnicode_Substring(value, offset, end));
+        if (!chunk) throw py::error_already_set();
+        py::object encoded = encoder.attr("encode")(chunk, end == length);
+        const Py_ssize_t encodedSize = PyBytes_GET_SIZE(encoded.ptr());
+        if (encodedSize > MAX_INLINE_CHAR - total) {
+            return MAX_INLINE_CHAR + 1;
+        }
+        total += encodedSize;
     }
-    return PyBytes_GET_SIZE(encoded.ptr());
+    if (length == 0) {
+        py::object encoded = encoder.attr("encode")(py::str(), true);
+        total = PyBytes_GET_SIZE(encoded.ptr());
+    }
+    return total;
 }
 
 inline PyObject* FormatDecimalParam(PyObject* params, Py_ssize_t index, PyObject* value) {
