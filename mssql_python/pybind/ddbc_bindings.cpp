@@ -395,7 +395,7 @@ void ValidateArrowTextPayloadLength(size_t stride, size_t dataBytes) {
 }
 
 void ValidateDecimalDataLength(uint64_t dataLength) {
-    if (dataLength > MAX_DIGITS_IN_NUMERIC) {
+    if (dataLength >= MAX_DIGITS_IN_NUMERIC) {
         ThrowStdException("Decimal data exceeds the allocated fetch buffer");
     }
 }
@@ -5729,7 +5729,17 @@ py::object RunFetchValidationTest(const std::string& scenario) {
         GetDataVar(nullptr, 1, SQL_C_BINARY, buffer, &indicator, reservedBytes, py::none(),
                    false, TestSQLGetData);
     } else if (scenario == "oversized_decimal_indicator") {
-        ValidateDecimalDataLength(MAX_DIGITS_IN_NUMERIC + 1);
+        ValidateDecimalDataLength(MAX_DIGITS_IN_NUMERIC);
+    } else if (scenario == "odd_streamed_wchar") {
+        testGetDataResults = {
+            {static_cast<SQLRETURN>(SQL_SUCCESS_WITH_INFO), static_cast<SQLLEN>(3)},
+        };
+        testGetDataResultIndex = 0;
+        std::vector<SQLWCHAR> buffer;
+        SQLLEN indicator = 0;
+        size_t reservedBytes = 0;
+        GetDataVar(nullptr, 1, SQL_C_WCHAR, buffer, &indicator, reservedBytes, py::none(),
+                   false, TestSQLGetData);
     } else if (scenario == "truncation_no_progress") {
         testGetDataResults = {
             {static_cast<SQLRETURN>(SQL_SUCCESS_WITH_INFO), static_cast<SQLLEN>(0)},
