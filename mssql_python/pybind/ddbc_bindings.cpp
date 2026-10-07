@@ -2292,7 +2292,8 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
     // Run DetectParamTypes BEFORE SQLPrepare so that type-detection errors
     // (unsupported type, NaN Decimal, precision overflow) don't leave the
     // cursor in a half-prepared state.
-    std::vector<ParamInfo> paramInfos = DetectParamTypes(params.ptr(), input_sizes.ptr());
+    std::vector<ParamInfo> paramInfos =
+        DetectParamTypes(params.ptr(), input_sizes.ptr(), charEncoding);
 
     RETCODE rc;
     bool already_prepared = is_stmt_prepared[0].cast<bool>();
