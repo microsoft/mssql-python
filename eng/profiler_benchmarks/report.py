@@ -477,8 +477,8 @@ def ci_mode_reports(report):
 
 
 def render_ci_reports(reports, head, build_id, issues=()):
-    modes = {mode: [] for mode in MODES}
-    reasons = {}
+    diagnostics = []
+    diagnostic_issues = list(issues)
     seen = set()
     for report in reports:
         leg = report["leg"]
@@ -490,104 +490,25 @@ def render_ci_reports(reports, head, build_id, issues=()):
         else:
             validate(report)
             valid = {measurement_mode(report): report}
-            errors = {
-                mode: "Mode not supplied by this legacy artifact"
-                for mode in MODES
-                if mode not in valid
-            }
-        for mode, item in valid.items():
-            if item["status"] == "complete":
-                modes[mode].append(item)
-        for mode, reason in errors.items():
-            reasons[leg, mode] = reason
-    latency_issues = list(issues) + [
-        leg + " (" + reasons.get((leg, "latency"), "missing latency measurement") + ")"
-        for leg in LEGS
-        if not any(r["leg"] == leg for r in modes["latency"])
-    ]
-    primary = render(modes["latency"], head, build_id, latency_issues, default_mode="latency")
-    primary = primary.replace(
-        "## PR Performance Report",
-        "## PR Performance Report\n\n**Primary verdict: native OFF / Python phases OFF latency only.**",
+            errors = {}
+        diagnostic = valid.get("diagnostic")
+        if diagnostic is not None and diagnostic["status"] == "complete":
+            diagnostics.append(diagnostic)
+        else:
+            reason = errors.get("diagnostic", "missing or incomplete diagnostic measurement")
+            diagnostic_issues.append(leg + " (" + reason + ")")
+    body = render(diagnostics, head, build_id, diagnostic_issues)
+    artifact_note = "Raw samples and logs are attached to the ADO run as `profiler-*` artifacts."
+    body = body.replace(
+        artifact_note,
+        "This headline uses the original 22-task profiling-enabled diagnostics; separate "
+        "OFF/OFF latency and ON/OFF route measurements, when available, are retained in the raw artifacts "
+        "and are not headline inputs.\n\n" + artifact_note,
         1,
     )
-    lines = [
-        "",
-        "### Measurement availability",
-        "",
-        "| Environment | Latency OFF/OFF | Route ON/OFF | Diagnostics ON/ON |",
-        "|---|---|---|---|",
-    ]
-    for leg in LEGS:
-        cells = []
-        for mode in ("latency", "route", "diagnostic"):
-            complete = any(item["leg"] == leg for item in modes[mode])
-            cells.append(
-                "Complete"
-                if complete
-                else "Unavailable: " + escape(reasons.get((leg, mode), "artifact missing"))
-            )
-        lines.append("| " + environment_name(leg) + " | " + " | ".join(cells) + " |")
-    for mode, label in (
-        (
-            "route",
-            "Native route attribution (instrumented, Python phases OFF; not production latency)",
-        ),
-        ("diagnostic", "Legacy diagnostics (native and Python phases ON; not production latency)"),
-    ):
-        lines += ["", "<details>", "<summary>" + label + "</summary>", ""]
-        if not modes[mode]:
-            lines.append("Unavailable. No latency inference is made from this section.")
-        for report in modes[mode]:
-            lines += [
-                "",
-                "#### " + environment_name(report["leg"]),
-                "",
-                "| Task | Before ms | After ms | Paired change | Ratio median [min, max] |",
-                "|---|---:|---:|---:|---:|",
-            ]
-            notes = []
-            for row in comparisons(report):
-                lines.append(
-                    f"| {TASK_NAMES[row['name']]} | {row['base_ms']:.3f} | {row['candidate_ms']:.3f} | {row['change_pct']:+.1f}% | {row['ratio']:.3f} [{row['ratio_min']:.3f}, {row['ratio_max']:.3f}] |"
-                )
-                if mode == "diagnostic" and (row["phases"] or row["counts"]):
-                    phases = "; ".join(
-                        f"{escape(label)} {delta:+.3f} ms" for delta, label in row["phases"]
-                    )
-                    counts_text = "; ".join(escape(count) for count in row["counts"])
-                    notes.append(
-                        "Inclusive phase changes: "
-                        + (phases or "none recorded")
-                        + ". Call changes: "
-                        + (counts_text or "none recorded")
-                        + "."
-                    )
-                if mode == "route":
-                    counts = [
-                        report["pairs"][0][side]["scenarios"][row["name"]]["cpp"]
-                        .get("ddbc::FetchRow::construct_row", {})
-                        .get("calls", 0)
-                        for side in ("base", "candidate")
-                    ]
-                    notes.append(
-                        f"Native proof for {row['name']}: 1001 fetch calls per side/sample; Row constructions base/candidate {counts[0]}/{counts[1]}. "
-                        + route_description(report, row["name"].split("_")[1])
-                    )
-            lines += [""] + notes
-            lines.append(
-                "Raw paired counters and worker/native identities are retained in the artifact; inclusive phases must not be summed."
-            )
-        lines += ["", "</details>"]
-    appendix = "\n".join(lines)
-    if len(primary) + len(appendix) + 1 > MAX_COMMENT_CHARS:
-        appendix = "\n".join(
-            line for line in lines if not line.startswith("Inclusive phase changes:")
-        )
-        appendix += "\nExpanded phase details exceed the comment budget; full counters remain in the raw artifact."
-    if len(primary) + len(appendix) + 1 > MAX_COMMENT_CHARS:
+    if len(body) > MAX_COMMENT_CHARS:
         raise ValueError("CI performance comment exceeds its bounded size")
-    return primary + "\n" + appendix
+    return body
 
 
 def assess(evidence, artifact_urls, load_artifact, issues=()):

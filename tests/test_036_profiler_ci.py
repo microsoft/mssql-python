@@ -2361,7 +2361,7 @@ class TestSingleRowMeasurementModes(unittest.TestCase):
         )
         return diagnostic
 
-    def test_ci_bundle_all_mode_outcomes_have_latency_only_verdicts(self):
+    def test_ci_bundle_all_mode_outcomes_restore_diagnostic_verdicts(self):
         for bits in range(8):
             with self.subTest(completeness=bits):
                 bundle = self.sample_bundle()
@@ -2377,19 +2377,55 @@ class TestSingleRowMeasurementModes(unittest.TestCase):
                 self.assertEqual(len(valid), 3)
                 self.assertEqual(len(reasons), 3 - bits.bit_count())
                 body = reporting.render_ci_reports([bundle], "c" * 40, 42)
-                self.assertIn("Primary verdict: native OFF / Python phases OFF latency only", body)
-                self.assertIn("Diagnostics ON/ON", body)
-                self.assertEqual("Performance unavailable" in body, not bool(bits & 1))
+                self.assertIn("original 22-task profiling-enabled diagnostics", body)
+                self.assertIn("not headline inputs", body)
+                self.assertIn("when available", body)
+                self.assertIn("do not represent production-wheel latency", body)
+                self.assertNotIn("Primary verdict:", body)
+                self.assertNotIn("### Measurement availability", body)
+                self.assertNotIn("<summary>Native route attribution", body)
+                self.assertEqual("Performance unavailable" in body, not bool(bits & 4))
                 self.assertNotIn("Performance improved", body)
                 self.assertLessEqual(len(body), reporting.MAX_COMMENT_CHARS)
-                if bits & 2:
-                    self.assertIn("1001 fetch calls per side/sample", body)
-                    section = body.split("<summary>Native route attribution", 1)[1].split(
-                        "</details>", 1
-                    )[0]
-                    self.assertGreater(section.index("Native proof for"), section.rindex("| 1,000"))
-                if bits != 7:
-                    self.assertIn("Unavailable: Not started: budget exhausted", body)
+                headings = [
+                    "<summary><b>Performance diagnostics</b></summary>",
+                    "<summary><b>All database tasks and timings</b></summary>",
+                    "<summary><b>Build and measurement details</b></summary>",
+                ]
+                positions = [body.index(heading) for heading in headings]
+                self.assertEqual(positions, sorted(positions))
+                if bits & 4:
+                    self.assertIn(
+                        "| Database task | Before | After | Paired change | Result |", body
+                    )
+                    table = body.split(headings[1], 1)[1].split("</details>", 1)[0]
+                    for name in reporting.CASES:
+                        self.assertIn("| " + reporting.TASK_NAMES[name] + " |", table)
+                    self.assertNotIn("Ratio median", table)
+                else:
+                    self.assertIn("Not started: budget exhausted", body)
+
+    def test_ci_restored_headline_does_not_substitute_other_modes(self):
+        for diagnostic_ratio, latency_ratio in ((0.6, 1.5), (1.5, 0.6)):
+            with self.subTest(diagnostic_ratio=diagnostic_ratio):
+                bundle = self.sample_bundle()
+                for report, ratio in (
+                    (bundle, diagnostic_ratio),
+                    (bundle["fetch_measurements"]["latency"], latency_ratio),
+                ):
+                    for pair in report["pairs"]:
+                        for name, cell in pair["candidate"]["scenarios"].items():
+                            cell["wall_ms"] = pair["base"]["scenarios"][name]["wall_ms"] * ratio
+                body = reporting.render_ci_reports([bundle], "c" * 40, 42)
+                self.assertEqual("Performance improved" in body, diagnostic_ratio < 1)
+                self.assertEqual("Performance regression detected" in body, diagnostic_ratio > 1)
+                self.assertIn("not headline inputs", body)
+                self.assertIn("when available", body)
+                bundle["pairs"][0]["candidate"]["scenarios"].pop("fetchone")
+                body = reporting.render_ci_reports([bundle], "c" * 40, 42)
+                self.assertIn("Performance unavailable", body)
+                self.assertIn("Invalid mode data", body)
+                self.assertNotIn("Performance improved", body)
 
     def test_ci_bundle_rejects_bad_siblings_and_shared_on_drift(self):
         for defect in ("missing", "mode", "commit", "counter", "identity", "environment"):
@@ -2419,7 +2455,11 @@ class TestSingleRowMeasurementModes(unittest.TestCase):
                     self.assertNotIn("diagnostic", valid)
                 body = reporting.render_ci_reports([bundle], "c" * 40, 42)
                 self.assertIn("Unavailable:", body)
-                self.assertIn("1,000 mixed rows / fetchmany(1)", body)
+                self.assertEqual("Performance unavailable" in body, "diagnostic" not in valid)
+                if "diagnostic" in valid:
+                    self.assertIn("| Row-by-row fetching |", body)
+                else:
+                    self.assertIn(reasons["diagnostic"], body)
         bundle = self.sample_bundle()
         for pair in bundle["pairs"]:
             for side in ("base", "candidate"):
@@ -2475,22 +2515,28 @@ class TestSingleRowMeasurementModes(unittest.TestCase):
         body = reporting.assess(
             evidence, {"Linux-SQL2022": "fake-artifact"}, lambda url: archive(bundle)
         )
-        self.assertIn("Primary verdict: native OFF", body)
-        self.assertIn("Row constructions base/candidate 0/1000", body)
+        self.assertIn("original 22-task profiling-enabled diagnostics", body)
+        self.assertIn("| Row-by-row fetching |", body)
         bundle["fetch_measurements"]["latency"].update(
             status="incomplete", pairs=[], unavailable_reason="OFF build failed"
         )
         body = reporting.assess(
             evidence, {"Linux-SQL2022": "fake-artifact"}, lambda url: archive(bundle)
         )
+        self.assertNotIn("Performance unavailable", body)
+        self.assertIn("| Row-by-row fetching |", body)
+        bundle.update(status="incomplete", pairs=[], unavailable_reason="Diagnostic worker failed")
+        body = reporting.assess(
+            evidence, {"Linux-SQL2022": "fake-artifact"}, lambda url: archive(bundle)
+        )
         self.assertIn("Performance unavailable", body)
-        self.assertIn("OFF build failed", body)
+        self.assertIn("Diagnostic worker failed", body)
         bundle["head_commit"] = "f" * 40
         body = reporting.assess(
             evidence, {"Linux-SQL2022": "fake-artifact"}, lambda url: archive(bundle)
         )
         self.assertIn("Performance unavailable", body)
-        self.assertNotIn("Row constructions base/candidate 0/1000", body)
+        self.assertNotIn("| Row-by-row fetching |", body)
 
     def test_ci_orchestration_counts_order_reuse_and_budget_exhaustion(self):
         from unittest.mock import patch
@@ -2937,20 +2983,20 @@ class TestSingleRowMeasurementModes(unittest.TestCase):
             self.assertEqual(result["cleanup_required"], str(retained))
             self.assertIn("cleanup failed", result["unavailable_reason"])
 
-    def test_ci_existing_publisher_consumes_bundle_without_latency_fallback(self):
+    def test_ci_existing_publisher_restores_diagnostics_without_sibling_fallback(self):
         from unittest.mock import patch
 
-        for modern, latency_available in (
+        for modern, diagnostic_available in (
             (False, True),
             (False, False),
             (True, True),
             (True, False),
         ):
-            with self.subTest(modern=modern, latency_available=latency_available):
+            with self.subTest(modern=modern, diagnostic_available=diagnostic_available):
                 bundle = self.sample_bundle(modern=modern)
-                if not latency_available:
-                    bundle["fetch_measurements"]["latency"].update(
-                        status="incomplete", pairs=[], unavailable_reason="OFF worker failed"
+                if not diagnostic_available:
+                    bundle.update(
+                        status="incomplete", pairs=[], unavailable_reason="Diagnostic worker failed"
                     )
                 data = {}
                 for leg in reporting.LEGS:
@@ -2999,12 +3045,13 @@ class TestSingleRowMeasurementModes(unittest.TestCase):
                 body = posted[-1]
                 self.assertEqual(body.count(reporting.MARKER), 1)
                 self.assertEqual(body.count("## PR Performance Report"), 1)
-                self.assertIn("Primary verdict: native OFF", body)
-                self.assertIn("Row constructions base/candidate 0/1000", body)
-                self.assertIn("Legacy diagnostics", body)
-                self.assertEqual("Performance unavailable" in body, not latency_available)
-                if not latency_available:
-                    self.assertIn("OFF worker failed", body)
+                self.assertIn("original 22-task profiling-enabled diagnostics", body)
+                self.assertIn("not headline inputs", body)
+                self.assertIn("when available", body)
+                self.assertNotIn("Primary verdict:", body)
+                self.assertEqual("Performance unavailable" in body, not diagnostic_available)
+                if not diagnostic_available:
+                    self.assertIn("Diagnostic worker failed", body)
                     self.assertNotIn("Performance improved", body)
 
     def test_ci_finalization_deadline_is_checked_after_validation_and_write(self):
@@ -3237,10 +3284,20 @@ class TestSingleRowMeasurementModes(unittest.TestCase):
             self.assertEqual(set(valid), set(reporting.MODES))
             self.assertEqual(errors, {})
             body = reporting.render_ci_reports([bundle], "c" * 40, 42)
-            self.assertIn("Row constructions base/candidate 0/1000", body)
+            self.assertIn("original 22-task profiling-enabled diagnostics", body)
+            route = valid["route"]
+            for method in ("fetchone", "fetchmany", "fetchval"):
+                for side in ("base", "candidate"):
+                    identity = route["pairs"][0][side]["provenance"]
+                    expected = (
+                        1000 if side == "candidate" and (not modern or method == "fetchmany") else 0
+                    )
+                    self.assertEqual(reporting.expected_constructors(identity, method), expected)
             if modern:
-                self.assertIn("Row constructions base/candidate 0/0", body)
-                self.assertIn("binding=True, default fetchone native Row=False", body)
+                self.assertIn(
+                    "binding=True, default fetchone native Row=False",
+                    reporting.route_description(route, "fetchone"),
+                )
             for policy in ((True, True, True), (False, True, False)) if modern else ():
                 # A future base chooses its own policy; candidate role does not select it.
                 future = copy.deepcopy(bundle)
@@ -3261,7 +3318,7 @@ class TestSingleRowMeasurementModes(unittest.TestCase):
                                     )
                 self.assertEqual(reporting.ci_mode_reports(future)[1], {})
                 self.assertIn(
-                    "Primary verdict: native OFF",
+                    "original 22-task profiling-enabled diagnostics",
                     reporting.render_ci_reports([future], "c" * 40, 42),
                 )
 
@@ -3353,7 +3410,8 @@ class TestSingleRowMeasurementModes(unittest.TestCase):
             self.assertIn("latency", valid)
             self.assertIn("diagnostic" if defect == "diagnostic-anchor" else "route", errors)
             self.assertIn(
-                "Primary verdict: native OFF", reporting.render_ci_reports([bundle], "c" * 40, 42)
+                "original 22-task profiling-enabled diagnostics",
+                reporting.render_ci_reports([bundle], "c" * 40, 42),
             )
 
     def test_versioned_controller_rejects_warmup_drift_and_keeps_subset_incomplete(self):

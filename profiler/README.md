@@ -376,10 +376,13 @@ loop. Raw build logs and mode-prefixed worker JSON/log files stay in the same ar
 without nested files named `report.json`.
 
 The updated collector validates shared PR/build/base/merge identity, then each mode
-independently. The primary performance verdict comes **only from OFF/OFF latency**.
-Native route counts/timings and both-ON diagnostics appear in separately labeled
-sections; neither replaces missing latency. Missing, malformed and unstarted modes
-are explicitly unavailable. The updated reader accepts historical schema-1/schema-2
+independently. The PR comment restores the original 22-task profiling-enabled
+**diagnostic** headline, section ordering and timing tables; it is not a shipped-latency
+verdict. Separate OFF/OFF latency and ON/OFF route measurements, when available, remain
+in the raw artifacts and are not headline inputs. Missing, malformed or incomplete
+diagnostics are explicitly unavailable even when the latency or route measurements
+complete. The standalone latency and route reports remain available with their existing
+labels. The updated reader accepts historical schema-1/schema-2
 reports as well as the additive route contract. Old strict five-key provenance readers
 reject new fetch workers; deploy producer and trusted consumer changes together rather
 than stripping fields. Interactive Profiler defaults remain unchanged.
