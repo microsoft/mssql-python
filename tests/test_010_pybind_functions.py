@@ -110,6 +110,15 @@ def test_sql_no_data_ignores_undefined_indicator():
 
 
 @pytest.mark.skipif(not DDBC_AVAILABLE, reason="ddbc_bindings not available")
+def test_unrelated_warning_without_growth_is_not_treated_as_truncation():
+    ret, indicator, calls, size = ddbc._test_fetch_validation("unrelated_warning_no_progress")
+    assert ret == 0
+    assert indicator == 0
+    assert calls == 1
+    assert size == 1
+
+
+@pytest.mark.skipif(not DDBC_AVAILABLE, reason="ddbc_bindings not available")
 class TestPybindModuleInfo:
     """Test module information and architecture detection."""
 

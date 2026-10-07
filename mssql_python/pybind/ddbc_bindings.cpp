@@ -5501,7 +5501,9 @@ template <typename T>
 SQLRETURN GetDataVar(SQLHSTMT hStmt, SQLUSMALLINT colNumber, SQLSMALLINT cType,
                      std::vector<T>& dataVec, SQLLEN* indicator, size_t& reservedBytes,
                      py::handle messages, bool captureDiagnostics = true,
-                     SQLGetDataFunc getData = nullptr) {
+                     SQLGetDataFunc getData = nullptr,
+                     bool (*hasTruncationDiagnostic)(SQLHSTMT) =
+                         HasDataTruncationDiagnostic) {
     if (getData == nullptr) {
         getData = SQLGetData_ptr;
     }
@@ -5613,8 +5615,7 @@ SQLRETURN GetDataVar(SQLHSTMT hStmt, SQLUSMALLINT colNumber, SQLSMALLINT cType,
 
             // The next read starts where the null terminator would have been placed
             if (end <= dataVec.size()) {
-                const bool isTruncation =
-                    !captureDiagnostics || HasDataTruncationDiagnostic(hStmt);
+                const bool isTruncation = hasTruncationDiagnostic(hStmt);
                 if (isTruncation) {
                     ThrowStdException("Variable-length fetch truncation made no progress");
                 }
@@ -5660,6 +5661,10 @@ SQLRETURN SQL_API TestSQLGetData(SQLHANDLE, SQLUSMALLINT, SQLSMALLINT, SQLPOINTE
     *indicator = value;
     return ret;
 }
+
+bool TestHasTruncationDiagnostic(SQLHSTMT) { return true; }
+
+bool TestHasUnrelatedWarning(SQLHSTMT) { return false; }
 
 py::object RunFetchValidationTest(const std::string& scenario) {
     if (scenario == "oversized_rows") {
@@ -5726,7 +5731,19 @@ py::object RunFetchValidationTest(const std::string& scenario) {
         SQLLEN indicator = 0;
         size_t reservedBytes = 0;
         GetDataVar(nullptr, 1, SQL_C_BINARY, buffer, &indicator, reservedBytes, py::none(),
-                   false, TestSQLGetData);
+                   false, TestSQLGetData, TestHasTruncationDiagnostic);
+    } else if (scenario == "unrelated_warning_no_progress") {
+        testGetDataResults = {
+            {static_cast<SQLRETURN>(SQL_SUCCESS_WITH_INFO), static_cast<SQLLEN>(0)},
+        };
+        testGetDataResultIndex = 0;
+        std::vector<SQLCHAR> buffer;
+        SQLLEN indicator = 0;
+        size_t reservedBytes = 0;
+        const SQLRETURN ret =
+            GetDataVar(nullptr, 1, SQL_C_BINARY, buffer, &indicator, reservedBytes,
+                       py::none(), false, TestSQLGetData, TestHasUnrelatedWarning);
+        return py::make_tuple(ret, indicator, testGetDataResultIndex, buffer.size());
     } else if (scenario == "oversized_decimal_indicator") {
         ValidateDecimalDataLength(MAX_DIGITS_IN_NUMERIC);
     } else if (scenario == "odd_streamed_wchar") {
@@ -5748,7 +5765,7 @@ py::object RunFetchValidationTest(const std::string& scenario) {
         SQLLEN indicator = 0;
         size_t reservedBytes = 0;
         GetDataVar(nullptr, 1, SQL_C_BINARY, buffer, &indicator, reservedBytes, py::none(),
-                   false, TestSQLGetData);
+                   false, TestSQLGetData, TestHasTruncationDiagnostic);
     } else if (scenario == "sql_no_total_no_data") {
         testGetDataResults = {
             {static_cast<SQLRETURN>(SQL_SUCCESS_WITH_INFO), static_cast<SQLLEN>(SQL_NO_TOTAL)},
