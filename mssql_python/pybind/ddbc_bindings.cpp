@@ -3473,6 +3473,8 @@ py::object FetchLobColumnData(SQLHSTMT hStmt, SQLUSMALLINT colIndex, SQLSMALLINT
                               py::handle messages) {
     PERF_TIMER("FetchLobColumnData");
     std::vector<char> buffer;
+    size_t reservedBytes = 0;
+    ReserveNativeFetchBytes(reservedBytes, DAE_CHUNK_SIZE, sizeof(char));
     SQLRETURN ret = SQL_SUCCESS_WITH_INFO;
     int loopCount = 0;
 
@@ -3542,7 +3544,11 @@ py::object FetchLobColumnData(SQLHSTMT hStmt, SQLUSMALLINT colIndex, SQLSMALLINT
             }
         }
         if (bytesRead > 0) {
-            buffer.insert(buffer.end(), chunk.begin(), chunk.begin() + bytesRead);
+            const size_t previousSize = buffer.size();
+            const size_t requiredSize =
+                CheckedAddSize(previousSize, bytesRead, "LOB fetch buffer is too large");
+            ResizeNativeFetchBuffer(buffer, requiredSize, reservedBytes);
+            std::memcpy(buffer.data() + previousSize, chunk.data(), bytesRead);
             LOG("FetchLobColumnData: Appended %zu bytes at loop %d", bytesRead, loopCount);
         }
         if (ret == SQL_SUCCESS) {
@@ -3563,6 +3569,7 @@ py::object FetchLobColumnData(SQLHSTMT hStmt, SQLUSMALLINT colIndex, SQLSMALLINT
             ThrowStdException("Wide-character LOB data has an invalid byte length");
         }
         size_t wcharCount = buffer.size() / sizeof(SQLWCHAR);
+        ReserveNativeFetchBytes(reservedBytes, wcharCount, sizeof(SQLWCHAR));
         std::vector<SQLWCHAR> alignedBuf(wcharCount);
         std::memcpy(alignedBuf.data(), buffer.data(), buffer.size());
         return py::cast(dupeSqlWCharAsUtf16Le(alignedBuf.data(), wcharCount));

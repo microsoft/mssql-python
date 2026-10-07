@@ -296,7 +296,7 @@ inline void ApplyInputSizeOverride(PyObject* params, PyObject* inputSize, Py_ssi
          (PyBytes_Check(obj) ? PyBytes_GET_SIZE(obj) : PyByteArray_GET_SIZE(obj)) >
              MAX_INLINE_BINARY);
     info.isDAE = textNeedsDAE || binaryNeedsDAE;
-    if (info.isDAE && !PyLongGreaterThan(columnSize, MAX_INLINE_BINARY)) {
+    if (info.isDAE) {
         info.columnSize = 0;
     }
 
