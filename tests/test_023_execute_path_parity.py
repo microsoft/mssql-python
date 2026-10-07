@@ -296,6 +296,18 @@ def test_setinputsizes_text_binding_normalizes_time(cursor):
     )
 
 
+@pytest.mark.parametrize(
+    ("value", "sql_type"),
+    [
+        ("x" * 4001, ddbc_sql_const.SQL_VARCHAR.value),
+        (b"x" * 8001, ddbc_sql_const.SQL_VARBINARY.value),
+    ],
+)
+def test_setinputsizes_uses_actual_value_size_for_dae(cursor, value, sql_type):
+    """A too-small declared size cannot bypass streaming for a large value."""
+    assert _override_roundtrip(cursor, value, sql_type, 1) == value
+
+
 @pytest.mark.parametrize("sql_type", [None, ddbc_sql_const.SQL_VARCHAR.value])
 def test_time_isoformat_must_return_string(cursor, sql_type):
     """Native time normalization rejects a broken subclass contract on either path."""

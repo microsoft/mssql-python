@@ -349,6 +349,23 @@ size_t CheckedMultiplySize(size_t left, size_t right, const char* errorMessage) 
     return left * right;
 }
 
+size_t CheckedFetchColumnSize(SQLULEN columnSize) {
+    const size_t result = static_cast<size_t>(columnSize);
+    if (static_cast<SQLULEN>(result) != columnSize) {
+        ThrowStdException("Column size is too large");
+    }
+    return result;
+}
+
+SQLLEN CheckedFetchBufferLength(size_t elementCount, size_t elementSize) {
+    const size_t byteCount =
+        CheckedMultiplySize(elementCount, elementSize, "Column fetch stride is too large");
+    if (byteCount > static_cast<size_t>(std::numeric_limits<SQLLEN>::max())) {
+        ThrowStdException("Column fetch stride is too large");
+    }
+    return static_cast<SQLLEN>(byteCount);
+}
+
 constexpr int MAX_NATIVE_ROW_COUNT = 1000000;
 constexpr size_t MAX_NATIVE_FETCH_BYTES = 256ULL * 1024 * 1024;
 constexpr size_t MAX_NATIVE_PARAMETER_BYTES = 256ULL * 1024 * 1024;
@@ -4449,23 +4466,30 @@ SQLRETURN SQLBindColums(SQLHSTMT hStmt, ColumnBuffers& buffers, const Metadata& 
             case SQL_VARCHAR:
             case SQL_LONGVARCHAR: {
                 HandleZeroColumnSizeAtFetch(columnSize);
+                const size_t baseColumnSize = CheckedFetchColumnSize(columnSize);
                 if (useWideChar) {
                     // Bind VARCHAR columns as SQL_C_WCHAR so the ODBC driver
                     // returns UTF-16 data, avoiding code-page decode issues.
-                    uint64_t fetchBufferSize = columnSize + 1 /*null-terminator*/;
+                    const size_t fetchBufferSize = CheckedAddSize(
+                        baseColumnSize, 1, "Column fetch stride is too large");
                     ResizeNativeFetchBuffer(buffers.wcharBuffers[col - 1],
                                             CheckedMultiplySize(fetchSize, fetchBufferSize,
                                                                 "Native fetch buffer is too large"),
                                             reservedBytes);
                     ret = SQLBindCol_ptr(
                         hStmt, col, SQL_C_WCHAR, buffers.wcharBuffers[col - 1].data(),
-                        fetchBufferSize * sizeof(SQLWCHAR), buffers.indicators[col - 1].data());
+                        CheckedFetchBufferLength(fetchBufferSize, sizeof(SQLWCHAR)),
+                        buffers.indicators[col - 1].data());
                 } else {
                     // Original narrow-char path
 #if defined(__APPLE__) || defined(__linux__)
-                    uint64_t fetchBufferSize = columnSize * 4 + 1 /*null-terminator*/;
+                    const size_t fetchBufferSize = CheckedAddSize(
+                        CheckedMultiplySize(baseColumnSize, 4,
+                                            "Column fetch stride is too large"),
+                        1, "Column fetch stride is too large");
 #else
-                    uint64_t fetchBufferSize = columnSize + 1 /*null-terminator*/;
+                    const size_t fetchBufferSize = CheckedAddSize(
+                        baseColumnSize, 1, "Column fetch stride is too large");
 #endif
                     ResizeNativeFetchBuffer(buffers.charBuffers[col - 1],
                                             CheckedMultiplySize(fetchSize, fetchBufferSize,
@@ -4473,7 +4497,8 @@ SQLRETURN SQLBindColums(SQLHSTMT hStmt, ColumnBuffers& buffers, const Metadata& 
                                             reservedBytes);
                     ret = SQLBindCol_ptr(
                         hStmt, col, SQL_C_CHAR, buffers.charBuffers[col - 1].data(),
-                        fetchBufferSize * sizeof(SQLCHAR), buffers.indicators[col - 1].data());
+                        CheckedFetchBufferLength(fetchBufferSize, sizeof(SQLCHAR)),
+                        buffers.indicators[col - 1].data());
                 }
                 break;
             }
@@ -4483,13 +4508,14 @@ SQLRETURN SQLBindColums(SQLHSTMT hStmt, ColumnBuffers& buffers, const Metadata& 
                 // TODO: handle variable length data correctly. This logic wont
                 // suffice
                 HandleZeroColumnSizeAtFetch(columnSize);
-                uint64_t fetchBufferSize = columnSize + 1 /*null-terminator*/;
+                const size_t fetchBufferSize = CheckedAddSize(
+                    CheckedFetchColumnSize(columnSize), 1, "Column fetch stride is too large");
                 ResizeNativeFetchBuffer(buffers.wcharBuffers[col - 1],
                                         CheckedMultiplySize(fetchSize, fetchBufferSize,
                                                             "Native fetch buffer is too large"),
                                         reservedBytes);
                 ret = SQLBindCol_ptr(hStmt, col, SQL_C_WCHAR, buffers.wcharBuffers[col - 1].data(),
-                                     fetchBufferSize * sizeof(SQLWCHAR),
+                                     CheckedFetchBufferLength(fetchBufferSize, sizeof(SQLWCHAR)),
                                      buffers.indicators[col - 1].data());
                 break;
             }
@@ -4572,17 +4598,20 @@ SQLRETURN SQLBindColums(SQLHSTMT hStmt, ColumnBuffers& buffers, const Metadata& 
             case SQL_SS_UDT:
             case SQL_BINARY:
             case SQL_VARBINARY:
-            case SQL_LONGVARBINARY:
+            case SQL_LONGVARBINARY: {
                 // TODO: handle variable length data correctly. This logic wont
                 // suffice
                 HandleZeroColumnSizeAtFetch(columnSize);
+                const size_t fetchBufferSize = CheckedFetchColumnSize(columnSize);
                 ResizeNativeFetchBuffer(buffers.charBuffers[col - 1],
-                                        CheckedMultiplySize(fetchSize, columnSize,
+                                        CheckedMultiplySize(fetchSize, fetchBufferSize,
                                                             "Native fetch buffer is too large"),
                                         reservedBytes);
                 ret = SQLBindCol_ptr(hStmt, col, SQL_C_BINARY, buffers.charBuffers[col - 1].data(),
-                                     columnSize, buffers.indicators[col - 1].data());
+                                     CheckedFetchBufferLength(fetchBufferSize, 1),
+                                     buffers.indicators[col - 1].data());
                 break;
+            }
             case SQL_SS_TIMESTAMPOFFSET:
                 ResizeNativeFetchBuffer(buffers.datetimeoffsetBuffers[col - 1], fetchSize,
                                         reservedBytes);

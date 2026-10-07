@@ -257,10 +257,16 @@ inline void ApplyInputSizeOverride(PyObject* params, PyObject* inputSize, Py_ssi
         }
     }
 
-    info.isDAE =
-        (PyUnicode_Check(obj) && PyLongGreaterThan(columnSize, MAX_INLINE_CHAR)) ||
-        ((PyBytes_Check(obj) || PyByteArray_Check(obj)) &&
-         PyLongGreaterThan(columnSize, MAX_INLINE_BINARY));
+    const bool textNeedsDAE =
+        PyUnicode_Check(obj) &&
+        (PyLongGreaterThan(columnSize, MAX_INLINE_CHAR) ||
+         PyUnicode_GET_LENGTH(obj) > MAX_INLINE_CHAR);
+    const bool binaryNeedsDAE =
+        (PyBytes_Check(obj) || PyByteArray_Check(obj)) &&
+        (PyLongGreaterThan(columnSize, MAX_INLINE_BINARY) ||
+         (PyBytes_Check(obj) ? PyBytes_GET_SIZE(obj) : PyByteArray_GET_SIZE(obj)) >
+             MAX_INLINE_BINARY);
+    info.isDAE = textNeedsDAE || binaryNeedsDAE;
 
     if (PyTime_Check(obj) && info.paramCType == PARAM_C_TYPE_TEXT) {
         NormalizeTimeParam(params, index, info.columnSize);
