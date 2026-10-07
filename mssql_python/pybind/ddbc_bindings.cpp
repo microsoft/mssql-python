@@ -3405,6 +3405,16 @@ SQLRETURN SQLExecuteMany_wrap(const SqlHandlePtr statementHandle, const std::u16
                 LOG("SQLExecuteMany: DAE row %zu failed - rc=%d", rowIndex, rc);
                 return rc;
             }
+
+            const SQLRETURN rowRc = rc;
+            rc = SQLFreeStmt_ptr(hStmt, SQL_RESET_PARAMS);
+            if (!SQL_SUCCEEDED(rc)) {
+                LOG("SQLExecuteMany: SQL_RESET_PARAMS failed for row %zu - "
+                    "rc=%d",
+                    rowIndex, rc);
+                return rc;
+            }
+            rc = rowRc;
         }
         LOG("SQLExecuteMany: All DAE rows processed successfully - "
             "total_rows=%zu",
