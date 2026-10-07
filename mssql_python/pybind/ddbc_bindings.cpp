@@ -3294,8 +3294,16 @@ SQLRETURN SQLExecuteMany_wrap(const SqlHandlePtr statementHandle, const std::u16
                 rowParams.append(values[rowIndex]);
             }
 
+            std::vector<ParamInfo> rowParamInfos = paramInfos;
+            for (size_t paramIndex = 0; paramIndex < rowParamInfos.size(); ++paramIndex) {
+                if (rowParams[paramIndex].is_none()) {
+                    rowParamInfos[paramIndex].paramCType = SQL_C_DEFAULT;
+                    rowParamInfos[paramIndex].isDAE = false;
+                    rowParamInfos[paramIndex].dataPtr = py::none();
+                }
+            }
             std::vector<std::shared_ptr<void>> paramBuffers;
-            rc = BindParameters(*statementHandle, hStmt, rowParams, paramInfos,
+            rc = BindParameters(*statementHandle, hStmt, rowParams, rowParamInfos,
                                 paramBuffers, charEncoding);
             if (!SQL_SUCCEEDED(rc)) {
                 LOG("SQLExecuteMany: BindParameters failed for row %zu - rc=%d", rowIndex, rc);
