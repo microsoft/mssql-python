@@ -4779,6 +4779,7 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, const Metadata&
     PERF_TIMER("FetchBatchData");
     LOG("FetchBatchData: Fetching data in batches");
     SQLRETURN ret;
+    numRowsFetched = 0;
     {
         // Release the GIL during the blocking ODBC fetch
         py::gil_scoped_release release;
@@ -5625,6 +5626,10 @@ py::object RunFetchValidationTest(const std::string& scenario) {
         CheckedArrowSourceOffset(buffer, 0, buffer.size(), buffer.size() + 1);
     } else if (scenario == "zero_arrow_rows") {
         ValidateArrowFetchedRowCount(0, 1, 1);
+    } else if (scenario == "oversized_arrow_fetch") {
+        ValidateArrowFetchedRowCount(2, 1, 2);
+    } else if (scenario == "oversized_arrow_batch") {
+        ValidateArrowFetchedRowCount(2, 2, 1);
     } else if (scenario == "sql_no_total_progress") {
         testGetDataResults = {
             {static_cast<SQLRETURN>(SQL_SUCCESS_WITH_INFO), static_cast<SQLLEN>(SQL_NO_TOTAL)},
@@ -5931,6 +5936,7 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules,
             currentFetchSize = spaceLeftInArrowBatch;
             fetchStateGuard.setRowArraySize(currentFetchSize);
         }
+        numRowsFetched = 0;
         {
             // Release GIL during the blocking ODBC fetch
             py::gil_scoped_release release;
