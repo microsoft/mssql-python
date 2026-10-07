@@ -2633,30 +2633,35 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                     ):
                         c_type = ddbc_sql_const.SQL_C_CHAR.value
 
-                    # Check if this should be a DAE (data at execution) parameter.
-                    if sample_value is not None:
-                        if isinstance(sample_value, str):
-                            if c_type == ddbc_sql_const.SQL_C_CHAR.value:
-                                is_dae = column_size > MAX_INLINE_CHAR or any(
-                                    _encoded_length_exceeds(
-                                        value,
-                                        encoding_settings["encoding"],
-                                        MAX_INLINE_CHAR,
-                                    )
-                                    for value in column
-                                    if isinstance(value, str)
+                    # Check every compatible value before selecting array binding. Mixed
+                    # str/bytes columns cannot rely on the sample value's type.
+                    if c_type in (
+                        ddbc_sql_const.SQL_C_CHAR.value,
+                        ddbc_sql_const.SQL_C_WCHAR.value,
+                    ):
+                        text_values = [value for value in column if isinstance(value, str)]
+                        if c_type == ddbc_sql_const.SQL_C_CHAR.value:
+                            text_is_large = any(
+                                _encoded_length_exceeds(
+                                    value,
+                                    encoding_settings["encoding"],
+                                    MAX_INLINE_CHAR,
                                 )
-                            else:
-                                text_size = max(
-                                    sum(2 if ord(char) > 0xFFFF else 1 for char in value)
-                                    for value in column
-                                    if isinstance(value, str)
-                                )
-                                is_dae = (
-                                    column_size > MAX_INLINE_CHAR or text_size > MAX_INLINE_CHAR
-                                )
-                        elif isinstance(sample_value, (bytes, bytearray)) and column_size > 8000:
-                            is_dae = True
+                                for value in text_values
+                            )
+                            binary_is_large = any(
+                                len(value) > MAX_INLINE_CHAR
+                                for value in column
+                                if isinstance(value, (bytes, bytearray))
+                            )
+                        else:
+                            text_is_large = any(
+                                sum(2 if ord(char) > 0xFFFF else 1 for char in value)
+                                > MAX_INLINE_CHAR
+                                for value in text_values
+                            )
+                            binary_is_large = False
+                        is_dae = column_size > MAX_INLINE_CHAR or text_is_large or binary_is_large
 
                     # Sanitize precision/scale for numeric types
                     if sql_type in (
