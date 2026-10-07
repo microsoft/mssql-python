@@ -154,7 +154,7 @@ inline SQLULEN DAEColumnSize(SQLSMALLINT sqlType, SQLULEN actualSize) {
         case SQL_LONGVARCHAR:
         case SQL_WLONGVARCHAR:
         case SQL_LONGVARBINARY:
-            return 0;
+            return actualSize;
         default:
             return actualSize;
     }
@@ -237,8 +237,8 @@ inline Py_ssize_t EncodedUnicodeLength(PyObject* value, const std::string& encod
         if (!chunk) throw py::error_already_set();
         py::object encoded = encoder.attr("encode")(chunk, end == length);
         const Py_ssize_t encodedSize = PyBytes_GET_SIZE(encoded.ptr());
-        if (encodedSize > MAX_INLINE_CHAR - total) {
-            return MAX_INLINE_CHAR + 1;
+        if (encodedSize > MAX_INLINE_BINARY - total) {
+            return MAX_INLINE_BINARY + 1;
         }
         total += encodedSize;
     }
