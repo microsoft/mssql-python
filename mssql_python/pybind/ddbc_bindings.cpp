@@ -378,6 +378,15 @@ void ValidateNativeRowCount(int value, const char* name, bool allowZero) {
     }
 }
 
+int ValidateNativeRowCountArgument(py::handle value, const char* name, bool allowZero) {
+    if (PyBool_Check(value.ptr())) {
+        ThrowStdException(std::string(name) + " must be an integer, not bool");
+    }
+    const int converted = value.cast<int>();
+    ValidateNativeRowCount(converted, name, allowZero);
+    return converted;
+}
+
 void ReserveNativeParameterBytes(size_t& reservedBytes, size_t count, size_t elementSize) {
     const size_t allocationBytes =
         CheckedMultiplySize(count, elementSize, "Parameter buffer size is too large");
@@ -2769,12 +2778,15 @@ SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list&
                                                             &encodedSize) != 0) {
                                     throw py::error_already_set();
                                 }
-                            } else {
+                            } else if (py::isinstance<py::bytearray>(columnValues[i])) {
                                 encodedData = PyByteArray_AsString(columnValues[i].ptr());
                                 encodedSize = PyByteArray_Size(columnValues[i].ptr());
                                 if (encodedData == nullptr || encodedSize < 0) {
                                     throw py::error_already_set();
                                 }
+                            } else {
+                                ThrowStdException(
+                                    MakeParamMismatchErrorStr(info.paramCType, paramIndex));
                             }
 
                             const size_t dataSize = static_cast<size_t>(encodedSize);
@@ -5312,12 +5324,13 @@ struct FetchStateGuard {
 // the result set and populates the provided Python list with the row data. If
 // there are no more rows to fetch, it returns SQL_NO_DATA. If an error occurs
 // during fetching, it throws a runtime error.
-SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetchSize,
+SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, py::handle fetchSizeArg,
                          const std::string& charEncoding = "utf-16le",
                          const std::string& wcharEncoding = "utf-16le", int charCtype = SQL_C_WCHAR,
                          py::handle messages = {}) {
     PERF_TIMER("FetchMany_wrap");
-    ValidateNativeRowCount(fetchSize, "Fetch size", false);
+    const int fetchSize =
+        ValidateNativeRowCountArgument(fetchSizeArg, "Fetch size", false);
     // Issue #531: upgrade SQL_C_CHAR + utf-8 to SQL_C_WCHAR on Windows so the
     // driver does lossless UTF-16 conversion instead of returning ACP bytes.
     charCtype = EffectiveCharCtypeForFetch(charCtype, charEncoding);
@@ -5543,10 +5556,12 @@ int32_t days_from_civil(int y, int m, int d) {
     return era * 146097 + static_cast<int>(doe) - 719468;
 }
 
-SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules, int arrowBatchSize,
-                               int charCtype, py::handle messages = {}) {
+SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules,
+                               py::handle arrowBatchSizeArg, int charCtype,
+                               py::handle messages = {}) {
     PERF_TIMER("FetchArrowBatch_wrap");
-    ValidateNativeRowCount(arrowBatchSize, "Arrow batch size", true);
+    const int arrowBatchSize =
+        ValidateNativeRowCountArgument(arrowBatchSizeArg, "Arrow batch size", true);
     const size_t batchSize = static_cast<size_t>(arrowBatchSize);
     const size_t offsetCount = CheckedAddSize(batchSize, 1, "Arrow batch size is too large");
     const size_t initialVarDataSize =
@@ -6137,19 +6152,23 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules,
                         if (charCtype == SQL_C_CHAR) {
                             auto target_vec = &arrowColumnProducer->varData;
                             auto start = arrowColumnProducer->varVal[idxRowArrow];
-                            EnsureNativeFetchBufferSize(
-                                *target_vec,
-                                CheckedAddSize(start, dataLen, "Arrow value buffer is too large"),
-                                reservedBytes);
-                            const size_t sourceStride = hasLobColumns
-                                                            ? buffers.charBuffers[idxCol].size()
-                                                            : buffers.charBuffers[idxCol].size() /
-                                                                  static_cast<size_t>(fetchSize);
-                            const size_t sourceOffset = CheckedArrowSourceOffset(
-                                buffers.charBuffers[idxCol], idxRowSql, sourceStride, dataLen);
+                            if (dataLen > 0) {
+                                EnsureNativeFetchBufferSize(
+                                    *target_vec,
+                                    CheckedAddSize(start, dataLen,
+                                                   "Arrow value buffer is too large"),
+                                    reservedBytes);
+                                const size_t sourceStride =
+                                    hasLobColumns
+                                        ? buffers.charBuffers[idxCol].size()
+                                        : buffers.charBuffers[idxCol].size() /
+                                              static_cast<size_t>(fetchSize);
+                                const size_t sourceOffset = CheckedArrowSourceOffset(
+                                    buffers.charBuffers[idxCol], idxRowSql, sourceStride, dataLen);
 
-                            std::memcpy(&(*target_vec)[start],
-                                        &buffers.charBuffers[idxCol][sourceOffset], dataLen);
+                                std::memcpy(&(*target_vec)[start],
+                                            &buffers.charBuffers[idxCol][sourceOffset], dataLen);
+                            }
                             arrowColumnProducer->varVal[idxRowArrow + 1] = start + dataLen;
                             break;
                         }
