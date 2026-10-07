@@ -58,6 +58,7 @@ def test_arrow_batch_rejects_unsafe_size_before_handle_access(batch_size):
     ("scenario", "message"),
     [
         ("oversized_rows", "more rows than the allocated fetch buffers"),
+        ("zero_rows", "successful fetch with zero rows"),
         ("odd_wchar", "invalid byte length"),
         ("oversized_indicator", "exceeds the allocated fetch buffer"),
     ],

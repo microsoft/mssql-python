@@ -4708,6 +4708,9 @@ SQLRETURN SQLBindColums(SQLHSTMT hStmt, ColumnBuffers& buffers, const Metadata& 
 
 void ValidateFetchedRowCount(const ColumnBuffers& buffers, SQLUSMALLINT numCols,
                              SQLULEN numRowsFetched) {
+    if (numRowsFetched == 0) {
+        ThrowStdException("Driver reported a successful fetch with zero rows");
+    }
     for (SQLUSMALLINT col = 0; col < numCols; ++col) {
         if (numRowsFetched > buffers.indicators[col].size()) {
             ThrowStdException("Driver returned more rows than the allocated fetch buffers");
@@ -5397,7 +5400,11 @@ SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetch
 template <typename T>
 SQLRETURN GetDataVar(SQLHSTMT hStmt, SQLUSMALLINT colNumber, SQLSMALLINT cType,
                      std::vector<T>& dataVec, SQLLEN* indicator, size_t& reservedBytes,
-                     py::handle messages, bool captureDiagnostics = true) {
+                     py::handle messages, bool captureDiagnostics = true,
+                     SQLGetDataFunc getData = nullptr) {
+    if (getData == nullptr) {
+        getData = SQLGetData_ptr;
+    }
     size_t start = 0;
     size_t end = 0;
 
@@ -5431,7 +5438,7 @@ SQLRETURN GetDataVar(SQLHSTMT hStmt, SQLUSMALLINT colNumber, SQLSMALLINT cType,
             ThrowStdException("Variable-length fetch buffer is too large");
         }
         SQLLEN localInd = 0;
-        SQLRETURN ret = SQLGetData_ptr(
+        SQLRETURN ret = getData(
             hStmt, colNumber, cType, reinterpret_cast<uint8_t*>(dataVec.data() + start),
             static_cast<SQLLEN>(availableBytes),
             &localInd);
@@ -5540,6 +5547,9 @@ py::object RunFetchValidationTest(const std::string& scenario) {
     if (scenario == "oversized_rows") {
         ColumnBuffers buffers(1, 1);
         ValidateFetchedRowCount(buffers, 1, 2);
+    } else if (scenario == "zero_rows") {
+        ColumnBuffers buffers(1, 1);
+        ValidateFetchedRowCount(buffers, 1, 0);
     } else if (scenario == "odd_wchar") {
         ColumnBuffers buffers(1, 1);
         buffers.wcharBuffers[0].resize(2);
@@ -5554,22 +5564,17 @@ py::object RunFetchValidationTest(const std::string& scenario) {
         std::vector<SQLCHAR> buffer(4);
         CheckedArrowSourceOffset(buffer, 0, buffer.size(), buffer.size() + 1);
     } else if (scenario == "sql_no_total_progress") {
-        struct RestoreSQLGetData {
-            SQLGetDataFunc original = SQLGetData_ptr;
-            ~RestoreSQLGetData() { SQLGetData_ptr = original; }
-        } restore;
         testGetDataResults = {
             {static_cast<SQLRETURN>(SQL_SUCCESS_WITH_INFO), static_cast<SQLLEN>(SQL_NO_TOTAL)},
             {static_cast<SQLRETURN>(SQL_SUCCESS), static_cast<SQLLEN>(1)},
         };
         testGetDataResultIndex = 0;
-        SQLGetData_ptr = TestSQLGetData;
 
         std::vector<SQLCHAR> buffer;
         SQLLEN indicator = 0;
         size_t reservedBytes = 0;
         const SQLRETURN ret = GetDataVar(nullptr, 1, SQL_C_BINARY, buffer, &indicator,
-                                         reservedBytes, py::none(), false);
+                                         reservedBytes, py::none(), false, TestSQLGetData);
         return py::make_tuple(ret, indicator, testGetDataResultIndex, buffer.size());
     } else {
         throw py::value_error("Unknown fetch validation test scenario");
@@ -6171,14 +6176,14 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules,
                                                            ? buffers.charBuffers[idxCol].size()
                                                            : CheckedFetchColumnSize(
                                                                  processedColumnSize);
+                        const size_t sourceOffset = CheckedArrowSourceOffset(
+                            buffers.charBuffers[idxCol], idxRowSql, fetchBufferSize, dataLen);
                         auto target_vec = &arrowColumnProducer->varData;
                         auto start = arrowColumnProducer->varVal[idxRowArrow];
                         EnsureNativeFetchBufferSize(
                             *target_vec,
                             CheckedAddSize(start, dataLen, "Arrow value buffer is too large"),
                             reservedBytes);
-                        const size_t sourceOffset = CheckedArrowSourceOffset(
-                            buffers.charBuffers[idxCol], idxRowSql, fetchBufferSize, dataLen);
 
                         std::memcpy(&(*target_vec)[start],
                                     &buffers.charBuffers[idxCol][sourceOffset], dataLen);
@@ -6211,14 +6216,14 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules,
                                                                      1,
                                                                      "Column fetch stride is too large");
 #endif
+                            const size_t sourceOffset = CheckedArrowSourceOffset(
+                                buffers.charBuffers[idxCol], idxRowSql, fetchBufferSize, dataLen);
                             auto target_vec = &arrowColumnProducer->varData;
                             auto start = arrowColumnProducer->varVal[idxRowArrow];
                             EnsureNativeFetchBufferSize(
                                 *target_vec,
                                 CheckedAddSize(start, dataLen, "Arrow value buffer is too large"),
                                 reservedBytes);
-                            const size_t sourceOffset = CheckedArrowSourceOffset(
-                                buffers.charBuffers[idxCol], idxRowSql, fetchBufferSize, dataLen);
 
                             std::memcpy(&(*target_vec)[start],
                                         &buffers.charBuffers[idxCol][sourceOffset], dataLen);
