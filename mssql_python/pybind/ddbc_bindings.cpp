@@ -3614,6 +3614,9 @@ static py::object FetchLobColumnDataImpl(
         const size_t payloadCapacity = DAE_CHUNK_SIZE - terminatorBytes;
         const bool continueForTruncation =
             ret == SQL_SUCCESS_WITH_INFO && hasTruncationDiagnostic(hStmt);
+        if (actualRead == SQL_NO_TOTAL && !continueForTruncation) {
+            ThrowStdException("LOB SQL_NO_TOTAL requires a truncation diagnostic");
+        }
         if (actualRead >= 0 && static_cast<size_t>(actualRead) > payloadCapacity &&
             !continueForTruncation) {
             ThrowStdException("LOB data indicator exceeds the fetch buffer capacity");
@@ -3662,6 +3665,9 @@ static py::object FetchLobColumnDataImpl(
                 }
 
             }
+        }
+        if (continueForTruncation && bytesRead == 0) {
+            ThrowStdException("LOB fetch truncation made no progress");
         }
         if (bytesRead > 0) {
             const size_t previousSize = buffer.size();
@@ -5724,6 +5730,20 @@ SQLRETURN SQL_API TestSQLGetData(SQLHANDLE, SQLUSMALLINT, SQLSMALLINT, SQLPOINTE
     return ret;
 }
 
+SQLRETURN SQL_API TestSQLGetDataZeroFill(SQLHANDLE, SQLUSMALLINT, SQLSMALLINT,
+                                         SQLPOINTER target, SQLLEN targetLength,
+                                         SQLLEN* indicator) {
+    if (testGetDataResultIndex >= testGetDataResults.size()) {
+        return SQL_ERROR;
+    }
+    const auto [ret, value] = testGetDataResults[testGetDataResultIndex++];
+    if (target != nullptr && targetLength > 0) {
+        std::memset(target, 0, static_cast<size_t>(targetLength));
+    }
+    *indicator = value;
+    return ret;
+}
+
 bool TestHasTruncationDiagnostic(SQLHSTMT) { return true; }
 
 bool TestHasUnrelatedWarning(SQLHSTMT) { return false; }
@@ -5860,6 +5880,31 @@ py::object RunFetchValidationTest(const std::string& scenario) {
         testGetDataResultIndex = 0;
         FetchLobColumnDataImpl(nullptr, 1, SQL_C_BINARY, false, true, "", py::none(),
                                false, TestSQLGetData, TestHasUnrelatedWarning);
+    } else if (scenario == "lob_unrelated_warning_no_total") {
+        testGetDataResults = {
+            {static_cast<SQLRETURN>(SQL_SUCCESS_WITH_INFO),
+             static_cast<SQLLEN>(SQL_NO_TOTAL)},
+        };
+        testGetDataResultIndex = 0;
+        FetchLobColumnDataImpl(nullptr, 1, SQL_C_BINARY, false, true, "", py::none(),
+                               false, TestSQLGetData, TestHasUnrelatedWarning);
+    } else if (scenario == "lob_narrow_terminator_no_progress") {
+        testGetDataResults = {
+            {static_cast<SQLRETURN>(SQL_SUCCESS_WITH_INFO), static_cast<SQLLEN>(1)},
+        };
+        testGetDataResultIndex = 0;
+        FetchLobColumnDataImpl(nullptr, 1, SQL_C_CHAR, false, false, "utf-8",
+                               py::none(), false, TestSQLGetDataZeroFill,
+                               TestHasTruncationDiagnostic);
+    } else if (scenario == "lob_wide_terminator_no_progress") {
+        testGetDataResults = {
+            {static_cast<SQLRETURN>(SQL_SUCCESS_WITH_INFO),
+             static_cast<SQLLEN>(sizeof(SQLWCHAR))},
+        };
+        testGetDataResultIndex = 0;
+        FetchLobColumnDataImpl(nullptr, 1, SQL_C_WCHAR, true, false, "utf-16le",
+                               py::none(), false, TestSQLGetDataZeroFill,
+                               TestHasTruncationDiagnostic);
     } else if (scenario == "unrelated_warning_oversized") {
         testGetDataResults = {
             {static_cast<SQLRETURN>(SQL_SUCCESS_WITH_INFO), static_cast<SQLLEN>(2)},
