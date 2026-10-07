@@ -144,7 +144,7 @@ inline SQLULEN DAEColumnSize(SQLSMALLINT sqlType, SQLULEN actualSize) {
     switch (sqlType) {
         case SQL_CHAR:
         case SQL_VARCHAR:
-            return actualSize > MAX_INLINE_BINARY ? 0 : actualSize;
+            return actualSize > MAX_INLINE_CHAR ? 0 : actualSize;
         case SQL_WCHAR:
         case SQL_WVARCHAR:
             return actualSize > MAX_INLINE_CHAR ? 0 : actualSize;
