@@ -425,7 +425,7 @@ void ReserveNativeParameterBytes(size_t& reservedBytes, size_t count, size_t ele
 size_t ParameterArrayElementSize(const ParamInfo& info) {
     switch (info.paramCType) {
         case SQL_C_LONG:
-            return sizeof(int64_t);
+            return sizeof(int);
         case SQL_C_DOUBLE:
             return sizeof(double);
         case SQL_C_WCHAR:
@@ -903,8 +903,7 @@ SQLRETURN BindParameters(SqlHandle& handle, SQLHANDLE hStmt, const py::list& par
                 break;
             }
             case SQL_C_WCHAR: {
-                if (!py::isinstance<py::str>(param) && !py::isinstance<py::bytearray>(param) &&
-                    !py::isinstance<py::bytes>(param)) {
+                if (!py::isinstance<py::str>(param)) {
                     ThrowStdException(MakeParamMismatchErrorStr(paramInfo.paramCType, paramIndex));
                 }
                 if (paramInfo.isDAE) {
@@ -5815,7 +5814,6 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules,
     bool hasLobColumns = false;
 
     std::vector<SQLSMALLINT> dataTypes(numCols);
-    std::vector<SQLULEN> columnSizes(numCols);
     std::vector<bool> columnNullable(numCols);
     std::vector<bool> columnVarLen(numCols, false);
     std::vector<int64_t> nullCounts(numCols, 0);
@@ -6360,17 +6358,19 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules,
                                                            ? buffers.charBuffers[idxCol].size()
                                                            : CheckedFetchColumnSize(
                                                                  processedColumnSize);
-                        const size_t sourceOffset = CheckedArrowSourceOffset(
-                            buffers.charBuffers[idxCol], idxRowSql, fetchBufferSize, dataLen);
                         auto target_vec = &arrowColumnProducer->varData;
                         auto start = arrowColumnProducer->varVal[idxRowArrow];
-                        EnsureNativeFetchBufferSize(
-                            *target_vec,
-                            CheckedAddSize(start, dataLen, "Arrow value buffer is too large"),
-                            reservedBytes);
+                        if (dataLen > 0) {
+                            const size_t sourceOffset = CheckedArrowSourceOffset(
+                                buffers.charBuffers[idxCol], idxRowSql, fetchBufferSize, dataLen);
+                            EnsureNativeFetchBufferSize(
+                                *target_vec,
+                                CheckedAddSize(start, dataLen, "Arrow value buffer is too large"),
+                                reservedBytes);
 
-                        std::memcpy(&(*target_vec)[start],
-                                    &buffers.charBuffers[idxCol][sourceOffset], dataLen);
+                            std::memcpy(&(*target_vec)[start],
+                                        &buffers.charBuffers[idxCol][sourceOffset], dataLen);
+                        }
                         arrowColumnProducer->varVal[idxRowArrow + 1] = start + dataLen;
                         break;
                     }
