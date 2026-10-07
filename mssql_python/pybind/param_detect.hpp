@@ -334,19 +334,23 @@ inline void ApplyInputSizeOverride(PyObject* params, PyObject* inputSize, Py_ssi
                                : UnicodeUtf16Length(obj);
     }
     const bool textNeedsDAE =
-        PyUnicode_Check(obj) && actualTextLength > MAX_INLINE_CHAR;
+        !isNumeric && PyUnicode_Check(obj) && actualTextLength > MAX_INLINE_CHAR;
     const bool binaryNeedsDAE =
         (PyBytes_Check(obj) || PyByteArray_Check(obj)) &&
         (PyBytes_Check(obj) ? PyBytes_GET_SIZE(obj) : PyByteArray_GET_SIZE(obj)) >
             MAX_INLINE_BINARY;
     info.isDAE = textNeedsDAE || binaryNeedsDAE;
-    if (info.isDAE) {
-        const SQLULEN actualSize =
-            textNeedsDAE
-                ? static_cast<SQLULEN>(actualTextLength)
-                : static_cast<SQLULEN>(PyBytes_Check(obj) ? PyBytes_GET_SIZE(obj)
-                                                          : PyByteArray_GET_SIZE(obj));
-        info.columnSize = DAEColumnSize(info.paramSQLType, actualSize);
+    if (!isNumeric && PyUnicode_Check(obj)) {
+        const SQLULEN actualSize = static_cast<SQLULEN>(actualTextLength);
+        info.columnSize =
+            info.isDAE ? DAEColumnSize(info.paramSQLType, actualSize)
+                       : std::max(info.columnSize, actualSize);
+    } else if (PyBytes_Check(obj) || PyByteArray_Check(obj)) {
+        const SQLULEN actualSize = static_cast<SQLULEN>(
+            PyBytes_Check(obj) ? PyBytes_GET_SIZE(obj) : PyByteArray_GET_SIZE(obj));
+        info.columnSize =
+            info.isDAE ? DAEColumnSize(info.paramSQLType, actualSize)
+                       : std::max(info.columnSize, actualSize);
     }
 
     if (PyTime_Check(obj) && info.paramCType == PARAM_C_TYPE_TEXT) {
