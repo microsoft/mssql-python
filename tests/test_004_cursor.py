@@ -1748,7 +1748,7 @@ def test_fetchmany_rejects_excessive_native_buffer(cursor):
 
 def test_fetchall_clamps_wide_result_batch_to_native_buffer_budget(cursor):
     cursor.execute("SELECT " + ", ".join("CAST(N'x' AS NVARCHAR(4000))" for _ in range(34)))
-    assert cursor.fetchall() == [("x",) * 34]
+    assert [tuple(row) for row in cursor.fetchall()] == [("x",) * 34]
 
 
 def test_description(cursor):
