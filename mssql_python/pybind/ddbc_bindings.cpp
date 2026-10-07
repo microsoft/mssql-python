@@ -3337,8 +3337,8 @@ SQLRETURN SQLExecuteMany_wrap(const SqlHandlePtr statementHandle, const std::u16
                 if (rc != SQL_NEED_DATA) break;
 
                 const ParamInfo* matchedInfo = reinterpret_cast<const ParamInfo*>(token);
-                const ParamInfo* first = paramInfos.data();
-                const ParamInfo* last = first + paramInfos.size();
+                const ParamInfo* first = rowParamInfos.data();
+                const ParamInfo* last = first + rowParamInfos.size();
                 if (matchedInfo < first || matchedInfo >= last) {
                     ThrowStdException(
                         "SQLExecuteMany: unrecognized paramToken from SQLParamData");
