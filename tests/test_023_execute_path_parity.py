@@ -322,11 +322,16 @@ def test_setinputsizes_uses_actual_value_size_for_dae(cursor, value, sql_type):
 )
 def test_executemany_setinputsizes_uses_actual_text_size_for_dae(cursor, value, sql_type):
     """A too-small declared size cannot bypass streaming for an array-bound text value."""
-    cursor.execute("CREATE TABLE #dae_batch (value NVARCHAR(MAX))")
+    table_name = (
+        "#dae_batch_varchar"
+        if sql_type == ddbc_sql_const.SQL_VARCHAR.value
+        else "#dae_batch_nvarchar"
+    )
+    cursor.execute(f"CREATE TABLE {table_name} (value NVARCHAR(MAX))")
     cursor.setinputsizes([(sql_type, 1, 0)])
-    cursor.executemany("INSERT INTO #dae_batch (value) VALUES (?)", [(value,), ("short",)])
-    cursor.execute("SELECT value FROM #dae_batch ORDER BY LEN(value) DESC")
-    assert cursor.fetchall() == [(value,), ("short",)]
+    cursor.executemany(f"INSERT INTO {table_name} (value) VALUES (?)", [(value,), ("short",)])
+    cursor.execute(f"SELECT value FROM {table_name} ORDER BY LEN(value) DESC")
+    assert [tuple(row) for row in cursor.fetchall()] == [(value,), ("short",)]
 
 
 def test_executemany_setinputsizes_scans_mixed_text_values_for_dae(cursor):
@@ -336,7 +341,7 @@ def test_executemany_setinputsizes_scans_mixed_text_values_for_dae(cursor):
     cursor.setinputsizes([(ddbc_sql_const.SQL_VARCHAR.value, 1, 0)])
     cursor.executemany("INSERT INTO #mixed_dae_batch (value) VALUES (?)", [(b"x",), (value,)])
     cursor.execute("SELECT value FROM #mixed_dae_batch ORDER BY LEN(value) DESC")
-    assert cursor.fetchall() == [(value,), ("x",)]
+    assert [tuple(row) for row in cursor.fetchall()] == [(value,), ("x",)]
 
 
 def test_setinputsizes_rejects_bytes_for_wide_character_binding(cursor):

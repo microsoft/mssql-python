@@ -40,14 +40,14 @@ from mssql_python.exceptions import (
 
 
 @pytest.mark.skipif(not DDBC_AVAILABLE, reason="ddbc_bindings not available")
-@pytest.mark.parametrize("fetch_size", [-1, 1_000_001])
+@pytest.mark.parametrize("fetch_size", [-1, 1_000_001, True])
 def test_fetchmany_rejects_unsafe_size_before_handle_access(fetch_size):
     with pytest.raises(RuntimeError, match="Fetch size"):
         ddbc.DDBCSQLFetchMany(None, [], fetch_size)
 
 
 @pytest.mark.skipif(not DDBC_AVAILABLE, reason="ddbc_bindings not available")
-@pytest.mark.parametrize("batch_size", [-1, 1_000_001])
+@pytest.mark.parametrize("batch_size", [-1, 1_000_001, True])
 def test_arrow_batch_rejects_unsafe_size_before_handle_access(batch_size):
     with pytest.raises(RuntimeError, match="Arrow batch size"):
         ddbc.DDBCSQLFetchArrowBatch(None, [], batch_size, 0)
