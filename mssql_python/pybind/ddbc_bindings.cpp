@@ -382,6 +382,18 @@ size_t CheckedArrowSourceOffset(const std::vector<ElementType>& buffer, size_t r
     return offset;
 }
 
+template <typename ElementType>
+void ValidateArrowTextPayloadLength(size_t stride, size_t dataBytes) {
+    if (stride == 0) {
+        ThrowStdException("Arrow text fetch buffer has no terminator storage");
+    }
+    const size_t payloadBytes = CheckedMultiplySize(
+        stride - 1, sizeof(ElementType), "Arrow text source size is too large");
+    if (dataBytes > payloadBytes) {
+        ThrowStdException("Driver data length exceeds the Arrow text payload capacity");
+    }
+}
+
 constexpr int MAX_NATIVE_ROW_COUNT = 1000000;
 constexpr size_t MAX_NATIVE_FETCH_BYTES = 256ULL * 1024 * 1024;
 constexpr size_t MAX_NATIVE_PARAMETER_BYTES = 256ULL * 1024 * 1024;
@@ -5628,6 +5640,10 @@ py::object RunFetchValidationTest(const std::string& scenario) {
         ValidateArrowFetchedRowCount(2, 1, 2);
     } else if (scenario == "oversized_arrow_batch") {
         ValidateArrowFetchedRowCount(2, 2, 1);
+    } else if (scenario == "char_terminator_indicator") {
+        ValidateArrowTextPayloadLength<SQLCHAR>(4, 4);
+    } else if (scenario == "wchar_terminator_indicator") {
+        ValidateArrowTextPayloadLength<SQLWCHAR>(4, 4 * sizeof(SQLWCHAR));
     } else if (scenario == "sql_no_total_progress") {
         testGetDataResults = {
             {static_cast<SQLRETURN>(SQL_SUCCESS_WITH_INFO), static_cast<SQLLEN>(SQL_NO_TOTAL)},
@@ -6279,6 +6295,7 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules,
                                                                      1,
                                                                      "Column fetch stride is too large");
 #endif
+                            ValidateArrowTextPayloadLength<SQLCHAR>(fetchBufferSize, dataLen);
                             const size_t sourceOffset = CheckedArrowSourceOffset(
                                 buffers.charBuffers[idxCol], idxRowSql, fetchBufferSize, dataLen);
                             auto target_vec = &arrowColumnProducer->varData;
@@ -6313,6 +6330,7 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules,
                                                                      processedColumnSize),
                                                                  1,
                                                                  "Column fetch stride is too large");
+                        ValidateArrowTextPayloadLength<SQLWCHAR>(fetchBufferSize, dataLen);
                         const size_t sourceOffset = CheckedArrowSourceOffset(
                             buffers.wcharBuffers[idxCol], idxRowSql, fetchBufferSize, dataLen);
                         auto wcharSource = &buffers.wcharBuffers[idxCol][sourceOffset];
