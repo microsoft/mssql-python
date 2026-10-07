@@ -309,6 +309,26 @@ def test_setinputsizes_uses_actual_value_size_for_dae(cursor, value, sql_type):
     assert _override_roundtrip(cursor, value, sql_type, 1) == value
 
 
+@pytest.mark.parametrize(
+    ("value", "sql_type"),
+    [
+        pytest.param("x" * 4001, ddbc_sql_const.SQL_VARCHAR.value, id="varchar-encoded-bytes"),
+        pytest.param(
+            "\U0001f600" * 2001,
+            ddbc_sql_const.SQL_WVARCHAR.value,
+            id="nvarchar-utf16-units",
+        ),
+    ],
+)
+def test_executemany_setinputsizes_uses_actual_text_size_for_dae(cursor, value, sql_type):
+    """A too-small declared size cannot bypass streaming for an array-bound text value."""
+    cursor.execute("CREATE TABLE #dae_batch (value NVARCHAR(MAX))")
+    cursor.setinputsizes([(sql_type, 1, 0)])
+    cursor.executemany("INSERT INTO #dae_batch (value) VALUES (?)", [(value,), ("short",)])
+    cursor.execute("SELECT value FROM #dae_batch ORDER BY LEN(value) DESC")
+    assert cursor.fetchall() == [(value,), ("short",)]
+
+
 @pytest.mark.parametrize("sql_type", [None, ddbc_sql_const.SQL_VARCHAR.value])
 def test_time_isoformat_must_return_string(cursor, sql_type):
     """Native time normalization rejects a broken subclass contract on either path."""

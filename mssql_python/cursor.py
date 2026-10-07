@@ -2580,6 +2580,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         param_info = ddbc_bindings.ParamInfo
         parameters_type = []
         any_dae = False
+        encoding_settings = self._get_encoding_settings()
 
         # Check if we have explicit input sizes set
         if self._inputsizes:
@@ -2615,10 +2616,22 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                     ):
                         c_type = ddbc_sql_const.SQL_C_CHAR.value
 
-                    # Check if this should be a DAE (data at execution) parameter based on column size
+                    # Check if this should be a DAE (data at execution) parameter.
                     if sample_value is not None:
-                        if isinstance(sample_value, str) and column_size > MAX_INLINE_CHAR:
-                            is_dae = True
+                        if isinstance(sample_value, str):
+                            if c_type == ddbc_sql_const.SQL_C_CHAR.value:
+                                text_size = max(
+                                    len(value.encode(encoding_settings["encoding"]))
+                                    for value in column
+                                    if isinstance(value, str)
+                                )
+                            else:
+                                text_size = max(
+                                    sum(2 if ord(char) > 0xFFFF else 1 for char in value)
+                                    for value in column
+                                    if isinstance(value, str)
+                                )
+                            is_dae = column_size > MAX_INLINE_CHAR or text_size > MAX_INLINE_CHAR
                         elif isinstance(sample_value, (bytes, bytearray)) and column_size > 8000:
                             is_dae = True
 
@@ -2651,6 +2664,9 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                         # Update column_size to actual maximum size if it's larger
                         # Always ensure at least a minimum size of 1 for empty strings
                         column_size = max(max_binary_size, 1)
+
+                    if is_dae:
+                        column_size = 0
 
                     paraminfo = param_info()
                     paraminfo.paramCType = c_type
@@ -2815,9 +2831,6 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             columnwise_params, row_count = self._transpose_rowwise_to_columnwise(
                 processed_parameters
             )
-
-        # Get encoding settings
-        encoding_settings = self._get_encoding_settings()
 
         # Debug logging: emit batch metadata only. Never log parameter values or
         # row representations here -- rows may contain PII (SSNs, emails,

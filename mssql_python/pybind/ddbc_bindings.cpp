@@ -2571,16 +2571,41 @@ SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list&
                             std::memset(wcharArray + i * (info.columnSize + 1), 0,
                                         (info.columnSize + 1) * sizeof(SQLWCHAR));
                         } else {
-                            std::u16string wstr = columnValues[i].cast<std::u16string>();
-                            // u16string is already UTF-16, so the
-                            // original check is sufficient
-                            if (wstr.length() > info.columnSize) {
+                            if (!py::isinstance<py::str>(columnValues[i])) {
+                                ThrowStdException(
+                                    MakeParamMismatchErrorStr(info.paramCType, paramIndex));
+                            }
+                            if (static_cast<size_t>(
+                                    PyUnicode_GET_LENGTH(columnValues[i].ptr())) >
+                                info.columnSize) {
                                 ThrowStdException("Input string exceeds allowed column size "
                                                   "at parameter index " +
                                                   std::to_string(paramIndex));
                             }
-                            std::memcpy(wcharArray + i * (info.columnSize + 1), wstr.c_str(),
-                                        (wstr.length() + 1) * sizeof(SQLWCHAR));
+                            py::object encoded =
+                                columnValues[i].attr("encode")("utf-16-le", "strict");
+                            char* encodedData = nullptr;
+                            Py_ssize_t encodedSize = 0;
+                            if (PyBytes_AsStringAndSize(encoded.ptr(), &encodedData,
+                                                        &encodedSize) != 0) {
+                                throw py::error_already_set();
+                            }
+                            if (encodedSize < 0 ||
+                                static_cast<size_t>(encodedSize) % sizeof(SQLWCHAR) != 0) {
+                                ThrowStdException(
+                                    "Wide-character parameter has an invalid byte length");
+                            }
+                            const size_t wcharLength =
+                                static_cast<size_t>(encodedSize) / sizeof(SQLWCHAR);
+                            if (wcharLength > info.columnSize) {
+                                ThrowStdException("Input string exceeds allowed column size "
+                                                  "at parameter index " +
+                                                  std::to_string(paramIndex));
+                            }
+                            SQLWCHAR* destination = wcharArray + i * elementWidth;
+                            std::copy_n(reinterpret_cast<const SQLWCHAR*>(encodedData),
+                                        wcharLength, destination);
+                            destination[wcharLength] = 0;
                             strLenOrIndArray[i] = SQL_NTS;
                         }
                     }
@@ -2681,19 +2706,24 @@ SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list&
                                 ThrowStdException(MakeParamMismatchErrorStr(info.paramCType,
                                                                             paramIndex));
                             }
-                            std::string encodedStr;
-
+                            py::object encoded;
+                            char* encodedData = nullptr;
+                            Py_ssize_t encodedSize = 0;
                             if (py::isinstance<py::str>(columnValues[i])) {
                                 // Use Python's codec system to encode the string with specified
                                 // encoding
                                 try {
-                                    py::object encoded =
+                                    encoded =
                                         columnValues[i].attr("encode")(charEncoding, "strict");
-                                    encodedStr = encoded.cast<std::string>();
+                                    if (PyBytes_AsStringAndSize(encoded.ptr(), &encodedData,
+                                                                &encodedSize) != 0) {
+                                        throw py::error_already_set();
+                                    }
                                     LOG("BindParameterArray: param[%d] row[%zu] SQL_C_CHAR - "
                                         "Encoded with '%s', "
                                         "size=%zu bytes",
-                                        paramIndex, i, charEncoding.c_str(), encodedStr.size());
+                                        paramIndex, i, charEncoding.c_str(),
+                                        static_cast<size_t>(encodedSize));
                                 } catch (const py::error_already_set& e) {
                                     LOG_ERROR("BindParameterArray: param[%d] row[%zu] SQL_C_CHAR - "
                                               "Failed to encode "
@@ -2704,22 +2734,31 @@ SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list&
                                         std::to_string(paramIndex) + " row " + std::to_string(i) +
                                         " with encoding '" + charEncoding + "': " + e.what());
                                 }
+                            } else if (py::isinstance<py::bytes>(columnValues[i])) {
+                                encoded = py::reinterpret_borrow<py::object>(columnValues[i]);
+                                if (PyBytes_AsStringAndSize(encoded.ptr(), &encodedData,
+                                                            &encodedSize) != 0) {
+                                    throw py::error_already_set();
+                                }
                             } else {
-                                // bytes/bytearray - use as-is (already encoded)
-                                encodedStr = columnValues[i].cast<std::string>();
+                                encodedData = PyByteArray_AsString(columnValues[i].ptr());
+                                encodedSize = PyByteArray_Size(columnValues[i].ptr());
+                                if (encodedData == nullptr || encodedSize < 0) {
+                                    throw py::error_already_set();
+                                }
                             }
 
-                            if (encodedStr.size() > info.columnSize) {
+                            const size_t dataSize = static_cast<size_t>(encodedSize);
+                            if (dataSize > info.columnSize) {
                                 LOG("BindParameterArray: String/binary too "
                                     "long - param_index=%d, row=%zu, size=%zu, "
                                     "max=%zu",
-                                    paramIndex, i, encodedStr.size(), info.columnSize);
+                                    paramIndex, i, dataSize, info.columnSize);
                                 ThrowStdException("Input exceeds column size at index " +
                                                   std::to_string(i));
                             }
-                            std::memcpy(charArray + i * (info.columnSize + 1), encodedStr.c_str(),
-                                        encodedStr.size());
-                            strLenOrIndArray[i] = static_cast<SQLLEN>(encodedStr.size());
+                            std::copy_n(encodedData, dataSize, charArray + i * elementWidth);
+                            strLenOrIndArray[i] = static_cast<SQLLEN>(dataSize);
                         }
                     }
                     LOG("BindParameterArray: SQL_C_CHAR/BINARY bound - "
@@ -3548,7 +3587,7 @@ py::object FetchLobColumnData(SQLHSTMT hStmt, SQLUSMALLINT colIndex, SQLSMALLINT
             const size_t requiredSize =
                 CheckedAddSize(previousSize, bytesRead, "LOB fetch buffer is too large");
             ResizeNativeFetchBuffer(buffer, requiredSize, reservedBytes);
-            std::memcpy(buffer.data() + previousSize, chunk.data(), bytesRead);
+            std::copy_n(chunk.data(), bytesRead, buffer.data() + previousSize);
             LOG("FetchLobColumnData: Appended %zu bytes at loop %d", bytesRead, loopCount);
         }
         if (ret == SQL_SUCCESS) {
