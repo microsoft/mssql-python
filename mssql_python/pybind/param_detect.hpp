@@ -308,17 +308,23 @@ inline void ApplyInputSizeOverride(PyObject* params, PyObject* inputSize, Py_ssi
                                : UnicodeUtf16Length(obj);
     }
     const bool textNeedsDAE =
-        PyUnicode_Check(obj) &&
-        (PyLongGreaterThan(columnSize, MAX_INLINE_CHAR) ||
-         actualTextLength > MAX_INLINE_CHAR);
+        PyUnicode_Check(obj) && actualTextLength > MAX_INLINE_CHAR;
     const bool binaryNeedsDAE =
         (PyBytes_Check(obj) || PyByteArray_Check(obj)) &&
-        (PyLongGreaterThan(columnSize, MAX_INLINE_BINARY) ||
-         (PyBytes_Check(obj) ? PyBytes_GET_SIZE(obj) : PyByteArray_GET_SIZE(obj)) >
-             MAX_INLINE_BINARY);
+        (PyBytes_Check(obj) ? PyBytes_GET_SIZE(obj) : PyByteArray_GET_SIZE(obj)) >
+            MAX_INLINE_BINARY;
     info.isDAE = textNeedsDAE || binaryNeedsDAE;
     if (info.isDAE) {
         info.columnSize = 0;
+        if (textNeedsDAE) {
+            if (info.paramSQLType == SQL_CHAR || info.paramSQLType == SQL_VARCHAR) {
+                info.paramSQLType = SQL_LONGVARCHAR;
+            } else if (info.paramSQLType == SQL_WCHAR || info.paramSQLType == SQL_WVARCHAR) {
+                info.paramSQLType = SQL_WLONGVARCHAR;
+            }
+        } else if (info.paramSQLType == SQL_BINARY || info.paramSQLType == SQL_VARBINARY) {
+            info.paramSQLType = SQL_LONGVARBINARY;
+        }
     }
 
     if (PyTime_Check(obj) && info.paramCType == PARAM_C_TYPE_TEXT) {
@@ -490,16 +496,13 @@ inline std::vector<ParamInfo> DetectParamTypes(PyObject* params, PyObject* input
                 // Strings > 4000 UTF-16 code units exceed SQL Server's inline NVARCHAR(MAX)
                 // threshold. Switch to data-at-execution (DAE) streaming: ODBC driver pulls
                 // data in chunks via SQLPutData, avoiding a single massive buffer allocation.
-                // DAE path: match slow-path types exactly.
-                // Non-unicode (ASCII) → SQL_VARCHAR + PARAM_C_TYPE_TEXT, which is
-                //   SQL_C_WCHAR and matches the slow path's SQL_C_CHAR (numerically
-                //   -8 == SQL_C_WCHAR — a long-standing alias in the Python layer).
-                // Unicode → SQL_WVARCHAR + SQL_C_WCHAR (wide-char streaming)
+                // Long SQL types prevent a zero DAE ColumnSize from being interpreted
+                // as a fixed-width VARCHAR/NVARCHAR precision by the driver.
                 info.isDAE = true;
                 info.columnSize = 0;
                 info.utf16Len = utf16_len;
                 info.dataPtr = borrow(obj);
-                info.paramSQLType = is_unicode ? SQL_WVARCHAR : SQL_VARCHAR;
+                info.paramSQLType = is_unicode ? SQL_WLONGVARCHAR : SQL_LONGVARCHAR;
                 info.paramCType = is_unicode ? SQL_C_WCHAR : PARAM_C_TYPE_TEXT;
             } else {
                 info.columnSize = is_unicode ? utf16_len : length;
@@ -520,6 +523,7 @@ inline std::vector<ParamInfo> DetectParamTypes(PyObject* params, PyObject* input
                 info.isDAE = true;
                 info.columnSize = 0;
                 info.dataPtr = borrow(obj);
+                info.paramSQLType = SQL_LONGVARBINARY;
             } else {
                 info.columnSize = std::max<SQLULEN>(length, 1);
             }

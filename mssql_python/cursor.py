@@ -1347,9 +1347,9 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
     def _get_sql_to_c_type_map(cls):
         if cls._SQL_TO_C_TYPE is None:
             cls._SQL_TO_C_TYPE = {
-                ddbc_sql_const.SQL_CHAR.value: ddbc_sql_const.SQL_C_CHAR.value,
-                ddbc_sql_const.SQL_VARCHAR.value: ddbc_sql_const.SQL_C_CHAR.value,
-                ddbc_sql_const.SQL_LONGVARCHAR.value: ddbc_sql_const.SQL_C_CHAR.value,
+                ddbc_sql_const.SQL_CHAR.value: ddbc_sql_const.SQL_CHAR.value,
+                ddbc_sql_const.SQL_VARCHAR.value: ddbc_sql_const.SQL_CHAR.value,
+                ddbc_sql_const.SQL_LONGVARCHAR.value: ddbc_sql_const.SQL_CHAR.value,
                 ddbc_sql_const.SQL_WCHAR.value: ddbc_sql_const.SQL_C_WCHAR.value,
                 ddbc_sql_const.SQL_WVARCHAR.value: ddbc_sql_const.SQL_C_WCHAR.value,
                 ddbc_sql_const.SQL_WLONGVARCHAR.value: ddbc_sql_const.SQL_C_WCHAR.value,
@@ -2633,35 +2633,39 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                     ):
                         c_type = ddbc_sql_const.SQL_C_CHAR.value
 
-                    # Check every compatible value before selecting array binding. Mixed
-                    # str/bytes columns cannot rely on the sample value's type.
-                    if c_type in (
-                        ddbc_sql_const.SQL_C_CHAR.value,
-                        ddbc_sql_const.SQL_C_WCHAR.value,
+                    # Check every compatible value before selecting array binding. Use
+                    # the SQL type because the public SQL_C_CHAR enum aliases SQL_C_WCHAR.
+                    if sql_type in (
+                        ddbc_sql_const.SQL_CHAR.value,
+                        ddbc_sql_const.SQL_VARCHAR.value,
+                        ddbc_sql_const.SQL_LONGVARCHAR.value,
                     ):
                         text_values = [value for value in column if isinstance(value, str)]
-                        if c_type == ddbc_sql_const.SQL_C_CHAR.value:
-                            text_is_large = any(
-                                _encoded_length_exceeds(
-                                    value,
-                                    encoding_settings["encoding"],
-                                    MAX_INLINE_CHAR,
-                                )
-                                for value in text_values
+                        text_is_large = any(
+                            _encoded_length_exceeds(
+                                value,
+                                encoding_settings["encoding"],
+                                MAX_INLINE_CHAR,
                             )
-                            binary_is_large = any(
-                                len(value) > MAX_INLINE_CHAR
-                                for value in column
-                                if isinstance(value, (bytes, bytearray))
-                            )
-                        else:
-                            text_is_large = any(
-                                sum(2 if ord(char) > 0xFFFF else 1 for char in value)
-                                > MAX_INLINE_CHAR
-                                for value in text_values
-                            )
-                            binary_is_large = False
-                        is_dae = column_size > MAX_INLINE_CHAR or text_is_large or binary_is_large
+                            for value in text_values
+                        )
+                        binary_is_large = any(
+                            len(value) > MAX_INLINE_CHAR
+                            for value in column
+                            if isinstance(value, (bytes, bytearray))
+                        )
+                        is_dae = text_is_large or binary_is_large
+                    elif sql_type in (
+                        ddbc_sql_const.SQL_WCHAR.value,
+                        ddbc_sql_const.SQL_WVARCHAR.value,
+                        ddbc_sql_const.SQL_WLONGVARCHAR.value,
+                        ddbc_sql_const.SQL_SS_XML.value,
+                    ):
+                        is_dae = any(
+                            sum(2 if ord(char) > 0xFFFF else 1 for char in value) > MAX_INLINE_CHAR
+                            for value in column
+                            if isinstance(value, str)
+                        )
 
                     # Sanitize precision/scale for numeric types
                     if sql_type in (
@@ -2676,6 +2680,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                         ddbc_sql_const.SQL_BINARY.value,
                         ddbc_sql_const.SQL_VARBINARY.value,
                         ddbc_sql_const.SQL_LONGVARBINARY.value,
+                        ddbc_sql_const.SQL_SS_UDT.value,
                     ):
                         # Find the maximum size needed for any row's binary data
                         max_binary_size = 0
@@ -2685,8 +2690,9 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                                 max_binary_size = max(max_binary_size, len(value))
 
                         # For SQL Server VARBINARY(MAX), we need to use large object binding
-                        if column_size > 8000 or max_binary_size > 8000:
-                            sql_type = ddbc_sql_const.SQL_LONGVARBINARY.value
+                        if max_binary_size > 8000:
+                            if sql_type != ddbc_sql_const.SQL_SS_UDT.value:
+                                sql_type = ddbc_sql_const.SQL_LONGVARBINARY.value
                             is_dae = True
 
                         # Update column_size to actual maximum size if it's larger

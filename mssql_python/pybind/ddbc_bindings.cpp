@@ -4767,6 +4767,7 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, const Metadata&
     LOG("FetchBatchData: Fetching data in batches");
     SQLRETURN ret;
     {
+        numRowsFetched = 0;
         // Release the GIL during the blocking ODBC fetch
         py::gil_scoped_release release;
         PERF_TIMER("FetchBatchData::SQLFetchScroll_call");
