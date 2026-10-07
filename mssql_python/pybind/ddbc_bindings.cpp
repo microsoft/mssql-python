@@ -3806,9 +3806,19 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                 } else {
                     uint64_t fetchBufferSize =
                         (columnSize + 1) * sizeof(SQLWCHAR);  // +1 for null terminator
-                    std::vector<SQLWCHAR> dataBuffer(columnSize + 1);
+                    const size_t bufferChars = columnSize + 1;
+                    SQLWCHAR inlineBuffer[64];
+                    std::vector<SQLWCHAR> heapBuffer;
+                    SQLWCHAR* dataBuffer;
+                    if (bufferChars <= std::size(inlineBuffer)) {
+                        std::fill_n(inlineBuffer, bufferChars, SQLWCHAR{});
+                        dataBuffer = inlineBuffer;
+                    } else {
+                        heapBuffer.resize(bufferChars);
+                        dataBuffer = heapBuffer.data();
+                    }
                     SQLLEN dataLen;
-                    ret = SQLGetData_ptr(hStmt, i, SQL_C_WCHAR, dataBuffer.data(), fetchBufferSize,
+                    ret = SQLGetData_ptr(hStmt, i, SQL_C_WCHAR, dataBuffer, fetchBufferSize,
                                          &dataLen);
                     CaptureFetchDiagnostics(
                         hStmt, ret, messages,
@@ -3818,14 +3828,14 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                     if (SQL_SUCCEEDED(ret)) {
                         if (dataLen > 0) {
                             uint64_t numCharsInData = dataLen / sizeof(SQLWCHAR);
-                            if (numCharsInData < dataBuffer.size()) {
+                            if (numCharsInData < bufferChars) {
                                 // Construct with explicit length: SQLGetData reports the
                                 // exact number of characters via dataLen, so do not rely on
                                 // null termination. This preserves embedded NULs and avoids
                                 // any risk of reading past the valid range if the driver
                                 // omits the terminator.
                                 row.append(FetchText::from_utf16_native(
-                                    reinterpret_cast<const char*>(dataBuffer.data()),
+                                    reinterpret_cast<const char*>(dataBuffer),
                                     static_cast<Py_ssize_t>(numCharsInData * sizeof(SQLWCHAR))));
                                 LOG("SQLGetData: Appended NVARCHAR string "
                                     "length=%lu for column %d",

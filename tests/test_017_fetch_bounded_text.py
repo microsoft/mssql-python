@@ -193,3 +193,104 @@ def test_bounded_nvarchar_batch_malformed_fallback(db_connection, raw, method):
         assert _fetch_rows(cursor, method) == [(expected,)]
         cursor.execute("SELECT CAST(N'recovered' AS nvarchar(64))")
         assert cursor.fetchone()[0] == "recovered"
+
+
+@pytest.mark.parametrize(
+    "width", [10, 63, 64, 4000], ids=["small", "inline-edge", "heap-edge", "large"]
+)
+@pytest.mark.parametrize("method", ["fetchone", "fetchval"])
+def test_bounded_nvarchar_single_row_buffer_boundary(db_connection, width, method):
+    expected = [None, "", "A\0B", "\ufeff\ufffe", "x" * (width - 2) + "\U0001f642"]
+    values = ", ".join(
+        f"({index}, CAST("
+        + ("NULL" if value is None else f"0x{value.encode('utf-16le').hex()}")
+        + f" AS nvarchar({width})))"
+        for index, value in enumerate(expected)
+    )
+    with db_connection.cursor() as cursor:
+        cursor.execute(f"SELECT payload FROM (VALUES {values}) AS v(n, payload) ORDER BY n")
+        for value in expected:
+            row = getattr(cursor, method)()
+            actual = row[0] if method == "fetchone" else row
+            assert actual == value
+            assert actual is None or type(actual) is str
+        assert getattr(cursor, method)() is None
+        assert getattr(cursor, method)() is None
+        cursor.execute("SELECT CAST(N'reused' AS nvarchar(10))")
+        assert cursor.fetchone()[0] == "reused"
+
+
+@pytest.mark.parametrize("width", [63, 64], ids=["inline-edge", "heap-edge"])
+@pytest.mark.parametrize("method", ["fetchone", "fetchval"])
+@pytest.mark.parametrize("raw", ["00D8", "00DC"], ids=["unpaired-high", "unpaired-low"])
+def test_bounded_nvarchar_buffer_boundary_strict_error(db_connection, width, method, raw):
+    with db_connection.cursor() as cursor:
+        cursor.execute(f"SELECT CAST(0x{raw} AS nvarchar({width}))")
+        with pytest.raises(UnicodeDecodeError):
+            getattr(cursor, method)()
+        cursor.execute("SELECT CAST(N'recovered' AS nvarchar(10))")
+        row = getattr(cursor, method)()
+        assert (row[0] if method == "fetchone" else row) == "recovered"
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Windows does not export the native driver function-pointer globals",
+)
+@pytest.mark.parametrize("width", [63, 64], ids=["inline-edge", "heap-edge"])
+def test_bounded_nvarchar_getdata_buffer_contract(conn_str, width):
+    import os
+    import subprocess
+    import textwrap
+
+    script = textwrap.dedent("""
+        import ctypes as c
+        import os
+        import sys
+        import mssql_python
+        from mssql_python import ddbc_bindings as ddbc
+
+        width = int(sys.argv[1])
+        pointer, short, length = c.c_void_p, c.c_short, c.c_ssize_t
+        get_type = c.CFUNCTYPE(short, pointer, c.c_ushort, short, pointer, length, pointer)
+        library = c.CDLL(ddbc.module.__file__)
+        slot = pointer.in_dll(library, "SQLGetData_ptr")
+        calls, errors = [], []
+
+        @get_type
+        def getdata(handle, column, ctype, buffer, capacity, indicator):
+            try:
+                assert column == 1 and ctype == -8  # SQL_C_WCHAR
+                assert capacity == (width + 1) * 2
+                assert c.string_at(buffer, capacity) == bytes(capacity)
+                calls.append(capacity)
+                return original(handle, column, ctype, buffer, capacity, indicator)
+            except BaseException as error:
+                errors.append(repr(error))
+                return -1
+
+        with mssql_python.connect(os.environ["DB_CONNECTION_STRING"]) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(f"SELECT CAST(REPLICATE(N'x', {width}) AS nvarchar({width}))")
+                saved = slot.value
+                assert saved
+                original = get_type(saved)
+                slot.value = c.cast(getdata, pointer).value
+                try:
+                    assert cursor.fetchone()[0] == "x" * width
+                    assert cursor.fetchone() is None
+                finally:
+                    slot.value = saved
+                assert calls == [(width + 1) * 2] and not errors, (calls, errors)
+                cursor.execute("SELECT CAST(N'recovered' AS nvarchar(10))")
+                assert cursor.fetchval() == "recovered"
+        """)
+    result = subprocess.run(
+        [sys.executable, "-c", script, str(width)],
+        env={**os.environ, "DB_CONNECTION_STRING": conn_str},
+        capture_output=True,
+        text=True,
+        timeout=45,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
