@@ -69,6 +69,8 @@ def test_arrow_batch_rejects_unsafe_size_before_handle_access(batch_size):
         ("char_terminator_indicator", "exceeds the Arrow text payload capacity"),
         ("wchar_terminator_indicator", "exceeds the Arrow text payload capacity"),
         ("truncation_no_progress", "truncation made no progress"),
+        ("first_call_no_data", "no data before making progress"),
+        ("oversized_decimal_indicator", "Decimal data exceeds the allocated fetch buffer"),
     ],
 )
 def test_driver_fetch_validation_rejects_malformed_lengths(scenario, message):

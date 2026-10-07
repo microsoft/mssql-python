@@ -394,6 +394,12 @@ void ValidateArrowTextPayloadLength(size_t stride, size_t dataBytes) {
     }
 }
 
+void ValidateDecimalDataLength(uint64_t dataLength) {
+    if (dataLength > MAX_DIGITS_IN_NUMERIC) {
+        ThrowStdException("Decimal data exceeds the allocated fetch buffer");
+    }
+}
+
 constexpr int MAX_NATIVE_ROW_COUNT = 1000000;
 constexpr size_t MAX_NATIVE_FETCH_BYTES = 256ULL * 1024 * 1024;
 constexpr size_t MAX_NATIVE_PARAMETER_BYTES = 256ULL * 1024 * 1024;
@@ -5057,9 +5063,7 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, const Metadata&
                 case SQL_NUMERIC: {
                     try {
                         SQLLEN decimalDataLen = buffers.indicators[col - 1][i];
-                        if (decimalDataLen > MAX_DIGITS_IN_NUMERIC) {
-                            ThrowStdException("Decimal data exceeds the allocated fetch buffer");
-                        }
+                        ValidateDecimalDataLength(static_cast<uint64_t>(decimalDataLen));
                         const char* rawData = reinterpret_cast<const char*>(
                             &buffers.charBuffers[col - 1][i * MAX_DIGITS_IN_NUMERIC]);
 
@@ -5548,6 +5552,9 @@ SQLRETURN GetDataVar(SQLHSTMT hStmt, SQLUSMALLINT colNumber, SQLSMALLINT cType,
         }
 
         if (ret == SQL_NO_DATA) {
+            if (start == 0) {
+                ThrowStdException("Variable-length fetch returned no data before making progress");
+            }
             const size_t prefixBytes = CheckedMultiplySize(
                 start, sizeof(T), "Variable-length fetch result is too large");
             if (prefixBytes > static_cast<size_t>(std::numeric_limits<SQLLEN>::max())) {
@@ -5710,6 +5717,18 @@ py::object RunFetchValidationTest(const std::string& scenario) {
         const SQLRETURN ret = GetDataVar(nullptr, 1, SQL_C_BINARY, buffer, &indicator,
                                          reservedBytes, py::none(), false, TestSQLGetData);
         return py::make_tuple(ret, indicator, testGetDataResultIndex, buffer.size());
+    } else if (scenario == "first_call_no_data") {
+        testGetDataResults = {
+            {static_cast<SQLRETURN>(SQL_NO_DATA), std::numeric_limits<SQLLEN>::max()},
+        };
+        testGetDataResultIndex = 0;
+        std::vector<SQLCHAR> buffer;
+        SQLLEN indicator = 0;
+        size_t reservedBytes = 0;
+        GetDataVar(nullptr, 1, SQL_C_BINARY, buffer, &indicator, reservedBytes, py::none(),
+                   false, TestSQLGetData);
+    } else if (scenario == "oversized_decimal_indicator") {
+        ValidateDecimalDataLength(MAX_DIGITS_IN_NUMERIC + 1);
     } else if (scenario == "truncation_no_progress") {
         testGetDataResults = {
             {static_cast<SQLRETURN>(SQL_SUCCESS_WITH_INFO), static_cast<SQLLEN>(0)},
@@ -6485,9 +6504,7 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules,
                     case SQL_DECIMAL:
                     case SQL_NUMERIC: {
                         // Relies on overloaded operators defined in Int128_t struct
-                        if (dataLen > MAX_DIGITS_IN_NUMERIC) {
-                            ThrowStdException("Decimal data exceeds the allocated fetch buffer");
-                        }
+                        ValidateDecimalDataLength(dataLen);
                         Int128_t decimalValue(0, 0);
                         auto start = idxRowSql * MAX_DIGITS_IN_NUMERIC;
                         int sign = 1;
