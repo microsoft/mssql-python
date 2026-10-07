@@ -3612,12 +3612,12 @@ static py::object FetchLobColumnDataImpl(
 
         const size_t terminatorBytes = isBinary ? 0 : (isWideChar ? sizeof(SQLWCHAR) : 1);
         const size_t payloadCapacity = DAE_CHUNK_SIZE - terminatorBytes;
-        if (ret == SQL_SUCCESS && actualRead >= 0 &&
-            static_cast<size_t>(actualRead) > payloadCapacity) {
-            ThrowStdException("LOB data indicator exceeds the fetch buffer capacity");
-        }
         const bool continueForTruncation =
             ret == SQL_SUCCESS_WITH_INFO && hasTruncationDiagnostic(hStmt);
+        if (actualRead >= 0 && static_cast<size_t>(actualRead) > payloadCapacity &&
+            !continueForTruncation) {
+            ThrowStdException("LOB data indicator exceeds the fetch buffer capacity");
+        }
         size_t bytesRead = 0;
         if (actualRead >= 0) {
             bytesRead = static_cast<size_t>(actualRead);
@@ -5643,6 +5643,32 @@ SQLRETURN GetDataVar(SQLHSTMT hStmt, SQLUSMALLINT colNumber, SQLSMALLINT cType,
 
         // SQL_SUCCESS_WITH_INFO means buffer was too small, need to continue fetching
         if (ret == SQL_SUCCESS_WITH_INFO) {
+            const bool isTruncation = hasTruncationDiagnostic(hStmt);
+            if (!isTruncation) {
+                if (localInd < 0) {
+                    ThrowStdException(
+                        "Unexpected negative variable-length data indicator");
+                }
+                const size_t terminatorBytes =
+                    CheckedMultiplySize(sizeNullTerminator, sizeof(T),
+                                        "Variable-length fetch result is too large");
+                const size_t payloadCapacity =
+                    availableBytes >= terminatorBytes ? availableBytes - terminatorBytes : 0;
+                if (static_cast<size_t>(localInd) > payloadCapacity) {
+                    ThrowStdException(
+                        "Variable-length data indicator exceeds the fetch buffer capacity");
+                }
+                const size_t prefixBytes = CheckedMultiplySize(
+                    start, sizeof(T), "Variable-length fetch result is too large");
+                if (prefixBytes > static_cast<size_t>(std::numeric_limits<SQLLEN>::max()) ||
+                    localInd > std::numeric_limits<SQLLEN>::max() -
+                                   static_cast<SQLLEN>(prefixBytes)) {
+                    ThrowStdException("Variable-length fetch result is too large");
+                }
+                *indicator = static_cast<SQLLEN>(prefixBytes) + localInd;
+                return SQL_SUCCESS;
+            }
+
             // Determine how much more space we need
             if (localInd == SQL_NO_TOTAL) {
                 // SQL_NO_TOTAL: driver doesn't know total size, double the buffer
@@ -5664,20 +5690,7 @@ SQLRETURN GetDataVar(SQLHSTMT hStmt, SQLUSMALLINT colNumber, SQLSMALLINT cType,
 
             // The next read starts where the null terminator would have been placed
             if (end <= dataVec.size()) {
-                const bool isTruncation = hasTruncationDiagnostic(hStmt);
-                if (isTruncation) {
-                    ThrowStdException("Variable-length fetch truncation made no progress");
-                }
-                const size_t prefixBytes = CheckedMultiplySize(
-                    start, sizeof(T), "Variable-length fetch result is too large");
-                if (localInd < 0 ||
-                    prefixBytes > static_cast<size_t>(std::numeric_limits<SQLLEN>::max()) ||
-                    localInd > std::numeric_limits<SQLLEN>::max() -
-                                   static_cast<SQLLEN>(prefixBytes)) {
-                    ThrowStdException("Variable-length fetch made no progress");
-                }
-                *indicator = static_cast<SQLLEN>(prefixBytes) + localInd;
-                return SQL_SUCCESS;
+                ThrowStdException("Variable-length fetch truncation made no progress");
             }
             if (end > dataVec.max_size()) {
                 ThrowStdException("Variable-length fetch buffer is too large");
@@ -5769,7 +5782,8 @@ py::object RunFetchValidationTest(const std::string& scenario) {
         SQLLEN indicator = 0;
         size_t reservedBytes = 0;
         const SQLRETURN ret = GetDataVar(nullptr, 1, SQL_C_BINARY, buffer, &indicator,
-                                         reservedBytes, py::none(), false, TestSQLGetData);
+                                         reservedBytes, py::none(), false, TestSQLGetData,
+                                         TestHasTruncationDiagnostic);
         return py::make_tuple(ret, indicator, testGetDataResultIndex, buffer.size());
     } else if (scenario == "first_call_no_data") {
         testGetDataResults = {
@@ -5804,7 +5818,7 @@ py::object RunFetchValidationTest(const std::string& scenario) {
         SQLLEN indicator = 0;
         size_t reservedBytes = 0;
         GetDataVar(nullptr, 1, SQL_C_WCHAR, buffer, &indicator, reservedBytes, py::none(),
-                   false, TestSQLGetData);
+                   false, TestSQLGetData, TestHasTruncationDiagnostic);
     } else if (scenario == "unexpected_lob_indicator") {
         testGetDataResults = {
             {static_cast<SQLRETURN>(SQL_SUCCESS_WITH_INFO), static_cast<SQLLEN>(-2)},
@@ -5838,6 +5852,24 @@ py::object RunFetchValidationTest(const std::string& scenario) {
                                    TestHasUnrelatedWarning)
                 .cast<py::bytes>();
         return py::make_tuple(py::len(value), testGetDataResultIndex);
+    } else if (scenario == "lob_unrelated_warning_oversized") {
+        testGetDataResults = {
+            {static_cast<SQLRETURN>(SQL_SUCCESS_WITH_INFO),
+             static_cast<SQLLEN>(DAE_CHUNK_SIZE + 1)},
+        };
+        testGetDataResultIndex = 0;
+        FetchLobColumnDataImpl(nullptr, 1, SQL_C_BINARY, false, true, "", py::none(),
+                               false, TestSQLGetData, TestHasUnrelatedWarning);
+    } else if (scenario == "unrelated_warning_oversized") {
+        testGetDataResults = {
+            {static_cast<SQLRETURN>(SQL_SUCCESS_WITH_INFO), static_cast<SQLLEN>(2)},
+        };
+        testGetDataResultIndex = 0;
+        std::vector<SQLCHAR> buffer;
+        SQLLEN indicator = 0;
+        size_t reservedBytes = 0;
+        GetDataVar(nullptr, 1, SQL_C_BINARY, buffer, &indicator, reservedBytes,
+                   py::none(), false, TestSQLGetData, TestHasUnrelatedWarning);
     } else if (scenario == "odd_direct_wchar") {
         ValidateWideCharByteLength(3);
     } else if (scenario == "odd_lob_wchar") {
@@ -5868,7 +5900,8 @@ py::object RunFetchValidationTest(const std::string& scenario) {
         SQLLEN indicator = 0;
         size_t reservedBytes = 0;
         const SQLRETURN ret = GetDataVar(nullptr, 1, SQL_C_BINARY, buffer, &indicator,
-                                         reservedBytes, py::none(), false, TestSQLGetData);
+                                         reservedBytes, py::none(), false, TestSQLGetData,
+                                         TestHasTruncationDiagnostic);
         return py::make_tuple(ret, indicator, testGetDataResultIndex, buffer.size());
     } else {
         throw py::value_error("Unknown fetch validation test scenario");
