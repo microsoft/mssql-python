@@ -2653,10 +2653,21 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                         binary_values = [
                             value for value in column if isinstance(value, (bytes, bytearray))
                         ]
-                        text_is_large = any(
-                            sum(2 if ord(char) > 0xFFFF else 1 for char in value) > MAX_INLINE_CHAR
-                            for value in text_values
-                        )
+                        if c_type == ddbc_sql_const.SQL_CHAR.value:
+                            text_is_large = any(
+                                _encoded_length_exceeds(
+                                    value,
+                                    encoding_settings["encoding"],
+                                    MAX_INLINE_CHAR,
+                                )
+                                for value in text_values
+                            )
+                        else:
+                            text_is_large = any(
+                                sum(2 if ord(char) > 0xFFFF else 1 for char in value)
+                                > MAX_INLINE_CHAR
+                                for value in text_values
+                            )
                         binary_is_large = narrow_text_type and any(
                             len(value) > MAX_INLINE_BINARY for value in binary_values
                         )
