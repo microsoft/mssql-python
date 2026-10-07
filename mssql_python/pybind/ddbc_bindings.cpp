@@ -391,7 +391,7 @@ void ReserveNativeParameterBytes(size_t& reservedBytes, size_t count, size_t ele
 size_t ParameterArrayElementSize(const ParamInfo& info) {
     switch (info.paramCType) {
         case SQL_C_LONG:
-            return sizeof(int);
+            return sizeof(int64_t);
         case SQL_C_DOUBLE:
             return sizeof(double);
         case SQL_C_WCHAR:
@@ -773,6 +773,9 @@ SQLRETURN BindParameters(SqlHandle& handle, SQLHANDLE hStmt, const py::list& par
     for (int paramIndex = 0; paramIndex < params.size(); paramIndex++) {
         const auto& param = params[paramIndex];
         ParamInfo& paramInfo = paramInfos[paramIndex];
+        if (paramInfo.isDAE) {
+            paramInfo.dataPtr = py::reinterpret_borrow<py::object>(param);
+        }
         LOG("BindParameters: Processing param[%d] - C_Type=%d, SQL_Type=%d, "
             "ColumnSize=%lu, DecimalDigits=%d, InputOutputType=%d",
             paramIndex, paramInfo.paramCType, paramInfo.paramSQLType,
@@ -4725,7 +4728,7 @@ SQLRETURN SQLBindColums(SQLHSTMT hStmt, ColumnBuffers& buffers, const Metadata& 
                                         reservedBytes);
                 ret = SQLBindCol_ptr(hStmt, col, SQL_C_SS_TIMESTAMPOFFSET,
                                      buffers.datetimeoffsetBuffers[col - 1].data(),
-                                     sizeof(DateTimeOffset) * fetchSize,
+                                     sizeof(DateTimeOffset),
                                      buffers.indicators[col - 1].data());
                 break;
             default:

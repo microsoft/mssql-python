@@ -329,6 +329,16 @@ def test_executemany_setinputsizes_uses_actual_text_size_for_dae(cursor, value, 
     assert cursor.fetchall() == [(value,), ("short",)]
 
 
+def test_executemany_setinputsizes_scans_mixed_text_values_for_dae(cursor):
+    """A bytes sample cannot hide a later oversized string from DAE selection."""
+    value = "x" * 4001
+    cursor.execute("CREATE TABLE #mixed_dae_batch (value VARCHAR(MAX))")
+    cursor.setinputsizes([(ddbc_sql_const.SQL_VARCHAR.value, 1, 0)])
+    cursor.executemany("INSERT INTO #mixed_dae_batch (value) VALUES (?)", [(b"x",), (value,)])
+    cursor.execute("SELECT value FROM #mixed_dae_batch ORDER BY LEN(value) DESC")
+    assert cursor.fetchall() == [(value,), ("x",)]
+
+
 @pytest.mark.parametrize("sql_type", [None, ddbc_sql_const.SQL_VARCHAR.value])
 def test_time_isoformat_must_return_string(cursor, sql_type):
     """Native time normalization rejects a broken subclass contract on either path."""
