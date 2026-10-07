@@ -48,6 +48,7 @@ else:
 MAX_INLINE_CHAR: int = (
     4000  # NVARCHAR/VARCHAR inline limit; this triggers NVARCHAR(MAX)/VARCHAR(MAX) + DAE
 )
+MAX_INLINE_BINARY: int = 8000
 SMALLMONEY_MIN: decimal.Decimal = decimal.Decimal("-214748.3648")
 SMALLMONEY_MAX: decimal.Decimal = decimal.Decimal("214748.3647")
 MONEY_MIN: decimal.Decimal = decimal.Decimal("-922337203685477.5808")
@@ -980,7 +981,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
         if isinstance(param, (bytes, bytearray)):
             length = len(param)
-            if length > 8000:  # Use VARBINARY(MAX) for large blobs
+            if length > MAX_INLINE_BINARY:  # Use VARBINARY(MAX) for large blobs
                 return (
                     ddbc_sql_const.SQL_VARBINARY.value,
                     ddbc_sql_const.SQL_C_BINARY.value,
@@ -2650,7 +2651,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                             for value in text_values
                         )
                         binary_is_large = any(
-                            len(value) > MAX_INLINE_CHAR
+                            len(value) > MAX_INLINE_BINARY
                             for value in column
                             if isinstance(value, (bytes, bytearray))
                         )
@@ -2690,7 +2691,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                                 max_binary_size = max(max_binary_size, len(value))
 
                         # For SQL Server VARBINARY(MAX), we need to use large object binding
-                        if max_binary_size > 8000:
+                        if max_binary_size > MAX_INLINE_BINARY:
                             if sql_type != ddbc_sql_const.SQL_SS_UDT.value:
                                 sql_type = ddbc_sql_const.SQL_LONGVARBINARY.value
                             is_dae = True
@@ -2780,7 +2781,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                                 max_binary_size = max(max_binary_size, len(value))
 
                         # For SQL Server VARBINARY(MAX), we need to use large object binding
-                        if max_binary_size > 8000:
+                        if max_binary_size > MAX_INLINE_BINARY:
                             paraminfo.paramSQLType = ddbc_sql_const.SQL_LONGVARBINARY.value
                             paraminfo.isDAE = True
 

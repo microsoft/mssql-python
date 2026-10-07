@@ -3617,11 +3617,14 @@ py::object FetchLobColumnData(SQLHSTMT hStmt, SQLUSMALLINT colIndex, SQLSMALLINT
         if (buffer.size() % sizeof(SQLWCHAR) != 0) {
             ThrowStdException("Wide-character LOB data has an invalid byte length");
         }
-        size_t wcharCount = buffer.size() / sizeof(SQLWCHAR);
-        ReserveNativeFetchBytes(reservedBytes, wcharCount, sizeof(SQLWCHAR));
-        std::vector<SQLWCHAR> alignedBuf(wcharCount);
-        std::memcpy(alignedBuf.data(), buffer.data(), buffer.size());
-        return py::cast(dupeSqlWCharAsUtf16Le(alignedBuf.data(), wcharCount));
+        int byteOrder = -1;
+        PyObject* decoded =
+            PyUnicode_DecodeUTF16(buffer.data(), static_cast<Py_ssize_t>(buffer.size()),
+                                  "strict", &byteOrder);
+        if (decoded == nullptr) {
+            throw py::error_already_set();
+        }
+        return py::reinterpret_steal<py::str>(decoded);
     }
     if (isBinary) {
         LOG("FetchLobColumnData: Returning binary data - %zu bytes for column "
