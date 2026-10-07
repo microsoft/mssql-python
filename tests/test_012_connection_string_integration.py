@@ -9,7 +9,11 @@ These tests verify end-to-end behavior of the parser, filter, and builder pipeli
 
 import pytest
 import os
+import logging
 from unittest.mock import patch, MagicMock
+from mssql_python.connection import Connection
+from mssql_python.exceptions import InterfaceError
+from mssql_python.logging import logger
 from mssql_python.connection_string_parser import (
     _ConnectionStringParser,
     ConnectionStringParseError,
@@ -293,6 +297,83 @@ class TestConnectionStringIntegration:
             parser._parse("Server=localhost;MadeUpKeyword=value")
 
         assert "Unknown keyword 'madeupkeyword'" in str(exc_info.value)
+
+
+class TestConnectionStringLoggingWork:
+    @pytest.fixture
+    def log_sink(self, monkeypatch, caplog):
+        sink = logging.Logger("mssql_python.connection_string_test")
+        sink.addHandler(caplog.handler)
+        monkeypatch.setattr(logger, "_logger", sink)
+        monkeypatch.setattr(logger, "_cached_level", logging.DEBUG)
+        return sink
+
+    @pytest.mark.parametrize(
+        "level", [logging.DEBUG, logging.INFO, logging.WARNING, logging.CRITICAL]
+    )
+    def test_sanitization_only_runs_when_info_enabled(self, level, log_sink, caplog):
+        log_sink.setLevel(level)
+        enabled = level <= logging.INFO
+        parse = _ConnectionStringParser._parse
+        build = _ConnectionStringBuilder.build
+        with (
+            patch(
+                "mssql_python.connection.sanitize_connection_string",
+                wraps=sanitize_connection_string,
+            ) as sanitize,
+            patch.object(
+                _ConnectionStringParser, "_parse", autospec=True, side_effect=parse
+            ) as parses,
+            patch.object(
+                _ConnectionStringBuilder, "build", autospec=True, side_effect=build
+            ) as builds,
+        ):
+            result, params = Connection._construct_connection_string(
+                None,
+                "Server=localhost;Database=original;UID=dummy;PWD={dummy;brace}}tail}",
+                Database="override",
+            )
+            assert parses.call_count == builds.call_count == (2 if enabled else 1)
+            assert sanitize.call_count == int(enabled)
+            if enabled:
+                sanitize.assert_called_once_with(result)
+
+        assert params["Database"] == "override"
+        assert params["PWD"] == "dummy;brace}tail"
+        assert "PWD={dummy;brace}}tail}" in result
+        assert params["Driver"] == "ODBC Driver 18 for SQL Server"
+        assert params["APP"] == "MSSQL-Python"
+        messages = [
+            record.getMessage()
+            for record in caplog.records
+            if "Final connection string:" in record.getMessage()
+        ]
+        assert len(messages) == int(enabled)
+        if enabled:
+            assert "PWD=***" in messages[0]
+            assert "dummy;brace" not in messages[0]
+            assert "tail" not in messages[0]
+            assert "Database=override" in messages[0]
+
+    @pytest.mark.parametrize("level", [logging.INFO, logging.WARNING])
+    @pytest.mark.parametrize(
+        "connection_str,kwargs,error",
+        [
+            ("Server=localhost;UnknownKeyword=value", {}, ConnectionStringParseError),
+            ("Server=localhost;Server=localhost", {}, ConnectionStringParseError),
+            ("Server=localhost;PWD={dummy", {}, ConnectionStringParseError),
+            ("Server=localhost;Driver=reserved", {}, ConnectionStringParseError),
+            ("Server=localhost", {"Driver": "reserved"}, ValueError),
+            ("Server=localhost\x00", {}, InterfaceError),
+            ("Server=localhost", {"Database": "test\x00"}, InterfaceError),
+        ],
+    )
+    def test_validation_precedes_logging(self, level, connection_str, kwargs, error, log_sink):
+        log_sink.setLevel(level)
+        with patch("mssql_python.connection.sanitize_connection_string") as sanitize:
+            with pytest.raises(error):
+                Connection._construct_connection_string(None, connection_str, **kwargs)
+            sanitize.assert_not_called()
 
 
 class TestConnectAPIIntegration:

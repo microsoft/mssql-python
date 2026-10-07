@@ -14,6 +14,7 @@ Resource Management:
 import weakref
 import re
 import codecs
+import logging
 import warnings
 import struct
 from types import MappingProxyType
@@ -1064,7 +1065,8 @@ class Connection:
         # Step 5: Build final connection string
         conn_str = _ConnectionStringBuilder(normalized_params).build()
 
-        logger.info("Final connection string: %s", sanitize_connection_string(conn_str))
+        if logger.isEnabledFor(logging.INFO):
+            logger.info("Final connection string: %s", sanitize_connection_string(conn_str))
 
         return conn_str, normalized_params
 
