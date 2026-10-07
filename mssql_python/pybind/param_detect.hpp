@@ -140,6 +140,26 @@ inline constexpr int MAX_INLINE_CHAR = 4000;
 // Binary data longer than this uses DAE streaming (SQL Server max for non-MAX types)
 inline constexpr int MAX_INLINE_BINARY = 8000;
 
+inline SQLULEN DAEColumnSize(SQLSMALLINT sqlType, SQLULEN actualSize) {
+    switch (sqlType) {
+        case SQL_CHAR:
+        case SQL_VARCHAR:
+            return actualSize > MAX_INLINE_BINARY ? 0 : actualSize;
+        case SQL_WCHAR:
+        case SQL_WVARCHAR:
+            return actualSize > MAX_INLINE_CHAR ? 0 : actualSize;
+        case SQL_BINARY:
+        case SQL_VARBINARY:
+            return actualSize > MAX_INLINE_BINARY ? 0 : actualSize;
+        case SQL_LONGVARCHAR:
+        case SQL_WLONGVARCHAR:
+        case SQL_LONGVARBINARY:
+            return 0;
+        default:
+            return actualSize;
+    }
+}
+
 // SQL Server maximum numeric precision
 inline constexpr int MAX_NUMERIC_PRECISION = 38;
 
@@ -321,11 +341,12 @@ inline void ApplyInputSizeOverride(PyObject* params, PyObject* inputSize, Py_ssi
             MAX_INLINE_BINARY;
     info.isDAE = textNeedsDAE || binaryNeedsDAE;
     if (info.isDAE) {
-        info.columnSize =
+        const SQLULEN actualSize =
             textNeedsDAE
                 ? static_cast<SQLULEN>(actualTextLength)
                 : static_cast<SQLULEN>(PyBytes_Check(obj) ? PyBytes_GET_SIZE(obj)
                                                           : PyByteArray_GET_SIZE(obj));
+        info.columnSize = DAEColumnSize(info.paramSQLType, actualSize);
     }
 
     if (PyTime_Check(obj) && info.paramCType == PARAM_C_TYPE_TEXT) {
@@ -497,13 +518,14 @@ inline std::vector<ParamInfo> DetectParamTypes(PyObject* params, PyObject* input
                 // Strings > 4000 UTF-16 code units exceed SQL Server's inline NVARCHAR(MAX)
                 // threshold. Switch to data-at-execution (DAE) streaming: ODBC driver pulls
                 // data in chunks via SQLPutData, avoiding a single massive buffer allocation.
-                // Advertise the validated payload size rather than zero or the caller's
-                // declared size so the driver selects the corresponding MAX representation.
+                // Use the validated payload size when it is legal fixed-width metadata;
+                // larger values use the driver's MAX-length sentinel.
                 info.isDAE = true;
-                info.columnSize = utf16_len;
+                const SQLSMALLINT sqlType = is_unicode ? SQL_WVARCHAR : SQL_VARCHAR;
+                info.columnSize = DAEColumnSize(sqlType, utf16_len);
                 info.utf16Len = utf16_len;
                 info.dataPtr = borrow(obj);
-                info.paramSQLType = is_unicode ? SQL_WVARCHAR : SQL_VARCHAR;
+                info.paramSQLType = sqlType;
                 info.paramCType = is_unicode ? SQL_C_WCHAR : PARAM_C_TYPE_TEXT;
             } else {
                 info.columnSize = is_unicode ? utf16_len : length;
@@ -522,7 +544,8 @@ inline std::vector<ParamInfo> DetectParamTypes(PyObject* params, PyObject* input
             info.decimalDigits = 0;
             if (length > MAX_INLINE_BINARY) {
                 info.isDAE = true;
-                info.columnSize = static_cast<SQLULEN>(length);
+                info.columnSize =
+                    DAEColumnSize(SQL_VARBINARY, static_cast<SQLULEN>(length));
                 info.dataPtr = borrow(obj);
             } else {
                 info.columnSize = std::max<SQLULEN>(length, 1);
