@@ -4757,6 +4757,17 @@ void ValidateFetchedRowCount(const ColumnBuffers& buffers, SQLUSMALLINT numCols,
     }
 }
 
+void ValidateArrowFetchedRowCount(SQLULEN numRowsFetched, int currentFetchSize,
+                                  int spaceLeftInArrowBatch) {
+    if (numRowsFetched == 0) {
+        ThrowStdException("Driver reported a successful Arrow fetch with zero rows");
+    }
+    if (numRowsFetched > static_cast<SQLULEN>(currentFetchSize) ||
+        numRowsFetched > static_cast<SQLULEN>(spaceLeftInArrowBatch)) {
+        ThrowStdException("Driver returned more rows than the allocated Arrow buffers");
+    }
+}
+
 // Fetch rows in batches
 // TODO: Move to anonymous namespace, since it is not used outside this file
 template <typename Metadata>
@@ -5599,9 +5610,21 @@ py::object RunFetchValidationTest(const std::string& scenario) {
         py::list row;
         row.append(py::none());
         ColumnProcessors::ProcessWChar(row.ptr(), buffers, &columnInfo, 1, 0, nullptr);
+    } else if (scenario == "odd_char_as_wchar") {
+        ColumnBuffers buffers(1, 1);
+        buffers.wcharBuffers[0].resize(2);
+        buffers.indicators[0][0] = 3;
+        ColumnInfoExt columnInfo{};
+        columnInfo.useWideChar = true;
+        columnInfo.fetchBufferSize = 2;
+        py::list row;
+        row.append(py::none());
+        ColumnProcessors::ProcessChar(row.ptr(), buffers, &columnInfo, 1, 0, nullptr);
     } else if (scenario == "oversized_indicator") {
         std::vector<SQLCHAR> buffer(4);
         CheckedArrowSourceOffset(buffer, 0, buffer.size(), buffer.size() + 1);
+    } else if (scenario == "zero_arrow_rows") {
+        ValidateArrowFetchedRowCount(0, 1, 1);
     } else if (scenario == "sql_no_total_progress") {
         testGetDataResults = {
             {static_cast<SQLRETURN>(SQL_SUCCESS_WITH_INFO), static_cast<SQLLEN>(SQL_NO_TOTAL)},
@@ -5924,10 +5947,7 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules,
         }
         // numRowsFetched is the SQL_ATTR_ROWS_FETCHED_PTR attribute.
         // It'll be populated by SQLFetch
-        if (numRowsFetched > static_cast<SQLULEN>(currentFetchSize) ||
-            numRowsFetched > static_cast<SQLULEN>(spaceLeftInArrowBatch)) {
-            ThrowStdException("Driver returned more rows than the allocated Arrow buffers");
-        }
+        ValidateArrowFetchedRowCount(numRowsFetched, currentFetchSize, spaceLeftInArrowBatch);
         for (SQLULEN idxRowSql = 0; idxRowSql < numRowsFetched; idxRowSql++) {
             for (SQLUSMALLINT idxCol = 0; idxCol < numCols; idxCol++) {
                 auto& arrowColumnProducer = arrowArrayPrivateData[idxCol];

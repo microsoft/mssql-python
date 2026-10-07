@@ -60,7 +60,9 @@ def test_arrow_batch_rejects_unsafe_size_before_handle_access(batch_size):
         ("oversized_rows", "more rows than the allocated fetch buffers"),
         ("zero_rows", "successful fetch with zero rows"),
         ("odd_wchar", "invalid byte length"),
+        ("odd_char_as_wchar", "invalid byte length"),
         ("oversized_indicator", "exceeds the allocated fetch buffer"),
+        ("zero_arrow_rows", "successful Arrow fetch with zero rows"),
     ],
 )
 def test_driver_fetch_validation_rejects_malformed_lengths(scenario, message):
