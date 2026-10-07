@@ -63,6 +63,8 @@ def test_arrow_batch_rejects_unsafe_size_before_handle_access(batch_size):
         ("odd_wchar", "invalid byte length"),
         ("odd_char_as_wchar", "invalid byte length"),
         ("oversized_indicator", "exceeds the allocated fetch buffer"),
+        ("short_fixed_indicator", "does not match the bound buffer size"),
+        ("oversized_fixed_indicator", "does not match the bound buffer size"),
         ("zero_arrow_rows", "successful Arrow fetch with zero rows"),
         ("oversized_arrow_fetch", "more rows than the allocated Arrow buffers"),
         ("oversized_arrow_batch", "more rows than the allocated Arrow buffers"),

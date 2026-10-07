@@ -400,6 +400,46 @@ void ValidateDecimalDataLength(uint64_t dataLength) {
     }
 }
 
+size_t FixedFetchValueSize(SQLSMALLINT dataType) {
+    switch (dataType) {
+        case SQL_INTEGER:
+            return sizeof(SQLINTEGER);
+        case SQL_SMALLINT:
+            return sizeof(SQLSMALLINT);
+        case SQL_TINYINT:
+        case SQL_BIT:
+            return sizeof(SQLCHAR);
+        case SQL_REAL:
+            return sizeof(SQLREAL);
+        case SQL_FLOAT:
+        case SQL_DOUBLE:
+            return sizeof(SQLDOUBLE);
+        case SQL_BIGINT:
+            return sizeof(SQLBIGINT);
+        case SQL_TIMESTAMP:
+        case SQL_TYPE_TIMESTAMP:
+        case SQL_DATETIME:
+            return sizeof(SQL_TIMESTAMP_STRUCT);
+        case SQL_TYPE_DATE:
+            return sizeof(SQL_DATE_STRUCT);
+        case SQL_SS_TIME2:
+            return sizeof(SQL_SS_TIME2_STRUCT);
+        case SQL_GUID:
+            return sizeof(SQLGUID);
+        case SQL_SS_TIMESTAMPOFFSET:
+            return sizeof(DateTimeOffset);
+        default:
+            return 0;
+    }
+}
+
+void ValidateFixedFetchDataLength(SQLSMALLINT dataType, uint64_t dataLength) {
+    const size_t expectedSize = FixedFetchValueSize(dataType);
+    if (expectedSize != 0 && dataLength != expectedSize) {
+        ThrowStdException("Fixed-width data indicator does not match the bound buffer size");
+    }
+}
+
 constexpr int MAX_NATIVE_ROW_COUNT = 1000000;
 constexpr size_t MAX_NATIVE_FETCH_BYTES = 256ULL * 1024 * 1024;
 constexpr size_t MAX_NATIVE_PARAMETER_BYTES = 256ULL * 1024 * 1024;
@@ -5106,6 +5146,8 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, const Metadata&
             if (dataLen < 0) {
                 ThrowStdException("Unexpected negative data length");
             }
+            ValidateFixedFetchDataLength(columnInfos[col - 1].dataType,
+                                         static_cast<uint64_t>(dataLen));
 
             // Performance: Use function pointer dispatch for simple types (fast
             // path) This eliminates the switch statement from hot loop -
@@ -5804,6 +5846,10 @@ py::object RunFetchValidationTest(const std::string& scenario) {
     } else if (scenario == "oversized_indicator") {
         std::vector<SQLCHAR> buffer(4);
         CheckedArrowSourceOffset(buffer, 0, buffer.size(), buffer.size() + 1);
+    } else if (scenario == "short_fixed_indicator") {
+        ValidateFixedFetchDataLength(SQL_INTEGER, sizeof(SQLINTEGER) - 1);
+    } else if (scenario == "oversized_fixed_indicator") {
+        ValidateFixedFetchDataLength(SQL_GUID, sizeof(SQLGUID) + 1);
     } else if (scenario == "zero_arrow_rows") {
         ValidateArrowFetchedRowCount(0, 1, 1);
     } else if (scenario == "oversized_arrow_fetch") {
@@ -6560,6 +6606,7 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules,
                     ThrowStdException("Unexpected negative data length.");
                 }
                 auto dataLen = static_cast<uint64_t>(indicator);
+                ValidateFixedFetchDataLength(dataType, dataLen);
 
                 switch (dataType) {
                     case SQL_SS_UDT:
