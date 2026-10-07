@@ -615,6 +615,7 @@ static SQLRETURN StreamDAEParameter(SQLHSTMT hStmt, const ParamInfo& info,
         return SQL_SUCCESS;
     }
     ThrowStdException("DAE only supports str, bytes, or bytearray values");
+    return SQL_ERROR;
 }
 
 // GH-610: Resolve SQL type for a NULL parameter using per-handle cache.
