@@ -333,6 +333,12 @@ void Connection::setAutocommit(bool enable) {
         ThrowStdException("Connection handle not allocated");
     }
     clearResultMetadata();
+    // Only successful native sanitation with no retained statement/raw handle
+    // aliases proves ON. A new login or _autocommit alone is not proof.
+    if (enable && _dbcHandle->get() && _poolClean && !_poolProofDisabled) {
+        _autocommit = true;
+        return;
+    }
     SQLINTEGER value = enable ? SQL_AUTOCOMMIT_ON : SQL_AUTOCOMMIT_OFF;
     LOG("Setting autocommit=%d", enable);
     SQLRETURN ret;

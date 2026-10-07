@@ -2025,10 +2025,22 @@ py::list SQLGetAllDiagRecords(SqlHandlePtr handle) {
     return records;
 }
 
+static bool FetchDiagnosticsAreEmpty(SQLHSTMT hStmt) {
+    if (!SQLGetDiagField_ptr)
+        return false;
+    // Diagnostic header reads preserve the originating records. An unsupported
+    // or uncertain count must retain the original record enumeration.
+    SQLINTEGER count = -1;
+    SQLRETURN ret = SQLGetDiagField_ptr(SQL_HANDLE_STMT, hStmt, 0, SQL_DIAG_NUMBER,
+                                       &count, 0, nullptr);
+    return ret == SQL_SUCCESS && count == 0;
+}
+
 // Called only with the GIL held, immediately after the originating ODBC call.
 static void CaptureFetchDiagnostics(SQLHSTMT hStmt, SQLRETURN ret, py::handle messages,
                                     bool internalTruncation = false) {
-    if ((ret == SQL_SUCCESS_WITH_INFO || ret == SQL_NO_DATA) && messages && !messages.is_none())
+    if ((ret == SQL_SUCCESS_WITH_INFO || ret == SQL_NO_DATA) && messages && !messages.is_none() &&
+        !FetchDiagnosticsAreEmpty(hStmt))
         AppendDiagRecords(hStmt, SQL_HANDLE_STMT, messages, internalTruncation);
 }
 
