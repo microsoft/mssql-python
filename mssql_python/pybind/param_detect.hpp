@@ -190,6 +190,29 @@ inline bool PyLongGreaterThan(PyObject* value, long long threshold) {
     return overflow > 0 || (overflow == 0 && result > threshold);
 }
 
+inline Py_ssize_t UnicodeUtf16Length(PyObject* value) {
+    const Py_ssize_t length = PyUnicode_GET_LENGTH(value);
+    if (PyUnicode_KIND(value) <= PyUnicode_2BYTE_KIND) {
+        return length;
+    }
+
+    Py_ssize_t utf16Length = 0;
+    const Py_UCS4* data = PyUnicode_4BYTE_DATA(value);
+    for (Py_ssize_t index = 0; index < length; ++index) {
+        utf16Length += data[index] > 0xFFFF ? 2 : 1;
+    }
+    return utf16Length;
+}
+
+inline Py_ssize_t EncodedUnicodeLength(PyObject* value, const std::string& encoding) {
+    py::object encoded =
+        steal(PyUnicode_AsEncodedString(value, encoding.c_str(), "strict"));
+    if (!encoded) {
+        throw py::error_already_set();
+    }
+    return PyBytes_GET_SIZE(encoded.ptr());
+}
+
 inline PyObject* FormatDecimalParam(PyObject* params, Py_ssize_t index, PyObject* value) {
     py::object formatted = steal(PyObject_CallMethod(value, "__format__", "s", "f"));
     if (!formatted) throw py::error_already_set();
@@ -216,7 +239,7 @@ inline void NormalizeTimeParam(PyObject* params, Py_ssize_t index, SQLULEN& colu
 }
 
 inline void ApplyInputSizeOverride(PyObject* params, PyObject* inputSize, Py_ssize_t index,
-                                   ParamInfo& info) {
+                                   ParamInfo& info, const std::string& charEncoding) {
     py::tuple values = borrow<py::tuple>(inputSize);
     info.paramSQLType = values[0].cast<SQLSMALLINT>();
     info.paramCType = values[1].cast<SQLSMALLINT>();
@@ -257,16 +280,25 @@ inline void ApplyInputSizeOverride(PyObject* params, PyObject* inputSize, Py_ssi
         }
     }
 
+    Py_ssize_t actualTextLength = 0;
+    if (PyUnicode_Check(obj)) {
+        actualTextLength = info.paramCType == SQL_C_CHAR
+                               ? EncodedUnicodeLength(obj, charEncoding)
+                               : UnicodeUtf16Length(obj);
+    }
     const bool textNeedsDAE =
         PyUnicode_Check(obj) &&
         (PyLongGreaterThan(columnSize, MAX_INLINE_CHAR) ||
-         PyUnicode_GET_LENGTH(obj) > MAX_INLINE_CHAR);
+         actualTextLength > MAX_INLINE_CHAR);
     const bool binaryNeedsDAE =
         (PyBytes_Check(obj) || PyByteArray_Check(obj)) &&
         (PyLongGreaterThan(columnSize, MAX_INLINE_BINARY) ||
          (PyBytes_Check(obj) ? PyBytes_GET_SIZE(obj) : PyByteArray_GET_SIZE(obj)) >
              MAX_INLINE_BINARY);
     info.isDAE = textNeedsDAE || binaryNeedsDAE;
+    if (info.isDAE && !PyLongGreaterThan(columnSize, MAX_INLINE_BINARY)) {
+        info.columnSize = 0;
+    }
 
     if (PyTime_Check(obj) && info.paramCType == PARAM_C_TYPE_TEXT) {
         NormalizeTimeParam(params, index, info.columnSize);
@@ -302,7 +334,8 @@ inline void ApplyInputSizeOverride(PyObject* params, PyObject* inputSize, Py_ssi
 //
 // Takes raw PyObject* lists. Caller guarantees params is a fresh copy (cursor.py
 // does list(actual_params)), so in-place mutation via PyList_SetItem is safe.
-inline std::vector<ParamInfo> DetectParamTypes(PyObject* params, PyObject* inputSizes) {
+inline std::vector<ParamInfo> DetectParamTypes(PyObject* params, PyObject* inputSizes,
+                                               const std::string& charEncoding = "utf-8") {
     PyTypeCache::initialize();
 
     const Py_ssize_t n = PyList_GET_SIZE(params);
@@ -318,7 +351,7 @@ inline std::vector<ParamInfo> DetectParamTypes(PyObject* params, PyObject* input
         info.isDAE = false;
 
         if (i < inputSizeCount) {
-            ApplyInputSizeOverride(params, PyList_GET_ITEM(inputSizes, i), i, info);
+            ApplyInputSizeOverride(params, PyList_GET_ITEM(inputSizes, i), i, info, charEncoding);
             continue;
         }
 
@@ -404,16 +437,7 @@ inline std::vector<ParamInfo> DetectParamTypes(PyObject* params, PyObject* input
             unsigned int kind = PyUnicode_KIND(obj);
             const void* udata = PyUnicode_DATA(obj);
 
-            Py_ssize_t utf16_len;
-            if (kind <= PyUnicode_2BYTE_KIND) {
-                utf16_len = length;
-            } else {
-                utf16_len = 0;
-                const Py_UCS4* data = PyUnicode_4BYTE_DATA(obj);
-                for (Py_ssize_t j = 0; j < length; ++j) {
-                    utf16_len += (data[j] > 0xFFFF) ? 2 : 1;
-                }
-            }
+            const Py_ssize_t utf16_len = UnicodeUtf16Length(obj);
 
             // Detect whether the string needs wide-char (NVARCHAR) or narrow (VARCHAR) binding.
             // PyUnicode_IS_COMPACT_ASCII is a struct field check (O(1)), not a content scan.

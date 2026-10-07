@@ -300,6 +300,7 @@ def test_setinputsizes_text_binding_normalizes_time(cursor):
     ("value", "sql_type"),
     [
         ("x" * 4001, ddbc_sql_const.SQL_VARCHAR.value),
+        ("\U0001f600" * 3000, ddbc_sql_const.SQL_WVARCHAR.value),
         (b"x" * 8001, ddbc_sql_const.SQL_VARBINARY.value),
     ],
 )
