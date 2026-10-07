@@ -474,8 +474,19 @@ void ReserveNativeFetchBytes(size_t& reservedBytes, size_t count, size_t element
 template <typename ElementType>
 void ResizeNativeFetchBuffer(std::vector<ElementType>& buffer, size_t count,
                              size_t& reservedBytes) {
+    if (buffer.size() >= count) {
+        return;
+    }
+
+    const size_t oldBytes = CheckedMultiplySize(
+        buffer.size(), sizeof(ElementType), "Native fetch buffer size is too large");
     ReserveNativeFetchBytes(reservedBytes, count, sizeof(ElementType));
-    buffer.resize(count);
+    {
+        std::vector<ElementType> resizedBuffer(count);
+        std::copy(buffer.begin(), buffer.end(), resizedBuffer.begin());
+        buffer.swap(resizedBuffer);
+    }
+    reservedBytes -= oldBytes;
 }
 
 template <typename ElementType>
@@ -488,8 +499,7 @@ void EnsureNativeFetchBufferSize(std::vector<ElementType>& buffer, size_t requir
     while (newSize < requiredSize) {
         newSize = CheckedMultiplySize(newSize, 2, "Native fetch buffer size is too large");
     }
-    ReserveNativeFetchBytes(reservedBytes, newSize - buffer.size(), sizeof(ElementType));
-    buffer.resize(newSize);
+    ResizeNativeFetchBuffer(buffer, newSize, reservedBytes);
 }
 
 template <typename ElementType>
@@ -5442,8 +5452,7 @@ SQLRETURN GetDataVar(SQLHSTMT hStmt, SQLUSMALLINT colNumber, SQLSMALLINT cType,
             start = dataVec.size() - sizeNullTerminator;
 
             // Resize buffer for next iteration
-            ReserveNativeFetchBytes(reservedBytes, end - dataVec.size(), sizeof(T));
-            dataVec.resize(end);
+            ResizeNativeFetchBuffer(dataVec, end, reservedBytes);
         } else {
             // Unexpected return code
             return ret;
