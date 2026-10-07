@@ -326,14 +326,6 @@ inline void ApplyInputSizeOverride(PyObject* params, PyObject* inputSize, Py_ssi
                 ? static_cast<SQLULEN>(actualTextLength)
                 : static_cast<SQLULEN>(PyBytes_Check(obj) ? PyBytes_GET_SIZE(obj)
                                                           : PyByteArray_GET_SIZE(obj));
-        if (info.paramSQLType == SQL_CHAR || info.paramSQLType == SQL_VARCHAR) {
-            info.paramSQLType = SQL_LONGVARCHAR;
-        } else if (textNeedsDAE &&
-                   (info.paramSQLType == SQL_WCHAR || info.paramSQLType == SQL_WVARCHAR)) {
-            info.paramSQLType = SQL_WLONGVARCHAR;
-        } else if (info.paramSQLType == SQL_BINARY || info.paramSQLType == SQL_VARBINARY) {
-            info.paramSQLType = SQL_LONGVARBINARY;
-        }
     }
 
     if (PyTime_Check(obj) && info.paramCType == PARAM_C_TYPE_TEXT) {
@@ -505,13 +497,13 @@ inline std::vector<ParamInfo> DetectParamTypes(PyObject* params, PyObject* input
                 // Strings > 4000 UTF-16 code units exceed SQL Server's inline NVARCHAR(MAX)
                 // threshold. Switch to data-at-execution (DAE) streaming: ODBC driver pulls
                 // data in chunks via SQLPutData, avoiding a single massive buffer allocation.
-                // Long SQL types prevent a zero DAE ColumnSize from being interpreted
-                // as a fixed-width VARCHAR/NVARCHAR precision by the driver.
+                // Advertise the validated payload size rather than zero or the caller's
+                // declared size so the driver selects the corresponding MAX representation.
                 info.isDAE = true;
                 info.columnSize = utf16_len;
                 info.utf16Len = utf16_len;
                 info.dataPtr = borrow(obj);
-                info.paramSQLType = is_unicode ? SQL_WLONGVARCHAR : SQL_LONGVARCHAR;
+                info.paramSQLType = is_unicode ? SQL_WVARCHAR : SQL_VARCHAR;
                 info.paramCType = is_unicode ? SQL_C_WCHAR : PARAM_C_TYPE_TEXT;
             } else {
                 info.columnSize = is_unicode ? utf16_len : length;
@@ -532,7 +524,6 @@ inline std::vector<ParamInfo> DetectParamTypes(PyObject* params, PyObject* input
                 info.isDAE = true;
                 info.columnSize = static_cast<SQLULEN>(length);
                 info.dataPtr = borrow(obj);
-                info.paramSQLType = SQL_LONGVARBINARY;
             } else {
                 info.columnSize = std::max<SQLULEN>(length, 1);
             }
