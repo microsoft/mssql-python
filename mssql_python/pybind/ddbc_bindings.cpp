@@ -422,6 +422,7 @@ size_t FixedFetchValueSize(SQLSMALLINT dataType) {
             return sizeof(SQL_TIMESTAMP_STRUCT);
         case SQL_TYPE_DATE:
             return sizeof(SQL_DATE_STRUCT);
+        case SQL_TYPE_TIME:
         case SQL_SS_TIME2:
             return sizeof(SQL_SS_TIME2_STRUCT);
         case SQL_GUID:
@@ -437,6 +438,15 @@ void ValidateFixedFetchDataLength(SQLSMALLINT dataType, uint64_t dataLength) {
     const size_t expectedSize = FixedFetchValueSize(dataType);
     if (expectedSize != 0 && dataLength != expectedSize) {
         ThrowStdException("Fixed-width data indicator does not match the bound buffer size");
+    }
+}
+
+void ValidateDirectFetchDataLength(SQLRETURN ret, SQLSMALLINT dataType, SQLLEN indicator) {
+    if (SQL_SUCCEEDED(ret) && indicator != SQL_NULL_DATA) {
+        if (indicator < 0) {
+            ThrowStdException("Unexpected negative data length");
+        }
+        ValidateFixedFetchDataLength(dataType, static_cast<uint64_t>(indicator));
     }
 }
 
@@ -4275,6 +4285,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                 SQLLEN indicator = 0;
                 ret = SQLGetData_ptr(hStmt, i, SQL_C_LONG, &intValue, 0, &indicator);
                 CaptureFetchDiagnostics(hStmt, ret, messages);
+                ValidateDirectFetchDataLength(ret, effectiveDataType, indicator);
                 if (SQL_SUCCEEDED(ret) && indicator != SQL_NULL_DATA) {
                     row.append(static_cast<int>(intValue));
                 } else {
@@ -4287,6 +4298,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                 SQLLEN indicator = 0;
                 ret = SQLGetData_ptr(hStmt, i, SQL_C_SHORT, &smallIntValue, 0, &indicator);
                 CaptureFetchDiagnostics(hStmt, ret, messages);
+                ValidateDirectFetchDataLength(ret, effectiveDataType, indicator);
                 if (SQL_SUCCEEDED(ret) && indicator == SQL_NULL_DATA) {
                     row.append(py::none());
                     break;
@@ -4306,6 +4318,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                 SQLLEN indicator = 0;
                 ret = SQLGetData_ptr(hStmt, i, SQL_C_FLOAT, &realValue, 0, &indicator);
                 CaptureFetchDiagnostics(hStmt, ret, messages);
+                ValidateDirectFetchDataLength(ret, effectiveDataType, indicator);
                 if (SQL_SUCCEEDED(ret) && indicator == SQL_NULL_DATA) {
                     row.append(py::none());
                     break;
@@ -4330,6 +4343,14 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                 CaptureFetchDiagnostics(hStmt, ret, messages);
 
                 if (SQL_SUCCEEDED(ret)) {
+                    if (indicator == SQL_NULL_DATA) {
+                        row.append(py::none());
+                        break;
+                    }
+                    if (indicator < 0) {
+                        ThrowStdException("Unexpected negative data length");
+                    }
+                    ValidateDecimalDataLength(static_cast<uint64_t>(indicator));
                     try {
                         // Validate 'indicator' to avoid buffer overflow and
                         // fallback to a safe null-terminated read when length
@@ -4386,6 +4407,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                 SQLLEN indicator = 0;
                 ret = SQLGetData_ptr(hStmt, i, SQL_C_DOUBLE, &doubleValue, 0, &indicator);
                 CaptureFetchDiagnostics(hStmt, ret, messages);
+                ValidateDirectFetchDataLength(ret, effectiveDataType, indicator);
                 if (SQL_SUCCEEDED(ret) && indicator == SQL_NULL_DATA) {
                     row.append(py::none());
                     break;
@@ -4405,6 +4427,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                 SQLLEN indicator = 0;
                 ret = SQLGetData_ptr(hStmt, i, SQL_C_SBIGINT, &bigintValue, 0, &indicator);
                 CaptureFetchDiagnostics(hStmt, ret, messages);
+                ValidateDirectFetchDataLength(ret, effectiveDataType, indicator);
                 if (SQL_SUCCEEDED(ret) && indicator == SQL_NULL_DATA) {
                     row.append(py::none());
                     break;
@@ -4425,6 +4448,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                 ret = SQLGetData_ptr(hStmt, i, SQL_C_TYPE_DATE, &dateValue, sizeof(dateValue),
                                      &indicator);
                 CaptureFetchDiagnostics(hStmt, ret, messages);
+                ValidateDirectFetchDataLength(ret, effectiveDataType, indicator);
                 if (SQL_SUCCEEDED(ret) && indicator != SQL_NULL_DATA) {
                     row.append(
                         FetchTemporal::date(dateValue.year, dateValue.month, dateValue.day));
@@ -4439,6 +4463,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                 SQLLEN indicator = 0;
                 ret = SQLGetData_ptr(hStmt, i, SQL_C_SS_TIME2, &t2, sizeof(t2), &indicator);
                 CaptureFetchDiagnostics(hStmt, ret, messages);
+                ValidateDirectFetchDataLength(ret, effectiveDataType, indicator);
                 if (SQL_SUCCEEDED(ret) && indicator != SQL_NULL_DATA) {
                     row.append(FetchTemporal::time(
                         t2.hour, t2.minute, t2.second, t2.fraction / 1000));  // ns to µs
@@ -4460,6 +4485,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                 ret = SQLGetData_ptr(hStmt, i, SQL_C_TYPE_TIMESTAMP, &timestampValue,
                                      sizeof(timestampValue), &indicator);
                 CaptureFetchDiagnostics(hStmt, ret, messages);
+                ValidateDirectFetchDataLength(ret, effectiveDataType, indicator);
                 if (SQL_SUCCEEDED(ret) && indicator == SQL_NULL_DATA) {
                     row.append(py::none());
                     break;
@@ -4484,6 +4510,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                 ret = SQLGetData_ptr(hStmt, i, SQL_C_SS_TIMESTAMPOFFSET, &dtoValue,
                                      sizeof(dtoValue), &indicator);
                 CaptureFetchDiagnostics(hStmt, ret, messages);
+                ValidateDirectFetchDataLength(ret, effectiveDataType, indicator);
                 if (SQL_SUCCEEDED(ret) && indicator != SQL_NULL_DATA) {
                     LOG("SQLGetData: Retrieved DATETIMEOFFSET for column %d - "
                         "%d-%d-%d %d:%d:%d, fraction_ns=%u, tz_hour=%d, "
@@ -4576,6 +4603,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                 SQLLEN indicator = 0;
                 ret = SQLGetData_ptr(hStmt, i, SQL_C_TINYINT, &tinyIntValue, 0, &indicator);
                 CaptureFetchDiagnostics(hStmt, ret, messages);
+                ValidateDirectFetchDataLength(ret, effectiveDataType, indicator);
                 if (SQL_SUCCEEDED(ret) && indicator == SQL_NULL_DATA) {
                     row.append(py::none());
                     break;
@@ -4595,6 +4623,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                 SQLLEN indicator = 0;
                 ret = SQLGetData_ptr(hStmt, i, SQL_C_BIT, &bitValue, 0, &indicator);
                 CaptureFetchDiagnostics(hStmt, ret, messages);
+                ValidateDirectFetchDataLength(ret, effectiveDataType, indicator);
                 if (SQL_SUCCEEDED(ret) && indicator == SQL_NULL_DATA) {
                     row.append(py::none());
                     break;
@@ -4616,6 +4645,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                 ret =
                     SQLGetData_ptr(hStmt, i, SQL_C_GUID, &guidValue, sizeof(guidValue), &indicator);
                 CaptureFetchDiagnostics(hStmt, ret, messages);
+                ValidateDirectFetchDataLength(ret, effectiveDataType, indicator);
 
                 if (SQL_SUCCEEDED(ret) && indicator != SQL_NULL_DATA) {
                     std::vector<char> guid_bytes(16);
@@ -5850,6 +5880,11 @@ py::object RunFetchValidationTest(const std::string& scenario) {
         ValidateFixedFetchDataLength(SQL_INTEGER, sizeof(SQLINTEGER) - 1);
     } else if (scenario == "oversized_fixed_indicator") {
         ValidateFixedFetchDataLength(SQL_GUID, sizeof(SQLGUID) + 1);
+    } else if (scenario == "short_direct_fixed_indicator") {
+        ValidateDirectFetchDataLength(SQL_SUCCESS, SQL_TYPE_TIMESTAMP,
+                                      sizeof(SQL_TIMESTAMP_STRUCT) - 1);
+    } else if (scenario == "oversized_direct_decimal_indicator") {
+        ValidateDecimalDataLength(MAX_DIGITS_IN_NUMERIC);
     } else if (scenario == "zero_arrow_rows") {
         ValidateArrowFetchedRowCount(0, 1, 1);
     } else if (scenario == "oversized_arrow_fetch") {
