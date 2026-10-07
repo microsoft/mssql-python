@@ -2312,6 +2312,24 @@ static void CaptureFetchDiagnostics(SQLHSTMT hStmt, SQLRETURN ret, py::handle me
         AppendDiagRecords(hStmt, SQL_HANDLE_STMT, messages, internalTruncation);
 }
 
+static bool HasDataTruncationDiagnostic(SQLHSTMT hStmt) {
+    SQLWCHAR state[6] = {};
+    SQLINTEGER nativeError = 0;
+    SQLWCHAR message[SQL_MAX_MESSAGE_LENGTH] = {};
+    SQLSMALLINT messageLength = 0;
+    for (SQLSMALLINT record = 1;; ++record) {
+        const SQLRETURN ret =
+            SQLGetDiagRec_ptr(SQL_HANDLE_STMT, hStmt, record, state, &nativeError, message,
+                              SQL_MAX_MESSAGE_LENGTH, &messageLength);
+        if (ret == SQL_NO_DATA) return false;
+        if (!SQL_SUCCEEDED(ret)) return false;
+        if (state[0] == '0' && state[1] == '1' && state[2] == '0' && state[3] == '0' &&
+            state[4] == '4') {
+            return true;
+        }
+    }
+}
+
 static void CheckFetchError(const SqlHandlePtr& handle, SQLRETURN ret) {
     if (ret < 0)
         py::module_::import("mssql_python.helpers")
@@ -4774,6 +4792,9 @@ void ValidateFetchedRowCount(const ColumnBuffers& buffers, SQLUSMALLINT numCols,
     if (numRowsFetched == 0) {
         ThrowStdException("Driver reported a successful fetch with zero rows");
     }
+    if (numCols == 0) {
+        ThrowStdException("Driver returned rows for a result set with no columns");
+    }
     for (SQLUSMALLINT col = 0; col < numCols; ++col) {
         if (numRowsFetched > buffers.indicators[col].size()) {
             ThrowStdException("Driver returned more rows than the allocated fetch buffers");
@@ -5526,14 +5547,24 @@ SQLRETURN GetDataVar(SQLHSTMT hStmt, SQLUSMALLINT colNumber, SQLSMALLINT cType,
             return ret;
         }
 
+        if (ret == SQL_NO_DATA) {
+            const size_t prefixBytes = CheckedMultiplySize(
+                start, sizeof(T), "Variable-length fetch result is too large");
+            if (prefixBytes > static_cast<size_t>(std::numeric_limits<SQLLEN>::max())) {
+                ThrowStdException("Variable-length fetch result is too large");
+            }
+            *indicator = static_cast<SQLLEN>(prefixBytes);
+            break;
+        }
+
         // Handle NULL data
         if (localInd == SQL_NULL_DATA) {
             *indicator = SQL_NULL_DATA;
             return SQL_SUCCESS;
         }
 
-        // SQL_SUCCESS or SQL_NO_DATA means we got all the data
-        if (ret == SQL_SUCCESS || ret == SQL_NO_DATA) {
+        // SQL_SUCCESS means we got all the data
+        if (ret == SQL_SUCCESS) {
             if (localInd >= 0) {
                 const size_t prefixBytes = CheckedMultiplySize(
                     start, sizeof(T), "Variable-length fetch result is too large");
@@ -5575,6 +5606,11 @@ SQLRETURN GetDataVar(SQLHSTMT hStmt, SQLUSMALLINT colNumber, SQLSMALLINT cType,
 
             // The next read starts where the null terminator would have been placed
             if (end <= dataVec.size()) {
+                const bool isTruncation =
+                    !captureDiagnostics || HasDataTruncationDiagnostic(hStmt);
+                if (isTruncation) {
+                    ThrowStdException("Variable-length fetch truncation made no progress");
+                }
                 const size_t prefixBytes = CheckedMultiplySize(
                     start, sizeof(T), "Variable-length fetch result is too large");
                 if (localInd < 0 ||
@@ -5622,6 +5658,9 @@ py::object RunFetchValidationTest(const std::string& scenario) {
     if (scenario == "oversized_rows") {
         ColumnBuffers buffers(1, 1);
         ValidateFetchedRowCount(buffers, 1, 2);
+    } else if (scenario == "rows_without_columns") {
+        ColumnBuffers buffers(0, 1);
+        ValidateFetchedRowCount(buffers, 0, 1);
     } else if (scenario == "zero_rows") {
         ColumnBuffers buffers(1, 1);
         ValidateFetchedRowCount(buffers, 1, 0);
@@ -5665,6 +5704,28 @@ py::object RunFetchValidationTest(const std::string& scenario) {
         };
         testGetDataResultIndex = 0;
 
+        std::vector<SQLCHAR> buffer;
+        SQLLEN indicator = 0;
+        size_t reservedBytes = 0;
+        const SQLRETURN ret = GetDataVar(nullptr, 1, SQL_C_BINARY, buffer, &indicator,
+                                         reservedBytes, py::none(), false, TestSQLGetData);
+        return py::make_tuple(ret, indicator, testGetDataResultIndex, buffer.size());
+    } else if (scenario == "truncation_no_progress") {
+        testGetDataResults = {
+            {static_cast<SQLRETURN>(SQL_SUCCESS_WITH_INFO), static_cast<SQLLEN>(0)},
+        };
+        testGetDataResultIndex = 0;
+        std::vector<SQLCHAR> buffer;
+        SQLLEN indicator = 0;
+        size_t reservedBytes = 0;
+        GetDataVar(nullptr, 1, SQL_C_BINARY, buffer, &indicator, reservedBytes, py::none(),
+                   false, TestSQLGetData);
+    } else if (scenario == "sql_no_total_no_data") {
+        testGetDataResults = {
+            {static_cast<SQLRETURN>(SQL_SUCCESS_WITH_INFO), static_cast<SQLLEN>(SQL_NO_TOTAL)},
+            {static_cast<SQLRETURN>(SQL_NO_DATA), std::numeric_limits<SQLLEN>::max()},
+        };
+        testGetDataResultIndex = 0;
         std::vector<SQLCHAR> buffer;
         SQLLEN indicator = 0;
         size_t reservedBytes = 0;

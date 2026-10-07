@@ -58,6 +58,7 @@ def test_arrow_batch_rejects_unsafe_size_before_handle_access(batch_size):
     ("scenario", "message"),
     [
         ("oversized_rows", "more rows than the allocated fetch buffers"),
+        ("rows_without_columns", "result set with no columns"),
         ("zero_rows", "successful fetch with zero rows"),
         ("odd_wchar", "invalid byte length"),
         ("odd_char_as_wchar", "invalid byte length"),
@@ -67,6 +68,7 @@ def test_arrow_batch_rejects_unsafe_size_before_handle_access(batch_size):
         ("oversized_arrow_batch", "more rows than the allocated Arrow buffers"),
         ("char_terminator_indicator", "exceeds the Arrow text payload capacity"),
         ("wchar_terminator_indicator", "exceeds the Arrow text payload capacity"),
+        ("truncation_no_progress", "truncation made no progress"),
     ],
 )
 def test_driver_fetch_validation_rejects_malformed_lengths(scenario, message):
@@ -93,6 +95,15 @@ assert size == 2
         check=False,
     )
     assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.skipif(not DDBC_AVAILABLE, reason="ddbc_bindings not available")
+def test_sql_no_data_ignores_undefined_indicator():
+    ret, indicator, calls, size = ddbc._test_fetch_validation("sql_no_total_no_data")
+    assert ret == 0
+    assert indicator == 1
+    assert calls == 2
+    assert size == 2
 
 
 @pytest.mark.skipif(not DDBC_AVAILABLE, reason="ddbc_bindings not available")
