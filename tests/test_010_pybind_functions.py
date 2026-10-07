@@ -72,6 +72,10 @@ def test_arrow_batch_rejects_unsafe_size_before_handle_access(batch_size):
         ("first_call_no_data", "no data before making progress"),
         ("oversized_decimal_indicator", "Decimal data exceeds the allocated fetch buffer"),
         ("odd_streamed_wchar", "invalid byte length"),
+        ("unexpected_lob_indicator", "Unexpected negative LOB data indicator"),
+        ("lob_truncation_no_progress", "LOB fetch truncation made no progress"),
+        ("odd_direct_wchar", "invalid byte length"),
+        ("odd_lob_wchar", "invalid byte length"),
     ],
 )
 def test_driver_fetch_validation_rejects_malformed_lengths(scenario, message):

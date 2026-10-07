@@ -3554,10 +3554,16 @@ SQLRETURN SQLFetch_wrap(SqlHandlePtr StatementHandle) {
     return ret;
 }
 
-// Non-static so it can be called from inline functions in header
-py::object FetchLobColumnData(SQLHSTMT hStmt, SQLUSMALLINT colIndex, SQLSMALLINT cType,
-                              bool isWideChar, bool isBinary, const std::string& charEncoding,
-                              py::handle messages) {
+inline void ValidateWideCharByteLength(SQLLEN dataLen) {
+    if (dataLen > 0 && dataLen % sizeof(SQLWCHAR) != 0) {
+        ThrowStdException("Wide-character data has an invalid byte length");
+    }
+}
+
+static py::object FetchLobColumnDataImpl(
+    SQLHSTMT hStmt, SQLUSMALLINT colIndex, SQLSMALLINT cType, bool isWideChar, bool isBinary,
+    const std::string& charEncoding, py::handle messages, bool captureDiagnostics,
+    SQLGetDataFunc getData, bool (*hasTruncationDiagnostic)(SQLHSTMT)) {
     PERF_TIMER("FetchLobColumnData");
     std::vector<char> buffer;
     size_t reservedBytes = 0;
@@ -3572,9 +3578,11 @@ py::object FetchLobColumnData(SQLHSTMT hStmt, SQLUSMALLINT colIndex, SQLSMALLINT
         {
             // Release the GIL during blocking SQLGetData LOB streaming
             py::gil_scoped_release release;
-            ret = SQLGetData_ptr(hStmt, colIndex, cType, chunk.data(), DAE_CHUNK_SIZE, &actualRead);
+            ret = getData(hStmt, colIndex, cType, chunk.data(), DAE_CHUNK_SIZE, &actualRead);
         }
-        CaptureFetchDiagnostics(hStmt, ret, messages, true);
+        if (captureDiagnostics) {
+            CaptureFetchDiagnostics(hStmt, ret, messages, true);
+        }
 
         if (ret == SQL_ERROR || !SQL_SUCCEEDED(ret) && ret != SQL_SUCCESS_WITH_INFO) {
             std::ostringstream oss;
@@ -3587,6 +3595,12 @@ py::object FetchLobColumnData(SQLHSTMT hStmt, SQLUSMALLINT colIndex, SQLSMALLINT
             LOG("FetchLobColumnData: Column %d is NULL at loop %d", colIndex, loopCount);
             return py::none();
         }
+        if (actualRead < 0 && actualRead != SQL_NO_TOTAL) {
+            ThrowStdException("Unexpected negative LOB data indicator");
+        }
+        if (isWideChar) {
+            ValidateWideCharByteLength(actualRead);
+        }
 
         size_t bytesRead = 0;
         if (actualRead >= 0) {
@@ -3595,8 +3609,13 @@ py::object FetchLobColumnData(SQLHSTMT hStmt, SQLUSMALLINT colIndex, SQLSMALLINT
                 bytesRead = DAE_CHUNK_SIZE;
             }
         } else {
-            // fallback: use full buffer size if actualRead is unknown
             bytesRead = DAE_CHUNK_SIZE;
+        }
+        if (ret == SQL_SUCCESS_WITH_INFO && bytesRead == 0) {
+            if (hasTruncationDiagnostic(hStmt)) {
+                ThrowStdException("LOB fetch truncation made no progress");
+            }
+            break;
         }
 
         // For character data, trim trailing null terminators
@@ -3628,6 +3647,7 @@ py::object FetchLobColumnData(SQLHSTMT hStmt, SQLUSMALLINT colIndex, SQLSMALLINT
                             loopCount);
                     }
                 }
+
             }
         }
         if (bytesRead > 0) {
@@ -3686,6 +3706,15 @@ py::object FetchLobColumnData(SQLHSTMT hStmt, SQLUSMALLINT colIndex, SQLSMALLINT
         // Return raw bytes as fallback
         return raw_bytes;
     }
+}
+
+// Non-static so it can be called from inline functions in header
+py::object FetchLobColumnData(SQLHSTMT hStmt, SQLUSMALLINT colIndex, SQLSMALLINT cType,
+                              bool isWideChar, bool isBinary, const std::string& charEncoding,
+                              py::handle messages) {
+    return FetchLobColumnDataImpl(hStmt, colIndex, cType, isWideChar, isBinary, charEncoding,
+                                  messages, true, SQLGetData_ptr,
+                                  HasDataTruncationDiagnostic);
 }
 
 // Helper function to map sql_variant's underlying C type to SQL data type
@@ -3922,6 +3951,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                              dataLen >= static_cast<SQLLEN>(fetchBufferSize)));
                     if (SQL_SUCCEEDED(ret)) {
                         if (dataLen > 0) {
+                            ValidateWideCharByteLength(dataLen);
                             uint64_t numCharsInData = dataLen / sizeof(SQLWCHAR);
                             if (numCharsInData < dataBuffer.size()) {
                                 // Construct with explicit length: SQLGetData reports the
@@ -4101,6 +4131,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                              dataLen >= static_cast<SQLLEN>(fetchBufferSize)));
                     if (SQL_SUCCEEDED(ret)) {
                         if (dataLen > 0) {
+                            ValidateWideCharByteLength(dataLen);
                             uint64_t numCharsInData = dataLen / sizeof(SQLWCHAR);
                             if (numCharsInData < dataBuffer.size()) {
                                 // Construct with explicit length: SQLGetData reports the
@@ -5760,6 +5791,30 @@ py::object RunFetchValidationTest(const std::string& scenario) {
         size_t reservedBytes = 0;
         GetDataVar(nullptr, 1, SQL_C_WCHAR, buffer, &indicator, reservedBytes, py::none(),
                    false, TestSQLGetData);
+    } else if (scenario == "unexpected_lob_indicator") {
+        testGetDataResults = {
+            {static_cast<SQLRETURN>(SQL_SUCCESS_WITH_INFO), static_cast<SQLLEN>(-2)},
+        };
+        testGetDataResultIndex = 0;
+        FetchLobColumnDataImpl(nullptr, 1, SQL_C_BINARY, false, true, "", py::none(),
+                               false, TestSQLGetData, TestHasTruncationDiagnostic);
+    } else if (scenario == "lob_truncation_no_progress") {
+        testGetDataResults = {
+            {static_cast<SQLRETURN>(SQL_SUCCESS_WITH_INFO), static_cast<SQLLEN>(0)},
+        };
+        testGetDataResultIndex = 0;
+        FetchLobColumnDataImpl(nullptr, 1, SQL_C_BINARY, false, true, "", py::none(),
+                               false, TestSQLGetData, TestHasTruncationDiagnostic);
+    } else if (scenario == "odd_direct_wchar") {
+        ValidateWideCharByteLength(3);
+    } else if (scenario == "odd_lob_wchar") {
+        testGetDataResults = {
+            {static_cast<SQLRETURN>(SQL_SUCCESS), static_cast<SQLLEN>(3)},
+        };
+        testGetDataResultIndex = 0;
+        FetchLobColumnDataImpl(nullptr, 1, SQL_C_WCHAR, true, false, "utf-16le",
+                               py::none(), false, TestSQLGetData,
+                               TestHasTruncationDiagnostic);
     } else if (scenario == "truncation_no_progress") {
         testGetDataResults = {
             {static_cast<SQLRETURN>(SQL_SUCCESS_WITH_INFO), static_cast<SQLLEN>(0)},
