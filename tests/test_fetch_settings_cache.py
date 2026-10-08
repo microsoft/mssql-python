@@ -1477,7 +1477,12 @@ def test_single_row_wrapper_does_not_enter_batch_factory(cursor):
         "SELECT n AS a, CAST(N'text' AS NVARCHAR(10)) AS b "
         "FROM (VALUES (1),(2),(3),(4)) AS v(n) ORDER BY n"
     )
-    with patch.object(ddbc_bindings, "construct_rows", wraps=ddbc_bindings.construct_rows) as batch:
+    with (
+        patch.object(ddbc_bindings, "construct_rows", wraps=ddbc_bindings.construct_rows) as batch,
+        patch.object(
+            ddbc_bindings, "DDBCSQLFetchRow", wraps=ddbc_bindings.DDBCSQLFetchRow
+        ) as fused,
+    ):
         retained = cursor.fetchmany(1)[0]
         assert tuple(retained) == (1, "text")
         batch.assert_not_called()
@@ -1486,6 +1491,7 @@ def test_single_row_wrapper_does_not_enter_batch_factory(cursor):
         assert cursor.fetchmany(2)[0][0] == 4
         assert batch.call_count == 2
         assert tuple(retained) == (1, "text")
+        fused.assert_not_called()
 
 
 @pytest.mark.parametrize("override_fast_create", (False, True))
@@ -1718,7 +1724,7 @@ def test_single_row_construction_failure_keeps_fetch_position(cursor, method, fa
     cursor.execute("SELECT n AS number FROM (VALUES (1), (2)) AS v(n) ORDER BY n")
     from mssql_python.row import Row
 
-    bridge_name = "DDBCSQLFetchRow" if method == "fetchmany" else "DDBCSQLFetchOne"
+    bridge_name = "DDBCSQLFetchMany" if method == "fetchmany" else "DDBCSQLFetchOne"
     bridge = getattr(ddbc_bindings, bridge_name)
 
     def fetch():
@@ -1827,7 +1833,7 @@ def test_single_row_fusion_handles_post_fetch_factory_change(cursor, method, whe
         ):
             with pytest.raises(RuntimeError, match="factory changed after native advancement"):
                 cursor.fetchmany(1) if method == "fetchmany" else getattr(cursor, method)()
-            assert fused.call_count == (1 if method == "fetchmany" else 0)
+            fused.assert_not_called()
             assert Row._fast_create is factory
             assert cursor.rowcount == 1 and cursor.rownumber == 0
     finally:
@@ -1875,7 +1881,7 @@ def test_single_row_late_allocator_preserves_factory_global_lookup(cursor, metho
             ) as fused,
         ):
             result = cursor.fetchmany(1) if method == "fetchmany" else getattr(cursor, method)()
-            assert fused.call_count == (1 if method == "fetchmany" else 0)
+            fused.assert_not_called()
         if method == "fetchval":
             assert result == 1
         else:

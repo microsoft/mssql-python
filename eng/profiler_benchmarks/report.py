@@ -298,7 +298,7 @@ def validate_row_route(route, guarded=None):
     values = tuple(methods[name] for name in ("fetchone", "fetchmany", "fetchval"))
     if values not in ((False, False, False), (True, True, True), (False, True, False)):
         raise ValueError("Unsupported Python row route policy")
-    if guarded is not None and (type(guarded) is not bool or any(values) != guarded):
+    if guarded is not None and (type(guarded) is not bool or (any(values) and not guarded)):
         raise ValueError("Native binding contradicts Python row route")
     return methods
 

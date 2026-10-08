@@ -50,7 +50,7 @@ _DEFAULT_FAST_ROW_DESCRIPTOR = vars(Row)["_fast_create"]
 # Describes the default routes; reporting reads this outside the fetch hot path.
 _DEFAULT_NATIVE_ROW_ROUTE = {
     "version": 1,
-    "methods": {"fetchone": False, "fetchmany": True, "fetchval": False},
+    "methods": {"fetchone": False, "fetchmany": False, "fetchval": False},
 }
 _DEFAULT_NATIVE_FETCH_ONE = ddbc_bindings.DDBCSQLFetchOne
 _DEFAULT_NATIVE_FETCH_MANY = ddbc_bindings.DDBCSQLFetchMany
@@ -2990,24 +2990,6 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             started = perf_start()
             try:
                 fetch = ddbc_bindings.DDBCSQLFetchMany
-                if (
-                    not started
-                    and type(size) is int
-                    and size == 1
-                    and fetch is _DEFAULT_NATIVE_FETCH_MANY
-                    and _native_row_eligible(Row)
-                ):
-                    return ddbc_bindings.DDBCSQLFetchRow(
-                        self.hstmt,
-                        rows_data,
-                        char_enc,
-                        wchar_enc,
-                        self._cached_char_ctype,
-                        self.messages,
-                        True,
-                        self._finish_fetchmany,
-                        _NATIVE_ROW_PLAN,
-                    )
                 ret = fetch(
                     self.hstmt,
                     rows_data,
