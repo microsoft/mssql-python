@@ -581,6 +581,29 @@ void EnsureNativeFetchBufferSize(std::vector<ElementType>& buffer, size_t requir
     ResizeNativeFetchBuffer(buffer, newSize, reservedBytes);
 }
 
+size_t ExtendNativeFetchBuffer(std::vector<char>& buffer, size_t currentSize, size_t appendSize,
+                               size_t& reservedBytes) {
+    const size_t requiredSize =
+        CheckedAddSize(currentSize, appendSize, "Native fetch buffer size is too large");
+    EnsureNativeFetchBufferSize(buffer, requiredSize, reservedBytes);
+    return requiredSize;
+}
+
+py::tuple TestLobBufferGrowth(size_t chunkCount, size_t chunkSize) {
+    std::vector<char> buffer;
+    size_t dataSize = 0;
+    size_t reservedBytes = 0;
+    size_t growthCount = 0;
+    for (size_t chunk = 0; chunk < chunkCount; ++chunk) {
+        const size_t previousAllocation = buffer.size();
+        dataSize = ExtendNativeFetchBuffer(buffer, dataSize, chunkSize, reservedBytes);
+        if (buffer.size() != previousAllocation) {
+            ++growthCount;
+        }
+    }
+    return py::make_tuple(growthCount, dataSize, buffer.size(), reservedBytes);
+}
+
 template <typename ElementType>
 std::unique_ptr<ElementType[]> AllocateArrowArray(size_t count, size_t& reservedBytes,
                                                   const char* errorMessage) {
@@ -2484,6 +2507,7 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
                               bool use_prepare,
                               const py::dict& encoding_settings) {
     PERF_TIMER("SQLExecute_wrap");
+    ValidateInputSizes(input_sizes.ptr());
     if (!statementHandle || !statementHandle->get()) {
         return SQL_INVALID_HANDLE;
     }
@@ -3306,9 +3330,14 @@ SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list&
 
 SQLRETURN SQLExecuteMany_wrap(const SqlHandlePtr statementHandle, const std::u16string& query,
                               const py::list& columnwise_params,
-                              std::vector<ParamInfo>& paramInfos, size_t paramSetSize,
+                              std::vector<ParamInfo>& paramInfos, py::handle paramSetSizeArg,
                               const py::dict& encodingSettings) {
     PERF_TIMER("SQLExecuteMany_wrap");
+    const size_t paramSetSize = static_cast<size_t>(
+        ValidateNativeRowCountArgument(paramSetSizeArg, "Parameter set size", false));
+    if (!statementHandle || !statementHandle->get()) {
+        return SQL_INVALID_HANDLE;
+    }
     statementHandle->resultMetadata.clear();
     LOG("SQLExecuteMany: Starting batch execution - param_count=%zu, "
         "param_set_size=%zu",
@@ -3646,6 +3675,7 @@ static py::object FetchLobColumnDataImpl(
     SQLGetDataFunc getData, bool (*hasTruncationDiagnostic)(SQLHSTMT)) {
     PERF_TIMER("FetchLobColumnData");
     std::vector<char> buffer;
+    size_t dataSize = 0;
     size_t reservedBytes = 0;
     ReserveNativeFetchBytes(reservedBytes, DAE_CHUNK_SIZE, sizeof(char));
     SQLRETURN ret = SQL_SUCCESS_WITH_INFO;
@@ -3742,10 +3772,8 @@ static py::object FetchLobColumnDataImpl(
             ThrowStdException("LOB fetch truncation made no progress");
         }
         if (bytesRead > 0) {
-            const size_t previousSize = buffer.size();
-            const size_t requiredSize =
-                CheckedAddSize(previousSize, bytesRead, "LOB fetch buffer is too large");
-            ResizeNativeFetchBuffer(buffer, requiredSize, reservedBytes);
+            const size_t previousSize = dataSize;
+            dataSize = ExtendNativeFetchBuffer(buffer, dataSize, bytesRead, reservedBytes);
             std::copy_n(chunk.data(), bytesRead, buffer.data() + previousSize);
             LOG("FetchLobColumnData: Appended %zu bytes at loop %d", bytesRead, loopCount);
         }
@@ -3755,21 +3783,21 @@ static py::object FetchLobColumnDataImpl(
             break;
         }
     }
-    LOG("FetchLobColumnData: Total bytes collected=%zu for column %d", buffer.size(), colIndex);
+    LOG("FetchLobColumnData: Total bytes collected=%zu for column %d", dataSize, colIndex);
 
-    if (buffer.empty()) {
+    if (dataSize == 0) {
         if (isBinary) {
             return py::bytes("");
         }
         return py::str("");
     }
     if (isWideChar) {
-        if (buffer.size() % sizeof(SQLWCHAR) != 0) {
+        if (dataSize % sizeof(SQLWCHAR) != 0) {
             ThrowStdException("Wide-character LOB data has an invalid byte length");
         }
         int byteOrder = -1;
         PyObject* decoded =
-            PyUnicode_DecodeUTF16(buffer.data(), static_cast<Py_ssize_t>(buffer.size()),
+            PyUnicode_DecodeUTF16(buffer.data(), static_cast<Py_ssize_t>(dataSize),
                                   "strict", &byteOrder);
         if (decoded == nullptr) {
             throw py::error_already_set();
@@ -3779,18 +3807,18 @@ static py::object FetchLobColumnDataImpl(
     if (isBinary) {
         LOG("FetchLobColumnData: Returning binary data - %zu bytes for column "
             "%d",
-            buffer.size(), colIndex);
-        return py::bytes(buffer.data(), buffer.size());
+            dataSize, colIndex);
+        return py::bytes(buffer.data(), dataSize);
     }
 
     // For SQL_C_CHAR data, decode using the appropriate encoding.
     const std::string effectiveCharEncoding = GetEffectiveCharDecoding(charEncoding);
-    py::bytes raw_bytes(buffer.data(), buffer.size());
+    py::bytes raw_bytes(buffer.data(), dataSize);
     try {
         py::object decoded = raw_bytes.attr("decode")(effectiveCharEncoding, "strict");
         LOG("FetchLobColumnData: Decoded narrow string with '%s' - %zu bytes -> %zu chars for "
             "column %d",
-            effectiveCharEncoding.c_str(), buffer.size(), py::len(decoded), colIndex);
+            effectiveCharEncoding.c_str(), dataSize, py::len(decoded), colIndex);
         return decoded;
     } catch (const py::error_already_set& e) {
         LOG_ERROR("FetchLobColumnData: Failed to decode with '%s' for column %d: %s",
@@ -7538,6 +7566,8 @@ PYBIND11_MODULE(ddbc_bindings, m) {
           "Fetch an arrow batch of given length from the result set", py::arg("StatementHandle"),
           py::arg("capsules"), py::arg("arrowBatchSize"), py::arg("charCtype"),
           py::arg("messages") = py::none());
+    m.def("_test_lob_buffer_growth", &TestLobBufferGrowth, py::arg("chunk_count"),
+          py::arg("chunk_size"));
     m.def("DDBCSQLFreeHandle", &SQLFreeHandle_wrap, "Free a handle");
     m.def("DDBCSQLResetStmt", &SQLResetStmt_wrap,
           "Close cursor and unbind params without freeing HSTMT");

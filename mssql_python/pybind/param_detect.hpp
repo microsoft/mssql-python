@@ -274,6 +274,89 @@ inline void NormalizeTimeParam(PyObject* params, Py_ssize_t index, SQLULEN& colu
     }
 }
 
+inline long long ValidatedInputSizeInteger(PyObject* value, const char* fieldName) {
+    if (!PyLong_Check(value) || PyBool_Check(value)) {
+        throw py::type_error(std::string(fieldName) + " must be an integer");
+    }
+    int overflow = 0;
+    const long long result = PyLong_AsLongLongAndOverflow(value, &overflow);
+    if ((result == -1 && PyErr_Occurred()) || overflow != 0) {
+        PyErr_Clear();
+        throw py::value_error(std::string(fieldName) + " is out of range");
+    }
+    return result;
+}
+
+inline void ValidateInputSizes(PyObject* inputSizes) {
+    if (inputSizes == Py_None) {
+        return;
+    }
+    if (!PyList_Check(inputSizes)) {
+        throw py::type_error("inputSizes must be None or a list");
+    }
+
+    const Py_ssize_t count = PyList_GET_SIZE(inputSizes);
+    for (Py_ssize_t index = 0; index < count; ++index) {
+        PyObject* entry = PyList_GET_ITEM(inputSizes, index);
+        if (!PyTuple_Check(entry) || PyTuple_GET_SIZE(entry) != 4) {
+            throw py::type_error("each inputSizes entry must be a four-item tuple");
+        }
+
+        const long long sqlType =
+            ValidatedInputSizeInteger(PyTuple_GET_ITEM(entry, 0), "SQL type");
+        const long long cType =
+            ValidatedInputSizeInteger(PyTuple_GET_ITEM(entry, 1), "C type");
+        PyObject* columnSize = PyTuple_GET_ITEM(entry, 2);
+        PyObject* decimalDigits = PyTuple_GET_ITEM(entry, 3);
+        if (!PyLong_Check(columnSize) || PyBool_Check(columnSize) ||
+            !PyLong_Check(decimalDigits) || PyBool_Check(decimalDigits)) {
+            throw py::type_error("column size and decimal digits must be integers");
+        }
+
+        if (sqlType < std::numeric_limits<SQLSMALLINT>::min() ||
+            sqlType > std::numeric_limits<SQLSMALLINT>::max() ||
+            cType < std::numeric_limits<SQLSMALLINT>::min() ||
+            cType > std::numeric_limits<SQLSMALLINT>::max()) {
+            throw py::value_error("SQL and C types must fit in SQLSMALLINT");
+        }
+        const bool isNumeric = sqlType == SQL_DECIMAL || sqlType == SQL_NUMERIC;
+        py::int_ zero(0);
+        const int negativeColumnSize =
+            PyObject_RichCompareBool(columnSize, zero.ptr(), Py_LT);
+        const int negativeDecimalDigits =
+            PyObject_RichCompareBool(decimalDigits, zero.ptr(), Py_LT);
+        if (negativeColumnSize == -1 || negativeDecimalDigits == -1) {
+            throw py::error_already_set();
+        }
+        if (negativeColumnSize == 1) {
+            throw py::value_error("column size must be non-negative");
+        }
+        if (negativeDecimalDigits == 1) {
+            throw py::value_error("decimal digits must be non-negative");
+        }
+        if (!isNumeric) {
+            const unsigned long long requestedSize = PyLong_AsUnsignedLongLong(columnSize);
+            if (requestedSize == static_cast<unsigned long long>(-1) && PyErr_Occurred()) {
+                PyErr_Clear();
+                throw py::value_error("column size is out of range");
+            }
+            if (requestedSize > std::numeric_limits<SQLULEN>::max()) {
+                throw py::value_error("column size is out of range");
+            }
+            const unsigned long long requestedDigits =
+                PyLong_AsUnsignedLongLong(decimalDigits);
+            if (requestedDigits == static_cast<unsigned long long>(-1) && PyErr_Occurred()) {
+                PyErr_Clear();
+                throw py::value_error("decimal digits are out of range");
+            }
+            if (requestedDigits >
+                static_cast<unsigned long long>(std::numeric_limits<SQLSMALLINT>::max())) {
+                throw py::value_error("decimal digits are out of range");
+            }
+        }
+    }
+}
+
 inline void ApplyInputSizeOverride(PyObject* params, PyObject* inputSize, Py_ssize_t index,
                                    ParamInfo& info, const std::string& charEncoding) {
     py::tuple values = borrow<py::tuple>(inputSize);
@@ -390,6 +473,11 @@ inline void ApplyInputSizeOverride(PyObject* params, PyObject* inputSize, Py_ssi
 inline std::vector<ParamInfo> DetectParamTypes(PyObject* params, PyObject* inputSizes,
                                                const std::string& charEncoding = "utf-8") {
     PyTypeCache::initialize();
+
+    if (!PyList_Check(params)) {
+        throw py::type_error("params must be a list");
+    }
+    ValidateInputSizes(inputSizes);
 
     const Py_ssize_t n = PyList_GET_SIZE(params);
     const Py_ssize_t inputSizeCount = inputSizes == Py_None ? 0 : PyList_GET_SIZE(inputSizes);
