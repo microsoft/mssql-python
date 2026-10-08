@@ -38,6 +38,71 @@ from mssql_python.exceptions import (
 
 
 @pytest.mark.skipif(not DDBC_AVAILABLE, reason="ddbc_bindings not available")
+@pytest.mark.parametrize("fetch_size", [-1, 1_000_001, True])
+def test_fetchmany_rejects_unsafe_size_before_handle_access(fetch_size):
+    with pytest.raises(RuntimeError, match="Fetch size"):
+        ddbc.DDBCSQLFetchMany(None, [], fetch_size)
+
+
+@pytest.mark.skipif(not DDBC_AVAILABLE, reason="ddbc_bindings not available")
+@pytest.mark.parametrize("batch_size", [-1, 1_000_001, True])
+def test_arrow_batch_rejects_unsafe_size_before_handle_access(batch_size):
+    with pytest.raises(RuntimeError, match="Arrow batch size"):
+        ddbc.DDBCSQLFetchArrowBatch(None, [], batch_size, 0)
+
+
+@pytest.mark.skipif(not DDBC_AVAILABLE, reason="ddbc_bindings not available")
+@pytest.mark.parametrize("param_set_size", [-1, 0, 1_000_001, True])
+def test_executemany_rejects_unsafe_size_before_handle_access(param_set_size):
+    with pytest.raises(RuntimeError, match="Parameter set size"):
+        ddbc.SQLExecuteMany(None, "", [], [], param_set_size, {})
+
+
+@pytest.mark.skipif(not DDBC_AVAILABLE, reason="ddbc_bindings not available")
+@pytest.mark.parametrize(
+    ("input_sizes", "message"),
+    [
+        ((12, -8, 1, 0), "inputSizes must be None or a list"),
+        ([None], "four-item tuple"),
+        ([(12, -8, 1)], "four-item tuple"),
+        ([(12, -8, True, 0)], "must be integers"),
+        ([(12, -8, -1, 0)], "column size must be non-negative"),
+        ([(12, -8, 2**128, 0)], "column size is out of range"),
+        ([(12, -8, 1, 2**128)], "decimal digits are out of range"),
+    ],
+)
+def test_execute_rejects_malformed_input_sizes_before_handle_access(input_sizes, message):
+    with pytest.raises((TypeError, ValueError), match=message):
+        ddbc.DDBCSQLExecute(None, "", [], input_sizes, [False], True, {})
+
+
+@pytest.mark.skipif(not DDBC_AVAILABLE, reason="ddbc_bindings not available")
+def test_lob_buffer_growth_is_geometric():
+    growth_count, data_size, allocation_size, reserved_bytes = ddbc._test_lob_buffer_growth(
+        64, 64 * 1024
+    )
+    assert data_size == 4 * 1024 * 1024
+    assert allocation_size == data_size
+    assert reserved_bytes == allocation_size
+    assert growth_count == 7
+
+
+@pytest.mark.skipif(not DDBC_AVAILABLE, reason="ddbc_bindings not available")
+@pytest.mark.parametrize(
+    ("chunk_count", "chunk_size", "message"),
+    [
+        (1_000_001, 1, "chunk count"),
+        (True, 1, "chunk count"),
+        (1, 0, "chunk size"),
+        (1, True, "chunk size"),
+    ],
+)
+def test_lob_buffer_growth_helper_rejects_unsafe_sizes(chunk_count, chunk_size, message):
+    with pytest.raises((RuntimeError, TypeError), match=message):
+        ddbc._test_lob_buffer_growth(chunk_count, chunk_size)
+
+
+@pytest.mark.skipif(not DDBC_AVAILABLE, reason="ddbc_bindings not available")
 class TestPybindModuleInfo:
     """Test module information and architecture detection."""
 
