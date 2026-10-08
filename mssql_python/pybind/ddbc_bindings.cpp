@@ -3726,47 +3726,11 @@ static py::object FetchLobColumnDataImpl(
         size_t bytesRead = 0;
         if (actualRead >= 0) {
             bytesRead = static_cast<size_t>(actualRead);
-            if (bytesRead > DAE_CHUNK_SIZE) {
-                bytesRead = DAE_CHUNK_SIZE;
+            if (continueForTruncation && bytesRead > payloadCapacity) {
+                bytesRead = payloadCapacity;
             }
         } else {
-            bytesRead = DAE_CHUNK_SIZE;
-        }
-        if (continueForTruncation && bytesRead == 0) {
-            ThrowStdException("LOB fetch truncation made no progress");
-        }
-
-        // For character data, trim trailing null terminators
-        if (!isBinary && bytesRead > 0) {
-            if (!isWideChar) {
-                // Narrow characters
-                while (bytesRead > 0 && chunk[bytesRead - 1] == '\0') {
-                    --bytesRead;
-                }
-                if (bytesRead < DAE_CHUNK_SIZE) {
-                    LOG("FetchLobColumnData: Trimmed null terminator from "
-                        "narrow char data - loop=%d",
-                        loopCount);
-                }
-            } else {
-                // Wide characters
-                size_t wcharSize = sizeof(SQLWCHAR);
-                if (bytesRead >= wcharSize && (bytesRead % wcharSize == 0)) {
-                    size_t wcharCount = bytesRead / wcharSize;
-                    std::vector<SQLWCHAR> alignedBuf(wcharCount);
-                    std::memcpy(alignedBuf.data(), chunk.data(), bytesRead);
-                    while (wcharCount > 0 && alignedBuf[wcharCount - 1] == 0) {
-                        --wcharCount;
-                        bytesRead -= wcharSize;
-                    }
-                    if (bytesRead < DAE_CHUNK_SIZE) {
-                        LOG("FetchLobColumnData: Trimmed null terminator from "
-                            "wide char data - loop=%d",
-                            loopCount);
-                    }
-                }
-
-            }
+            bytesRead = payloadCapacity;
         }
         if (continueForTruncation && bytesRead == 0) {
             ThrowStdException("LOB fetch truncation made no progress");
@@ -5035,6 +4999,7 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, const Metadata&
         SQLULEN columnSize;
         SQLULEN processedColumnSize;
         uint64_t fetchBufferSize;
+        size_t fixedValueSize;
         bool isLob;
     };
     const bool useWideChar = (charCtype == SQL_C_WCHAR);
@@ -5053,6 +5018,8 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, const Metadata&
             const auto& columnMeta = GetFetchColumnMetadata(columnNames, col);
             columnInfos[col].dataType = GetFetchColumnType(columnMeta);
             columnInfos[col].columnSize = GetFetchColumnSize(columnMeta);
+            columnInfos[col].fixedValueSize =
+                FixedFetchValueSize(columnInfos[col].dataType);
             columnInfos[col].isLob =
                 std::find(lobColumns.begin(), lobColumns.end(), col + 1) != lobColumns.end();
             columnInfos[col].processedColumnSize = columnInfos[col].columnSize;
@@ -5204,8 +5171,12 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, const Metadata&
             if (dataLen < 0) {
                 ThrowStdException("Unexpected negative data length");
             }
-            ValidateFixedFetchDataLength(columnInfos[col - 1].dataType,
-                                         static_cast<uint64_t>(dataLen));
+            const size_t fixedValueSize = columnInfos[col - 1].fixedValueSize;
+            if (fixedValueSize != 0 &&
+                static_cast<uint64_t>(dataLen) != fixedValueSize) {
+                ThrowStdException(
+                    "Fixed-width data indicator does not match the bound buffer size");
+            }
 
             // Performance: Use function pointer dispatch for simple types (fast
             // path) This eliminates the switch statement from hot loop -
@@ -6020,23 +5991,27 @@ py::object RunFetchValidationTest(const std::string& scenario) {
         testGetDataResultIndex = 0;
         FetchLobColumnDataImpl(nullptr, 1, SQL_C_BINARY, false, true, "", py::none(),
                                false, TestSQLGetData, TestHasUnrelatedWarning);
-    } else if (scenario == "lob_narrow_terminator_no_progress") {
+    } else if (scenario == "lob_narrow_nul_progress") {
         testGetDataResults = {
             {static_cast<SQLRETURN>(SQL_SUCCESS_WITH_INFO), static_cast<SQLLEN>(1)},
+            {static_cast<SQLRETURN>(SQL_SUCCESS), static_cast<SQLLEN>(0)},
         };
         testGetDataResultIndex = 0;
-        FetchLobColumnDataImpl(nullptr, 1, SQL_C_CHAR, false, false, "utf-8",
-                               py::none(), false, TestSQLGetDataZeroFill,
-                               TestHasTruncationDiagnostic);
-    } else if (scenario == "lob_wide_terminator_no_progress") {
+        py::object value = FetchLobColumnDataImpl(
+            nullptr, 1, SQL_C_CHAR, false, false, "utf-8", py::none(), false,
+            TestSQLGetDataZeroFill, TestHasTruncationDiagnostic);
+        return py::make_tuple(py::len(value), testGetDataResultIndex);
+    } else if (scenario == "lob_wide_nul_progress") {
         testGetDataResults = {
             {static_cast<SQLRETURN>(SQL_SUCCESS_WITH_INFO),
              static_cast<SQLLEN>(sizeof(SQLWCHAR))},
+            {static_cast<SQLRETURN>(SQL_SUCCESS), static_cast<SQLLEN>(0)},
         };
         testGetDataResultIndex = 0;
-        FetchLobColumnDataImpl(nullptr, 1, SQL_C_WCHAR, true, false, "utf-16le",
-                               py::none(), false, TestSQLGetDataZeroFill,
-                               TestHasTruncationDiagnostic);
+        py::object value = FetchLobColumnDataImpl(
+            nullptr, 1, SQL_C_WCHAR, true, false, "utf-16le", py::none(), false,
+            TestSQLGetDataZeroFill, TestHasTruncationDiagnostic);
+        return py::make_tuple(py::len(value), testGetDataResultIndex);
     } else if (scenario == "unrelated_warning_oversized") {
         testGetDataResults = {
             {static_cast<SQLRETURN>(SQL_SUCCESS_WITH_INFO), static_cast<SQLLEN>(2)},
@@ -6136,6 +6111,7 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules,
 
     std::vector<SQLSMALLINT> dataTypes(numCols);
     std::vector<SQLULEN> columnSizes(numCols);
+    std::vector<size_t> fixedValueSizes(numCols);
     std::vector<bool> columnNullable(numCols);
     std::vector<bool> columnVarLen(numCols, false);
     std::vector<int64_t> nullCounts(numCols, 0);
@@ -6155,6 +6131,7 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules,
 
         dataTypes[i] = dataType;
         columnSizes[i] = columnSize;
+        fixedValueSizes[i] = FixedFetchValueSize(dataType);
         columnNullable[i] = (nullable != SQL_NO_NULLS);
 
         if ((dataType == SQL_WVARCHAR || dataType == SQL_WLONGVARCHAR || dataType == SQL_VARCHAR ||
@@ -6669,7 +6646,11 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules,
                     ThrowStdException("Unexpected negative data length.");
                 }
                 auto dataLen = static_cast<uint64_t>(indicator);
-                ValidateFixedFetchDataLength(dataType, dataLen);
+                if (fixedValueSizes[idxCol] != 0 &&
+                    dataLen != fixedValueSizes[idxCol]) {
+                    ThrowStdException(
+                        "Fixed-width data indicator does not match the bound buffer size");
+                }
 
                 switch (dataType) {
                     case SQL_SS_UDT:
