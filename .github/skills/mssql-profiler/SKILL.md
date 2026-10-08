@@ -15,8 +15,10 @@ Read the [profiler guide](../../../profiler/README.md) and inspect the relevant
 1. Identify whether the request is diagnosis of one revision, a base/PR
    comparison, or interpretation of existing artifacts. Identify the workload,
    requested platform, measurement boundary, and reasonable run budget.
+
    State the suspected cause, the expected observation, and what would refute it.
    Prefer one bounded experiment using existing workloads over a new framework.
+
 2. Use the supplied checkout and its active development interpreter. Record the
    revision and dirty changes. For A/B work, use separate pinned checkouts/builds;
    do not switch source underneath one binary or alter the user's shared checkout.
@@ -203,9 +205,12 @@ enable boundary, or disabled interval can be dropped.
    Verify each process imports its intended package and native binary.
 2. Confirm the workload reaches the changed path. Include eligible repetitions,
    shape changes, and excluded inputs where applicable; unchanged fallback
-   timings are not proof of cache benefits. Read the actual benchmark registry
-   and worker, not just scenario names: ordinary SELECT fetching may never reach
-   a catalog-specific branch. Include unchanged-path controls for shared changes.
+   timings are not proof of cache benefits.
+
+   Read the actual benchmark registry and worker, not just scenario names:
+   ordinary SELECT fetching may never reach a catalog-specific branch. Include
+   unchanged-path controls for shared changes.
+
 3. Define cold setup, warmup, and the measured sequence before running. Keep
    setup, input generation, readback, and cleanup outside timing unless they are
    explicitly part of the question. Do not invalidate a prepared statement with
@@ -213,17 +218,22 @@ enable boundary, or disabled interval can be dropped.
 4. Run matching profiling-enabled builds for attribution. Record actual call
    counts and changed-value correctness, not only duration. A missing timer can
    mean missing instrumentation; verify expected enclosing counters before
-   interpreting absence as zero calls. For a diagnostic experiment, vary one
-   suspected cause while retaining a matched control and the other conditions.
-   Check the predicted operation/phase change, not just a lower total time.
-   Keep diagnostic probes out of the final release-latency comparison.
+   interpreting absence as zero calls.
+
+   For a diagnostic experiment, vary one suspected cause while retaining a
+   matched control and the other conditions. Check the predicted operation/phase
+   change, not just a lower total time. Keep diagnostic probes out of the final
+   release-latency comparison.
+
 5. Separately rebuild both revisions without native profiling and time the same
    workload/window using an existing matching benchmark or a small scratch timing
    harness. `Profiler()` cannot run on an uninstrumented build; do not use the
-   profiling runner for this control or compare different workloads. Share setup,
-   values, timing, validation, and cleanup where possible; adapt only the
-   instrumentation. Report unavailable counters as unavailable, not zero or
-   results manufactured by a fake profiler.
+   profiling runner for this control or compare different workloads.
+
+   Share setup, values, timing, validation, and cleanup where possible; adapt
+   only the instrumentation. Report unavailable counters as unavailable, not
+   zero or results manufactured by a fake profiler.
+
 6. Counterbalance base/PR order over repeated rounds. Preserve individual
    observations and note contention. Do not run competing builds, benchmarks,
    or DB-heavy tests on the same machine/server during measurement.
@@ -295,13 +305,19 @@ Return a concise report with these fields, marking unavailable fields explicitly
 
 | Field | Required detail |
 | --- | --- |
-| Provenance | Base/head SHA and CI merge/run/job/attempt when applicable, dirty changes, interpreter/dependencies, native binary and ODBC provider identity, effective build/profiling flags, OS/architecture, SQL Server version |
+| Provenance | Base/head SHA, dirty changes, interpreter, native binary identity, effective build/profiling flags, OS/architecture, SQL Server version |
 | Workload | Scenario/script, rows/columns/parameters, value/type distribution, expected path and observed operation counts |
-| Window | Setup/warmup policy, measured operations, commit/fetch/cleanup inclusion, repetitions, process reuse, predecessor workloads and within-worker order |
+| Window | Setup/warmup policy, measured operations, commit/fetch/cleanup inclusion, repetitions and run order |
 | Results | Raw artifact paths, per-round observations, aggregate units, timings, deltas and variability |
 | Interpretation | What was observed, what remains uncertain, failures/skips, and platform/execution limits |
 
+Extend provenance with dependencies, actual ODBC provider identity, and any CI
+merge/run/job/attempt. Include the process reuse, predecessor workloads, and
+within-worker order described above in the window.
+
 Do not include credentials or private connection details in that report.
-Preserve raw evidence and clean up only run-owned temporary resources. Verify
-cleanup actually completed; a timeout or stop request alone does not prove it.
+Preserve raw evidence and clean up only run-owned temporary resources.
 Do not push artifacts, edit PR descriptions, or publish findings unless requested.
+
+Verify cleanup actually completed; a timeout or stop request alone does not
+prove it.
