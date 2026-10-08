@@ -17,6 +17,8 @@ import pytest
 import platform
 import threading
 import os
+import subprocess
+import sys
 
 # Import ddbc_bindings with error handling
 try:
@@ -49,6 +51,98 @@ def test_fetchmany_rejects_unsafe_size_before_handle_access(fetch_size):
 def test_arrow_batch_rejects_unsafe_size_before_handle_access(batch_size):
     with pytest.raises(RuntimeError, match="Arrow batch size"):
         ddbc.DDBCSQLFetchArrowBatch(None, [], batch_size, 0)
+
+
+@pytest.mark.skipif(not DDBC_AVAILABLE, reason="ddbc_bindings not available")
+@pytest.mark.parametrize(
+    ("scenario", "message"),
+    [
+        ("oversized_rows", "more rows than the allocated fetch buffers"),
+        ("rows_without_columns", "result set with no columns"),
+        ("zero_rows", "successful fetch with zero rows"),
+        ("odd_wchar", "invalid byte length"),
+        ("odd_char_as_wchar", "invalid byte length"),
+        ("oversized_indicator", "exceeds the allocated fetch buffer"),
+        ("short_fixed_indicator", "does not match the bound buffer size"),
+        ("oversized_fixed_indicator", "does not match the bound buffer size"),
+        ("short_direct_fixed_indicator", "does not match the bound buffer size"),
+        ("oversized_direct_decimal_indicator", "Decimal data exceeds"),
+        ("zero_arrow_rows", "successful Arrow fetch with zero rows"),
+        ("oversized_arrow_fetch", "more rows than the allocated Arrow buffers"),
+        ("oversized_arrow_batch", "more rows than the allocated Arrow buffers"),
+        ("char_terminator_indicator", "exceeds the Arrow text payload capacity"),
+        ("wchar_terminator_indicator", "exceeds the Arrow text payload capacity"),
+        ("truncation_no_progress", "truncation made no progress"),
+        ("first_call_no_data", "no data before making progress"),
+        ("oversized_decimal_indicator", "Decimal data exceeds the allocated fetch buffer"),
+        ("odd_streamed_wchar", "invalid byte length"),
+        ("unexpected_lob_indicator", "Unexpected negative LOB data indicator"),
+        ("lob_truncation_no_progress", "LOB fetch truncation made no progress"),
+        ("oversized_lob_success", "LOB data indicator exceeds the fetch buffer capacity"),
+        ("lob_unrelated_warning_oversized", "LOB data indicator exceeds the fetch buffer capacity"),
+        ("lob_unrelated_warning_no_total", "SQL_NO_TOTAL requires a truncation diagnostic"),
+        ("unrelated_warning_oversized", "data indicator exceeds the fetch buffer capacity"),
+        ("odd_direct_wchar", "invalid byte length"),
+        ("odd_lob_wchar", "invalid byte length"),
+    ],
+)
+def test_driver_fetch_validation_rejects_malformed_lengths(scenario, message):
+    with pytest.raises(RuntimeError, match=message):
+        ddbc._test_fetch_validation(scenario)
+
+
+@pytest.mark.skipif(not DDBC_AVAILABLE, reason="ddbc_bindings not available")
+def test_sql_no_total_fetch_makes_progress_in_isolated_process():
+    code = """
+import mssql_python.ddbc_bindings as ddbc
+ret, indicator, calls, size = ddbc._test_fetch_validation("sql_no_total_progress")
+assert ret == 0
+assert indicator == 2
+assert calls == 2
+assert size == 2
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=os.path.dirname(os.path.dirname(__file__)),
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.skipif(not DDBC_AVAILABLE, reason="ddbc_bindings not available")
+def test_sql_no_data_ignores_undefined_indicator():
+    ret, indicator, calls, size = ddbc._test_fetch_validation("sql_no_total_no_data")
+    assert ret == 0
+    assert indicator == 1
+    assert calls == 2
+    assert size == 2
+
+
+@pytest.mark.skipif(not DDBC_AVAILABLE, reason="ddbc_bindings not available")
+def test_unrelated_warning_without_growth_is_not_treated_as_truncation():
+    ret, indicator, calls, size = ddbc._test_fetch_validation("unrelated_warning_no_progress")
+    assert ret == 0
+    assert indicator == 0
+    assert calls == 1
+    assert size == 1
+
+
+@pytest.mark.skipif(not DDBC_AVAILABLE, reason="ddbc_bindings not available")
+def test_lob_unrelated_warning_with_progress_completes():
+    size, calls = ddbc._test_fetch_validation("lob_unrelated_warning_progress")
+    assert size == 1
+    assert calls == 1
+
+
+@pytest.mark.skipif(not DDBC_AVAILABLE, reason="ddbc_bindings not available")
+@pytest.mark.parametrize("scenario", ["lob_narrow_nul_progress", "lob_wide_nul_progress"])
+def test_lob_truncation_preserves_nul_payload(scenario):
+    size, calls = ddbc._test_fetch_validation(scenario)
+    assert size == 1
+    assert calls == 2
 
 
 @pytest.mark.skipif(not DDBC_AVAILABLE, reason="ddbc_bindings not available")
