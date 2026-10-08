@@ -12,8 +12,19 @@ python -m eng.profiler_benchmarks.controller --base main --candidate HEAD \
 python -m eng.profiler_benchmarks.report profiler-results/report.json
 ```
 
-The fixed registry has 20 tasks. `--scenarios` runs a local subset, but subset
+The fixed registry has 22 tasks. `--scenarios` runs a local subset, but subset
 reports remain incomplete and cannot produce a verdict.
+
+`lob_varchar_256k_fetchall` fetches one 256 KiB `VARCHAR(MAX)` value to exercise
+multi-chunk streaming. Query setup and exact payload validation are outside the
+timed fetch window.
+
+`scalar_fetchval` fetches 10,000 ordered, non-NULL integers from the existing test
+table through `fetchval()`, followed by one EOF call. It requires debug logging to
+be disabled without changing logger configuration. Query setup, exact-value/type
+validation (including zero), EOF validation, and diagnostic checks are outside
+the timed fetch window. Both revisions run the same workload; the report's
+improvement thresholds are unchanged.
 
 ## Measurement contract
 

@@ -1184,6 +1184,14 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         cursor.executemany(sql, params)
 
         Note:
+            SQL_SS_UDT parameters require a statement whose parameter metadata
+            SQL Server can describe. The driver discovers the UDT identity before
+            binding; this may require a metadata round trip. Temporary tables and
+            table variables may not be describable, and discovery errors are
+            propagated. For built-in spatial types, bind serialized bytes without
+            a SQL_SS_UDT override or use a SQL constructor such as
+            hierarchyid::Parse(?) with a text parameter instead.
+
             When inserting NULL into BINARY/VARBINARY columns in temp tables (#table)
             or table variables, SQLDescribeParam cannot resolve the column type and
             falls back to SQL_VARCHAR. This causes an implicit conversion error from
@@ -2686,15 +2694,21 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                         paraminfo.columnSize = max(max_binary_size, 1)
 
                     parameters_type.append(paraminfo)
-                    if paraminfo.isDAE:
-                        any_dae = True
+                if paraminfo.isDAE:
+                    any_dae = True
 
         if any_dae:
             logger.debug(
                 "DAE parameters detected. Falling back to row-by-row execution with streaming.",
             )
-            for row in seq_of_parameters:
-                self.execute(operation, row)
+            input_sizes = self._inputsizes
+            try:
+                for row in seq_of_parameters:
+                    # execute() consumes overrides; every streamed row needs them.
+                    self._inputsizes = input_sizes
+                    self.execute(operation, row)
+            finally:
+                self._reset_inputsizes()
             return
 
         # Process parameters into column-wise format with possible type conversions
@@ -3833,23 +3847,27 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             After calling fetchval(), the cursor position advances by one row,
             just like fetchone().
         """
-        logger.debug("fetchval: Fetching single value from first column")
+        if logger.is_debug_enabled:
+            logger.debug("fetchval: Fetching single value from first column")
         self._check_closed()  # Check if the cursor is closed
 
         # Check if this is a result-producing statement
         if not self.description:
             # Non-result-set statement (INSERT, UPDATE, DELETE, etc.)
-            logger.debug("fetchval: No result set available (non-SELECT statement)")
+            if logger.is_debug_enabled:
+                logger.debug("fetchval: No result set available (non-SELECT statement)")
             return None
 
         # Fetch the first row
         row = self.fetchone()
 
         if row is None:
-            logger.debug("fetchval: No value available (no rows)")
+            if logger.is_debug_enabled:
+                logger.debug("fetchval: No value available (no rows)")
             return None
 
-        logger.debug("fetchval: Value retrieved successfully")
+        if logger.is_debug_enabled:
+            logger.debug("fetchval: Value retrieved successfully")
         return row[0]
 
     def commit(self):
