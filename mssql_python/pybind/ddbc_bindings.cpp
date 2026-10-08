@@ -3336,10 +3336,10 @@ py::object FetchLobColumnData(SQLHSTMT hStmt, SQLUSMALLINT colIndex, SQLSMALLINT
                 size_t wcharSize = sizeof(SQLWCHAR);
                 if (bytesRead >= wcharSize && (bytesRead % wcharSize == 0)) {
                     while (bytesRead >= wcharSize) {
-                        SQLWCHAR lastChar;
                         // The byte destination need not be aligned for SQLWCHAR.
-                        std::memcpy(&lastChar, chunk + bytesRead - wcharSize, wcharSize);
-                        if (lastChar != 0) {
+                        const char* lastChar = chunk + bytesRead - wcharSize;
+                        if (std::any_of(lastChar, lastChar + wcharSize,
+                                        [](char byte) { return byte != '\0'; })) {
                             break;
                         }
                         bytesRead -= wcharSize;

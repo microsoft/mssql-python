@@ -1718,6 +1718,62 @@ def _run_fetch_script(conn_str, script, *arguments, timeout=45):
     assert result.returncode == 0, result.stdout + result.stderr
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Windows does not export the native driver function-pointer globals",
+)
+@pytest.mark.parametrize("method", ["fetchone", "fetchmany", "fetchval"])
+def test_first_numeric_getdata_error_stops_before_second_column(conn_str, method):
+    script = textwrap.dedent("""
+        import ctypes as c
+        import os
+        import sys
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        import mssql_python
+        from mssql_python import ddbc_bindings as ddbc
+
+        pointer, short, length = c.c_void_p, c.c_short, c.c_ssize_t
+        get_type = c.CFUNCTYPE(short, pointer, c.c_ushort, short, pointer, length, pointer)
+        library = c.CDLL(ddbc.module.__file__)
+        slot = pointer.in_dll(library, "SQLGetData_ptr")
+        calls = []
+
+        @get_type
+        def getdata(handle, column, ctype, buffer, capacity, indicator):
+            calls.append(column)
+            if column == 1:
+                return -1
+            return original(handle, column, ctype, buffer, capacity, indicator)
+
+        with mssql_python.connect(os.environ["DB_CONNECTION_STRING"]) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT CAST(7 AS INT), CAST(8 AS INT)")
+                position = cursor._next_row_index
+                saved = slot.value
+                assert saved
+                original = get_type(saved)
+                diagnostic = SimpleNamespace(sqlState="HY000", ddbcErrorMsg="first column failed")
+                with patch.object(ddbc, "DDBCSQLCheckError", return_value=diagnostic):
+                    slot.value = c.cast(getdata, pointer).value
+                    try:
+                        method = sys.argv[1]
+                        try:
+                            getattr(cursor, method)(*([1] if method == "fetchmany" else []))
+                        except mssql_python.DatabaseError as error:
+                            assert "first column failed" in str(error)
+                        else:
+                            raise AssertionError("first-column SQL_ERROR was masked")
+                    finally:
+                        slot.value = saved
+                assert calls == [1], calls
+                assert cursor._next_row_index == position
+                cursor.execute("SELECT 42, 43")
+                assert tuple(cursor.fetchone()) == (42, 43)
+        """)
+    _run_fetch_script(conn_str, script, method)
+
+
 @pytest.mark.parametrize(
     ("sql_type", "literal", "expected"),
     (

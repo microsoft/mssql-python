@@ -1081,7 +1081,77 @@ def test_unix_profiler_step_does_not_put_database_password_on_command_line():
     assert "Pwd=$DB_PASSWORD" in benchmark
 
 
-def test_build_check_rejects_foreign_provider_and_enabled_recording(tmp_path, monkeypatch):
+@pytest.fixture
+def release_cache(tmp_path):
+    cache = tmp_path / "mssql_python/pybind/build/CMakeCache.txt"
+    cache.parent.mkdir(parents=True)
+    cache.write_text(
+        "CMAKE_GENERATOR:INTERNAL=Unix Makefiles\n"
+        "CMAKE_CXX_FLAGS:STRING=\n"
+        "CMAKE_CXX_FLAGS_RELEASE:STRING=-O3 -DNDEBUG\n"
+        "CMAKE_BUILD_TYPE:STRING=Release\n",
+        encoding="utf-8",
+    )
+    return cache
+
+
+@pytest.mark.parametrize("profiling", [False, True])
+def test_benchmark_build_requests_and_records_release(
+    tmp_path, monkeypatch, release_cache, profiling
+):
+    def run(command, log, timeout, **options):
+        assert options["env"]["CMAKE_BUILD_TYPE"] == "Release"
+        assert options["env"]["ENABLE_PROFILING"] == str(int(profiling))
+        assert options["cwd"] == tmp_path / "mssql_python/pybind"
+        assert timeout == 37
+        log.write_text("build output\n", encoding="utf-8")
+
+    monkeypatch.setenv("CMAKE_BUILD_TYPE", "Debug")
+    monkeypatch.setattr(controller, "run_process", run)
+    log = tmp_path / "build.log"
+    controller.build(tmp_path, log, 37, profiling=profiling)
+    assert 'CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG"' in log.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("configuration", ["", "Debug", "Release", "Debug;Release"])
+def test_release_build_configuration(tmp_path, release_cache, configuration):
+    key = "CMAKE_CONFIGURATION_TYPES" if ";" in configuration else "CMAKE_BUILD_TYPE"
+    content = release_cache.read_text(encoding="utf-8")
+    release_cache.write_text(
+        content.replace("CMAKE_BUILD_TYPE:STRING=Release", f"{key}:STRING={configuration}"),
+        encoding="utf-8",
+    )
+    if ";" in configuration:
+        tag = f"py{sys.version_info.major}{sys.version_info.minor}"
+        windows_cache = release_cache.parent / "x64" / tag / release_cache.name
+        windows_cache.parent.mkdir(parents=True)
+        release_cache.replace(windows_cache)
+        release_cache = windows_cache
+    if "Release" not in configuration.split(";"):
+        with pytest.raises(ValueError, match="Release native build"):
+            controller.release_build_configuration(tmp_path)
+    else:
+        assert controller.release_build_configuration(tmp_path)[key] == configuration
+    release_cache.unlink()
+    with pytest.raises(FileNotFoundError):
+        controller.release_build_configuration(tmp_path)
+
+
+def test_release_cache_rejects_ambiguous_windows_builds(tmp_path, release_cache):
+    content = release_cache.read_text(encoding="utf-8")
+    tag = f"py{sys.version_info.major}{sys.version_info.minor}"
+    for arch in ("x64", "arm64"):
+        cache = release_cache.parent / arch / tag / release_cache.name
+        cache.parent.mkdir(parents=True)
+        cache.write_text(content, encoding="utf-8")
+    release_cache.unlink()
+    with pytest.raises(ValueError, match="Ambiguous"):
+        controller.release_build_configuration(tmp_path)
+
+
+def test_build_check_rejects_foreign_provider_and_enabled_recording(
+    tmp_path, monkeypatch, release_cache
+):
     native = SimpleNamespace(
         __file__=str(tmp_path / "binding.so"), profiling=SimpleNamespace(is_enabled=lambda: False)
     )
@@ -1101,6 +1171,153 @@ def test_build_check_rejects_foreign_provider_and_enabled_recording(tmp_path, mo
     timer.is_enabled = lambda: True
     with pytest.raises(RuntimeError, match="recording OFF"):
         controller.check_build(tmp_path, True)
+
+
+@pytest.mark.parametrize(
+    "failure", [None, "timeout", "identity", "deadline", "process-cleanup", "directory-cleanup"]
+)
+def test_ci_bundle_modes_identity_deadline_cleanup_and_headline(
+    report, tmp_path, monkeypatch, failure
+):
+    clock, measured, built = [0], [], []
+    directory = tmp_path / "build-roots"
+    directory.mkdir()
+    monkeypatch.setattr(controller.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(controller, "resolve_revisions", lambda *a, **k: ("a" * 40, "b" * 40))
+    monkeypatch.setattr(controller, "git", lambda *a, **k: "b" * 40)
+    monkeypatch.setattr(controller.tempfile, "mkdtemp", lambda **k: str(directory))
+    monkeypatch.setattr(controller, "run_process", lambda *a, **k: None)
+    monkeypatch.setattr(
+        controller, "build", lambda path, *a, **k: built.append((path.name, k["profiling"]))
+    )
+    monkeypatch.setenv("BUILD_BUILDID", "42")
+    monkeypatch.setenv("SYSTEM_PULLREQUEST_SOURCECOMMITID", "c" * 40)
+    route = dict(version=1, methods=dict.fromkeys(("fetchone", "fetchmany", "fetchval"), False))
+
+    def source(path, revision):
+        return dict(source_commit=revision, python_cursor_sha256="d" * 64, row_route=route)
+
+    monkeypatch.setattr(controller, "python_source_identity", source)
+
+    def measure(path, output, scenarios, timeout, *, mode, revision, isolated):
+        measured.append(output.name)
+        assert isolated and scenarios is None
+        assert timeout == (controller.WORKER_TIMEOUT if mode == "diagnostic" else 30)
+        if output.name == "latency-base-1.json":
+            if failure == "timeout":
+                raise subprocess.TimeoutExpired("worker", timeout)
+            if failure == "process-cleanup":
+                raise controller.ProcessCleanupError("injected process cleanup failure")
+            if failure == "deadline":
+                clock[0] = controller.BENCHMARK_TIMEOUT + 1
+        side = "base" if revision == "a" * 40 else "candidate"
+        sample = copy.deepcopy(report["pairs"][0][side])
+        sample.update(
+            status="complete",
+            mode=mode,
+            provenance=dict(
+                **source(path, revision),
+                native_file=str(path / "native.so"),
+                native_sha256=("1" if mode == "latency" else "2") * 64,
+                native_profiling=mode != "latency",
+                guarded_row=True,
+            ),
+        )
+        if failure == "identity" and output.name == "latency-base-1.json":
+            sample["provenance"]["native_sha256"] = "3" * 64
+        if mode != "diagnostic":
+            sample["scenarios"] = {}
+            for name in reporting.FETCH_CASES:
+                shape, method = name.split("_")
+                timer = "ddbc::FetchMany_wrap" if method == "fetchmany" else "ddbc::FetchOne_wrap"
+                sample["scenarios"][name] = dict(
+                    wall_ms=10,
+                    work=f"Rows: 1000; shape: {shape}; API: {method}; EOF: 1",
+                    cpp=(
+                        {timer: dict(calls=1001, total_us=1001, min_us=1, max_us=1)}
+                        if mode == "route"
+                        else {}
+                    ),
+                    py={},
+                )
+        return sample
+
+    monkeypatch.setattr(controller, "measure", measure)
+    cleanup = MagicMock(wraps=controller.shutil.rmtree)
+    if failure == "directory-cleanup":
+        cleanup.side_effect = OSError("injected directory cleanup failure")
+    monkeypatch.setattr(controller.shutil, "rmtree", cleanup)
+    args = SimpleNamespace(
+        base=None,
+        candidate="HEAD",
+        output=tmp_path,
+        leg=report["leg"],
+        samples=5,
+        warmups=1,
+        reuse_candidate=True,
+        scenarios=None,
+        mode="diagnostic",
+    )
+    if failure:
+        with pytest.raises(RuntimeError):
+            controller.run_ci_report(args)
+    else:
+        controller.run_ci_report(args)
+    bundle = json.loads((tmp_path / "report.json").read_text(encoding="utf-8"))
+    modes, errors = reporting.ci_mode_reports(bundle)
+    if failure in ("process-cleanup", "directory-cleanup"):
+        assert bundle["cleanup_required"] == str(directory) and directory.exists()
+        assert cleanup.call_count == (failure == "directory-cleanup")
+    else:
+        cleanup.assert_called_once_with(str(directory))
+        assert not directory.exists()
+    if failure in ("process-cleanup", "deadline"):
+        assert measured == [
+            "latency-base-0.json",
+            "latency-candidate-0.json",
+            "latency-candidate-1.json",
+            "latency-base-1.json",
+        ]
+        assert all(mode["status"] == "incomplete" for mode in modes.values())
+    elif failure in ("timeout", "identity"):
+        assert modes["latency"]["status"] == "incomplete" and "latency" in errors
+        assert modes["route"]["status"] == modes["diagnostic"]["status"] == "complete"
+    elif failure is None:
+        assert not errors and all(len(mode["pairs"]) == 5 for mode in modes.values())
+        assert built == [("base-off", False), ("candidate-off", False), ("base-on", True)]
+        assert measured == [
+            f"{mode}-{side}-{index}.json"
+            for mode in ("latency", "route", "diagnostic")
+            for index in range(6)
+            for side in (("base", "candidate") if index % 2 == 0 else ("candidate", "base"))
+        ]
+        headline = reporting.render_ci_reports([bundle], "c" * 40, 42)
+        del bundle["fetch_measurements"]["latency"]
+        assert "latency" in reporting.ci_mode_reports(bundle)[1]
+        assert reporting.render_ci_reports([bundle], "c" * 40, 42) == headline
+        for field, value in (("source_commit", "e" * 40), ("mode", "latency")):
+            invalid = copy.deepcopy(bundle)
+            invalid["fetch_measurements"]["route"][field] = value
+            assert "route" in reporting.ci_mode_reports(invalid)[1]
+            assert reporting.render_ci_reports([invalid], "c" * 40, 42) == headline
+        for pair in bundle["fetch_measurements"]["route"]["pairs"]:
+            pair["candidate"]["provenance"]["native_sha256"] = "e" * 64
+        valid, errors = reporting.ci_mode_reports(bundle)
+        assert not valid and set(errors) == {"latency", "route", "diagnostic"}
+        assert "Shared ON" in errors["diagnostic"]
+
+
+@pytest.mark.parametrize("active,guarded", [(False, True), (True, False), (False, 1)])
+def test_default_row_route_distinguishes_capability_from_dispatch(active, guarded):
+    route = dict(version=1, methods=dict.fromkeys(("fetchone", "fetchmany", "fetchval"), active))
+    identity = dict(row_route=route, guarded_row=guarded)
+    if active or type(guarded) is not bool:
+        with pytest.raises(ValueError, match="binding contradicts"):
+            reporting.expected_constructors(identity, "fetchmany")
+    else:
+        assert all(
+            reporting.expected_constructors(identity, method) == 0 for method in route["methods"]
+        )
 
 
 def test_head_moving_while_listing_comments_prevents_publish(monkeypatch):

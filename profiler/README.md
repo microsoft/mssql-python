@@ -280,8 +280,17 @@ adding timers costs nothing in released builds.
 ### Explicit single-row comparison modes
 
 The paired controller retains its existing `diagnostic` default: native and Python
-recording are enabled, so the guarded Row path deliberately uses the split route.
-That report is not a latency measurement of ordinary fused fetching.
+recording are enabled. That instrumented report is not an uninstrumented latency
+measurement. Default fetching completes Rows in Python, even when the native
+Row-construction binding is available.
+
+Comparisons require Release builds on both sides. The controller sets
+`CMAKE_BUILD_TYPE=Release` for archived sources as well as the candidate; old Unix
+build scripts require CMake 3.22 or newer to consume that environment setting.
+Build checks reject a missing or non-Release configuration and retain the generator
+and C++ flags from `CMakeCache.txt` in build/worker logs. Unix non-coverage builds
+also explicitly configure Release by default. Historical measurements without
+verified Release configuration are not evidence of shipped Release latency.
 
 Two opt-in modes use the same six read-only workloads: `numeric_fetchone`,
 `numeric_fetchmany`, `numeric_fetchval`, and their `mixed_` equivalents. Each fetches
@@ -295,10 +304,12 @@ uses its public API, not a first-column-only native shortcut.
   timed window; the API loop, result retention and EOF call are inside it.
 - `--mode route` uses native instrumentation ON with Python phases OFF. Each case
   must record 1,001 native fetch calls. The version-1 default route contract requires
-  1,000 native Row constructions for `fetchmany(1)` and none for `fetchone` or
-  `fetchval` in the successor. Here `1` is a built-in integer for both numeric and
+  zero native Row constructions for all three APIs in the current implementation.
+  Here `1` is a built-in integer for both numeric and
   mixed shapes; this is not the numeric-column-only native fetching shortcut.
-  Legacy f539 requires 1,000 constructions for all three APIs; main666 requires none. This is route attribution, not production latency.
+  Legacy f539 requires 1,000 constructions for all three APIs; the intermediate
+  many-only route requires 1,000 for `fetchmany(1)`; main666 and the current route
+  require none. This is route attribution, not production latency.
   Existing native regression tests separately cover converter fallback, all-column
   callbacks, repeated EOF, and customization failures.
 
@@ -398,8 +409,10 @@ these allowances, or a speedup.
 `guarded_row` records native binding capability, not which Python API uses it.
 New workers carry exactly seven provenance fields: `source_commit`, `native_file`,
 `native_sha256`, `native_profiling`, `guarded_row`, `python_cursor_sha256`, and
-`row_route`. The latter is `{version: 1, methods: {fetchone: false, fetchmany: true,
-fetchval: false}}` for the successor. The private literal in `cursor.py` is descriptive;
+`row_route`. The latter is `{version: 1, methods: {fetchone: false, fetchmany: false,
+fetchval: false}}` for the current implementation. `guarded_row` may still be true:
+the low-level binding remains available but is not used by these default routes.
+The private literal in `cursor.py` is descriptive;
 it is never consulted by fetching. `fetchval` still calls the dynamically resolved
 `self.fetchone()`. The private `_finish_fetchone` completion now observes `native=False`
 for default fetchone/fetchval instead of the previous eligible `native=True` route.

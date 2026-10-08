@@ -436,7 +436,8 @@ def test_lob_binary_read_boundaries(db_connection, method, size):
 @pytest.mark.parametrize("method", ["fetchone", "fetchmany", "fetchall"])
 @pytest.mark.parametrize("kind", ["nvarchar", "varchar-wide", "varchar-narrow"])
 def test_lob_text_read_boundaries(db_connection, method, kind):
-    suffix = "\U0001f642\0caf\u00e9-tail" if kind == "nvarchar" else "caf\u00e9\0tail"
+    # Keep embedded NUL inside a chunk, outside the existing trailing-NUL trimming.
+    suffix = "\U0001f642c\0af\u00e9-tail" if kind == "nvarchar" else "caf\u00e9\0tail"
     expected = [None, ""] + [
         "x" * boundary + suffix for boundary in (4093, 4094, 4095, 8187, 8190, 8191, 8192, 262144)
     ]
@@ -490,7 +491,9 @@ def test_lob_getdata_storage_contract(conn_str, kind, mode):
         kind, mode = sys.argv[1:]
         binary, wide = kind == "binary", kind == "wide"
         ctype = -2 if binary else (-8 if wide else 1)
-        sqltype = "varbinary(max)" if binary else ("nvarchar(max)" if wide else "varchar(max)")
+        # VARCHAR(MAX) enters the LOB helper directly, including SQL_C_WCHAR.
+        # NVARCHAR(MAX) can first issue a bounded probe when its reported size is zero.
+        sqltype = "varbinary(max)" if binary else "varchar(max)"
         codec = "utf-16le" if wide else "utf-8"
         unit = 2 if wide else 1
         terminator = b"" if binary else bytes(unit)

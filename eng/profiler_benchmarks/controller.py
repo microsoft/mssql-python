@@ -121,11 +121,47 @@ def terminate_process_tree(process):
 
 
 def build(path, log, timeout=900, profiling=True):
-    env = dict(os.environ, ENABLE_PROFILING="1" if profiling else "0")
+    # CMake >= 3.22 also initializes archived, older build scripts from this variable.
+    env = dict(os.environ, ENABLE_PROFILING="1" if profiling else "0", CMAKE_BUILD_TYPE="Release")
     # build scripts find Python via PATH; keep the controller's interpreter.
     env["PATH"] = str(Path(sys.executable).parent) + os.pathsep + env["PATH"]
     command = ["cmd", "/c", "build.bat"] if os.name == "nt" else ["bash", "build.sh"]
     run_process(command, log, timeout, cwd=path / "mssql_python/pybind", env=env)
+    configuration = release_build_configuration(path)
+    with log.open("a", encoding="utf-8") as output:
+        output.write("Verified Release configuration: " + json.dumps(configuration) + "\n")
+
+
+def release_build_configuration(source_root):
+    cache = source_root / "mssql_python/pybind/build/CMakeCache.txt"
+    if not cache.is_file():
+        tag = f"py{sys.version_info.major}{sys.version_info.minor}"
+        candidates = list(cache.parent.glob(f"*/{tag}/CMakeCache.txt"))
+        if len(candidates) > 1:
+            raise ValueError("Ambiguous native build configuration for this Python version")
+        if candidates:
+            cache = candidates[0]
+    entries = dict(
+        re.findall(r"^(CMAKE_[A-Z_]+):[^=\n]+=(.*)$", cache.read_text(encoding="utf-8"), re.M)
+    )
+    configurations = entries.get("CMAKE_CONFIGURATION_TYPES", "")
+    if (
+        "Release" not in configurations.split(";")
+        if configurations
+        else entries.get("CMAKE_BUILD_TYPE") != "Release"
+    ):
+        raise ValueError(
+            "Benchmarks require a Release native build (CMake >= 3.22 for old scripts)"
+        )
+    return {
+        key: entries[key]
+        for key in (
+            "CMAKE_GENERATOR",
+            "CMAKE_CXX_FLAGS",
+            "CMAKE_CXX_FLAGS_RELEASE",
+            "CMAKE_CONFIGURATION_TYPES" if configurations else "CMAKE_BUILD_TYPE",
+        )
+    }
 
 
 def run_process(command, log, timeout, **options):
@@ -151,6 +187,7 @@ def run_process(command, log, timeout, **options):
 
 
 def check_build(source_root, profiling):
+    print("Verified Release configuration: " + json.dumps(release_build_configuration(source_root)))
     sys.path.insert(0, str(source_root))
     import mssql_python
     import mssql_python_odbc
