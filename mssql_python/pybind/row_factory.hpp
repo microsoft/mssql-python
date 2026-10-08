@@ -5,7 +5,89 @@
 
 #include "py_ref.hpp"
 
+#include <utility>
+
 namespace RowFactory {
+
+// Only the post-fetch cached-map loop: no ODBC access, Row allocation, or UUID work.
+inline py::list apply_output_converters(const py::object& values, const py::object& converters) {
+    if (!PyList_CheckExact(values.ptr()) || !PyList_CheckExact(converters.ptr())) {
+        throw py::type_error("converter values and map must be exact lists");
+    }
+    py::list result =
+        steal<py::list>(PyList_GetSlice(values.ptr(), 0, PyList_GET_SIZE(values.ptr())));
+    if (!result)
+        throw py::error_already_set();
+
+    // Keep the Python iterators: their retained tuples affect finalizer timing
+    // when a callback replaces itself or mutates the source lists.
+    py::object pairs = steal(PyObject_CallFunctionObjArgs(reinterpret_cast<PyObject*>(&PyZip_Type),
+                                                          values.ptr(), converters.ptr(), nullptr));
+    if (!pairs)
+        throw py::error_already_set();
+    py::object items =
+        steal(PyObject_CallOneArg(reinterpret_cast<PyObject*>(&PyEnum_Type), pairs.ptr()));
+    if (!items)
+        throw py::error_already_set();
+    pairs = py::object();
+
+    // Retain the current inputs and last encoded value like the Python locals.
+    py::object value, converter, value_bytes;
+    for (Py_ssize_t i = 0;; ++i) {
+        py::object item = steal(PyIter_Next(items.ptr()));
+        if (!item) {
+            if (PyErr_Occurred())
+                throw py::error_already_set();
+            break;
+        }
+        PyObject* pair = PyTuple_GET_ITEM(item.ptr(), 1);
+        py::object next_value = borrow(PyTuple_GET_ITEM(pair, 0));
+        py::object next_converter = borrow(PyTuple_GET_ITEM(pair, 1));
+        value = std::move(next_value);
+        converter = std::move(next_converter);
+        item = py::object();
+        const int enabled = PyObject_IsTrue(converter.ptr());
+        if (enabled < 0)
+            throw py::error_already_set();
+        if (!enabled || value.is_none())
+            continue;
+
+        try {
+            const int is_string =
+                PyObject_IsInstance(value.ptr(), reinterpret_cast<PyObject*>(&PyUnicode_Type));
+            if (is_string < 0)
+                throw py::error_already_set();
+            PyObject* argument = value.ptr();
+            if (is_string) {
+                // Match str.encode's codec lookup, including the spelling.
+                // Subclasses and __class__ proxies still dispatch encode dynamically.
+                py::object encoded =
+                    steal(PyUnicode_CheckExact(value.ptr())
+                              ? PyUnicode_AsEncodedString(value.ptr(), "utf-16-le", nullptr)
+                              : PyObject_CallMethod(value.ptr(), "encode", "s", "utf-16-le"));
+                if (!encoded)
+                    throw py::error_already_set();
+                value_bytes = std::move(encoded);
+                argument = value_bytes.ptr();
+            }
+            py::object converted = steal(PyObject_CallOneArg(converter.ptr(), argument));
+            if (!converted)
+                throw py::error_already_set();
+            // Checked assignment also preserves Python's caught IndexError if a
+            // callback grows the input lists beyond the initial result copy.
+            if (PyList_SetItem(result.ptr(), i, converted.release().ptr()) < 0)
+                throw py::error_already_set();
+        } catch (py::error_already_set& error) {
+            if (!error.matches(PyExc_Exception))
+                throw;
+            // Preserve the existing cached path's keep-original-on-Exception contract.
+            error.restore();
+            PyErr_Clear();
+        }
+    }
+    items = py::object();
+    return result;
+}
 
 inline void initialize_row(
     const py::object& row, PyObject* row_data, const py::object& column_map,

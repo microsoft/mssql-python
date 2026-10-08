@@ -23,6 +23,7 @@
 #include <cstring>  // For std::memcpy
 #include <filesystem>
 #include <iostream>
+#include <stdexcept>
 #include <utility>  // std::forward
 #include <datetime.h>  // CPython datetime API (PyDateTime_IMPORT, PyDateTime_GET_*, etc.)
 
@@ -3280,12 +3281,18 @@ py::object FetchLobColumnData(SQLHSTMT hStmt, SQLUSMALLINT colIndex, SQLSMALLINT
 
     while (true) {
         ++loopCount;
-        std::vector<char> chunk(DAE_CHUNK_SIZE, 0);
+        const size_t offset = buffer.size();
+        if (buffer.max_size() - offset < DAE_CHUNK_SIZE) {
+            throw std::length_error("LOB data exceeds maximum buffer size");
+        }
+        // Keep the existing read windows and zero-filled terminator room.
+        buffer.resize(offset + DAE_CHUNK_SIZE, 0);
+        char* chunk = buffer.data() + offset;
         SQLLEN actualRead = 0;
         {
             // Release the GIL during blocking SQLGetData LOB streaming
             py::gil_scoped_release release;
-            ret = SQLGetData_ptr(hStmt, colIndex, cType, chunk.data(), DAE_CHUNK_SIZE, &actualRead);
+            ret = SQLGetData_ptr(hStmt, colIndex, cType, chunk, DAE_CHUNK_SIZE, &actualRead);
         }
         CaptureFetchDiagnostics(hStmt, ret, messages, true);
 
@@ -3328,11 +3335,13 @@ py::object FetchLobColumnData(SQLHSTMT hStmt, SQLUSMALLINT colIndex, SQLSMALLINT
                 // Wide characters
                 size_t wcharSize = sizeof(SQLWCHAR);
                 if (bytesRead >= wcharSize && (bytesRead % wcharSize == 0)) {
-                    size_t wcharCount = bytesRead / wcharSize;
-                    std::vector<SQLWCHAR> alignedBuf(wcharCount);
-                    std::memcpy(alignedBuf.data(), chunk.data(), bytesRead);
-                    while (wcharCount > 0 && alignedBuf[wcharCount - 1] == 0) {
-                        --wcharCount;
+                    while (bytesRead >= wcharSize) {
+                        SQLWCHAR lastChar;
+                        // The byte destination need not be aligned for SQLWCHAR.
+                        std::memcpy(&lastChar, chunk + bytesRead - wcharSize, wcharSize);
+                        if (lastChar != 0) {
+                            break;
+                        }
                         bytesRead -= wcharSize;
                     }
                     if (bytesRead < DAE_CHUNK_SIZE) {
@@ -3343,8 +3352,8 @@ py::object FetchLobColumnData(SQLHSTMT hStmt, SQLUSMALLINT colIndex, SQLSMALLINT
                 }
             }
         }
+        buffer.resize(offset + bytesRead);
         if (bytesRead > 0) {
-            buffer.insert(buffer.end(), chunk.begin(), chunk.begin() + bytesRead);
             LOG("FetchLobColumnData: Appended %zu bytes at loop %d", bytesRead, loopCount);
         }
         if (ret == SQL_SUCCESS) {
@@ -6667,6 +6676,20 @@ PYBIND11_MODULE(ddbc_bindings, m) {
           py::arg("StatementHandle"), py::arg("colCount"), py::arg("row"), py::arg("charEncoding"),
           py::arg("wcharEncoding"), py::arg("charCtype"), py::arg("messages") = py::none());
     m.def("DDBCSQLMoreResults", &SQLMoreResults_wrap, "Check for more results in the result set");
+    py::class_<FetchOptions>(m, "_FetchOptions")
+        .def(py::init<const std::string&, const std::string&, int>());
+    m.def("_fetchone_with_options",
+          [](SqlHandlePtr statement, py::list& row, const FetchOptions& options,
+             py::handle messages) {
+              return FetchOne_wrap(std::move(statement), row, options.charEncoding,
+                                   options.wcharEncoding, options.charCtype, messages);
+          });
+    m.def("_fetchmany_with_options",
+          [](SqlHandlePtr statement, py::list& rows, int size, const FetchOptions& options,
+             py::handle messages) {
+              return FetchMany_wrap(std::move(statement), rows, size, options.charEncoding,
+                                    options.wcharEncoding, options.charCtype, messages);
+          });
     m.def("DDBCSQLFetchOne", &FetchOne_wrap, "Fetch one row from the result set",
           py::arg("StatementHandle"), py::arg("row"), py::arg("charEncoding") = "utf-16le",
           py::arg("wcharEncoding") = "utf-16le", py::arg("charCtype") = SQL_C_WCHAR,
@@ -6777,6 +6800,10 @@ PYBIND11_MODULE(ddbc_bindings, m) {
 
     // Add a version attribute
     m.attr("__version__") = "1.0.0";
+
+    m.def("_apply_output_converters", &RowFactory::apply_output_converters,
+          "Apply a cached converter map after native value materialization",
+          py::arg("values"), py::arg("converters"));
 
     // Fast Row construction in C++ — replaces Python list comprehension
     m.def("construct_rows", &RowFactory::construct_rows,

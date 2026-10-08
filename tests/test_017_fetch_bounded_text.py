@@ -1,10 +1,10 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT license.
 
-"""Bounded text payload fidelity, including row-wise routing beside a MAX column.
+"""Bounded text payload fidelity and LOB storage regression coverage.
 
-The MAX value here is only a routing control. Actual MAX text BOM/NUL fidelity
-belongs to the separate LOB decoder and is not covered by this regression.
+The bounded cases use MAX only as a routing control. The LOB cases preserve the
+existing streaming/decoder behavior; they do not redefine MAX text BOM/NUL fidelity.
 """
 
 import os
@@ -416,3 +416,157 @@ def test_narrow_getdata_decoding_in_subprocess(conn_str, payload):
                 assert cursor.fetchval() == 42
         """)
     _run_fetch_script(conn_str, script, payload)
+
+
+@pytest.mark.parametrize("method", ["fetchone", "fetchmany", "fetchall"])
+@pytest.mark.parametrize("size", [None, 0, 1, 8191, 8192, 8193, 16384, 262144])
+def test_lob_binary_read_boundaries(db_connection, method, size):
+    expected = None if size is None else (bytes(range(256)) * ((size + 255) // 256))[:size]
+    literal = "NULL" if expected is None else "0x" + expected.hex()
+    with db_connection.cursor() as cursor:
+        cursor.execute(f"SELECT CAST({literal} AS varbinary(max))")
+        rows = _fetch_rows(cursor, method)
+        assert rows == [(expected,)]
+        assert type(rows[0][0]) is type(expected)
+        assert cursor.messages == []
+        cursor.execute("SELECT 42")
+        assert cursor.fetchval() == 42
+
+
+@pytest.mark.parametrize("method", ["fetchone", "fetchmany", "fetchall"])
+@pytest.mark.parametrize("kind", ["nvarchar", "varchar-wide", "varchar-narrow"])
+def test_lob_text_read_boundaries(db_connection, method, kind):
+    suffix = "\U0001f642\0caf\u00e9-tail" if kind == "nvarchar" else "caf\u00e9\0tail"
+    expected = [None, ""] + [
+        "x" * boundary + suffix for boundary in (4093, 4094, 4095, 8187, 8190, 8191, 8192, 262144)
+    ]
+    original = db_connection.getdecoding(SQL_CHAR)
+    try:
+        narrow = kind == "varchar-narrow"
+        db_connection.setdecoding(
+            SQL_CHAR,
+            encoding="latin-1" if narrow else "utf-16le",
+            ctype=SQL_CHAR if narrow else SQL_WCHAR,
+        )
+        expressions = []
+        for index, value in enumerate(expected):
+            literal = "NULL" if value is None else "0x" + value.encode("utf-16le").hex()
+            expression = f"CAST({literal} AS nvarchar(max))"
+            if kind != "nvarchar":
+                expression = f"CAST({expression} COLLATE Latin1_General_100_BIN2 AS varchar(max))"
+            expressions.append(f"({index}, {expression})")
+        with db_connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT payload FROM (VALUES "
+                + ", ".join(expressions)
+                + ") AS v(n, payload) ORDER BY n"
+            )
+            rows = _fetch_rows(cursor, method)
+            assert rows == [(value,) for value in expected]
+            assert all(row[0] is None or type(row[0]) is str for row in rows)
+            assert cursor.messages == []
+            cursor.execute("SELECT 42")
+            assert cursor.fetchval() == 42
+    finally:
+        db_connection.setdecoding(SQL_CHAR, encoding=original["encoding"], ctype=original["ctype"])
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Windows does not export the native driver function-pointer globals",
+)
+@pytest.mark.parametrize("kind", ["binary", "narrow", "wide"])
+@pytest.mark.parametrize(
+    "mode", ["known", "unknown", "negative", "split", "zero", "null", "error", "no-data"]
+)
+def test_lob_getdata_storage_contract(conn_str, kind, mode):
+    script = textwrap.dedent("""
+        import ctypes as c
+        import os
+        import sys
+        import mssql_python
+        from mssql_python import ddbc_bindings as ddbc
+
+        kind, mode = sys.argv[1:]
+        binary, wide = kind == "binary", kind == "wide"
+        ctype = -2 if binary else (-8 if wide else 1)
+        sqltype = "varbinary(max)" if binary else ("nvarchar(max)" if wide else "varchar(max)")
+        codec = "utf-16le" if wide else "utf-8"
+        unit = 2 if wide else 1
+        terminator = b"" if binary else bytes(unit)
+        head_text = "A\\0B" + "x" * ((8192 - len(terminator)) // unit - 3)
+        tail_text = "Z\\0Y\\0\\0"
+        head, tail = head_text.encode(codec), tail_text.encode(codec)
+        expected = head + tail if binary else head_text + tail_text.rstrip("\\0")
+        if mode == "split" and not binary:
+            text = head_text[:-1] + "\\U0001f642" + tail_text
+            encoded = text.encode(codec)
+            head, tail = encoded[:len(head)], encoded[len(head):]
+            expected = text.rstrip("\\0")
+        elif mode == "zero":
+            expected = head if binary else head_text
+        elif mode == "null":
+            expected = None
+
+        pointer, short, length = c.c_void_p, c.c_short, c.c_ssize_t
+        get_type = c.CFUNCTYPE(short, pointer, c.c_ushort, short, pointer, length, pointer)
+        library = c.CDLL(ddbc.module.__file__)
+        slot = pointer.in_dll(library, "SQLGetData_ptr")
+        calls, errors = [], []
+
+        @get_type
+        def getdata(handle, column, actual_ctype, buffer, capacity, indicator):
+            try:
+                assert column == 1 and actual_ctype == ctype
+                assert capacity == 8192
+                assert c.string_at(buffer, capacity) == bytes(capacity)
+                calls.append(capacity)
+                assert len(calls) <= 2
+                first = len(calls) == 1
+                data = head if first else tail
+                c.memmove(buffer, data + terminator, len(data) + len(terminator))
+                reported = len(head) + len(tail) if first else len(tail)
+                if first and mode in ("unknown", "negative"):
+                    reported = -4 if mode == "unknown" else -9
+                if not first:
+                    if mode == "zero":
+                        reported = 0
+                    elif mode in ("null", "error", "no-data"):
+                        reported = -1
+                c.cast(indicator, c.POINTER(length))[0] = reported
+                if not first and mode in ("error", "no-data"):
+                    return -1 if mode == "error" else 100
+                return 1 if first else 0
+            except BaseException as error:
+                errors.append(repr(error))
+                return -1
+
+        with mssql_python.connect(os.environ["DB_CONNECTION_STRING"]) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(f"SELECT CAST(NULL AS {sqltype})")
+                assert ddbc.DDBCSQLFetch(cursor.hstmt) == 0
+                saved = slot.value
+                assert saved
+                marker = object()
+                row = [marker]
+                slot.value = c.cast(getdata, pointer).value
+                try:
+                    try:
+                        result = ddbc.DDBCSQLGetData(
+                            cursor.hstmt, 1, row, "utf-8", "utf-16le", ctype, cursor.messages
+                        )
+                    except RuntimeError as error:
+                        assert mode in ("error", "no-data"), str(error)
+                        assert "Error fetching LOB" in str(error)
+                        assert row == [marker]
+                    else:
+                        assert mode not in ("error", "no-data")
+                        assert result == 0 and row == [marker, expected]
+                        assert type(row[1]) is type(expected)
+                finally:
+                    slot.value = saved
+                assert calls == [8192, 8192] and not errors, (calls, errors)
+                cursor.execute("SELECT 42")
+                assert cursor.fetchval() == 42
+        """)
+    _run_fetch_script(conn_str, script, kind, mode)

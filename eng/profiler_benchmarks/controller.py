@@ -230,6 +230,7 @@ def verify_reused_source(source_root, revision):
 
 
 # Closed, reviewed dispatch bodies: main666, f539, many-only, and plain completion.
+# The options snapshot changes marshalling, not the plain Row-completion policy.
 # Method/comment/docstring edits require review and an explicit fingerprint update.
 # These reviewed method-source SHA256 digests are not credentials.
 _LEGACY_PYTHON_ROUTE = (
@@ -243,6 +244,9 @@ _MANY_ONLY_ROUTE = (
 )
 _PLAIN_COMPLETION_ROUTE = (
     "776ebc4532b69fe2492317ef6af9d4b2bb08e8a0f112613a7ce2600500bc37d8"  # DevSkim: ignore DS173237
+)
+_FETCH_OPTIONS_ROUTE = (
+    "6c8545f38956380e22b8cc9376e215e032d45ec68d1a29c669201f09477ec507"  # DevSkim: ignore DS173237
 )
 
 
@@ -323,7 +327,7 @@ def python_source_identity(source_root, revision):
     fingerprint = hashlib.sha256(
         json.dumps(methods, ensure_ascii=True, separators=(",", ":")).encode()
     ).hexdigest()
-    if fingerprint in (_LEGACY_PYTHON_ROUTE, _PLAIN_COMPLETION_ROUTE):
+    if fingerprint in (_LEGACY_PYTHON_ROUTE, _PLAIN_COMPLETION_ROUTE, _FETCH_OPTIONS_ROUTE):
         values = (False, False, False)
     elif fingerprint == _LEGACY_FUSED_ROUTE:
         values = (True, True, True)
@@ -344,7 +348,7 @@ def python_source_identity(source_root, revision):
         validate_row_route(route)
         if route != expected:
             raise ValueError("Python source-policy drift")
-    elif fingerprint in (_MANY_ONLY_ROUTE, _PLAIN_COMPLETION_ROUTE):
+    elif fingerprint in (_MANY_ONLY_ROUTE, _PLAIN_COMPLETION_ROUTE, _FETCH_OPTIONS_ROUTE):
         raise ValueError("Missing Python route declaration")
     return dict(
         source_commit=revision,

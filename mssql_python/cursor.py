@@ -677,7 +677,18 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         self._cached_char_encoding = char_decoding.get("encoding", "utf-16le")
         self._cached_char_ctype = char_decoding.get("ctype", ddbc_sql_const.SQL_WCHAR.value)
         self._cached_wchar_encoding = wchar_encoding
+        self._cached_fetch_options = None
         self._cached_decoding_generation = generation
+
+    def _create_fetch_options(self):
+        generation = self._cached_decoding_generation
+        options = ddbc_bindings._FetchOptions(
+            self._cached_char_encoding, self._cached_wchar_encoding, self._cached_char_ctype
+        )
+        # Allocation callbacks can refresh decoding; never install an older snapshot.
+        if self._cached_decoding_generation == generation:
+            self._cached_fetch_options = options
+        return options
 
     def _get_decoding_settings(self, sql_type):
         """
@@ -2889,14 +2900,22 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             started = perf_start()
             try:
                 fetch = ddbc_bindings.DDBCSQLFetchOne
-                ret = fetch(
-                    self.hstmt,
-                    row_data,
-                    char_enc,
-                    wchar_enc,
-                    self._cached_char_ctype,
-                    self.messages,
-                )
+                if fetch is _DEFAULT_NATIVE_FETCH_ONE:
+                    options = self._cached_fetch_options
+                    if options is None:
+                        options = self._create_fetch_options()
+                    ret = ddbc_bindings._fetchone_with_options(
+                        self.hstmt, row_data, options, self.messages
+                    )
+                else:
+                    ret = fetch(
+                        self.hstmt,
+                        row_data,
+                        char_enc,
+                        wchar_enc,
+                        self._cached_char_ctype,
+                        self.messages,
+                    )
             finally:
                 if started:
                     perf_stop("py::fetchone::cpp_call", started)
@@ -2990,15 +3009,23 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             started = perf_start()
             try:
                 fetch = ddbc_bindings.DDBCSQLFetchMany
-                ret = fetch(
-                    self.hstmt,
-                    rows_data,
-                    size,
-                    char_enc,
-                    wchar_enc,
-                    self._cached_char_ctype,
-                    self.messages,
-                )
+                if fetch is _DEFAULT_NATIVE_FETCH_MANY:
+                    options = self._cached_fetch_options
+                    if options is None:
+                        options = self._create_fetch_options()
+                    ret = ddbc_bindings._fetchmany_with_options(
+                        self.hstmt, rows_data, size, options, self.messages
+                    )
+                else:
+                    ret = fetch(
+                        self.hstmt,
+                        rows_data,
+                        size,
+                        char_enc,
+                        wchar_enc,
+                        self._cached_char_ctype,
+                        self.messages,
+                    )
             finally:
                 if started:
                     perf_stop("py::fetchmany::cpp_call", started)

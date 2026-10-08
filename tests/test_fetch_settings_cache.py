@@ -194,18 +194,33 @@ def test_wchar_decoding_forwarded_to_live_fetch_bridge(connection, method, bridg
 
 
 def test_decoding_cache_reuse_and_multiple_cursors(connection):
-    with patch.object(connection, "getdecoding", wraps=connection.getdecoding) as reads:
+    with (
+        patch.object(connection, "getdecoding", wraps=connection.getdecoding) as reads,
+        patch.object(ddbc, "_FetchOptions", wraps=ddbc._FetchOptions) as options,
+        patch.object(ddbc, "_fetchone_with_options", wraps=ddbc._fetchone_with_options) as one,
+        patch.object(ddbc, "_fetchmany_with_options", wraps=ddbc._fetchmany_with_options) as many,
+    ):
         with connection.cursor() as first, connection.cursor() as second:
             assert reads.call_count == 4
+            assert options.call_count == 0
             for cursor in (first, second):
+                cursor.execute("SELECT 42")
+                assert cursor.fetchall()[0][0] == 42
+                assert cursor._cached_fetch_options is None
                 cursor.execute("SELECT n FROM (VALUES (1), (2), (3)) AS v(n) ORDER BY n")
                 assert cursor.fetchone()[0] == 1
+                snapshot = cursor._cached_fetch_options
                 assert cursor.fetchmany(1)[0][0] == 2
                 assert cursor.fetchall()[0][0] == 3
+                assert one.call_args.args[-2] is many.call_args.args[-2] is snapshot
+                assert one.call_args.args[-1] is many.call_args.args[-1] is cursor.messages
+                assert cursor._cached_fetch_options is snapshot
             assert reads.call_count == 4
+            assert options.call_count == one.call_count == many.call_count == 2
 
             connection.setdecoding(mssql_python.SQL_CHAR, encoding="latin-1")
             for index, cursor in enumerate((first, second), 1):
+                snapshot = cursor._cached_fetch_options
                 cursor.execute(
                     "SELECT CONVERT(VARCHAR(1), 0xE9) AS txt FROM (VALUES (1), (2), (3)) AS v(n)"
                 )
@@ -213,6 +228,35 @@ def test_decoding_cache_reuse_and_multiple_cursors(connection):
                 assert cursor.fetchmany(1)[0].txt == "\u00e9"
                 assert cursor.fetchall()[0].txt == "\u00e9"
                 assert reads.call_count == 4 + 2 * index
+                assert options.call_count == 2 + index
+                assert cursor._cached_fetch_options is not snapshot
+
+
+@pytest.mark.parametrize("method", ("fetchone", "fetchmany", "fetchval"))
+def test_native_fetch_options_refresh_failure_is_retried(connection, method):
+    with connection.cursor() as cursor:
+        cursor.execute("SELECT 42")
+        assert cursor.fetchone()[0] == 42
+        assert cursor._cached_fetch_options is not None
+        cursor.execute("SELECT CONVERT(VARCHAR(1), 0xE9) AS txt")
+        connection.setdecoding(mssql_python.SQL_CHAR, encoding="latin-1")
+
+        def fetch():
+            return cursor.fetchmany(1) if method == "fetchmany" else getattr(cursor, method)()
+
+        with patch.object(ddbc, "_FetchOptions", side_effect=MemoryError("options allocation")):
+            with pytest.raises(MemoryError, match="options allocation"):
+                fetch()
+        assert cursor._cached_decoding_generation == connection._decoding_generation
+        assert cursor._cached_fetch_options is None
+        assert cursor._next_row_index == 0
+        value = fetch()
+        actual = (
+            value[0][0] if method == "fetchmany" else value if method == "fetchval" else value[0]
+        )
+        assert actual == "\u00e9"
+        assert cursor._cached_fetch_options is not None
+        assert cursor.rowcount == 1
 
 
 @pytest.mark.parametrize("method", FETCH_METHODS)
@@ -516,6 +560,273 @@ def test_direct_row_without_converters_is_zero_copy():
     values = [1, "abc", None]
     row = Row(values, {"number": 0, "txt": 1, "empty_value": 2})
     assert row._values is values
+
+
+@pytest.mark.parametrize("container", (list, tuple))
+def test_converter_leaf_inputs_and_copy(container):
+    text = "A\0\u00e9\U0001f600"
+    values = container(
+        [
+            text,
+            b"\0\xff",
+            42,
+            decimal.Decimal("1.25"),
+            datetime.date(2026, 1, 2),
+            uuid.UUID(UUID_TEXT),
+            None,
+        ]
+    )
+    seen = []
+
+    def convert(value):
+        seen.append(value)
+        return value
+
+    with patch.object(
+        ddbc, "_apply_output_converters", wraps=ddbc._apply_output_converters
+    ) as leaf:
+        row = Row(values, {}, converter_map=[convert] * len(values), uuid_str_indices=(5,))
+    expected = [b"A\0\0\0\xe9\0\x3d\xd8\0\xde", *values[1:-1]]
+    assert seen == expected
+    assert [type(value) for value in seen] == [type(value) for value in expected]
+    assert row._values is not values
+    assert list(row) == [*expected[:5], UUID_TEXT, None]
+    assert isinstance(values[5], uuid.UUID)
+    assert leaf.call_count == int(container is list)
+    if container is list:
+        values[0] = "changed"
+        assert row[0] == expected[0]
+
+
+@pytest.mark.parametrize("container", (list, tuple))
+@pytest.mark.parametrize("map_container", (list, tuple))
+@pytest.mark.parametrize("map_length", (1, 4))
+def test_converter_leaf_map_length(container, map_container, map_length):
+    calls = []
+    converters = map_container([lambda value: calls.append(value)] * map_length)
+    row = Row(container([1, 2]), {}, converter_map=converters)
+    assert calls == ([1] if map_length == 1 else [1, 2])
+    assert list(row) == ([None, 2] if map_length == 1 else [None, None])
+
+
+@pytest.mark.parametrize("container", (list, tuple))
+def test_converter_leaf_dynamic_encode(container):
+    events = []
+    token = object()
+
+    class Text(str):
+        def encode(self, encoding):
+            events.append((str(self), encoding))
+            Text.encode = lambda self, encoding: token
+            return b"first"
+
+    class StringProxy:
+        __class__ = property(lambda self: str)
+
+        def encode(self, encoding):
+            events.append(("proxy", encoding))
+            return token
+
+    values = container([Text("one"), Text("two"), StringProxy()])
+    row = Row(values, {}, converter_map=[lambda value: value] * 3)
+    assert events == [("one", "utf-16-le"), ("proxy", "utf-16-le")]
+    assert row[0] == b"first"
+    assert row[1] is row[2] is token
+
+
+def test_converter_leaf_releases_owned_references():
+    references = []
+
+    class Value:
+        pass
+
+    class Text(str):
+        def encode(self, encoding):
+            value = Value()
+            references.append(weakref.ref(value))
+            return value
+
+    class Converter:
+        def __call__(self, value):
+            assert value is references[-1]()
+            result = Value()
+            references.append(weakref.ref(result))
+            return result
+
+    values, converters = [Text("text")], [Converter()]
+    references.extend([weakref.ref(values[0]), weakref.ref(converters[0])])
+    row = Row(values, {}, converter_map=converters)
+    assert references[2]() is None
+    assert references[3]() is row[0]
+    del values, converters, row
+    gc.collect()
+    assert all(reference() is None for reference in references)
+
+
+@pytest.mark.parametrize("container", (list, tuple))
+@pytest.mark.parametrize("stage", ("bool", "encode", "call"))
+@pytest.mark.parametrize("error_type", (ValueError, KeyboardInterrupt))
+def test_converter_leaf_exception_boundaries(container, stage, error_type):
+    class Text(str):
+        def encode(self, encoding):
+            if stage == "encode":
+                raise error_type("converter failure")
+            return super().encode(encoding)
+
+    class Converter:
+        def __bool__(self):
+            if stage == "bool":
+                raise error_type("converter failure")
+            return True
+
+        def __call__(self, value):
+            raise error_type("converter failure")
+
+    values = container([Text("text")])
+    if stage == "bool" or error_type is KeyboardInterrupt:
+        with pytest.raises(error_type, match="converter failure"):
+            Row(values, {}, converter_map=[Converter()])
+    else:
+        assert Row(values, {}, converter_map=[Converter()])[0] is values[0]
+
+
+@pytest.mark.parametrize("native", (False, True))
+@pytest.mark.parametrize("mutation", ("replace", "grow", "shrink"))
+def test_converter_leaf_live_lists(native, mutation):
+    events = []
+    values = [1, 2, None]
+
+    class Values(list):
+        pass
+
+    if not native:
+        values = Values(values)
+
+    class Converter:
+        def __bool__(self):
+            events.append("bool")
+            return True
+
+        def __call__(self, value):
+            events.append(value)
+            if value == 1:
+                if mutation == "replace":
+                    values[1] = 20
+                    converters[1] = lambda value: value + 100
+                elif mutation == "grow":
+                    values.append(4)
+                    converters.append(self)
+                else:
+                    values.clear()
+                    converters.clear()
+            return value + 10
+
+    converters = [Converter()] * 3
+    row = Row(values, {}, converter_map=converters)
+    assert (
+        list(row)
+        == {
+            "replace": [11, 120, None],
+            "grow": [11, 12, None],
+            "shrink": [11, 2, None],
+        }[mutation]
+    )
+    assert (
+        events
+        == {
+            "replace": ["bool", 1, "bool"],
+            "grow": ["bool", 1, "bool", 2, "bool", "bool", 4],
+            "shrink": ["bool", 1],
+        }[mutation]
+    )
+
+
+def test_converter_leaf_self_replacement_finalizer_order():
+    def run(container):
+        events = []
+
+        class Converter:
+            def __call__(self, value):
+                converters[0] = None
+                events.append(value)
+                return value
+
+            def __del__(self):
+                events.append("released")
+
+        converters = [Converter(), events.append, events.append]
+        row = Row(container([1, 2, 3]), {}, converter_map=converters)
+        return events, list(row)
+
+    assert run(list) == run(tuple)
+
+
+def test_converter_leaf_codec_lookup_in_subprocess():
+    script = textwrap.dedent("""
+        import codecs
+        import encodings
+        from mssql_python.row import Row
+
+        events = []
+        def encode(value, errors="strict"):
+            events.append((value, errors))
+            return b"custom", len(value)
+        def search(name):
+            if name == "utf_16_le":
+                return codecs.CodecInfo(name=name, encode=encode, decode=None)
+        codecs.unregister(encodings.search_function)
+        codecs.register(search)
+        codecs.register(encodings.search_function)
+        values = ["A\\0\\u00e9", "\\U0001f600"]
+        expected = [value.encode("utf-16-le") for value in values]
+        expected_events = events[:]
+        events.clear()
+        row = Row(values, {}, converter_map=[lambda value: value] * 2)
+        assert list(row) == expected
+        assert events == expected_events
+        """)
+    result = subprocess.run(
+        [sys.executable, "-c", script], capture_output=True, text=True, timeout=30
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("method", FETCH_METHODS)
+def test_converter_leaf_registry_changes_during_rows(connection, method):
+    calls = []
+
+    def replacement(value):
+        return value + 100
+
+    def original(value):
+        calls.append(value)
+        connection.add_output_converter(mssql_python.SQL_INTEGER, replacement)
+        return value + 10
+
+    connection.add_output_converter(mssql_python.SQL_INTEGER, original)
+    with connection.cursor() as cursor:
+        cursor.execute("SELECT n AS a, n + 10 AS b FROM (VALUES (1), (2)) AS v(n) ORDER BY n")
+        rows = fetch_rows(cursor, method)
+        count = 1 if method == "fetchone" else 2
+        assert calls == [value for n in range(1, count + 1) for value in (n, n + 10)]
+        assert [list(row) for row in rows] == [[n + 10, n + 20] for n in range(1, count + 1)]
+        if method == "fetchone":
+            assert list(cursor.fetchone()) == [102, 112]
+        cursor.execute("SELECT 3 AS renamed")
+        assert cursor.fetchval() == 103
+    assert list(rows[0]) == [11, 21]
+    assert dict(rows[0]._mapping) == {"a": 11, "b": 21}
+
+
+@pytest.mark.parametrize("method", ("fetchone", "fetchval"))
+def test_converter_leaf_native_error_precedes_callbacks(connection, method):
+    calls = []
+    connection.add_output_converter(mssql_python.SQL_INTEGER, lambda value: calls.append(value))
+    with connection.cursor() as cursor:
+        cursor.execute("SELECT 1 AS a, CAST(0x00D8 AS NVARCHAR(10)) AS invalid_utf16")
+        with pytest.raises(UnicodeDecodeError):
+            getattr(cursor, method)()
+        assert calls == []
 
 
 def test_decoding_cache_refresh_failure_is_retried(connection):

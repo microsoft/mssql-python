@@ -426,6 +426,15 @@ struct DateTimeOffset {
     SQLSMALLINT timezone_minute;  // Offset minutes from UTC
 };
 
+struct FetchOptions {
+    const std::string charEncoding;
+    const std::string wcharEncoding;
+    const int charCtype;
+
+    FetchOptions(const std::string& charEncoding, const std::string& wcharEncoding, int charCtype)
+        : charEncoding(charEncoding), wcharEncoding(wcharEncoding), charCtype(charCtype) {}
+};
+
 // Struct to hold data buffers and indicators for each column
 struct ColumnBuffers {
     std::vector<std::vector<SQLCHAR>> charBuffers;
