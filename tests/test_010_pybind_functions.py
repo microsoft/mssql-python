@@ -182,6 +182,21 @@ def test_lob_buffer_growth_is_geometric():
 
 
 @pytest.mark.skipif(not DDBC_AVAILABLE, reason="ddbc_bindings not available")
+@pytest.mark.parametrize(
+    ("chunk_count", "chunk_size", "message"),
+    [
+        (1_000_001, 1, "chunk count"),
+        (True, 1, "chunk count"),
+        (1, 0, "chunk size"),
+        (1, True, "chunk size"),
+    ],
+)
+def test_lob_buffer_growth_helper_rejects_unsafe_sizes(chunk_count, chunk_size, message):
+    with pytest.raises((RuntimeError, TypeError), match=message):
+        ddbc._test_lob_buffer_growth(chunk_count, chunk_size)
+
+
+@pytest.mark.skipif(not DDBC_AVAILABLE, reason="ddbc_bindings not available")
 class TestPybindModuleInfo:
     """Test module information and architecture detection."""
 

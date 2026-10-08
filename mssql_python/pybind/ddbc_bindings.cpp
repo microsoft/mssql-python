@@ -589,7 +589,16 @@ size_t ExtendNativeFetchBuffer(std::vector<char>& buffer, size_t currentSize, si
     return requiredSize;
 }
 
-py::tuple TestLobBufferGrowth(size_t chunkCount, size_t chunkSize) {
+py::tuple TestLobBufferGrowth(py::handle chunkCountArg, py::handle chunkSizeArg) {
+    const size_t chunkCount = static_cast<size_t>(
+        ValidateNativeRowCountArgument(chunkCountArg, "LOB growth chunk count", false));
+    if (!PyLong_Check(chunkSizeArg.ptr()) || PyBool_Check(chunkSizeArg.ptr())) {
+        ThrowStdException("LOB growth chunk size must be a positive integer");
+    }
+    const size_t chunkSize = chunkSizeArg.cast<size_t>();
+    if (chunkSize == 0 || chunkSize > MAX_NATIVE_FETCH_BYTES) {
+        ThrowStdException("LOB growth chunk size must be between 1 and 256 MiB");
+    }
     std::vector<char> buffer;
     size_t dataSize = 0;
     size_t reservedBytes = 0;
