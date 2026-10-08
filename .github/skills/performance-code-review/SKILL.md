@@ -30,29 +30,52 @@ it is not a replacement for unrelated repository checks.
 
 ## Review procedure
 
-1. Read changed units and their surrounding callers, including deleted safety
-   checks, tests, public Python entry points, and native cleanup paths.
-2. Trace the current call graph. For parameter work, distinguish `execute`,
-   `executemany`, array binding, overrides, and DAE rather than assuming that
-   similarly named operations share a binder.
-3. Locate each changed loop and its input-dependent frequency. Apply the cost
-   model and pattern checklist below; record concrete growth before zone labels.
-4. Trace ownership, Python contracts, error returns, and invalidation end to end.
-   Treat initial findings as hypotheses, not established defects.
-5. Reproduce candidate defects with the smallest relevant existing harness.
-   Compare the same input on the PR and its actual base. Check public API paths,
-   not only direct calls into internal wrappers.
-6. Inspect available diff coverage and existing regression tests. Prioritize
-   uncovered failure, fallback, boundary, and teardown paths. Coverage percentage
-   alone neither proves safety nor establishes a defect.
-7. Evaluate performance evidence and simplifications using the rules below.
-   Do not ask for a migration or dependency PR without a demonstrated call-path
-   dependency; an exceptional DAE path does not justify rewriting all batching.
-8. Challenge each finding: what evidence would disprove it, is it pre-existing,
-   is the caller supported, and does the suggested fix preserve every invariant?
-   Drop disproved claims and explain material corrections plainly.
-9. Report only actionable findings. Separate correctness, measured performance,
-   unverified concerns, and code-organization suggestions.
+Use this workflow to assess a change or plan a permitted scratch experiment;
+it does not authorize production edits or additional runtime activity.
+
+1. **Define the problem and the boundaries.** State the observable failure or
+   slow operation, affected inputs, expected behavior, and what would count as
+   improvement. Identify contracts and neighboring paths that must not change.
+2. **Establish a trustworthy baseline.** Reproduce through the supported public
+   API using the smallest relevant existing harness and the same input on the
+   candidate and its actual base. Reduce the workload without removing the
+   conditions that trigger the problem. Separate pre-existing behavior and
+   environment/setup failures from a change-specific effect.
+3. **Trace what actually runs.** Read changed units, callers, deleted checks,
+   and cleanup paths. Follow dispatch rather than assuming similarly named
+   operations share an implementation. For parameter work, distinguish
+   `execute`, `executemany`, array binding, overrides, and DAE. Establish loop
+   frequency, data flow, ownership, and timer boundaries before naming a cost.
+4. **Separate observations from explanations.** Record the raw symptom, likely
+   causes, and the smallest check that would distinguish them. For each proposed
+   cause, predict what should change and what should stay unchanged. A costly
+   pattern or a correlated timing change is a hypothesis, not a root cause.
+5. **Test one explanation at a time.** Keep a pinned control and vary one
+   relevant factor in an isolated experiment when execution is permitted.
+   Hold unrelated code, workload, settings, and timing boundaries fixed.
+   Retain adverse and inconclusive results. If a check cannot distinguish the
+   causes, refine the hypothesis rather than enlarge the patch or discard data.
+6. **Assess the smallest causal fix.** Connect the proposed change to the
+   demonstrated mechanism, not just a better aggregate score. Prefer a local
+   removal of redundant work, a valid invariant moved out of a loop, or a
+   narrowly eligible fast path over a broad rewrite or new cache. Treat an
+   untested alternative as a suggestion, not an equivalent fix.
+7. **Trace the full impact before removing work.** Identify every caller of
+   shared helpers and every correctness responsibility of the old path.
+   Preserve diagnostics, error propagation, ownership, invalidation, fallback,
+   and cleanup. Move a responsibility to a verified replacement before
+   removing its old implementation; do not trade correctness for fewer calls.
+8. **Check both the mechanism and unaffected behavior.** Inspect existing tests
+   and diff coverage. Verify the intended behavior change and unchanged
+   contracts against the baseline, with eligible, excluded, boundary, failure,
+   and recovery cases. Assert promised operation reductions as well as values.
+   Retain representative neighboring-path controls; a passing target workload
+   or coverage percentage does not establish that shared behavior is safe.
+9. **Decide from the evidence.** Check whether attribution supports the proposed
+   cause and whether matched release measurements justify the added complexity.
+   Drop disproved findings and explain corrections. Separate established
+   mechanisms, measured effects, unresolved alternatives, and untested paths;
+   do not force an optimization when the evidence remains inconclusive.
 
 Before concluding, answer these questions from the evidence: does the change
 address the ask; is its scope justified; does it regress other supported paths;
@@ -123,13 +146,22 @@ dispatch path. Never flag it solely because its type name appears in a loop.
 - Compare against the appropriate current/base behavior and accepted contract.
   Do not restore a superseded bug in the name of legacy parity. Testing explicit
   `setinputsizes` overrides alone does not prove automatic detection parity.
+- Validate dispatch separately from capability: a selected native route requires
+  its binding, but an available binding need not be selected.
+- Preserve supported subclass/callback behavior, settings changes, and reentrancy
+  across Python/native boundaries. An immutable snapshot still needs correct
+  invalidation; callbacks may change state before a computed value is cached.
+- Check pending Python errors after fallible C-API conversions. Returning a
+  value while an exception remains set is not successful conversion.
 - Calling a Python special method directly can bypass a builtin's validation.
   For example, a `Decimal.__format__` override can return a non-string. Validate
   results before list mutation, casting, or unchecked Unicode macros, and
   preserve the expected exception behavior.
 - Keep Python code-point counts, UTF-16 code units, and encoded bytes distinct.
   Astral characters require two UTF-16 units. Size the final normalized/formatted
-  value, including the chosen encoding and any required terminator.
+  value, including the chosen encoding and any required terminator. Use the same
+  discipline in SQL fixtures: verify that boundary values fit the declared type
+  and reach the intended driver path before interpreting a failed assertion.
 - Inspect actual consumers of new metadata. Populating an unused length field
   may be a correctness prerequisite, but it is not evidence of a current
   customer-visible crash fix or a delivered speedup.
@@ -190,9 +222,17 @@ concurrent-lifecycle design.
 
 - Apply the smallest safe solution first: existing helpers, standard idioms, then
   new machinery. Avoid speculative wrappers, duplicate dispatch, or knobs.
+- Keep the fix separate from unrelated cleanup or architectural changes. Do not
+  require a migration or dependency PR without a demonstrated call-path need;
+  one exceptional path does not justify rewriting the surrounding subsystem.
+- Scope a follow-up experiment around one unresolved question and the result
+  that would change the decision. Reuse the existing workload and harness before
+  adding another framework; more validation machinery is not performance evidence.
 - Require evidence for a performance optimization's payoff. Safety ownership,
   protocol validation, and error handling do **not** need a throughput gain to
-  justify their existence.
+  justify their existence. Classify added code by responsibility before proposing
+  cuts; neither fewer lines nor fewer calls proves lower latency. Reject a
+  measured slowdown rather than preserving machinery because it looks cheaper.
 - Before calling a guard redundant, prove the state unreachable through all
   supported callers. Distinguish a genuinely fixed bound from user-supplied data.
 - A proposed cut must preserve diagnostics, lifetime, fallback, and public API
@@ -217,6 +257,14 @@ do not start an unrelated benchmark merely because a review is running.
   An override optimization needs declared overrides; a cache benefit needs hits.
   Existing benchmarks can be excellent fallback controls while never using the
   proposed fast path.
+- Map changed branches to the public operations that reach them: scalar,
+  rowwise, batched, Arrow, or catalog fetching as applicable. A SELECT-only
+  benchmark does not cover a SQLColumns-specific branch. If a shared loop
+  changes, retain ordinary-query controls even when catalog fetching is the goal.
+- For batch sizing, cover empty/small results, boundaries around capacity,
+  multiple growth steps, and a full final batch followed by actual EOF. Validate
+  values, cell and Row types, NULLs, order, description, and messages before
+  coercion or serialization can hide a difference.
 - Include compatible repeated inputs, shape changes, and excluded inputs. An
   all-or-nothing cache can miss every batch containing a NULL, date, decimal, or
   DAE value even if most of the batch is otherwise eligible. Inspect the actual
@@ -227,6 +275,9 @@ do not start an unrelated benchmark merely because a review is running.
 - Verify current values, affected rows, and relevant operation counts outside
   timed regions where possible. Use existing counters/logging for correctness;
   use normal production logging settings for timing.
+- Do not change the workload registry, acceptance criteria, or agreed report
+  format to rescue a result. Review necessary harness corrections explicitly,
+  preserving prior evidence and identifying which comparisons need rerunning.
 
 ### Provenance and controls
 
@@ -237,7 +288,9 @@ do not start an unrelated benchmark merely because a review is running.
   loader can legitimately load the `.so`/`.pyd`; its own path is not sufficient
   provenance. Discard mislabeled or logging-contaminated runs.
 - Use Release/`-DNDEBUG` for comparisons. Debug-only assertion costs are not
-  release regressions. Do not copy another PR's numbers onto a later change.
+  release regressions. Verify effective configuration and compiler flags as
+  described in the [profiler skill](../mssql-profiler/SKILL.md#build-and-verify-instrumentation),
+  not a build's label. Do not copy another PR's numbers onto a later change.
 - Counterbalance base/PR order, retain raw per-round observations, and avoid
   competing benchmarks or DB-heavy tests on the same machine/server. Alternation
   reduces order bias; it does not remove all contention or server-state effects.
@@ -257,16 +310,33 @@ do not start an unrelated benchmark merely because a review is running.
 - Parent timers include nested instrumentation overhead. Skipping thousands of
   bind calls can also skip thousands of timer records. Do not present that
   instrumented percentage as the production speedup or sum overlapping phases.
+- Trace a timer's exact source scope before naming the cause. A binding wrapper
+  may include metadata access, buffer sizing/value initialization, ODBC calls,
+  and diagnostics. Its total is not pure ODBC time or proof of allocator cost.
+  An increased fetch-call count alone does not attribute a slowdown; compare its
+  aggregate timed cost and the surrounding batch work.
+- Distinguish live buffer capacity from allocation traffic, transient peak, and
+  process RSS. A capacity probe establishes only the storage it observes; keep
+  diagnostic overlays separate from the uninstrumented latency comparison.
 - `SQLBindParameter` is not inherently a network round trip. An incomplete probe,
   cumulative counters from several workloads, or omitted phases cannot establish
   a universal upper bound on the optimization's benefit.
 - Show dispersion and paired observations alongside medians. Inconclusive data
   proves neither zero benefit nor absence of regression. Overlapping ranges or
   a "delta smaller than spread" rule are not statistical significance tests.
+- Name the statistic and apply the predeclared acceptance rule. A median of
+  paired ratios is not a ratio of medians; a practical threshold is not a
+  significance test. Below-threshold results do not establish equivalence.
+- Same-code A/A variation can reveal unstable conditions, but does not explain
+  away adverse A/B observations or justify subtracting "noise" from a result.
 - For normalized scores, show the numerator and denominator and confirm
   comparability. A moving pyodbc denominator is a warning, not an automatic
   verdict at a fixed percentage. Uncontrolled cross-run raw times do not repair
   it; obtain a controlled comparison or state the attribution uncertainty.
+- Keep per-workload regressions visible beside aggregate results. A favorable
+  sum of disjoint timing windows neither cancels an adverse case nor measures
+  full sequence elapsed time. A separately measured baseline is not a paired
+  comparison just because both summaries contain medians.
 
 ## Organization and runtime evidence
 
@@ -294,6 +364,11 @@ do not start an unrelated benchmark merely because a review is running.
 - Use short explicit pytest IDs for huge strings/bytes: pytest's current-test
   environment value can exceed Windows' 32,767-character limit before the
   product code runs.
+- Keep tests focused on distinct contracts. Before consolidation or removal,
+  map old cases to retained coverage and compare actual collected/executed
+  identities, multiplicities, outcomes, and covered production lines. Equal
+  totals or percentages can hide lost paths; renaming duplicate definitions can
+  expose previously uncollected tests. Explain intentional changes and skips.
 - Prefer connection-local temporary tables or unique run-owned objects. Clean
   only resources created by the repro; do not drop someone else's object to
   make a test green. Separate stale database state from a driver regression.
@@ -307,6 +382,29 @@ do not start an unrelated benchmark merely because a review is running.
 ## Report
 
 Lead with the outcome and keep the report proportional to the change.
+
+Label the evidence supporting each claim; these categories are complementary,
+not interchangeable:
+
+| Evidence | What it establishes | What it does not establish |
+| --- | --- | --- |
+| Source/mock checks | Inspected paths or simulated contracts | Native runtime safety, live SQL behavior, or latency |
+| Native behavioral checks | Built/imported revision's exercised contracts | Untested failure paths or platforms |
+| Profiling-enabled measurements | Observed calls and inclusive phase attribution | Shipped profiling-OFF speedup |
+| Matched Release-OFF measurements | Scoped latency for the recorded workload and context | Universal improvement or absence of regressions |
+
+Record a failure at the stage where it occurred. Establish whether setup,
+fixtures, the harness, or the intended driver path failed, using the baseline
+where relevant. A failed command alone does not identify a driver regression;
+an unfinished required cleanup or preservation check is not a qualified run.
+Retain partial measurements as explicitly limited evidence, leave unexecuted
+phases UNRUN, and do not rewrite an earlier failure using a later successful
+attempt. Merged status alone adds no missing runtime or performance qualification.
+
+Bind CI evidence to the actual head/base or tested merge, build, job, attempt,
+and configuration. Separate reruns at the same head; a later green run does not
+diagnose an earlier failure. Distinguish generated artifacts from verified
+publication, and reconcile stale check summaries with the underlying run.
 
 - **Confirmed correctness/parity defects:** caller-visible impact, minimal
   reproducer and actual result, current file/line anchor, PR-versus-base status,
