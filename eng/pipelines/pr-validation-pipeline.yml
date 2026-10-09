@@ -11,6 +11,41 @@ variables:
   arm64QemuImage: 'tonistiigi/binfmt@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0'
 
 jobs:
+- job: NativePoolSanitation
+  displayName: 'Native pool sanitation tests'
+  timeoutInMinutes: 20
+  pool:
+    vmImage: 'ubuntu-latest'
+
+  steps:
+  - checkout: self
+    persistCredentials: false
+
+  - task: UsePythonVersion@0
+    inputs:
+      versionSpec: '3.13'
+      addToPath: true
+    displayName: 'Use Python 3.13 for native tests'
+
+  - bash: |
+      set -euo pipefail
+      sudo apt-get update
+      sudo apt-get install -y build-essential cmake unixodbc-dev
+      python -m pip install --no-deps --require-hashes -r eng/requirements-build-linux.txt
+    displayName: 'Install native test build dependencies'
+
+  - bash: |
+      set -euo pipefail
+      cmake -S mssql_python/pybind -B mssql_python/pybind/build/native-tests \
+        -DCMAKE_BUILD_TYPE=Release -DENABLE_PROFILING=OFF \
+        -DBUILD_NATIVE_POOL_TESTS=ON -DPython3_EXECUTABLE="$(command -v python)"
+      cmake --build mssql_python/pybind/build/native-tests \
+        --config Release --target pool_sanitation_tests --parallel 2
+      ctest --test-dir mssql_python/pybind/build/native-tests \
+        -C Release --output-on-failure --no-tests=error \
+        --timeout 120 -R '^pool_sanitation$'
+    displayName: 'Build and run native pool sanitation tests'
+
 - job: CodeQLAnalysis
   displayName: 'CodeQL Security Analysis'
   pool:
