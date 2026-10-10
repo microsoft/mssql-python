@@ -207,6 +207,45 @@ for row in rows:
 connection.close()
  
 ```
+
+### Processing large results in batches
+
+Use `cursor.fetchmany(1000)` to retrieve up to 1,000 rows per call and process each
+batch before fetching the next. The final batch can be smaller; an empty list
+means there are no more rows. Compared with calling `fetchone()` for every row,
+batching can reduce per-call overhead without retaining the entire result in
+application memory.
+
+Set `DB_CONNECTION_STRING` for your database before running this example, which
+uses the same AdventureWorksLT sample schema as above:
+
+```python
+import os
+
+import mssql_python
+
+with mssql_python.connect(os.environ["DB_CONNECTION_STRING"]) as connection:
+    with connection.cursor() as cursor:
+        cursor.execute("SELECT CustomerID, FirstName, LastName FROM SalesLT.Customer")
+        while rows := cursor.fetchmany(1000):
+            for row in rows:
+                print(row)
+```
+
+Replace `print(row)` with processing that does not retain earlier rows or batches.
+Choose a batch size for your workload, row widths, and available memory; 1,000 is
+an example, not a universally optimal size. Larger batches retain more rows at a
+time, and large individual values can still require substantial memory.
+
+`fetchall()` returns all remaining rows in a list. Similarly, accumulating every
+batch in a list retains the full result and loses the memory benefit of consuming
+and discarding batches.
+
+This uses the existing `fetchmany(size)` API and does not change `cursor.arraysize`
+or any driver defaults. Without an explicit size, `fetchmany()` uses
+`cursor.arraysize`, whose default is 1. Batching requires changing the application's
+fetch loop; it does not add read-ahead to, or automatically accelerate, existing
+`fetchone()` loops.
  
 ## Still have questions?
  
