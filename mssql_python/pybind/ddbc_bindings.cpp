@@ -3979,7 +3979,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
             // 2. Initializes the variant metadata in the ODBC driver, which is required for
             //    SQLColAttribute(SQL_CA_SS_VARIANT_TYPE) to return the correct underlying C type.
             //    Without this probe call, SQLColAttribute returns incorrect type codes.
-            SQLLEN indicator;
+            SQLLEN indicator = INVALID_FETCH_INDICATOR;
             {
                 PERF_TIMER("sql_variant::null_probe");
                 ret = SQLGetData_ptr(hStmt, i, SQL_C_BINARY, NULL, 0, &indicator);
@@ -4059,7 +4059,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                     uint64_t fetchBufferSize =
                         (columnSize + 1) * sizeof(SQLWCHAR);  // +1 for null terminator
                     std::vector<SQLWCHAR> dataBuffer(columnSize + 1);
-                    SQLLEN dataLen;
+                    SQLLEN dataLen = INVALID_FETCH_INDICATOR;
                     ret = SQLGetData_ptr(hStmt, i, SQL_C_WCHAR, dataBuffer.data(), fetchBufferSize,
                                          &dataLen);
                     CaptureFetchDiagnostics(
@@ -4143,7 +4143,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                     // VARCHAR(10)).
                     uint64_t fetchBufferSize = columnSize * 4 + 1 /* null-termination */;
                     std::vector<SQLCHAR> dataBuffer(fetchBufferSize);
-                    SQLLEN dataLen;
+                    SQLLEN dataLen = INVALID_FETCH_INDICATOR;
                     ret = SQLGetData_ptr(hStmt, i, SQL_C_CHAR, dataBuffer.data(), dataBuffer.size(),
                                          &dataLen);
                     CaptureFetchDiagnostics(
@@ -4239,7 +4239,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                     uint64_t fetchBufferSize =
                         (columnSize + 1) * sizeof(SQLWCHAR);  // +1 for null terminator
                     std::vector<SQLWCHAR> dataBuffer(columnSize + 1);
-                    SQLLEN dataLen;
+                    SQLLEN dataLen = INVALID_FETCH_INDICATOR;
                     ret = SQLGetData_ptr(hStmt, i, SQL_C_WCHAR, dataBuffer.data(), fetchBufferSize,
                                          &dataLen);
                     CaptureFetchDiagnostics(
@@ -4532,7 +4532,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
             }
             case SQL_SS_TIMESTAMPOFFSET: {
                 DateTimeOffset dtoValue;
-                SQLLEN indicator;
+                SQLLEN indicator = INVALID_FETCH_INDICATOR;
                 ret = SQLGetData_ptr(hStmt, i, SQL_C_SS_TIMESTAMPOFFSET, &dtoValue,
                                      sizeof(dtoValue), &indicator);
                 CaptureFetchDiagnostics(hStmt, ret, messages);
@@ -4586,7 +4586,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                 } else {
                     // Small VARBINARY, fetch directly
                     std::vector<SQLCHAR> dataBuffer(columnSize);
-                    SQLLEN dataLen;
+                    SQLLEN dataLen = INVALID_FETCH_INDICATOR;
                     ret = SQLGetData_ptr(hStmt, i, SQL_C_BINARY, dataBuffer.data(), columnSize,
                                          &dataLen);
                     CaptureFetchDiagnostics(hStmt, ret, messages,
@@ -4667,7 +4667,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
 #if (ODBCVER >= 0x0350)
             case SQL_GUID: {
                 SQLGUID guidValue;
-                SQLLEN indicator;
+                SQLLEN indicator = INVALID_FETCH_INDICATOR;
                 ret =
                     SQLGetData_ptr(hStmt, i, SQL_C_GUID, &guidValue, sizeof(guidValue), &indicator);
                 CaptureFetchDiagnostics(hStmt, ret, messages);
