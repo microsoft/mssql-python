@@ -15,6 +15,7 @@ PIPELINE = ROOT / "eng" / "pipelines" / "mssql-odbc-daily-validation-pipeline.ym
 PR_PIPELINE = ROOT / "eng" / "pipelines" / "pr-validation-pipeline.yml"
 PREFLIGHT = ROOT / "eng" / "scripts" / "verify_mssql_odbc_provider.py"
 RELEASE_PIPELINE = ROOT / "OneBranchPipelines" / "stages" / "build-linux-single-stage.yml"
+PYBIND_CMAKE = ROOT / "mssql_python" / "pybind" / "CMakeLists.txt"
 
 
 @unittest.skipUnless(sys.platform.startswith("linux"), "runner requires Linux GNU timeout and bash")
@@ -187,6 +188,11 @@ class PipelineContractTests(unittest.TestCase):
         self.assertIn('pyarrow==25.0.1; python_version < "3.15"', requirements)
         self.assertIn('pyarrow==26.0.0; python_version >= "3.15"', requirements)
         self.assertNotIn("scientific-python-nightly-wheels", requirements)
+
+    def test_python_315_processes_python_header_before_libc_headers(self):
+        cmake = PYBIND_CMAKE.read_text(encoding="utf-8")
+
+        self.assertIn("target_compile_options(ddbc_bindings PRIVATE -include Python.h)", cmake)
 
 
 if __name__ == "__main__":
