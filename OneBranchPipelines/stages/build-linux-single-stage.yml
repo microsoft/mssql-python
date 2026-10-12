@@ -1,6 +1,6 @@
 # Linux Single Configuration Stage Template
 # Builds Python wheels for a specific Linux distribution and architecture
-# Builds for Python 3.10, 3.11, 3.12, 3.13, 3.14 within single job
+# Builds for Python 3.10, 3.11, 3.12, 3.13, 3.14, 3.15 within single job
 # Tests each wheel after building with isolated pytest execution
 parameters:
   # Stage identifier (e.g., 'Linux_manylinux_2_28_x86_64')
@@ -256,14 +256,14 @@ stages:
                 ls -1 "$(Build.SourcesDirectory)/odbc_wheels"/*.whl
               displayName: 'Flatten ODBC wheels for pip find-links'
           
-          # Build wheels for all Python versions (3.10-3.14) and test each one
+          # Build wheels for all Python versions (3.10-3.15) and test each one
           - script: |
               set -euo pipefail
               if [[ "$(LINUX_TAG)" == "manylinux_2_28" ]]; then SHELL_EXE=bash; else SHELL_EXE=sh; fi
               docker exec build-$(LINUX_TAG)-$(ARCH) $SHELL_EXE -lc 'mkdir -p /workspace/dist'
               
               # Loop through all Python versions: build wheel -> test wheel -> repeat
-              for PYBIN in cp310 cp311 cp312 cp313 cp314; do
+              for PYBIN in cp310 cp311 cp312 cp313 cp314 cp315; do
                 echo ""
                 echo "====================================================="
                 echo "Building and testing $PYBIN on $(LINUX_TAG)/$(ARCH)"
@@ -440,7 +440,7 @@ stages:
               echo "====================================================="
               echo "✓ All Python versions built and tested successfully!"
               echo "====================================================="
-            displayName: 'Build and test wheels for Python 3.10-3.14'
+            displayName: 'Build and test wheels for Python 3.10-3.15'
             env:
               DB_PASSWORD: $(DB_PASSWORD)
           

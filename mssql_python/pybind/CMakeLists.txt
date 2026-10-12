@@ -387,6 +387,12 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang
     endif()
 endif()
 
+# Python 3.15 defines newer POSIX feature levels than glibc's C++ headers.
+# Process Python.h first so libc sees the matching feature-test macros.
+if(UNIX)
+    target_compile_options(ddbc_bindings PRIVATE -include Python.h)
+endif()
+
 # Add macOS-specific string conversion fix
 if(APPLE)
     message(STATUS "Enabling macOS string conversion fix")
