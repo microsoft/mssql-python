@@ -2746,19 +2746,15 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                                 f"Failed to convert parameter to Decimal at row "
                                 f"{row_index}, column {i} (value type: {type(val).__name__})"
                             )
-                            # Split str(val) from the decimal parse so every conversion
-                            # failure can suppress chaining. Python 3.15's pure-Python
-                            # decimal implementation can retain the rejected input in
-                            # traceback state.
+                            # Raise outside the handler so conversion exceptions are
+                            # not retained as context with rejected input.
+                            conversion_failed = False
                             try:
                                 val_text = str(val)
-                            except Exception:  # pylint: disable=broad-exception-caught
-                                raise ValueError(err_msg) from None
-                            try:
                                 processed_row[i] = format(decimal.Decimal(val_text), "f")
-                            except decimal.DecimalException:
-                                raise ValueError(err_msg) from None
                             except Exception:  # pylint: disable=broad-exception-caught
+                                conversion_failed = True
+                            if conversion_failed:
                                 raise ValueError(err_msg) from None
                 processed_parameters.append(processed_row)
 
