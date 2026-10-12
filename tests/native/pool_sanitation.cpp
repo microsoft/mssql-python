@@ -6,7 +6,7 @@
 #include "logger_bridge.hpp"
 #include <pybind11/embed.h>
 #include <algorithm>
-#include <cstring>
+#include <array>
 #include <functional>
 #include <iostream>
 #include <unordered_map>
@@ -166,10 +166,17 @@ SQLRETURN SQL_API disconnect(SQLHDBC dbc) {
 }
 
 SQLRETURN SQL_API getInfo(SQLHDBC dbc, SQLUSMALLINT, SQLPOINTER value,
-                         SQLSMALLINT, SQLSMALLINT* length) {
-    *length = sizeof(dbc);
+                         SQLSMALLINT bufferLength, SQLSMALLINT* length) {
+    const auto required = static_cast<SQLSMALLINT>(sizeof(dbc));
+    if (length) {
+        *length = required;
+    }
+    if (bufferLength < 0 || (value && bufferLength < required)) {
+        return SQL_ERROR;
+    }
     if (value) {
-        std::memcpy(value, &dbc, sizeof(dbc));
+        std::copy_n(reinterpret_cast<const unsigned char*>(&dbc), sizeof(dbc),
+                    static_cast<unsigned char*>(value));
     }
     return SQL_SUCCESS;
 }
@@ -383,6 +390,46 @@ int main() {
         std::cout << "PASS " << name << '\n';
     };
     try {
+        run("getInfo size queries allow null output and length pointers", [] {
+            Handle handle{SQL_HANDLE_DBC, nullptr};
+            SQLSMALLINT length = 0;
+            require(getInfo(&handle, SQL_DRIVER_HDBC, nullptr, 0, &length) == SQL_SUCCESS,
+                    "Size query failed");
+            require(length == static_cast<SQLSMALLINT>(sizeof(SQLHDBC)),
+                    "Size query returned the wrong handle size");
+            require(getInfo(&handle, SQL_DRIVER_HDBC, nullptr, 0, nullptr) == SQL_SUCCESS,
+                    "Optional length pointer was dereferenced");
+        });
+        run("getInfo rejects short buffers without writing", [] {
+            Handle handle{SQL_HANDLE_DBC, nullptr};
+            std::array<unsigned char, sizeof(SQLHDBC)> buffer;
+            for (SQLSMALLINT capacity = -1;
+                 capacity < static_cast<SQLSMALLINT>(buffer.size()); ++capacity) {
+                buffer.fill(0xa5);
+                SQLSMALLINT length = 0;
+                require(getInfo(&handle, SQL_DRIVER_HDBC, buffer.data(), capacity, &length) == SQL_ERROR,
+                        "Short buffer was accepted");
+                require(length == static_cast<SQLSMALLINT>(sizeof(SQLHDBC)),
+                        "Short buffer did not report the required size");
+                require(std::all_of(buffer.begin(), buffer.end(),
+                                    [](unsigned char byte) { return byte == 0xa5; }),
+                        "Short buffer was modified");
+            }
+        });
+        run("getInfo copies handle bytes into an unaligned exact-size buffer", [] {
+            Handle handle{SQL_HANDLE_DBC, nullptr};
+            SQLHDBC dbc = &handle;
+            alignas(SQLHDBC) std::array<unsigned char, sizeof(SQLHDBC) + 2> buffer;
+            buffer.fill(0xa5);
+            require(getInfo(dbc, SQL_DRIVER_HDBC, buffer.data() + 1,
+                            static_cast<SQLSMALLINT>(sizeof(dbc)), nullptr) == SQL_SUCCESS,
+                    "Exact-size buffer was rejected");
+            require(std::equal(buffer.begin() + 1, buffer.end() - 1,
+                               reinterpret_cast<const unsigned char*>(&dbc)),
+                    "Copied handle representation differs");
+            require(buffer.front() == 0xa5 && buffer.back() == 0xa5,
+                    "Copy wrote outside the advertised buffer");
+        });
         for (SQLRETURN origin : {SQLRETURN(SQL_SUCCESS_WITH_INFO), SQLRETURN(SQL_NO_DATA)}) {
             run("successful zero-record header avoids enumeration without clearing messages", [origin] {
                 auto connection = acquire();
