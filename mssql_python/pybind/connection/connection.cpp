@@ -655,6 +655,12 @@ bool Connection::reset() {
     if (!_dbcHandle) {
         ThrowStdException("Connection handle not allocated");
     }
+    if (_cleanupState->childFreeFailed) {
+        _poolClean = false;
+        _poolSessionReset = false;
+        LOG("Cannot reuse connection after a statement handle failed to free");
+        return false;
+    }
     if (_poolClean && _poolSessionReset && !_poolProofDisabled) {
         updateLastUsed();
         return true;
@@ -702,6 +708,13 @@ bool Connection::reset() {
         return false;
     }
 
+    // A retained child can finish cleanup while either attribute call releases the GIL.
+    if (_cleanupState->childFreeFailed) {
+        _poolClean = false;
+        _poolSessionReset = false;
+        LOG("Cannot reuse connection after a statement handle failed to free");
+        return false;
+    }
     updateLastUsed();
     return true;
 }
@@ -710,6 +723,9 @@ void Connection::prepareForPool() {
     PERF_TIMER("Connection::prepareForPool");
     if (!_dbcHandle) {
         ThrowStdException("Connection handle not allocated");
+    }
+    if (_cleanupState->childFreeFailed) {
+        ThrowStdException("Cannot pool connection after a statement handle failed to free");
     }
     if (_poolClean && !_poolProofDisabled) {
         PERF_TIMER("Connection::prepareForPool::clean");
@@ -786,17 +802,18 @@ void Connection::prepareForPool() {
         ThrowStdException(statementError);
     }
     checkError(ret);
+    // A weak_ptr expires before its destructor finishes. Read the count before
+    // the failure latch so a completed destructor cannot hide a failed native free.
+    const bool noChildren = _cleanupState->childStatementCount == 0;
+    if (_cleanupState->childFreeFailed) {
+        ThrowStdException("Cannot pool connection after a statement handle failed to free");
+    }
     _autocommit = true;
     _poolSessionReset = sessionReset;
     updateLastUsed();
     // A native statement alias can execute again without another allocation,
-    // even in a later lease. Only expired wrappers permit the fast path.
-    if (!_poolProofDisabled) {
-        std::lock_guard<std::mutex> lock(_childHandlesMutex);
-        _poolClean = std::all_of(
-            _childStatementHandles.begin(), _childStatementHandles.end(),
-            [](const std::weak_ptr<SqlHandle>& handle) { return handle.expired(); });
-    }
+    // even in a later lease. All wrappers must finish cleanup before the fast path.
+    _poolClean = !_poolProofDisabled && noChildren;
 }
 
 void Connection::updateLastUsed() {

@@ -34,6 +34,17 @@ std::string failNext;
 int commits = 0;
 int logins = 0;
 std::vector<SQLULEN> loginTimeouts;
+std::function<void()> duringFree;
+std::function<void()> duringRollbackBatch;
+std::function<void()> duringReset;
+
+struct CallbackScope {
+    std::function<void()>& hook;
+    CallbackScope(std::function<void()>& hook, std::function<void()> action) : hook(hook) {
+        hook = std::move(action);
+    }
+    ~CallbackScope() { hook = {}; }
+};
 
 void require(bool condition, const std::string& message) {
     if (!condition) {
@@ -62,6 +73,7 @@ SQLRETURN SQL_API allocate(SQLSMALLINT type, SQLHANDLE parent, SQLHANDLE* out) {
 }
 
 SQLRETURN SQL_API freeHandle(SQLSMALLINT, SQLHANDLE handle) {
+    if (duringFree) duringFree();
     auto ret = record("free");
     if (SQL_SUCCEEDED(ret)) {
         handles.erase(handle);
@@ -103,6 +115,7 @@ SQLRETURN SQL_API setAttr(SQLHDBC dbc, SQLINTEGER attribute, SQLPOINTER value, S
         }
         handle.autocommit = value != nullptr;
     } else if (attribute == SQL_ATTR_RESET_CONNECTION) {
+        if (duringReset) duringReset();
         handle.resetPending = true;
     } else if (attribute == SQL_ATTR_LOGIN_TIMEOUT && length == SQL_IS_INTEGER) {
         handle.loginTimeout = reinterpret_cast<SQLULEN>(value);
@@ -137,6 +150,7 @@ SQLRETURN SQL_API endTran(SQLSMALLINT, SQLHANDLE dbc, SQLSMALLINT completion) {
 }
 
 SQLRETURN SQL_API executeDirect(SQLHSTMT statement, SQLWCHAR*, SQLINTEGER) {
+    if (duringRollbackBatch) duringRollbackBatch();
     auto& handle = *handles.at(handles.at(statement)->parent);
     if (handle.resetPending) {
         handle.transaction = handle.pendingWork = false;
@@ -794,16 +808,170 @@ int main() {
             connection->close();
             expectCalls({});
         });
-        run("failed cursor free cannot enable the next lease's fast path", [] {
+        for (bool fail : {false, true}) {
+            run("child lifetime count outlives weak pointer expiration", [fail] {
+                auto cleanup = std::make_shared<ConnectionCleanupState>();
+                SQLHANDLE nativeStatement = nullptr;
+                require(SQL_SUCCEEDED(allocate(SQL_HANDLE_STMT, nullptr, &nativeStatement)),
+                        "Test statement allocation failed");
+                auto statement = std::make_shared<SqlHandle>(
+                    static_cast<SQLSMALLINT>(SQL_HANDLE_STMT), nativeStatement, cleanup);
+                std::weak_ptr<SqlHandle> alias = statement;
+                bool sawExpiredWithPendingCleanup = false;
+                {
+                    CallbackScope callback(duringFree, [&] {
+                        sawExpiredWithPendingCleanup =
+                            alias.expired() && cleanup->childStatementCount == 1;
+                    });
+                    if (fail) failNext = "free";
+                    statement.reset();
+                }
+                require(sawExpiredWithPendingCleanup,
+                        "Lifetime count did not cover the expired wrapper's destructor");
+                require(cleanup->childStatementCount == 0, "Completed destructor retained its count");
+                require(cleanup->childFreeFailed == fail, "Destructor lost the native free outcome");
+                if (fail) {
+                    require(SQL_SUCCEEDED(freeHandle(SQL_HANDLE_STMT, nativeStatement)),
+                            "Test orphan cleanup failed");
+                }
+            });
+        }
+        run("failed cursor free discards the connection and invalidates surviving aliases", [] {
+            warm();
+            auto connection = acquire();
+            auto statement = connection->allocStatementHandle();
+            startWork(statement);
+            const auto nativeStatement = statement->get();
+            const auto dbc = handles.at(nativeStatement)->parent;
+            failNext = "free";
+            require(statement->freeHandle() == SQL_ERROR, "Expected failed free");
+            calls.clear();
+            expectFailure([&] { connection->close(); });
+            expectCalls({"off", "rollback", "disconnect", "free"});
+            require(handles.count(nativeStatement) == 0 && handles.count(dbc) == 0,
+                    "Discard did not reclaim the failed statement and its connection");
+            require(statement->isImplicitlyFreed(), "Surviving alias was not invalidated");
+            calls.clear();
+            require(statement->freeHandle() == SQL_SUCCESS, "Implicitly freed alias failed cleanup");
+            statement.reset();
+            expectCalls({});
+            require(commits == 0, "Discard committed pending work");
+            connection = acquire();
+            require(logins == 2, "Discard did not release capacity / replace DBC");
+            connection->close();
+            checkParked();
+        });
+        for (bool autocommit : {true, false}) {
+            for (bool explicitFailure : {true, false}) {
+                run("expired alias after failed destruction cannot return an orphan to the pool",
+                    [autocommit, explicitFailure] {
+                    warm();
+                    auto connection = acquire();
+                    connection->setAutocommit(autocommit);
+                    auto statement = connection->allocStatementHandle();
+                    startWork(statement);
+                    const auto nativeStatement = statement->get();
+                    const auto dbc = handles.at(nativeStatement)->parent;
+                    std::weak_ptr<SqlHandle> alias = statement;
+                    if (explicitFailure) {
+                        failNext = "free";
+                        require(statement->freeHandle() == SQL_ERROR, "Expected explicit free failure");
+                    }
+                    failNext = "free";
+                    statement.reset();
+                    require(alias.expired(), "Wrapper did not expire");
+                    require(handles.count(nativeStatement) == 1, "Native free unexpectedly succeeded");
+                    calls.clear();
+                    expectFailure([&] { connection->close(); });
+                    expectCalls({"off", "rollback", "disconnect", "free"});
+                    require(handles.count(nativeStatement) == 0 && handles.count(dbc) == 0,
+                            "Discard did not reclaim the orphan and its connection");
+                    require(commits == 0, "Orphan cleanup committed pending work");
+                    connection = acquire();
+                    require(logins == 2, "Orphan cleanup did not release the size-one pool capacity");
+                    connection->close();
+                    connection = acquire();
+                    calls.clear();
+                    connection->close();
+                    expectCalls({});
+                    require(logins == 2, "Replacement connection did not retain the clean fast path");
+                    checkParked();
+                });
+            }
+        }
+        run("successful retry cannot clear a previous child-free failure", [] {
             warm();
             auto connection = acquire();
             auto statement = connection->allocStatementHandle();
             startWork(statement);
             failNext = "free";
-            require(statement->freeHandle() == SQL_ERROR, "Expected failed free");
-            connection->close();
+            require(statement->freeHandle() == SQL_ERROR, "Expected explicit free failure");
+            require(statement->freeHandle() == SQL_SUCCESS, "Expected successful retry");
+            statement.reset();
+            calls.clear();
+            expectFailure([&] { connection->close(); });
+            expectCalls({"off", "rollback", "disconnect", "free"});
             connection = acquire();
+            require(logins == 2, "Successful retry cleared the failure latch");
+            connection->close();
+            checkParked();
+        });
+        run("child-free failure while parked rejects the connection at checkout", [] {
+            warm();
+            auto connection = acquire();
+            auto statement = connection->allocStatementHandle();
+            const auto nativeStatement = statement->get();
+            const auto dbc = handles.at(nativeStatement)->parent;
+            connection->close();
+            failNext = "free";
+            statement.reset();
+            require(handles.count(nativeStatement) == 1, "Expected orphaned statement");
+            connection = acquire();
+            require(logins == 2, "Checkout reused a connection with failed child cleanup");
+            require(handles.count(nativeStatement) == 0 && handles.count(dbc) == 0,
+                    "Checkout did not reclaim the orphan and its connection");
+            connection->close();
+            checkParked();
+        });
+        run("child-free failure during sanitation still discards the connection", [] {
+            warm();
+            auto connection = acquire();
+            auto statement = connection->allocStatementHandle();
             startWork(statement);
+            const auto nativeStatement = statement->get();
+            const auto dbc = handles.at(nativeStatement)->parent;
+            {
+                CallbackScope callback(duringRollbackBatch, [&] {
+                    failNext = "free";
+                    statement.reset();
+                });
+                expectFailure([&] { connection->close(); });
+            }
+            require(handles.count(nativeStatement) == 0 && handles.count(dbc) == 0,
+                    "Sanitation hid a failed destructor's orphan");
+            require(commits == 0, "Sanitation failure committed pending work");
+            connection = acquire();
+            require(logins == 2, "Sanitation failure did not release capacity");
+            connection->close();
+            checkParked();
+        });
+        run("child-free failure during checkout reset rejects the candidate", [] {
+            warm();
+            auto connection = acquire();
+            auto statement = connection->allocStatementHandle();
+            const auto nativeStatement = statement->get();
+            const auto dbc = handles.at(nativeStatement)->parent;
+            connection->close();
+            {
+                CallbackScope callback(duringReset, [&] {
+                    failNext = "free";
+                    statement.reset();
+                });
+                connection = acquire();
+            }
+            require(logins == 2, "Checkout reset hid a failed child free");
+            require(handles.count(nativeStatement) == 0 && handles.count(dbc) == 0,
+                    "Checkout reset did not reclaim the orphan and its connection");
             connection->close();
             checkParked();
         });

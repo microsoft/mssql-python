@@ -1590,11 +1590,18 @@ void DriverLoader::loadDriver() {
 // SqlHandle definition
 SqlHandle::SqlHandle(SQLSMALLINT type, SQLHANDLE rawHandle,
                      std::shared_ptr<ConnectionCleanupState> cleanupState)
-    : _type(type), _handle(rawHandle), _cleanupState(std::move(cleanupState)) {}
+    : _type(type), _handle(rawHandle), _cleanupState(std::move(cleanupState)) {
+    if (_type == SQL_HANDLE_STMT && _cleanupState) {
+        ++_cleanupState->childStatementCount;
+    }
+}
 
 SqlHandle::~SqlHandle() {
     if (_handle) {
         free();
+    }
+    if (_type == SQL_HANDLE_STMT && _cleanupState) {
+        --_cleanupState->childStatementCount;
     }
 }
 
@@ -1660,7 +1667,7 @@ SQLRETURN SqlHandle::freeHandle() {
 
     auto freeNative = [this]() -> SQLRETURN {
         auto cleanupLock = lockForCleanup();
-        if (!_handle || !SQLFreeHandle_ptr) {
+        if (!_handle) {
             return SQL_INVALID_HANDLE;
         }
         describeCache.clear();
@@ -1668,9 +1675,11 @@ SQLRETURN SqlHandle::freeHandle() {
             _handle = nullptr;
             return SQL_SUCCESS;
         }
-        SQLRETURN ret = SQLFreeHandle_ptr(_type, _handle);
+        SQLRETURN ret = SQLFreeHandle_ptr ? SQLFreeHandle_ptr(_type, _handle) : SQL_INVALID_HANDLE;
         if (SQL_SUCCEEDED(ret)) {
             _handle = nullptr;
+        } else if (_type == SQL_HANDLE_STMT && _cleanupState) {
+            _cleanupState->childFreeFailed = true;
         }
         return ret;
     };
