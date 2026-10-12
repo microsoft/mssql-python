@@ -7,6 +7,7 @@
 #include <cstring>
 #include <exception>
 #include <memory>
+#include <optional>
 #include <pybind11/chrono.h>
 #include <pybind11/complex.h>
 #include <pybind11/functional.h>
@@ -331,6 +332,9 @@ class SqlHandle {
     std::unordered_map<int, DescribedParamInfo> describeCache;
     void clearDescribeCache() { describeCache.clear(); }
     ResultMetadataCache resultMetadata;
+    // Written only under the GIL. Metadata invalidation (including cancellation)
+    // changes the generation, so an old successful unbind cannot authorize reuse.
+    std::optional<uint64_t> unboundGeneration;
 
   private:
     // The caller must release the GIL before waiting for native cleanup.
@@ -420,6 +424,15 @@ struct DateTimeOffset {
     SQLUINTEGER fraction;         // Nanoseconds
     SQLSMALLINT timezone_hour;    // Offset hours from UTC
     SQLSMALLINT timezone_minute;  // Offset minutes from UTC
+};
+
+struct FetchOptions {
+    const std::string charEncoding;
+    const std::string wcharEncoding;
+    const int charCtype;
+
+    FetchOptions(const std::string& charEncoding, const std::string& wcharEncoding, int charCtype)
+        : charEncoding(charEncoding), wcharEncoding(wcharEncoding), charCtype(charCtype) {}
 };
 
 // Struct to hold data buffers and indicators for each column

@@ -29,7 +29,7 @@ from mssql_python.exceptions import (
     DatabaseError,
 )
 from mssql_python.row import Row
-from mssql_python.perf_timer import perf_phase
+from mssql_python.perf_timer import perf_phase, perf_start, perf_stop
 from mssql_python import get_settings
 from mssql_python.parameter_helper import (
     detect_and_convert_parameters,
@@ -42,6 +42,37 @@ if TYPE_CHECKING:
     from mssql_python.connection import Connection
 else:
     pyarrow = None
+
+_DEFAULT_ROW_TYPE = Row
+_DEFAULT_FAST_ROW_CREATE = Row._fast_create
+_DEFAULT_FAST_ROW_CODE = _DEFAULT_FAST_ROW_CREATE.__code__
+_DEFAULT_FAST_ROW_DESCRIPTOR = vars(Row)["_fast_create"]
+# Describes the default routes; reporting reads this outside the fetch hot path.
+_DEFAULT_NATIVE_ROW_ROUTE = {
+    "version": 1,
+    "methods": {"fetchone": False, "fetchmany": False, "fetchval": False},
+}
+_DEFAULT_NATIVE_FETCH_ONE = ddbc_bindings.DDBCSQLFetchOne
+_DEFAULT_NATIVE_FETCH_MANY = ddbc_bindings.DDBCSQLFetchMany
+_NATIVE_ROW_PLAN = object()
+
+
+def _native_row_eligible(row_type):
+    # Inspect raw class entries: getattr would execute user descriptors before the factory.
+    if row_type is not _DEFAULT_ROW_TYPE or type(row_type) is not type:
+        return False
+    namespace = type.__getattribute__(row_type, "__dict__")
+    bases = type.__getattribute__(row_type, "__bases__")
+    return (
+        len(bases) == 1
+        and bases[0] is object
+        and "__new__" not in namespace
+        and "__setattr__" not in namespace
+        and namespace.get("_fast_create") is _DEFAULT_FAST_ROW_DESCRIPTOR
+        and _DEFAULT_FAST_ROW_CREATE.__code__ is _DEFAULT_FAST_ROW_CODE
+        and _DEFAULT_FAST_ROW_CREATE.__globals__.get("Row") is row_type
+    )
+
 
 # Constants for string handling
 MAX_INLINE_CHAR: int = (
@@ -646,7 +677,18 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         self._cached_char_encoding = char_decoding.get("encoding", "utf-16le")
         self._cached_char_ctype = char_decoding.get("ctype", ddbc_sql_const.SQL_WCHAR.value)
         self._cached_wchar_encoding = wchar_encoding
+        self._cached_fetch_options = None
         self._cached_decoding_generation = generation
+
+    def _create_fetch_options(self):
+        generation = self._cached_decoding_generation
+        options = ddbc_bindings._FetchOptions(
+            self._cached_char_encoding, self._cached_wchar_encoding, self._cached_char_ctype
+        )
+        # Allocation callbacks can refresh decoding; never install an older snapshot.
+        if self._cached_decoding_generation == generation:
+            self._cached_fetch_options = options
+        return options
 
     def _get_decoding_settings(self, sql_type):
         """
@@ -2855,52 +2897,86 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         # Fetch raw data
         row_data = []
         try:
-            with perf_phase("py::fetchone::cpp_call"):
-                ret = ddbc_bindings.DDBCSQLFetchOne(
-                    self.hstmt,
-                    row_data,
-                    char_enc,
-                    wchar_enc,
-                    self._cached_char_ctype,
-                    self.messages,
-                )
-
-            check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
-
-            if ret == ddbc_sql_const.SQL_NO_DATA.value:
-                # No more data available
-                if self._next_row_index == 0 and self.description is not None:
-                    self.rowcount = 0
-                return None
-
-            # Update internal position after successful fetch
-            if self._skip_increment_for_next_fetch:
-                self._skip_increment_for_next_fetch = False
-                self._next_row_index += 1
-            else:
-                self._increment_rownumber()
-
-            self.rowcount = self._next_row_index
-
-            # Get column and converter maps
-            column_map, converter_map, column_map_lower = self._get_column_and_converter_maps()
-            with perf_phase("py::fetchone::row_wrap"):
-                if not converter_map and not self._uuid_str_indices:
-                    return Row._fast_create(
-                        row_data, column_map, self, column_map_lower, self._cached_result_columns
+            started = perf_start()
+            try:
+                fetch = ddbc_bindings.DDBCSQLFetchOne
+                if fetch is _DEFAULT_NATIVE_FETCH_ONE:
+                    options = self._cached_fetch_options
+                    if options is None:
+                        options = self._create_fetch_options()
+                    ret = ddbc_bindings._fetchone_with_options(
+                        self.hstmt, row_data, options, self.messages
                     )
-                return Row(
-                    row_data,
-                    column_map,
-                    cursor=self,
-                    converter_map=converter_map,
-                    uuid_str_indices=self._uuid_str_indices,
-                    column_map_lower=column_map_lower,
-                    column_names=self._cached_result_columns,
-                )
+                else:
+                    ret = fetch(
+                        self.hstmt,
+                        row_data,
+                        char_enc,
+                        wchar_enc,
+                        self._cached_char_ctype,
+                        self.messages,
+                    )
+            finally:
+                if started:
+                    perf_stop("py::fetchone::cpp_call", started)
+
+            return self._finish_fetchone(ret, row_data)
         except Exception:
             # On error, don't increment rownumber - rethrow the error
             raise
+
+    def _finish_fetchone(self, ret, row_data, native=False):
+        check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
+
+        if ret == ddbc_sql_const.SQL_NO_DATA.value:
+            # No more data available
+            if self._next_row_index == 0 and self.description is not None:
+                self.rowcount = 0
+            return None
+
+        # Update internal position after successful fetch
+        if self._skip_increment_for_next_fetch:
+            self._skip_increment_for_next_fetch = False
+            self._next_row_index += 1
+        else:
+            self._increment_rownumber()
+
+        self.rowcount = self._next_row_index
+
+        # Get column and converter maps
+        column_map, converter_map, column_map_lower = self._get_column_and_converter_maps()
+        started = perf_start()
+        try:
+            if not converter_map and not self._uuid_str_indices:
+                if native and not started and _native_row_eligible(Row):
+                    row_type = Row
+                    factory = row_type._fast_create
+                    column_names = self._cached_result_columns
+                    return (
+                        _NATIVE_ROW_PLAN,
+                        row_type,
+                        column_map,
+                        self,
+                        column_map_lower,
+                        column_names,
+                        factory,
+                        _DEFAULT_FAST_ROW_CODE,
+                    )
+                return Row._fast_create(
+                    row_data, column_map, self, column_map_lower, self._cached_result_columns
+                )
+            return Row(
+                row_data,
+                column_map,
+                cursor=self,
+                converter_map=converter_map,
+                uuid_str_indices=self._uuid_str_indices,
+                column_map_lower=column_map_lower,
+                column_names=self._cached_result_columns,
+            )
+        finally:
+            if started:
+                perf_stop("py::fetchone::row_wrap", started)
 
     def fetchmany(self, size: Optional[int] = None) -> List[Row]:
         """
@@ -2930,61 +3006,111 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         # Fetch raw data
         rows_data = []
         try:
-            with perf_phase("py::fetchmany::cpp_call"):
-                ret = ddbc_bindings.DDBCSQLFetchMany(
-                    self.hstmt,
-                    rows_data,
-                    size,
-                    char_enc,
-                    wchar_enc,
-                    self._cached_char_ctype,
-                    self.messages,
-                )
-
-            check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
-
-            # Update rownumber for the number of rows actually fetched
-            if rows_data and self._has_result_set:
-                # advance counters by number of rows actually returned
-                self._next_row_index += len(rows_data)
-                self._rownumber = self._next_row_index - 1
-
-            # Centralize rowcount assignment after fetch
-            if len(rows_data) == 0 and self._next_row_index == 0:
-                self.rowcount = 0
-            else:
-                self.rowcount = self._next_row_index
-
-            # Get column and converter maps
-            column_map, converter_map, column_map_lower = self._get_column_and_converter_maps()
-
-            # Convert raw data to Row objects
-            uuid_idx = self._uuid_str_indices
-            with perf_phase("py::fetchmany::row_wrap"):
-                if not converter_map and not uuid_idx:
-                    return ddbc_bindings.construct_rows(
+            started = perf_start()
+            try:
+                fetch = ddbc_bindings.DDBCSQLFetchMany
+                if fetch is _DEFAULT_NATIVE_FETCH_MANY:
+                    options = self._cached_fetch_options
+                    if options is None:
+                        options = self._create_fetch_options()
+                    ret = ddbc_bindings._fetchmany_with_options(
+                        self.hstmt, rows_data, size, options, self.messages
+                    )
+                else:
+                    ret = fetch(
+                        self.hstmt,
                         rows_data,
-                        Row,
-                        column_map,
-                        self,
-                        column_map_lower,
-                        self._cached_result_columns,
+                        size,
+                        char_enc,
+                        wchar_enc,
+                        self._cached_char_ctype,
+                        self.messages,
                     )
-                return [
-                    Row(
-                        row_data,
-                        column_map,
-                        cursor=self,
-                        converter_map=converter_map,
-                        uuid_str_indices=uuid_idx,
-                        column_map_lower=column_map_lower,
-                        column_names=self._cached_result_columns,
-                    )
-                    for row_data in rows_data
-                ]
+            finally:
+                if started:
+                    perf_stop("py::fetchmany::cpp_call", started)
+
+            return self._finish_fetchmany(ret, rows_data, size=size)
         except Exception:
             # On error, don't increment rownumber - rethrow the error
             raise
+
+    def _finish_fetchmany(self, ret, rows_data, native=False, size=1):
+        check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
+
+        # Update rownumber for the number of rows actually fetched
+        if rows_data and self._has_result_set:
+            # advance counters by number of rows actually returned
+            self._next_row_index += len(rows_data)
+            self._rownumber = self._next_row_index - 1
+
+        # Centralize rowcount assignment after fetch
+        if len(rows_data) == 0 and self._next_row_index == 0:
+            self.rowcount = 0
+        else:
+            self.rowcount = self._next_row_index
+
+        # Get column and converter maps
+        column_map, converter_map, column_map_lower = self._get_column_and_converter_maps()
+
+        # Convert raw data to Row objects
+        uuid_idx = self._uuid_str_indices
+        started = perf_start()
+        try:
+            if not converter_map and not uuid_idx:
+                if (
+                    type(size) is int
+                    and size == 1
+                    and len(rows_data) == 1
+                    and Row is _DEFAULT_ROW_TYPE
+                    and Row._fast_create is _DEFAULT_FAST_ROW_CREATE
+                ):
+                    if native and not started and _native_row_eligible(Row):
+                        row_type = Row
+                        factory = row_type._fast_create
+                        column_names = self._cached_result_columns
+                        return (
+                            _NATIVE_ROW_PLAN,
+                            row_type,
+                            column_map,
+                            self,
+                            column_map_lower,
+                            column_names,
+                            factory,
+                            _DEFAULT_FAST_ROW_CODE,
+                        )
+                    return [
+                        Row._fast_create(
+                            rows_data[0],
+                            column_map,
+                            self,
+                            column_map_lower,
+                            self._cached_result_columns,
+                        )
+                    ]
+                return ddbc_bindings.construct_rows(
+                    rows_data,
+                    Row,
+                    column_map,
+                    self,
+                    column_map_lower,
+                    self._cached_result_columns,
+                )
+            return [
+                Row(
+                    row_data,
+                    column_map,
+                    cursor=self,
+                    converter_map=converter_map,
+                    uuid_str_indices=uuid_idx,
+                    column_map_lower=column_map_lower,
+                    column_names=self._cached_result_columns,
+                )
+                for row_data in rows_data
+            ]
+        finally:
+            if started:
+                perf_stop("py::fetchmany::row_wrap", started)
 
     def fetchall(self) -> List[Row]:
         """

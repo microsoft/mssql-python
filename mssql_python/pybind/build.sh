@@ -121,10 +121,12 @@ if [[ "$COVERAGE_MODE" == "true" && "$OS" == "Linux" ]]; then
 else
     if [[ "$OS" == "macOS" ]]; then
         echo "[ACTION] Configuring for macOS (default build)"
-        cmake -DMACOS_STRING_FIX=ON $PROFILING_FLAG "${SOURCE_DIR}"
+        cmake -DMACOS_STRING_FIX=ON -DCMAKE_BUILD_TYPE="${CMAKE_BUILD_TYPE:-Release}" \
+              $PROFILING_FLAG "${SOURCE_DIR}"
     else
         echo "[ACTION] Configuring for Linux with architecture: $DETECTED_ARCH"
-        cmake -DARCHITECTURE="$DETECTED_ARCH" $PROFILING_FLAG "${SOURCE_DIR}"
+        cmake -DARCHITECTURE="$DETECTED_ARCH" -DCMAKE_BUILD_TYPE="${CMAKE_BUILD_TYPE:-Release}" \
+              $PROFILING_FLAG "${SOURCE_DIR}"
     fi
 fi
 

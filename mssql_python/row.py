@@ -9,6 +9,7 @@ import decimal
 import uuid as _uuid
 from collections.abc import Mapping
 from typing import Any
+from mssql_python import ddbc_bindings
 from mssql_python.logging import logger
 
 
@@ -198,6 +199,9 @@ class Row:
         """
         Apply output converters using pre-computed converter map for optimal performance.
 
+        Native materialization has already completed. Exact lists use a native
+        dispatch loop; both paths copy values and preserve dynamic string encoding.
+
         Args:
             values: Raw values from the database
             converter_map: Pre-computed list of converters (one per column, None if no converter)
@@ -205,6 +209,11 @@ class Row:
         Returns:
             List of converted values
         """
+        # Native fetches and the cursor cache supply exact lists. Keep arbitrary
+        # iterables on the Python path, including their iteration side effects.
+        if type(values) is list and type(converter_map) is list:
+            return ddbc_bindings._apply_output_converters(values, converter_map)
+
         converted_values = list(values)
 
         for i, (value, converter) in enumerate(zip(values, converter_map)):

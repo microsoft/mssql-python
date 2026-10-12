@@ -3,20 +3,26 @@ Copyright (c) Microsoft Corporation.
 Licensed under the MIT license.
 
 Regression and operation-count tests for fetch settings and diagnostic preservation.
-All integration queries are read-only and each test owns its connection.
+Read-only fetch regressions; native fault injection runs in isolated child processes.
 """
 
 import datetime
+import decimal
+import gc
+import os
 from pathlib import Path
 import subprocess
 import sys
+import textwrap
 import uuid
 import weakref
 from unittest.mock import Mock, patch
 
 import pytest
 import mssql_python
+from mssql_python import ddbc_bindings as ddbc
 from mssql_python.constants import ConstantsDDBC
+from mssql_python.cursor import Cursor
 from mssql_python.row import Row
 
 FETCH_METHODS = ("fetchone", "fetchmany", "fetchall")
@@ -188,18 +194,33 @@ def test_wchar_decoding_forwarded_to_live_fetch_bridge(connection, method, bridg
 
 
 def test_decoding_cache_reuse_and_multiple_cursors(connection):
-    with patch.object(connection, "getdecoding", wraps=connection.getdecoding) as reads:
+    with (
+        patch.object(connection, "getdecoding", wraps=connection.getdecoding) as reads,
+        patch.object(ddbc, "_FetchOptions", wraps=ddbc._FetchOptions) as options,
+        patch.object(ddbc, "_fetchone_with_options", wraps=ddbc._fetchone_with_options) as one,
+        patch.object(ddbc, "_fetchmany_with_options", wraps=ddbc._fetchmany_with_options) as many,
+    ):
         with connection.cursor() as first, connection.cursor() as second:
             assert reads.call_count == 4
+            assert options.call_count == 0
             for cursor in (first, second):
+                cursor.execute("SELECT 42")
+                assert cursor.fetchall()[0][0] == 42
+                assert cursor._cached_fetch_options is None
                 cursor.execute("SELECT n FROM (VALUES (1), (2), (3)) AS v(n) ORDER BY n")
                 assert cursor.fetchone()[0] == 1
+                snapshot = cursor._cached_fetch_options
                 assert cursor.fetchmany(1)[0][0] == 2
                 assert cursor.fetchall()[0][0] == 3
+                assert one.call_args.args[-2] is many.call_args.args[-2] is snapshot
+                assert one.call_args.args[-1] is many.call_args.args[-1] is cursor.messages
+                assert cursor._cached_fetch_options is snapshot
             assert reads.call_count == 4
+            assert options.call_count == one.call_count == many.call_count == 2
 
             connection.setdecoding(mssql_python.SQL_CHAR, encoding="latin-1")
             for index, cursor in enumerate((first, second), 1):
+                snapshot = cursor._cached_fetch_options
                 cursor.execute(
                     "SELECT CONVERT(VARCHAR(1), 0xE9) AS txt FROM (VALUES (1), (2), (3)) AS v(n)"
                 )
@@ -207,6 +228,35 @@ def test_decoding_cache_reuse_and_multiple_cursors(connection):
                 assert cursor.fetchmany(1)[0].txt == "\u00e9"
                 assert cursor.fetchall()[0].txt == "\u00e9"
                 assert reads.call_count == 4 + 2 * index
+                assert options.call_count == 2 + index
+                assert cursor._cached_fetch_options is not snapshot
+
+
+@pytest.mark.parametrize("method", ("fetchone", "fetchmany", "fetchval"))
+def test_native_fetch_options_refresh_failure_is_retried(connection, method):
+    with connection.cursor() as cursor:
+        cursor.execute("SELECT 42")
+        assert cursor.fetchone()[0] == 42
+        assert cursor._cached_fetch_options is not None
+        cursor.execute("SELECT CONVERT(VARCHAR(1), 0xE9) AS txt")
+        connection.setdecoding(mssql_python.SQL_CHAR, encoding="latin-1")
+
+        def fetch():
+            return cursor.fetchmany(1) if method == "fetchmany" else getattr(cursor, method)()
+
+        with patch.object(ddbc, "_FetchOptions", side_effect=MemoryError("options allocation")):
+            with pytest.raises(MemoryError, match="options allocation"):
+                fetch()
+        assert cursor._cached_decoding_generation == connection._decoding_generation
+        assert cursor._cached_fetch_options is None
+        assert cursor._next_row_index == 0
+        value = fetch()
+        actual = (
+            value[0][0] if method == "fetchmany" else value if method == "fetchval" else value[0]
+        )
+        assert actual == "\u00e9"
+        assert cursor._cached_fetch_options is not None
+        assert cursor.rowcount == 1
 
 
 @pytest.mark.parametrize("method", FETCH_METHODS)
@@ -512,6 +562,273 @@ def test_direct_row_without_converters_is_zero_copy():
     assert row._values is values
 
 
+@pytest.mark.parametrize("container", (list, tuple))
+def test_converter_leaf_inputs_and_copy(container):
+    text = "A\0\u00e9\U0001f600"
+    values = container(
+        [
+            text,
+            b"\0\xff",
+            42,
+            decimal.Decimal("1.25"),
+            datetime.date(2026, 1, 2),
+            uuid.UUID(UUID_TEXT),
+            None,
+        ]
+    )
+    seen = []
+
+    def convert(value):
+        seen.append(value)
+        return value
+
+    with patch.object(
+        ddbc, "_apply_output_converters", wraps=ddbc._apply_output_converters
+    ) as leaf:
+        row = Row(values, {}, converter_map=[convert] * len(values), uuid_str_indices=(5,))
+    expected = [b"A\0\0\0\xe9\0\x3d\xd8\0\xde", *values[1:-1]]
+    assert seen == expected
+    assert [type(value) for value in seen] == [type(value) for value in expected]
+    assert row._values is not values
+    assert list(row) == [*expected[:5], UUID_TEXT, None]
+    assert isinstance(values[5], uuid.UUID)
+    assert leaf.call_count == int(container is list)
+    if container is list:
+        values[0] = "changed"
+        assert row[0] == expected[0]
+
+
+@pytest.mark.parametrize("container", (list, tuple))
+@pytest.mark.parametrize("map_container", (list, tuple))
+@pytest.mark.parametrize("map_length", (1, 4))
+def test_converter_leaf_map_length(container, map_container, map_length):
+    calls = []
+    converters = map_container([lambda value: calls.append(value)] * map_length)
+    row = Row(container([1, 2]), {}, converter_map=converters)
+    assert calls == ([1] if map_length == 1 else [1, 2])
+    assert list(row) == ([None, 2] if map_length == 1 else [None, None])
+
+
+@pytest.mark.parametrize("container", (list, tuple))
+def test_converter_leaf_dynamic_encode(container):
+    events = []
+    token = object()
+
+    class Text(str):
+        def encode(self, encoding):
+            events.append((str(self), encoding))
+            Text.encode = lambda self, encoding: token
+            return b"first"
+
+    class StringProxy:
+        __class__ = property(lambda self: str)
+
+        def encode(self, encoding):
+            events.append(("proxy", encoding))
+            return token
+
+    values = container([Text("one"), Text("two"), StringProxy()])
+    row = Row(values, {}, converter_map=[lambda value: value] * 3)
+    assert events == [("one", "utf-16-le"), ("proxy", "utf-16-le")]
+    assert row[0] == b"first"
+    assert row[1] is row[2] is token
+
+
+def test_converter_leaf_releases_owned_references():
+    references = []
+
+    class Value:
+        pass
+
+    class Text(str):
+        def encode(self, encoding):
+            value = Value()
+            references.append(weakref.ref(value))
+            return value
+
+    class Converter:
+        def __call__(self, value):
+            assert value is references[-1]()
+            result = Value()
+            references.append(weakref.ref(result))
+            return result
+
+    values, converters = [Text("text")], [Converter()]
+    references.extend([weakref.ref(values[0]), weakref.ref(converters[0])])
+    row = Row(values, {}, converter_map=converters)
+    assert references[2]() is None
+    assert references[3]() is row[0]
+    del values, converters, row
+    gc.collect()
+    assert all(reference() is None for reference in references)
+
+
+@pytest.mark.parametrize("container", (list, tuple))
+@pytest.mark.parametrize("stage", ("bool", "encode", "call"))
+@pytest.mark.parametrize("error_type", (ValueError, KeyboardInterrupt))
+def test_converter_leaf_exception_boundaries(container, stage, error_type):
+    class Text(str):
+        def encode(self, encoding):
+            if stage == "encode":
+                raise error_type("converter failure")
+            return super().encode(encoding)
+
+    class Converter:
+        def __bool__(self):
+            if stage == "bool":
+                raise error_type("converter failure")
+            return True
+
+        def __call__(self, value):
+            raise error_type("converter failure")
+
+    values = container([Text("text")])
+    if stage == "bool" or error_type is KeyboardInterrupt:
+        with pytest.raises(error_type, match="converter failure"):
+            Row(values, {}, converter_map=[Converter()])
+    else:
+        assert Row(values, {}, converter_map=[Converter()])[0] is values[0]
+
+
+@pytest.mark.parametrize("native", (False, True))
+@pytest.mark.parametrize("mutation", ("replace", "grow", "shrink"))
+def test_converter_leaf_live_lists(native, mutation):
+    events = []
+    values = [1, 2, None]
+
+    class Values(list):
+        pass
+
+    if not native:
+        values = Values(values)
+
+    class Converter:
+        def __bool__(self):
+            events.append("bool")
+            return True
+
+        def __call__(self, value):
+            events.append(value)
+            if value == 1:
+                if mutation == "replace":
+                    values[1] = 20
+                    converters[1] = lambda value: value + 100
+                elif mutation == "grow":
+                    values.append(4)
+                    converters.append(self)
+                else:
+                    values.clear()
+                    converters.clear()
+            return value + 10
+
+    converters = [Converter()] * 3
+    row = Row(values, {}, converter_map=converters)
+    assert (
+        list(row)
+        == {
+            "replace": [11, 120, None],
+            "grow": [11, 12, None],
+            "shrink": [11, 2, None],
+        }[mutation]
+    )
+    assert (
+        events
+        == {
+            "replace": ["bool", 1, "bool"],
+            "grow": ["bool", 1, "bool", 2, "bool", "bool", 4],
+            "shrink": ["bool", 1],
+        }[mutation]
+    )
+
+
+def test_converter_leaf_self_replacement_finalizer_order():
+    def run(container):
+        events = []
+
+        class Converter:
+            def __call__(self, value):
+                converters[0] = None
+                events.append(value)
+                return value
+
+            def __del__(self):
+                events.append("released")
+
+        converters = [Converter(), events.append, events.append]
+        row = Row(container([1, 2, 3]), {}, converter_map=converters)
+        return events, list(row)
+
+    assert run(list) == run(tuple)
+
+
+def test_converter_leaf_codec_lookup_in_subprocess():
+    script = textwrap.dedent("""
+        import codecs
+        import encodings
+        from mssql_python.row import Row
+
+        events = []
+        def encode(value, errors="strict"):
+            events.append((value, errors))
+            return b"custom", len(value)
+        def search(name):
+            if name == "utf_16_le":
+                return codecs.CodecInfo(name=name, encode=encode, decode=None)
+        codecs.unregister(encodings.search_function)
+        codecs.register(search)
+        codecs.register(encodings.search_function)
+        values = ["A\\0\\u00e9", "\\U0001f600"]
+        expected = [value.encode("utf-16-le") for value in values]
+        expected_events = events[:]
+        events.clear()
+        row = Row(values, {}, converter_map=[lambda value: value] * 2)
+        assert list(row) == expected
+        assert events == expected_events
+        """)
+    result = subprocess.run(
+        [sys.executable, "-c", script], capture_output=True, text=True, timeout=30
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("method", FETCH_METHODS)
+def test_converter_leaf_registry_changes_during_rows(connection, method):
+    calls = []
+
+    def replacement(value):
+        return value + 100
+
+    def original(value):
+        calls.append(value)
+        connection.add_output_converter(mssql_python.SQL_INTEGER, replacement)
+        return value + 10
+
+    connection.add_output_converter(mssql_python.SQL_INTEGER, original)
+    with connection.cursor() as cursor:
+        cursor.execute("SELECT n AS a, n + 10 AS b FROM (VALUES (1), (2)) AS v(n) ORDER BY n")
+        rows = fetch_rows(cursor, method)
+        count = 1 if method == "fetchone" else 2
+        assert calls == [value for n in range(1, count + 1) for value in (n, n + 10)]
+        assert [list(row) for row in rows] == [[n + 10, n + 20] for n in range(1, count + 1)]
+        if method == "fetchone":
+            assert list(cursor.fetchone()) == [102, 112]
+        cursor.execute("SELECT 3 AS renamed")
+        assert cursor.fetchval() == 103
+    assert list(rows[0]) == [11, 21]
+    assert dict(rows[0]._mapping) == {"a": 11, "b": 21}
+
+
+@pytest.mark.parametrize("method", ("fetchone", "fetchval"))
+def test_converter_leaf_native_error_precedes_callbacks(connection, method):
+    calls = []
+    connection.add_output_converter(mssql_python.SQL_INTEGER, lambda value: calls.append(value))
+    with connection.cursor() as cursor:
+        cursor.execute("SELECT 1 AS a, CAST(0x00D8 AS NVARCHAR(10)) AS invalid_utf16")
+        with pytest.raises(UnicodeDecodeError):
+            getattr(cursor, method)()
+        assert calls == []
+
+
 def test_decoding_cache_refresh_failure_is_retried(connection):
     with connection.cursor() as cursor:
         cursor.execute("SELECT CONVERT(VARCHAR(1), 0xE9) AS txt")
@@ -617,7 +934,7 @@ def assert_row_instance_capabilities(row):
     return reference
 
 
-@pytest.mark.parametrize("construction", ("direct", "python_fast", "native"))
+@pytest.mark.parametrize("construction", ("direct", "python_fast", "native", "native_single"))
 def test_constructed_row_preserves_instance_capabilities(construction):
     values = [42]
     column_map = {"number": 0}
@@ -625,6 +942,8 @@ def test_constructed_row_preserves_instance_capabilities(construction):
         row = Row(values, column_map)
     elif construction == "python_fast":
         row = Row._fast_create(values, column_map, None)
+    elif construction == "native_single":
+        row = mssql_python.ddbc_bindings.construct_row(values, Row, column_map, None)
     else:
         row = mssql_python.ddbc_bindings.construct_rows([values], Row, column_map, None)[0]
     assert row._values is values
@@ -643,8 +962,12 @@ def test_fetched_row_preserves_instance_capabilities(connection, method):
     assert reference() is None
 
 
-@pytest.mark.parametrize("size", (0, 1, 3))
-def test_construct_rows_repeated_calls_release_references(size):
+@pytest.mark.parametrize(
+    ("size", "single"),
+    ((0, False), (1, False), (3, False), (1, True)),
+    ids=("0", "1", "3", "native-single"),
+)
+def test_construct_rows_repeated_calls_release_references(size, single):
     values = [[index] for index in range(size)]
     column_map = {"Number": 0}
     column_map_lower = {"number": 0}
@@ -653,9 +976,16 @@ def test_construct_rows_repeated_calls_release_references(size):
     tracked = (values, column_map, column_map_lower, column_names, cursor, *values)
     references = [sys.getrefcount(value) for value in tracked]
     for _ in range(10):
-        rows = mssql_python.ddbc_bindings.construct_rows(
-            values, Row, column_map, cursor, column_map_lower, column_names
-        )
+        if single:
+            rows = [
+                mssql_python.ddbc_bindings.construct_row(
+                    values[0], Row, column_map, cursor, column_map_lower, column_names
+                )
+            ]
+        else:
+            rows = mssql_python.ddbc_bindings.construct_rows(
+                values, Row, column_map, cursor, column_map_lower, column_names
+            )
         assert len(rows) == size
         assert all(row._values is values[index] for index, row in enumerate(rows))
         assert all(row._column_map is column_map for row in rows)
@@ -667,6 +997,14 @@ def test_construct_rows_repeated_calls_release_references(size):
 
 
 def test_construct_rows_releases_partial_batch_on_attribute_error():
+    _assert_construct_row_attribute_failure(single=False)
+
+
+def test_construct_single_row_releases_references_on_attribute_error():
+    _assert_construct_row_attribute_failure(single=True)
+
+
+def _assert_construct_row_attribute_failure(single):
     class FailingRow(Row):
         __slots__ = ()
 
@@ -687,9 +1025,14 @@ def test_construct_rows_releases_partial_batch_on_attribute_error():
     references = [sys.getrefcount(value) for value in tracked]
     for _ in range(10):
         with pytest.raises(RuntimeError, match="injected slot assignment failure"):
-            mssql_python.ddbc_bindings.construct_rows(
-                values, FailingRow, column_map, cursor, None, column_names
-            )
+            if single:
+                mssql_python.ddbc_bindings.construct_row(
+                    values[-1], FailingRow, column_map, cursor, None, column_names
+                )
+            else:
+                mssql_python.ddbc_bindings.construct_rows(
+                    values, FailingRow, column_map, cursor, None, column_names
+                )
         assert [sys.getrefcount(value) for value in tracked] == references
 
 
@@ -1111,3 +1454,1031 @@ def test_fetch_error_is_raised_before_wrapping_rows(connection, method, bridge_n
                 fetch_rows(cursor, method)
         assert cursor._next_row_index == position
         assert tuple(fetch_rows(cursor, method)[0]) == (1,)
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Windows does not export the native driver function-pointer globals",
+)
+@pytest.mark.parametrize(
+    "mode",
+    (
+        "warm",
+        "prefix",
+        "shapes",
+        "nextset",
+        "fetch-error",
+        "count-error",
+        "decode-error",
+        "generation",
+        "mixed",
+    ),
+)
+def test_native_fetchone_full_column_count_cache(conn_str, mode):
+    if not conn_str:
+        pytest.skip("DB_CONNECTION_STRING is required")
+    code = (
+        "import runpy, sys; "
+        "runpy.run_path(sys.argv[1])['_check_native_fetchone_full_column_count_cache']"
+        "(sys.argv[2], sys.argv[3])"
+    )
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            code,
+            str(Path(__file__).resolve()),
+            mode,
+            str(Path(mssql_python.ddbc_bindings.module.__file__).resolve()),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, (result.returncode, result.stdout, result.stderr)
+
+
+def _check_native_fetchone_full_column_count_cache(mode, expected_native):
+    import ctypes
+    import os
+
+    native = Path(mssql_python.ddbc_bindings.module.__file__).resolve()
+    assert native == Path(expected_native)
+    library = ctypes.CDLL(str(native))
+    count_pointer = ctypes.c_void_p.in_dll(library, "SQLNumResultCols_ptr")
+    fetch_pointer = ctypes.c_void_p.in_dll(library, "SQLFetch_ptr")
+    count_type = ctypes.CFUNCTYPE(ctypes.c_short, ctypes.c_void_p, ctypes.POINTER(ctypes.c_short))
+    fetch_type = ctypes.CFUNCTYPE(ctypes.c_short, ctypes.c_void_p)
+    success = ConstantsDDBC.SQL_SUCCESS.value
+    error = ConstantsDDBC.SQL_ERROR.value
+    ddbc = mssql_python.ddbc_bindings
+    count_calls, callback_errors = [], []
+    fail_fetch = fail_count = invalidate_count = False
+
+    @count_type
+    def count_columns(handle, count):
+        nonlocal fail_count, invalidate_count
+        try:
+            count_calls.append(handle)
+            if fail_count:
+                fail_count = False
+                return error
+            result = original_count(handle, count)
+            if invalidate_count:
+                invalidate_count = False
+                status = ddbc.DDBCSQLSetStmtAttr(
+                    cursor.hstmt, ConstantsDDBC.SQL_ATTR_QUERY_TIMEOUT.value, 0
+                )
+                if status != success:
+                    callback_errors.append("Failed to invalidate the metadata generation")
+                    return error
+            return result
+        except BaseException as failure:
+            callback_errors.append(type(failure).__name__)
+            return error
+
+    @fetch_type
+    def fetch_row(handle):
+        nonlocal fail_fetch
+        try:
+            if fail_fetch:
+                fail_fetch = False
+                return error
+            return original_fetch(handle)
+        except BaseException as failure:
+            callback_errors.append(type(failure).__name__)
+            return error
+
+    try:
+        connection = mssql_python.connect(os.environ["DB_CONNECTION_STRING"], timeout=5)
+    except mssql_python.Error as failure:
+        raise AssertionError(
+            f"Connection failed: {type(failure).__name__}; connection details withheld"
+        ) from None
+    with connection, connection.cursor() as cursor:
+        query = (
+            "SELECT n AS number, CAST(N'text' AS NVARCHAR(10)) AS txt "
+            "FROM (VALUES (1), (2), (3), (4), (5), (6)) AS v(n) ORDER BY n"
+        )
+        cursor.execute(query)
+        saved_count, saved_fetch = count_pointer.value, fetch_pointer.value
+        assert saved_count and saved_fetch
+        original_count, original_fetch = count_type(saved_count), fetch_type(saved_fetch)
+        try:
+            count_pointer.value = ctypes.cast(count_columns, ctypes.c_void_p).value
+            fetch_pointer.value = ctypes.cast(fetch_row, ctypes.c_void_p).value
+            if mode == "prefix":
+                assert ddbc.DDBCSQLFetch(cursor.hstmt) == success
+                prefix = []
+                assert (
+                    ddbc.DDBCSQLGetData(
+                        cursor.hstmt,
+                        1,
+                        prefix,
+                        "utf-16le",
+                        "utf-16le",
+                        ConstantsDDBC.SQL_C_WCHAR.value,
+                    )
+                    == success
+                )
+                assert prefix == [1]
+                assert count_calls == []
+                assert tuple(cursor.fetchone()) == (2, "text")
+                assert len(count_calls) == 1
+                assert tuple(cursor.fetchone()) == (3, "text")
+                assert len(count_calls) == 1
+            elif mode == "shapes":
+                for sql, expected in (
+                    ("SELECT 7 AS number", (7,)),
+                    ("SELECT CAST(N'new' AS NVARCHAR(10)) AS txt", ("new",)),
+                    ("SELECT CAST(NULL AS INT) AS empty_value, 9 AS number", (None, 9)),
+                ):
+                    cursor.execute(sql + " FROM (VALUES (1), (2)) AS v(n)")
+                    count_calls.clear()
+                    for _ in range(2):
+                        row = tuple(cursor.fetchone())
+                        assert row == expected
+                        assert tuple(map(type, row)) == tuple(map(type, expected))
+                    assert len(count_calls) == 1
+                    assert cursor.fetchone() is None
+                    assert len(count_calls) == 1
+            elif mode == "nextset":
+                cursor.execute(
+                    "SELECT 1 AS number FROM (VALUES (1), (2)) AS v(n); "
+                    "SELECT CAST(N'changed' AS NVARCHAR(10)) AS txt "
+                    "FROM (VALUES (1), (2)) AS v(n)"
+                )
+                count_calls.clear()
+                assert [cursor.fetchone()[0] for _ in range(2)] == [1, 1]
+                assert len(count_calls) == 1
+                assert cursor.nextset()
+                count_calls.clear()
+                assert [cursor.fetchone()[0] for _ in range(2)] == ["changed", "changed"]
+                assert len(count_calls) == 1
+            elif mode == "fetch-error":
+                assert tuple(cursor.fetchone()) == (1, "text")
+                assert len(count_calls) == 1
+                fail_fetch = True
+                row = []
+                assert ddbc.DDBCSQLFetchOne(cursor.hstmt, row) == error
+                assert row == []
+                assert len(count_calls) == 1
+                assert tuple(cursor.fetchone()) == (2, "text")
+                assert len(count_calls) == 2
+                assert tuple(cursor.fetchone()) == (3, "text")
+                assert len(count_calls) == 2
+            elif mode == "count-error":
+                fail_count = True
+                with pytest.raises(mssql_python.DatabaseError):
+                    ddbc.DDBCSQLFetchOne(cursor.hstmt, [])
+                assert len(count_calls) == 1
+                assert tuple(cursor.fetchone()) == (2, "text")
+                assert len(count_calls) == 2
+                assert tuple(cursor.fetchone()) == (3, "text")
+                assert len(count_calls) == 2
+            elif mode == "decode-error":
+                cursor.execute(
+                    "SELECT CASE WHEN n = 2 THEN CAST(0x00D8 AS NVARCHAR(10)) "
+                    "ELSE CAST(N'ok' AS NVARCHAR(10)) END AS txt "
+                    "FROM (VALUES (1), (2), (3), (4)) AS v(n) ORDER BY n"
+                )
+                count_calls.clear()
+                assert cursor.fetchone()[0] == "ok"
+                with pytest.raises(UnicodeDecodeError):
+                    cursor.fetchone()
+                assert len(count_calls) == 1
+                assert [cursor.fetchone()[0] for _ in range(2)] == ["ok", "ok"]
+                assert len(count_calls) == 2
+            elif mode == "generation":
+                invalidate_count = True
+                assert tuple(cursor.fetchone()) == (1, "text")
+                assert len(count_calls) == 1
+                assert tuple(cursor.fetchone()) == (2, "text")
+                assert len(count_calls) == 2
+                assert tuple(cursor.fetchone()) == (3, "text")
+                assert len(count_calls) == 2
+            elif mode == "mixed":
+                assert [tuple(row) for row in cursor.fetchmany(2)] == [(1, "text"), (2, "text")]
+                count_calls.clear()
+                assert tuple(cursor.fetchone()) == (3, "text")
+                assert len(count_calls) == 1
+                assert tuple(cursor.fetchmany(1)[0]) == (4, "text")
+                count_calls.clear()
+                assert tuple(cursor.fetchone()) == (5, "text")
+                assert count_calls == []
+                assert [tuple(row) for row in cursor.fetchall()] == [(6, "text")]
+                count_calls.clear()
+                assert cursor.fetchone() is None
+                assert count_calls == []
+                cursor.execute(query)
+                try:
+                    other_connection = mssql_python.connect(
+                        os.environ["DB_CONNECTION_STRING"], timeout=5
+                    )
+                except mssql_python.Error as failure:
+                    raise AssertionError(
+                        f"Connection failed: {type(failure).__name__}; connection details withheld"
+                    ) from None
+                with other_connection, other_connection.cursor() as other:
+                    other.execute("SELECT CAST(N'other' AS NVARCHAR(10))")
+                    count_calls.clear()
+                    assert cursor.fetchone()[0] == 1
+                    assert other.fetchone()[0] == "other"
+                    assert cursor.fetchone()[0] == 2
+                    assert len(count_calls) == 2
+            else:
+                assert mode == "warm"
+                assert [tuple(cursor.fetchone()) for _ in range(6)] == [
+                    (n, "text") for n in range(1, 7)
+                ]
+                assert len(count_calls) == 1
+                assert cursor.fetchone() is None
+                assert len(count_calls) == 1
+                # Direct callers still perform a real query on every invocation.
+                assert ddbc.DDBCSQLNumResultCols(cursor.hstmt) == 2
+                assert ddbc.DDBCSQLNumResultCols(cursor.hstmt) == 2
+                assert len(count_calls) == 3
+            assert not callback_errors, callback_errors
+            assert not cursor.messages
+        finally:
+            count_pointer.value, fetch_pointer.value = saved_count, saved_fetch
+        cursor.execute("SELECT 42")
+        assert cursor.fetchone()[0] == 42
+
+
+def _run_fetch_script(conn_str, script, *arguments, timeout=45):
+    result = subprocess.run(
+        [sys.executable, "-c", script, *arguments],
+        env={**os.environ, "DB_CONNECTION_STRING": conn_str},
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Windows does not export the native driver function-pointer globals",
+)
+@pytest.mark.parametrize("method", ["fetchone", "fetchmany", "fetchval"])
+def test_first_numeric_getdata_error_stops_before_second_column(conn_str, method):
+    script = textwrap.dedent("""
+        import ctypes as c
+        import os
+        import sys
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        import mssql_python
+        from mssql_python import ddbc_bindings as ddbc
+
+        pointer, short, length = c.c_void_p, c.c_short, c.c_ssize_t
+        get_type = c.CFUNCTYPE(short, pointer, c.c_ushort, short, pointer, length, pointer)
+        library = c.CDLL(ddbc.module.__file__)
+        slot = pointer.in_dll(library, "SQLGetData_ptr")
+        calls = []
+
+        @get_type
+        def getdata(handle, column, ctype, buffer, capacity, indicator):
+            calls.append(column)
+            if column == 1:
+                return -1
+            return original(handle, column, ctype, buffer, capacity, indicator)
+
+        with mssql_python.connect(os.environ["DB_CONNECTION_STRING"]) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT CAST(7 AS INT), CAST(8 AS INT)")
+                position = cursor._next_row_index
+                saved = slot.value
+                assert saved
+                original = get_type(saved)
+                diagnostic = SimpleNamespace(sqlState="HY000", ddbcErrorMsg="first column failed")
+                with patch.object(ddbc, "DDBCSQLCheckError", return_value=diagnostic):
+                    slot.value = c.cast(getdata, pointer).value
+                    try:
+                        method = sys.argv[1]
+                        try:
+                            getattr(cursor, method)(*([1] if method == "fetchmany" else []))
+                        except mssql_python.DatabaseError as error:
+                            assert "first column failed" in str(error)
+                        else:
+                            raise AssertionError("first-column SQL_ERROR was masked")
+                    finally:
+                        slot.value = saved
+                assert calls == [1], calls
+                assert cursor._next_row_index == position
+                cursor.execute("SELECT 42, 43")
+                assert tuple(cursor.fetchone()) == (42, 43)
+        """)
+    _run_fetch_script(conn_str, script, method)
+
+
+@pytest.mark.parametrize(
+    ("sql_type", "literal", "expected"),
+    (
+        ("INT", "-2147483648", -2147483648),
+        ("INT", "2147483647", 2147483647),
+        ("SMALLINT", "-32768", -32768),
+        ("SMALLINT", "32767", 32767),
+        ("BIGINT", "-9223372036854775808", -9223372036854775808),
+        ("BIGINT", "9223372036854775807", 9223372036854775807),
+        ("TINYINT", "255", 255),
+        ("BIT", "0", False),
+        ("REAL", "-1.25", -1.25),
+        ("FLOAT", "1.7976931348623157E308", 1.7976931348623157e308),
+        ("FLOAT", "-2.2250738585072014E-308", -2.2250738585072014e-308),
+        ("FLOAT", "-0.0", 0.0),
+    ),
+    ids=(
+        "int_min",
+        "int_max",
+        "smallint_min",
+        "smallint_max",
+        "bigint_min",
+        "bigint_max",
+        "tinyint_max",
+        "bit_zero",
+        "real_negative",
+        "float_max",
+        "float_tiny",
+        "float_zero",
+    ),
+)
+def test_single_numeric_row_bound_path_parity(cursor, sql_type, literal, expected):
+    query = f"SELECT CAST({literal} AS {sql_type}) AS a, CAST(NULL AS {sql_type}) AS b"
+    cursor.execute(query)
+    bound = cursor.fetchmany(2)[0]
+    cursor.execute(query)
+    single = cursor.fetchmany(1)[0]
+    assert tuple(single) == tuple(bound) == (expected, None)
+    assert type(single[0]) is type(bound[0]) is type(expected)
+
+
+def test_single_row_converters_run_in_column_order(cursor):
+    events = []
+
+    def convert(value):
+        events.append(value)
+        if value == 2:
+            raise ValueError("keep original second column")
+        return value + 10
+
+    cursor.connection.add_output_converter(mssql_python.SQL_INTEGER, convert)
+    try:
+        cursor.execute("SELECT 1 AS a, 2 AS b, CAST(NULL AS INT) AS c")
+        assert cursor.fetchval() == 11
+        assert events == [1, 2]
+        events.clear()
+        cursor.execute("SELECT 1 AS a, 2 AS b, CAST(NULL AS INT) AS c")
+        assert tuple(cursor.fetchmany(1)[0]) == (11, 2, None)
+        assert events == [1, 2]
+    finally:
+        cursor.connection.remove_output_converter(mssql_python.SQL_INTEGER)
+
+
+def test_single_row_wrapper_does_not_enter_batch_factory(cursor):
+    from mssql_python import ddbc_bindings
+
+    cursor.execute(
+        "SELECT n AS a, CAST(N'text' AS NVARCHAR(10)) AS b "
+        "FROM (VALUES (1),(2),(3),(4)) AS v(n) ORDER BY n"
+    )
+    with (
+        patch.object(ddbc_bindings, "construct_rows", wraps=ddbc_bindings.construct_rows) as batch,
+        patch.object(
+            ddbc_bindings, "DDBCSQLFetchRow", wraps=ddbc_bindings.DDBCSQLFetchRow
+        ) as fused,
+    ):
+        retained = cursor.fetchmany(1)[0]
+        assert tuple(retained) == (1, "text")
+        batch.assert_not_called()
+        assert [row[0] for row in cursor.fetchmany(2)] == [2, 3]
+        batch.assert_called_once()
+        assert cursor.fetchmany(2)[0][0] == 4
+        assert batch.call_count == 2
+        assert tuple(retained) == (1, "text")
+        fused.assert_not_called()
+
+
+@pytest.mark.parametrize("override_fast_create", (False, True))
+def test_fetchmany_preserves_substituted_row_class(cursor, override_fast_create):
+    import importlib
+    from mssql_python.row import Row
+
+    class DerivedRow(Row):
+        pass
+
+    def forbidden(*args):
+        raise AssertionError("batch wrapping must not call a substituted Row's factory")
+
+    if override_fast_create:
+        DerivedRow._fast_create = staticmethod(forbidden)
+    cursor_module = importlib.import_module("mssql_python.cursor")
+    cursor.execute("SELECT 1 AS a")
+    with patch.object(cursor_module, "Row", DerivedRow):
+        row = cursor.fetchmany(1)[0]
+    assert type(row) is DerivedRow
+    assert row.a == 1
+
+
+def test_fetchmany_preserves_replaced_fast_factory(cursor):
+    from mssql_python.row import Row
+
+    cursor.execute("SELECT 1 AS a")
+    with patch.object(Row, "_fast_create", side_effect=AssertionError("must use batch factory")):
+        assert cursor.fetchmany(1)[0].a == 1
+
+
+@pytest.mark.parametrize("via_arraysize", (False, True))
+@pytest.mark.parametrize("raises", (False, True))
+def test_fetchmany_size_subclass_equality_is_not_called(cursor, via_arraysize, raises):
+    from mssql_python import ddbc_bindings
+
+    calls = []
+
+    class Size(int):
+        def __eq__(self, other):
+            calls.append(other)
+            if raises:
+                raise AssertionError("size equality must not run after native fetch")
+            return super().__eq__(other)
+
+    cursor.execute("SELECT 1 AS a UNION ALL SELECT 2")
+    with patch.object(ddbc_bindings, "construct_rows", wraps=ddbc_bindings.construct_rows) as batch:
+        if via_arraysize:
+            cursor.arraysize = Size(1)
+            result = cursor.fetchmany()
+        else:
+            result = cursor.fetchmany(Size(1))
+        assert result[0][0] == 1
+        batch.assert_called_once()
+    assert calls == []
+    assert cursor.fetchone()[0] == 2
+
+
+def test_real_subclass_and_instance_fetchone_overrides(cursor):
+    calls = []
+
+    class DerivedCursor(Cursor):
+        def fetchone(self):
+            calls.append("derived")
+            return (71, 72)
+
+    with DerivedCursor(cursor.connection) as derived:
+        derived.execute("SELECT 1 AS a UNION ALL SELECT 2")
+        assert derived.fetchval() == 71
+        assert next(derived) == (71, 72)
+        assert calls == ["derived", "derived"]
+        # fetchmany must not acquire fetchone's Python override semantics.
+        assert derived.fetchmany(1)[0][0] == 1
+        assert calls == ["derived", "derived"]
+        with patch.object(derived, "fetchone", return_value=(81, 82)) as override:
+            assert derived.fetchval() == 81
+            assert next(derived) == (81, 82)
+            assert derived.fetchmany(1)[0][0] == 2
+            assert override.call_count == 2
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Windows does not export the native driver function-pointer globals",
+)
+@pytest.mark.parametrize("first_fetch", ("fetchone", "fetchmany"))
+def test_count_generation_change_with_unbound_marker(conn_str, first_fetch):
+    """A count obtained across invalidation cannot authorize either cache."""
+    script = textwrap.dedent("""
+        import ctypes as c
+        import os
+        import sys
+        import mssql_python
+        from mssql_python import ddbc_bindings as ddbc
+
+        library = c.CDLL(ddbc.module.__file__)
+        pointer = c.c_void_p
+        count_type = c.CFUNCTYPE(c.c_short, pointer, c.POINTER(c.c_short))
+        unbind_type = c.CFUNCTYPE(c.c_short, pointer, c.c_ushort)
+        count_slot = pointer.in_dll(library, "SQLNumResultCols_ptr")
+        unbind_slot = pointer.in_dll(library, "SQLFreeStmt_ptr")
+        counts, unbinds, invalidations, callback_errors = [], [], [], []
+
+        @count_type
+        def counted(handle, value):
+            try:
+                counts.append(handle)
+                ret = original_count(handle, value)
+                if not invalidations:
+                    invalidations.append(True)
+                    # Change only the cache generation, not the result shape.
+                    assert ddbc.DDBCSQLSetStmtAttr(cursor.hstmt, 0, 0) == 0
+                return ret
+            except BaseException as error:
+                callback_errors.append(type(error).__name__)
+                return -1
+
+        @unbind_type
+        def unbound(handle, option):
+            try:
+                if option == 2:
+                    unbinds.append(handle)
+                return original_unbind(handle, option)
+            except BaseException as error:
+                callback_errors.append(type(error).__name__)
+                return -1
+
+        with mssql_python.connect(os.environ["DB_CONNECTION_STRING"]) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT n AS a, n + 10 AS b FROM (VALUES (1),(2),(3),(4)) v(n) ORDER BY n"
+                )
+                saved_count, saved_unbind = count_slot.value, unbind_slot.value
+                assert saved_count and saved_unbind
+                original_count = count_type(saved_count)
+                original_unbind = unbind_type(saved_unbind)
+                count_slot.value = c.cast(counted, pointer).value
+                unbind_slot.value = c.cast(unbound, pointer).value
+                try:
+                    first = (
+                        cursor.fetchmany(1)[0] if sys.argv[1] == "fetchmany"
+                        else cursor.fetchone()
+                    )
+                    assert tuple(first) == (1, 11)
+                    assert invalidations == [True]
+                    before_count, before_unbind = len(counts), len(unbinds)
+                    assert tuple(cursor.fetchone()) == (2, 12)
+                    assert len(counts) == before_count + 1
+                    assert len(unbinds) == before_unbind + 1
+                    before_count, before_unbind = len(counts), len(unbinds)
+                    assert cursor.fetchval() == 3
+                    assert tuple(next(cursor)) == (4, 14)
+                    assert cursor.fetchone() is None
+                    assert len(counts) == before_count
+                    assert len(unbinds) == before_unbind
+                    # Direct count calls remain uncached even after a warm fetch.
+                    assert ddbc.DDBCSQLNumResultCols(cursor.hstmt) == 2
+                    assert ddbc.DDBCSQLNumResultCols(cursor.hstmt) == 2
+                    assert len(counts) == before_count + 2
+                    assert tuple(first) == (1, 11)
+                    assert not callback_errors, callback_errors
+                    assert not cursor.messages
+                finally:
+                    count_slot.value, unbind_slot.value = saved_count, saved_unbind
+                cursor.execute("SELECT 42")
+                assert cursor.fetchval() == 42
+        """)
+    _run_fetch_script(conn_str, script, first_fetch)
+
+
+@pytest.mark.parametrize("mutation", ("new", "setattr", "code", "abstract", "descriptor"))
+def test_fast_row_inplace_customization(monkeypatch, mutation):
+    import weakref
+    from mssql_python import ddbc_bindings
+    from mssql_python.row import Row
+
+    factory = Row._fast_create
+    events = []
+
+    def custom_new(cls):
+        events.append("new")
+        return object.__new__(cls)
+
+    def custom_setattr(self, name, value):
+        events.append(name)
+        object.__setattr__(self, name, value)
+
+    def custom_factory(values, column_map, cursor, column_map_lower=None, column_names=None):
+        raise RuntimeError("customized factory code")
+
+    def fail_descriptor(self, value):
+        events.append(weakref.ref(self))
+        raise RuntimeError("customized descriptor")
+
+    if mutation == "new":
+        monkeypatch.setattr(Row, "__new__", staticmethod(custom_new))
+    elif mutation == "setattr":
+        monkeypatch.setattr(Row, "__setattr__", custom_setattr)
+    elif mutation == "code":
+        monkeypatch.setattr(factory, "__code__", custom_factory.__code__)
+    elif mutation == "abstract":
+        monkeypatch.setattr(Row, "__abstractmethods__", frozenset({"required"}), raising=False)
+    else:
+        monkeypatch.setattr(Row, "_column_names", property(fset=fail_descriptor))
+
+    assert Row._fast_create is factory
+    with patch.object(ddbc_bindings, "construct_row", wraps=ddbc_bindings.construct_row) as native:
+        if mutation in ("code", "descriptor"):
+            with pytest.raises(RuntimeError, match="customized"):
+                factory([42], {"number": 0}, None)
+        elif mutation == "abstract":
+            with pytest.raises(TypeError, match="abstract"):
+                factory([42], {"number": 0}, None)
+        else:
+            assert factory([42], {"number": 0}, None).number == 42
+        native.assert_not_called()
+    if mutation == "new":
+        assert events == ["new"]
+    elif mutation == "setattr":
+        assert events == ["_values", "_column_map", "_cursor", "_column_map_lower", "_column_names"]
+    elif mutation == "descriptor":
+        assert len(events) == 1 and events[0]() is None
+
+
+@pytest.mark.parametrize("method", ("fetchone", "fetchmany", "fetchval"))
+@pytest.mark.parametrize("failure", ("maps", "factory"))
+def test_single_row_construction_failure_keeps_fetch_position(cursor, method, failure):
+    from mssql_python import ddbc_bindings
+
+    cursor.execute("SELECT n AS number FROM (VALUES (1), (2)) AS v(n) ORDER BY n")
+    from mssql_python.row import Row
+
+    bridge_name = "DDBCSQLFetchMany" if method == "fetchmany" else "DDBCSQLFetchOne"
+    bridge = getattr(ddbc_bindings, bridge_name)
+
+    def fetch():
+        value = cursor.fetchmany(1) if method == "fetchmany" else getattr(cursor, method)()
+        return value[0][0] if method == "fetchmany" else value if method == "fetchval" else value[0]
+
+    def fail(*args):
+        assert cursor.rowcount == 1
+        assert cursor.rownumber == 0
+        assert cursor._next_row_index == 1
+        raise RuntimeError("injected post-fetch failure")
+
+    failed_stage = Mock(side_effect=fail)
+    failure_patch = (
+        patch.object(cursor, "_get_column_and_converter_maps", failed_stage)
+        if failure == "maps"
+        else patch.object(Row, "_column_names", property(fset=failed_stage))
+    )
+    with patch.object(ddbc_bindings, bridge_name, wraps=bridge) as native_fetch, failure_patch:
+        with pytest.raises(RuntimeError, match="injected post-fetch failure"):
+            fetch()
+        native_fetch.assert_called_once()
+        failed_stage.assert_called_once()
+    assert fetch() == 2
+    assert cursor.rowcount == 2
+    assert cursor.rownumber == 1
+
+
+@pytest.mark.parametrize("target", ("__new__", "__setattr__"))
+def test_native_row_guard_does_not_invoke_descriptors(monkeypatch, target):
+    from mssql_python.cursor import _native_row_eligible
+    from mssql_python.row import Row
+
+    events = []
+
+    class Descriptor:
+        def __get__(self, instance, owner):
+            events.append("lookup")
+            if target == "__new__":
+                if len(events) > 1:
+                    raise RuntimeError("duplicate allocator lookup")
+
+                def allocate(cls):
+                    events.append("allocate")
+                    return object.__new__(cls)
+
+                return allocate
+            return lambda name, value: object.__setattr__(instance, name, value)
+
+    monkeypatch.setattr(Row, target, Descriptor())
+    assert not _native_row_eligible(Row)
+    assert events == []
+    row = Row._fast_create([42], {"number": 0}, None)
+    assert row.number == 42
+    assert events == (["lookup", "allocate"] if target == "__new__" else ["lookup"] * 5)
+
+
+def test_native_row_guard_does_not_invoke_metaclass_hooks():
+    from mssql_python.cursor import _native_row_eligible
+    from mssql_python.row import Row
+
+    class Meta(type):
+        def __getattribute__(cls, name):
+            raise AssertionError("guard must not inspect substituted class through metaclass")
+
+    class CustomRow(Row, metaclass=Meta):
+        pass
+
+    assert not _native_row_eligible(CustomRow)
+
+
+@pytest.mark.parametrize("method", ("fetchone", "fetchmany", "fetchval"))
+@pytest.mark.parametrize("when", ("maps", "final_argument"))
+def test_single_row_fusion_handles_post_fetch_factory_change(cursor, method, when):
+    from mssql_python import ddbc_bindings
+    from mssql_python.row import Row
+
+    original_maps = cursor._get_column_and_converter_maps
+    factory = Row._fast_create
+
+    def replacement(values, column_map, cursor, column_map_lower=None, column_names=None):
+        raise RuntimeError("factory changed after native advancement")
+
+    def maps():
+        factory.__code__ = replacement.__code__
+        return original_maps()
+
+    def names(self):
+        factory.__code__ = replacement.__code__
+        return self.__dict__["_cached_result_columns"]
+
+    cursor.execute("SELECT n AS number FROM (VALUES (1), (2)) AS v(n) ORDER BY n")
+    cursor._get_column_and_converter_maps()
+    change = (
+        patch.object(cursor, "_get_column_and_converter_maps", side_effect=maps)
+        if when == "maps"
+        else patch.object(type(cursor), "_cached_result_columns", property(names), create=True)
+    )
+    old_code = factory.__code__
+    try:
+        with (
+            change,
+            patch.object(
+                ddbc_bindings, "DDBCSQLFetchRow", wraps=ddbc_bindings.DDBCSQLFetchRow
+            ) as fused,
+        ):
+            with pytest.raises(RuntimeError, match="factory changed after native advancement"):
+                cursor.fetchmany(1) if method == "fetchmany" else getattr(cursor, method)()
+            fused.assert_not_called()
+            assert Row._fast_create is factory
+            assert cursor.rowcount == 1 and cursor.rownumber == 0
+    finally:
+        factory.__code__ = old_code
+    assert cursor.fetchone().number == 2
+
+
+@pytest.mark.parametrize("method", ("fetchone", "fetchmany", "fetchval"))
+def test_single_row_late_allocator_preserves_factory_global_lookup(cursor, method):
+    from mssql_python import ddbc_bindings
+    from mssql_python.row import Row
+
+    original_row = Row
+
+    class ChangedRow(original_row):
+        pass
+
+    events = []
+    factory = original_row._fast_create
+    assert "__new__" not in vars(original_row)
+
+    class Allocator:
+        def __get__(self, instance, owner):
+            events.append("new_lookup")
+            factory.__globals__["Row"] = ChangedRow
+
+            def allocate(cls):
+                events.append("allocate:" + cls.__name__)
+                return object.__new__(cls)
+
+            return allocate
+
+    def names(self):
+        events.append("names_lookup")
+        original_row.__new__ = Allocator()
+        return self.__dict__["_cached_result_columns"]
+
+    cursor.execute("SELECT n AS number FROM (VALUES (1), (2)) AS v(n) ORDER BY n")
+    cursor._get_column_and_converter_maps()
+    try:
+        with (
+            patch.object(type(cursor), "_cached_result_columns", property(names), create=True),
+            patch.object(
+                ddbc_bindings, "DDBCSQLFetchRow", wraps=ddbc_bindings.DDBCSQLFetchRow
+            ) as fused,
+        ):
+            result = cursor.fetchmany(1) if method == "fetchmany" else getattr(cursor, method)()
+            fused.assert_not_called()
+        if method == "fetchval":
+            assert result == 1
+        else:
+            row = result[0] if method == "fetchmany" else result
+            assert type(row) is ChangedRow
+            assert row.number == 1
+        assert events == ["names_lookup", "new_lookup", "allocate:ChangedRow"]
+        assert cursor.rowcount == 1 and cursor.rownumber == 0
+    finally:
+        factory.__globals__["Row"] = original_row
+        if "__new__" in vars(original_row):
+            delattr(original_row, "__new__")
+    assert cursor.fetchone().number == 2
+
+
+def test_getdata_appends_to_existing_list_without_python_append(cursor):
+    class Destination(list):
+        def append(self, value):
+            raise AssertionError("native append must not dispatch to list overrides")
+
+    class Marker:
+        pass
+
+    marker = Marker()
+    reference = weakref.ref(marker)
+    destination = Destination([marker])
+    alias = destination
+    cursor.execute(
+        "SELECT CAST(-2147483648 AS INT), CAST(-32768 AS SMALLINT), "
+        "CAST(-9223372036854775808 AS BIGINT), CAST(255 AS TINYINT), "
+        "CAST(1 AS BIT), CAST(-1.25 AS REAL), CAST(1.5 AS FLOAT), "
+        "CAST(NULL AS INT), CAST(NULL AS SMALLINT), CAST(NULL AS BIGINT), "
+        "CAST(NULL AS TINYINT), CAST(NULL AS BIT), CAST(NULL AS REAL), "
+        "CAST(NULL AS FLOAT), CAST(12.50 AS DECIMAL(5,2)), "
+        "CAST('2024-02-29' AS DATE), CAST(0x0001FF AS VARBINARY(3))"
+    )
+    assert ddbc.DDBCSQLFetch(cursor.hstmt) == 0
+    assert ddbc.DDBCSQLGetData(cursor.hstmt, 17, destination, "utf-16le", "utf-16le", -8) == 0
+    expected = [
+        -2147483648,
+        -32768,
+        -9223372036854775808,
+        255,
+        True,
+        -1.25,
+        1.5,
+        *([None] * 7),
+        decimal.Decimal("12.50"),
+        datetime.date(2024, 2, 29),
+        b"\x00\x01\xff",
+    ]
+    assert destination is alias and destination[0] is marker
+    assert destination[1:] == expected
+    assert list(map(type, destination[1:])) == list(map(type, expected))
+    del marker, destination, alias
+    gc.collect()
+    assert reference() is None
+    cursor.execute("SELECT 42")
+    assert cursor.fetchval() == 42
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Windows does not export the native driver function-pointer globals",
+)
+@pytest.mark.parametrize(
+    "mode",
+    (
+        "numeric",
+        "mixed",
+        "lob",
+        "prefix",
+        "generation",
+        "count_error",
+        "nextset",
+        "warning",
+        "decode_error",
+    ),
+)
+def test_fetchmany_one_full_count_calls_in_subprocess(conn_str, mode):
+    script = textwrap.dedent("""
+        import ctypes as c
+        import os
+        import sys
+        import mssql_python
+        from mssql_python import ddbc_bindings as ddbc
+
+        mode = sys.argv[1]
+        pointer, short, ushort = c.c_void_p, c.c_short, c.c_ushort
+        count_type = c.CFUNCTYPE(short, pointer, c.POINTER(short))
+        diag_type = c.CFUNCTYPE(
+            short, short, pointer, short, pointer, pointer, pointer, short, pointer
+        )
+        library = c.CDLL(ddbc.module.__file__)
+        count_slot = pointer.in_dll(library, "SQLNumResultCols_ptr")
+        diag_slot = pointer.in_dll(library, "SQLGetDiagRec_ptr")
+        calls, errors, injected = [], [], []
+        warning_pending = False
+
+        @count_type
+        def counted(handle, count):
+            global warning_pending
+            try:
+                calls.append(handle)
+                if mode == "count_error" and not injected:
+                    injected.append(True)
+                    return -1
+                result = original_count(handle, count)
+                if mode == "generation" and not injected:
+                    injected.append(True)
+                    assert ddbc.DDBCSQLSetStmtAttr(cursor.hstmt, 0, 0) == 0
+                if mode == "warning" and not injected:
+                    injected.append(True)
+                    warning_pending = True
+                    return 1
+                return result
+            except BaseException as error:
+                errors.append(type(error).__name__)
+                return -1
+
+        @diag_type
+        def diagnostic(handle_type, handle, record, state, native, message, capacity, size):
+            global warning_pending
+            try:
+                if not warning_pending:
+                    return original_diag(
+                        handle_type, handle, record, state, native, message, capacity, size
+                    )
+                if record > 1:
+                    warning_pending = False
+                    return 100
+                text = "count warning".encode("utf-16le")
+                assert capacity > len(text) // 2
+                c.memmove(state, "01000\\0".encode("utf-16le"), 12)
+                c.memmove(message, text + b"\\0\\0", len(text) + 2)
+                c.cast(native, c.POINTER(c.c_int))[0] = 0
+                c.cast(size, c.POINTER(short))[0] = len(text) // 2
+                return 0
+            except BaseException as error:
+                errors.append(type(error).__name__)
+                return -1
+
+        with mssql_python.connect(os.environ["DB_CONNECTION_STRING"]) as connection:
+            with connection.cursor() as cursor:
+                value_sql = (
+                    "CASE WHEN n = 2 THEN CAST(0x00D8 AS NVARCHAR(10)) "
+                    "ELSE CAST(N'text' AS NVARCHAR(10)) END" if mode == "decode_error" else
+                    "CAST(N'text' AS NVARCHAR(MAX))" if mode == "lob" else
+                    "CAST(N'text' AS NVARCHAR(10))" if mode in ("mixed", "prefix") else
+                    "n + 10"
+                )
+                query = (
+                    f"SELECT n AS a, {value_sql} AS b FROM "
+                    "(VALUES (1),(2),(3),(4),(5),(6)) v(n) ORDER BY n"
+                )
+                cursor.execute(query)
+                saved_count, saved_diag = count_slot.value, diag_slot.value
+                assert saved_count and saved_diag
+                original_count, original_diag = count_type(saved_count), diag_type(saved_diag)
+                count_slot.value = c.cast(counted, pointer).value
+                diag_slot.value = c.cast(diagnostic, pointer).value
+                try:
+                    expected = 1
+                    if mode == "prefix":
+                        assert ddbc.DDBCSQLFetch(cursor.hstmt) == 0
+                        prefix = []
+                        assert ddbc.DDBCSQLGetData(
+                            cursor.hstmt, 1, prefix, "utf-16le", "utf-16le", -8
+                        ) == 0
+                        assert prefix == [1] and calls == []
+                        expected = 2
+                    if mode == "count_error":
+                        try:
+                            cursor.fetchmany(1)
+                        except mssql_python.DatabaseError:
+                            pass
+                        else:
+                            raise AssertionError("count failure was not propagated")
+                        assert len(calls) == 1
+                        calls.clear()
+                    first = cursor.fetchmany(1)[0]
+                    assert first[0] == expected and len(first) == 2
+                    assert first[1] == (
+                        "text" if mode in ("mixed", "prefix", "lob", "decode_error")
+                        else expected + 10
+                    )
+                    # Cold eager count and DescribeColumns' independent count.
+                    assert len(calls) == 2, (mode, calls)
+                    if mode == "decode_error":
+                        try:
+                            cursor.fetchone()
+                        except UnicodeDecodeError:
+                            pass
+                        else:
+                            raise AssertionError("invalid UTF-16 must fail GetData decoding")
+                        assert len(calls) == 2
+                        assert tuple(cursor.fetchmany(1)[0]) == (3, "text")
+                        assert len(calls) == 4  # failure invalidated count and metadata
+                        expected = 3
+                    cold = len(calls)
+                    assert cursor.fetchmany(1)[0][0] == expected + 1
+                    assert len(calls) == cold + (1 if mode == "generation" else 0)
+                    warm = len(calls)
+                    assert cursor.fetchval() == expected + 2
+                    assert cursor.fetchmany(1)[0][0] == expected + 3
+                    assert len(calls) == warm
+                    assert ddbc.DDBCSQLNumResultCols(cursor.hstmt) == 2
+                    assert ddbc.DDBCSQLNumResultCols(cursor.hstmt) == 2
+                    assert len(calls) == warm + 2  # public API is still uncached
+                    assert not errors, errors
+                    if mode == "warning":
+                        assert cursor.messages == [("[01000] (0)", "count warning")]
+                    else:
+                        assert not cursor.messages
+                    while cursor.fetchmany(1):
+                        pass
+                    assert len(calls) == warm + 2  # EOF does not reacquire the count
+                    if mode == "nextset":
+                        cursor.execute("SELECT 7 AS a; SELECT 8 AS a, 9 AS b")
+                        calls.clear()
+                        assert tuple(cursor.fetchmany(1)[0]) == (7,)
+                        assert len(calls) == 2
+                        assert cursor.nextset()
+                        calls.clear()
+                        assert tuple(cursor.fetchmany(1)[0]) == (8, 9)
+                        assert len(calls) == 2
+                        assert cursor.fetchmany(1) == []
+                        assert len(calls) == 2
+                finally:
+                    count_slot.value, diag_slot.value = saved_count, saved_diag
+                assert not errors, errors
+        """)
+    _run_fetch_script(conn_str, script, mode, timeout=60)

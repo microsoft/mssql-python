@@ -30,11 +30,12 @@ class ResultMetadataCache {
     struct Snapshot {
         uint64_t generation;
         std::shared_ptr<const ResultMetadata> metadata;
+        SQLSMALLINT fullColumnCount;
     };
 
     Snapshot snapshot() const {
         std::lock_guard<std::mutex> lock(mutex_);
-        return {generation_, metadata_};
+        return {generation_, metadata_, fullColumnCount_};
     }
 
     void publish(uint64_t generation, std::shared_ptr<const ResultMetadata> metadata) {
@@ -44,16 +45,26 @@ class ResultMetadataCache {
         }
     }
 
+    void publishFullColumnCount(uint64_t generation, SQLSMALLINT columnCount) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (generation == generation_ && columnCount >= 0) {
+            fullColumnCount_ = columnCount;
+        }
+    }
+
     void clear() {
         std::lock_guard<std::mutex> lock(mutex_);
         ++generation_;
         metadata_.reset();
+        fullColumnCount_ = -1;
     }
 
   private:
     mutable std::mutex mutex_;
     uint64_t generation_ = 0;
     std::shared_ptr<const ResultMetadata> metadata_;
+    // Prefix GetData metadata does not establish the full result cardinality.
+    SQLSMALLINT fullColumnCount_ = -1;
 };
 
 class ResultMetadataFailureGuard {

@@ -23,6 +23,7 @@
 #include <cstring>  // For std::memcpy
 #include <filesystem>
 #include <iostream>
+#include <stdexcept>
 #include <utility>  // std::forward
 #include <datetime.h>  // CPython datetime API (PyDateTime_IMPORT, PyDateTime_GET_*, etc.)
 
@@ -3111,6 +3112,24 @@ SQLSMALLINT SQLNumResultCols_wrap(SqlHandlePtr statementHandle, py::handle messa
 
 namespace {
 
+SQLSMALLINT CachedResultColumnCount(const SqlHandlePtr& handle, py::handle messages) {
+    const auto snapshot = handle->resultMetadata.snapshot();
+    if (snapshot.fullColumnCount >= 0) {
+        return snapshot.fullColumnCount;
+    }
+    const auto count = SQLNumResultCols_wrap(handle, messages);
+    handle->resultMetadata.publishFullColumnCount(snapshot.generation, count);
+    return count;
+}
+
+// Adopt a new cell reference even if appending to the caller's list fails.
+void AppendFetchedCell(py::list& row, PyObject* value) {
+    auto owned = steal(value);
+    if (!owned || PyList_Append(row.ptr(), owned.ptr()) < 0) {
+        throw py::error_already_set();
+    }
+}
+
 py::dict GetFetchColumnMetadata(const py::list& columns, size_t index) {
     return columns[index].cast<py::dict>();
 }
@@ -3262,12 +3281,18 @@ py::object FetchLobColumnData(SQLHSTMT hStmt, SQLUSMALLINT colIndex, SQLSMALLINT
 
     while (true) {
         ++loopCount;
-        std::vector<char> chunk(DAE_CHUNK_SIZE, 0);
+        const size_t offset = buffer.size();
+        if (buffer.max_size() - offset < DAE_CHUNK_SIZE) {
+            throw std::length_error("LOB data exceeds maximum buffer size");
+        }
+        // Keep the existing read windows and zero-filled terminator room.
+        buffer.resize(offset + DAE_CHUNK_SIZE, 0);
+        char* chunk = buffer.data() + offset;
         SQLLEN actualRead = 0;
         {
             // Release the GIL during blocking SQLGetData LOB streaming
             py::gil_scoped_release release;
-            ret = SQLGetData_ptr(hStmt, colIndex, cType, chunk.data(), DAE_CHUNK_SIZE, &actualRead);
+            ret = SQLGetData_ptr(hStmt, colIndex, cType, chunk, DAE_CHUNK_SIZE, &actualRead);
         }
         CaptureFetchDiagnostics(hStmt, ret, messages, true);
 
@@ -3310,11 +3335,13 @@ py::object FetchLobColumnData(SQLHSTMT hStmt, SQLUSMALLINT colIndex, SQLSMALLINT
                 // Wide characters
                 size_t wcharSize = sizeof(SQLWCHAR);
                 if (bytesRead >= wcharSize && (bytesRead % wcharSize == 0)) {
-                    size_t wcharCount = bytesRead / wcharSize;
-                    std::vector<SQLWCHAR> alignedBuf(wcharCount);
-                    std::memcpy(alignedBuf.data(), chunk.data(), bytesRead);
-                    while (wcharCount > 0 && alignedBuf[wcharCount - 1] == 0) {
-                        --wcharCount;
+                    while (bytesRead >= wcharSize) {
+                        // The byte destination need not be aligned for SQLWCHAR.
+                        const char* lastChar = chunk + bytesRead - wcharSize;
+                        if (std::any_of(lastChar, lastChar + wcharSize,
+                                        [](char byte) { return byte != '\0'; })) {
+                            break;
+                        }
                         bytesRead -= wcharSize;
                     }
                     if (bytesRead < DAE_CHUNK_SIZE) {
@@ -3325,8 +3352,8 @@ py::object FetchLobColumnData(SQLHSTMT hStmt, SQLUSMALLINT colIndex, SQLSMALLINT
                 }
             }
         }
+        buffer.resize(offset + bytesRead);
         if (bytesRead > 0) {
-            buffer.insert(buffer.end(), chunk.begin(), chunk.begin() + bytesRead);
             LOG("FetchLobColumnData: Appended %zu bytes at loop %d", bytesRead, loopCount);
         }
         if (ret == SQL_SUCCESS) {
@@ -3696,22 +3723,36 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                                 // Use Python's codec system to decode bytes.
                                 const std::string decodeEncoding =
                                     GetEffectiveCharDecoding(effectiveCharEnc);
-                                py::bytes raw_bytes(reinterpret_cast<char*>(dataBuffer.data()),
-                                                    static_cast<size_t>(dataLen));
+                                py::object decoded;
                                 try {
-                                    py::object decoded =
-                                        raw_bytes.attr("decode")(decodeEncoding, "strict");
-                                    row.append(decoded);
+                                    // bytes.decode rejects embedded NULs; the C codec API does not.
+                                    if (decodeEncoding.find('\0') != std::string::npos) {
+                                        PyErr_SetString(PyExc_ValueError, "embedded null character");
+                                        throw py::error_already_set();
+                                    }
+                                    decoded = steal(PyUnicode_Decode(
+                                        reinterpret_cast<const char*>(dataBuffer.data()),
+                                        static_cast<Py_ssize_t>(dataLen),
+                                        decodeEncoding.c_str(), "strict"));
+                                    if (!decoded) throw py::error_already_set();
+                                    if (PyList_Append(row.ptr(), decoded.ptr()) < 0)
+                                        throw py::error_already_set();
                                     LOG("SQLGetData: CHAR column %d decoded with '%s', %zu bytes "
                                         "-> %zu chars",
                                         i, decodeEncoding.c_str(), (size_t)dataLen,
                                         py::len(decoded));
                                 } catch (const py::error_already_set& e) {
+                                    if (e.matches(PyExc_MemoryError)) throw;
                                     LOG_ERROR(
                                         "SQLGetData: Failed to decode CHAR column %d with '%s': %s",
                                         i, decodeEncoding.c_str(), e.what());
-                                    // Return raw bytes as fallback
-                                    row.append(raw_bytes);
+                                    // Preserve the existing codec-error bytes fallback.
+                                    decoded = steal(PyBytes_FromStringAndSize(
+                                        reinterpret_cast<const char*>(dataBuffer.data()),
+                                        static_cast<Py_ssize_t>(dataLen)));
+                                    if (!decoded) throw py::error_already_set();
+                                    if (PyList_Append(row.ptr(), decoded.ptr()) < 0)
+                                        throw py::error_already_set();
                                 }
                             } else {
                                 // Buffer too small, fallback to streaming
@@ -3774,9 +3815,19 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                 } else {
                     uint64_t fetchBufferSize =
                         (columnSize + 1) * sizeof(SQLWCHAR);  // +1 for null terminator
-                    std::vector<SQLWCHAR> dataBuffer(columnSize + 1);
+                    const size_t bufferChars = columnSize + 1;
+                    SQLWCHAR inlineBuffer[64];
+                    std::vector<SQLWCHAR> heapBuffer;
+                    SQLWCHAR* dataBuffer;
+                    if (bufferChars <= std::size(inlineBuffer)) {
+                        std::fill_n(inlineBuffer, bufferChars, SQLWCHAR{});
+                        dataBuffer = inlineBuffer;
+                    } else {
+                        heapBuffer.resize(bufferChars);
+                        dataBuffer = heapBuffer.data();
+                    }
                     SQLLEN dataLen;
-                    ret = SQLGetData_ptr(hStmt, i, SQL_C_WCHAR, dataBuffer.data(), fetchBufferSize,
+                    ret = SQLGetData_ptr(hStmt, i, SQL_C_WCHAR, dataBuffer, fetchBufferSize,
                                          &dataLen);
                     CaptureFetchDiagnostics(
                         hStmt, ret, messages,
@@ -3786,14 +3837,14 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                     if (SQL_SUCCEEDED(ret)) {
                         if (dataLen > 0) {
                             uint64_t numCharsInData = dataLen / sizeof(SQLWCHAR);
-                            if (numCharsInData < dataBuffer.size()) {
+                            if (numCharsInData < bufferChars) {
                                 // Construct with explicit length: SQLGetData reports the
                                 // exact number of characters via dataLen, so do not rely on
                                 // null termination. This preserves embedded NULs and avoids
                                 // any risk of reading past the valid range if the driver
                                 // omits the terminator.
                                 row.append(FetchText::from_utf16_native(
-                                    reinterpret_cast<const char*>(dataBuffer.data()),
+                                    reinterpret_cast<const char*>(dataBuffer),
                                     static_cast<Py_ssize_t>(numCharsInData * sizeof(SQLWCHAR))));
                                 LOG("SQLGetData: Appended NVARCHAR string "
                                     "length=%lu for column %d",
@@ -3847,7 +3898,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                 ret = SQLGetData_ptr(hStmt, i, SQL_C_LONG, &intValue, 0, &indicator);
                 CaptureFetchDiagnostics(hStmt, ret, messages);
                 if (SQL_SUCCEEDED(ret) && indicator != SQL_NULL_DATA) {
-                    row.append(static_cast<int>(intValue));
+                    AppendFetchedCell(row, PyLong_FromLong(intValue));
                 } else {
                     row.append(py::none());
                 }
@@ -3863,7 +3914,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                     break;
                 }
                 if (SQL_SUCCEEDED(ret)) {
-                    row.append(static_cast<int>(smallIntValue));
+                    AppendFetchedCell(row, PyLong_FromLong(smallIntValue));
                 } else {
                     LOG("SQLGetData: Error retrieving SQL_SMALLINT for column "
                         "%d - SQLRETURN=%d",
@@ -3882,7 +3933,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                     break;
                 }
                 if (SQL_SUCCEEDED(ret)) {
-                    row.append(realValue);
+                    AppendFetchedCell(row, PyFloat_FromDouble(realValue));
                 } else {
                     LOG("SQLGetData: Error retrieving SQL_REAL for column %d - "
                         "SQLRETURN=%d",
@@ -3962,7 +4013,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                     break;
                 }
                 if (SQL_SUCCEEDED(ret)) {
-                    row.append(doubleValue);
+                    AppendFetchedCell(row, PyFloat_FromDouble(doubleValue));
                 } else {
                     LOG("SQLGetData: Error retrieving SQL_DOUBLE/FLOAT for "
                         "column %d - SQLRETURN=%d",
@@ -3981,7 +4032,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                     break;
                 }
                 if (SQL_SUCCEEDED(ret)) {
-                    row.append(static_cast<long long>(bigintValue));
+                    AppendFetchedCell(row, PyLong_FromLongLong(bigintValue));
                 } else {
                     LOG("SQLGetData: Error retrieving SQL_BIGINT for column %d "
                         "- SQLRETURN=%d",
@@ -4152,7 +4203,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                     break;
                 }
                 if (SQL_SUCCEEDED(ret)) {
-                    row.append(static_cast<int>(tinyIntValue));
+                    AppendFetchedCell(row, PyLong_FromLong(tinyIntValue));
                 } else {
                     LOG("SQLGetData: Error retrieving SQL_TINYINT for column "
                         "%d - SQLRETURN=%d",
@@ -4171,7 +4222,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                     break;
                 }
                 if (SQL_SUCCEEDED(ret)) {
-                    row.append(static_cast<bool>(bitValue));
+                    AppendFetchedCell(row, PyBool_FromLong(bitValue != 0));
                 } else {
                     LOG("SQLGetData: Error retrieving SQL_BIT for column %d - "
                         "SQLRETURN=%d",
@@ -4250,6 +4301,7 @@ SQLRETURN SQLFetchScroll_wrap(SqlHandlePtr StatementHandle, SQLSMALLINT FetchOri
 
     // Unbind any columns from previous fetch operations to avoid memory
     // corruption
+    StatementHandle->unboundGeneration.reset();
     SQLFreeStmt_ptr(StatementHandle->get(), SQL_UNBIND);
 
     // Perform scroll operation
@@ -4276,10 +4328,13 @@ SQLRETURN SQLFetchScroll_wrap(SqlHandlePtr StatementHandle, SQLSMALLINT FetchOri
 // For column in the result set, binds a buffer to retrieve column data
 // TODO: Move to anonymous namespace, since it is not used outside this file
 template <typename Metadata>
-SQLRETURN SQLBindColums(SQLHSTMT hStmt, ColumnBuffers& buffers, const Metadata& columnNames,
+SQLRETURN SQLBindColums(SqlHandlePtr handle, ColumnBuffers& buffers, const Metadata& columnNames,
                         SQLUSMALLINT numCols, int fetchSize, int charCtype = SQL_C_WCHAR,
                         py::handle messages = {}) {
     PERF_TIMER("SQLBindColums");
+    // Invalidate before the first bind, including partial/failed binding.
+    handle->unboundGeneration.reset();
+    SQLHSTMT hStmt = handle->get();
     SQLRETURN ret = SQL_SUCCESS;
     const bool useWideChar = (charCtype == SQL_C_WCHAR);
     // Bind columns based on their data types
@@ -4927,6 +4982,7 @@ struct FetchStateGuard {
                     ret = SQLSetStmtAttr_ptr(handle->get(), SQL_ATTR_ROWS_FETCHED_PTR, nullptr, 0);
                     break;
                 default:
+                    handle->unboundGeneration.reset();
                     ret = SQLFreeStmt_ptr(handle->get(), SQL_UNBIND);
                     break;
             }
@@ -4947,6 +5003,10 @@ struct FetchStateGuard {
         }
     }
 };
+
+SQLRETURN FetchSingleRow(SqlHandlePtr handle, py::list& row, const std::string& charEncoding,
+                         const std::string& wcharEncoding, int charCtype, py::handle messages,
+                         SQLSMALLINT knownColumnCount = -1, bool scroll = false);
 
 // FetchMany_wrap - Fetches multiple rows of data from the result set.
 //
@@ -4976,8 +5036,10 @@ SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetch
     SQLRETURN ret = SQL_ERROR;
     ResultMetadataFailureGuard metadataFailure(StatementHandle->resultMetadata, ret);
     SQLHSTMT hStmt = StatementHandle->get();
-    // Retrieve column count
-    SQLSMALLINT numCols = SQLNumResultCols_wrap(StatementHandle, messages);
+    // Keep count/name validation before advancing, including the size-one route.
+    SQLSMALLINT numCols = fetchSize == 1
+                             ? CachedResultColumnCount(StatementHandle, messages)
+                             : SQLNumResultCols_wrap(StatementHandle, messages);
 
     // Retrieve column metadata
     auto snapshot = StatementHandle->resultMetadata.snapshot();
@@ -5015,6 +5077,40 @@ SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetch
     if (numCols < 0 || columnNames.size() != static_cast<size_t>(numCols)) {
         LOG("FetchMany_wrap: Column metadata count does not match result column count");
         ThrowStdException("Column metadata count does not match result column count");
+    }
+
+    // Only types with identical bound and SQLGetData conversions are eligible.
+    // Keep other types on the existing path, including their pre-fetch failures.
+    const bool singleNumericRow = fetchSize == 1 && numCols > 0 &&
+        std::all_of(columnNames.begin(), columnNames.end(), [](const auto& column) {
+            switch (column.dataType) {
+                case SQL_INTEGER:
+                case SQL_SMALLINT:
+                case SQL_BIGINT:
+                case SQL_TINYINT:
+                case SQL_BIT:
+                case SQL_REAL:
+                case SQL_DOUBLE:
+                case SQL_FLOAT:
+                    return true;
+                default:
+                    return false;
+            }
+        });
+    if (singleNumericRow) {
+        PERF_TIMER("FetchMany::single_numeric_row");
+        FetchStateGuard fetchStateGuard(StatementHandle, messages);
+        // No rows-fetched pointer is needed for a single unbound row.
+        fetchStateGuard.configure(nullptr, 1);
+        py::list row;
+        ret = FetchSingleRow(StatementHandle, row, charEncoding, wcharEncoding, charCtype,
+                             messages, numCols, true);
+        CheckFetchError(StatementHandle, ret);
+        if (SQL_SUCCEEDED(ret)) {
+            rows.append(row);
+        }
+        fetchStateGuard.close();
+        return ret;
     }
 
     std::vector<SQLUSMALLINT> lobColumns;
@@ -5059,7 +5155,8 @@ SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetch
     FetchStateGuard fetchStateGuard(StatementHandle, messages);
 
     // Bind columns
-    ret = SQLBindColums(hStmt, buffers, columnNames, numCols, fetchSize, charCtype, messages);
+    ret = SQLBindColums(StatementHandle, buffers, columnNames, numCols, fetchSize, charCtype,
+                        messages);
     if (!SQL_SUCCEEDED(ret)) {
         LOG("FetchMany_wrap: Error when binding columns - SQLRETURN=%d", ret);
         return ret;
@@ -5380,7 +5477,8 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules,
     FetchStateGuard fetchStateGuard(StatementHandle, messages);
 
     if (!hasLobColumns && fetchSize > 0) {
-        ret = SQLBindColums(hStmt, buffers, columnNames, numCols, fetchSize, charCtype, messages);
+        ret = SQLBindColums(StatementHandle, buffers, columnNames, numCols, fetchSize, charCtype,
+                            messages);
         if (!SQL_SUCCEEDED(ret)) {
             LOG("Error when binding columns");
             return ret;
@@ -6238,7 +6336,8 @@ SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows,
     FetchStateGuard fetchStateGuard(StatementHandle, messages);
 
     // Bind columns
-    ret = SQLBindColums(hStmt, buffers, columnNames, numCols, fetchSize, charCtype, messages);
+    ret = SQLBindColums(StatementHandle, buffers, columnNames, numCols, fetchSize, charCtype,
+                        messages);
     if (!SQL_SUCCEEDED(ret)) {
         LOG("FetchAll_wrap: Error when binding columns - SQLRETURN=%d", ret);
         return ret;
@@ -6285,28 +6384,42 @@ SQLRETURN FetchOne_wrap(SqlHandlePtr StatementHandle, py::list& row,
     // Issue #531: upgrade SQL_C_CHAR + utf-8 to SQL_C_WCHAR on Windows so the
     // driver does lossless UTF-16 conversion instead of returning ACP bytes.
     charCtype = EffectiveCharCtypeForFetch(charCtype, charEncoding);
+    return FetchSingleRow(StatementHandle, row, charEncoding, wcharEncoding, charCtype, messages);
+}
+
+SQLRETURN FetchSingleRow(SqlHandlePtr StatementHandle, py::list& row,
+                         const std::string& charEncoding, const std::string& wcharEncoding,
+                         int charCtype, py::handle messages, SQLSMALLINT knownColumnCount,
+                         bool scroll) {
     SQLRETURN ret = SQL_ERROR;
     ResultMetadataFailureGuard metadataFailure(StatementHandle->resultMetadata, ret);
     SQLHSTMT hStmt = StatementHandle->get();
 
-    // Unbind any columns from previous fetch operations (e.g., fetchmany)
-    // to avoid conflicts with SQLGetData. SQLGetData cannot be used on
-    // columns that are already bound.
-    ret = SQLFreeStmt_ptr(hStmt, SQL_UNBIND);
-    CaptureFetchDiagnostics(hStmt, ret, messages);
-    if (!SQL_SUCCEEDED(ret))
-        return ret;
+    const auto generation = StatementHandle->resultMetadata.snapshot().generation;
+    if (StatementHandle->unboundGeneration != generation) {
+        StatementHandle->unboundGeneration.reset();
+        {
+            PERF_TIMER("FetchSingleRow::SQL_UNBIND");
+            ret = SQLFreeStmt_ptr(hStmt, SQL_UNBIND);
+        }
+        CaptureFetchDiagnostics(hStmt, ret, messages);
+        if (!SQL_SUCCEEDED(ret))
+            return ret;
+        StatementHandle->unboundGeneration = generation;
+    }
 
     // Assume hStmt is already allocated and a query has been executed
     {
         // Release the GIL during the blocking ODBC fetch
         py::gil_scoped_release release;
-        ret = SQLFetch_ptr(hStmt);
+        ret = scroll ? SQLFetchScroll_ptr(hStmt, SQL_FETCH_NEXT, 0) : SQLFetch_ptr(hStmt);
     }
     CaptureFetchDiagnostics(hStmt, ret, messages);
     if (SQL_SUCCEEDED(ret)) {
-        // Retrieve column count
-        SQLSMALLINT colCount = SQLNumResultCols_wrap(StatementHandle, messages);
+        SQLSMALLINT colCount = knownColumnCount;
+        if (colCount < 0) {
+            colCount = CachedResultColumnCount(StatementHandle, messages);
+        }
         ret = SQLGetData_wrap(StatementHandle, colCount, row, charEncoding, wcharEncoding,
                               charCtype, messages);
         if (!SQL_SUCCEEDED(ret)) {
@@ -6317,6 +6430,55 @@ SQLRETURN FetchOne_wrap(SqlHandlePtr StatementHandle, py::list& row,
         LOG("FetchOne_wrap: Error when fetching data - SQLRETURN=%d", ret);
     }
     return ret;
+}
+
+// Python completion retains return validation, counters, maps and custom factory ordering.
+py::object FetchRow_wrap(SqlHandlePtr statement, py::list& data,
+                         const std::string& charEncoding, const std::string& wcharEncoding,
+                         int charCtype, py::handle messages, bool many,
+                         const py::function& complete, const py::object& planToken,
+                         const py::tuple& attributes, const py::str& rowGlobalName,
+                         const py::str& newName, const py::str& setattrName) {
+    SQLRETURN ret = many
+        ? FetchMany_wrap(statement, data, 1, charEncoding, wcharEncoding, charCtype, messages)
+        : FetchOne_wrap(statement, data, charEncoding, wcharEncoding, charCtype, messages);
+    py::object result = complete(ret, data, true);
+    if (!PyTuple_CheckExact(result.ptr()) || PyTuple_GET_SIZE(result.ptr()) != 8 ||
+        PyTuple_GET_ITEM(result.ptr(), 0) != planToken.ptr()) {
+        return result;
+    }
+    if (many && PyList_GET_SIZE(data.ptr()) != 1) {
+        throw py::value_error("A single-row construction plan requires exactly one fetched row");
+    }
+    py::tuple plan = borrow<py::tuple>(result.ptr());
+    py::object values = many ? borrow(PyList_GET_ITEM(data.ptr(), 0)) : borrow(data.ptr());
+    py::object factory = borrow(PyTuple_GET_ITEM(plan.ptr(), 6));
+    py::object row;
+    PyObject* factoryRowType = nullptr;
+    if (PyFunction_Check(factory.ptr())) {
+        factoryRowType = PyDict_GetItemWithError(PyFunction_GetGlobals(factory.ptr()),
+                                                 rowGlobalName.ptr());
+        if (!factoryRowType && PyErr_Occurred()) {
+            throw py::error_already_set();
+        }
+    }
+    // Final argument evaluation or plan allocation can change the captured factory in place.
+    if (PyFunction_Check(factory.ptr()) &&
+        PyFunction_GetCode(factory.ptr()) == PyTuple_GET_ITEM(plan.ptr(), 7) &&
+        factoryRowType == PyTuple_GET_ITEM(plan.ptr(), 1) &&
+        RowFactory::has_default_row_allocation(factoryRowType, newName, setattrName)) {
+        PERF_TIMER("FetchRow::construct_row");
+        row = RowFactory::construct_row(values, plan[1].cast<py::type>(), plan[2],
+                                         plan[3], plan[4], plan[5], attributes);
+    } else {
+        row = factory(values, plan[2], plan[3], plan[4], plan[5]);
+    }
+    if (!many) {
+        return row;
+    }
+    py::list rows(1);
+    PyList_SET_ITEM(rows.ptr(), 0, row.release().ptr());
+    return rows;
 }
 
 // Wrap SQLMoreResults
@@ -6514,6 +6676,20 @@ PYBIND11_MODULE(ddbc_bindings, m) {
           py::arg("StatementHandle"), py::arg("colCount"), py::arg("row"), py::arg("charEncoding"),
           py::arg("wcharEncoding"), py::arg("charCtype"), py::arg("messages") = py::none());
     m.def("DDBCSQLMoreResults", &SQLMoreResults_wrap, "Check for more results in the result set");
+    py::class_<FetchOptions>(m, "_FetchOptions")
+        .def(py::init<const std::string&, const std::string&, int>());
+    m.def("_fetchone_with_options",
+          [](SqlHandlePtr statement, py::list& row, const FetchOptions& options,
+             py::handle messages) {
+              return FetchOne_wrap(std::move(statement), row, options.charEncoding,
+                                   options.wcharEncoding, options.charCtype, messages);
+          });
+    m.def("_fetchmany_with_options",
+          [](SqlHandlePtr statement, py::list& rows, int size, const FetchOptions& options,
+             py::handle messages) {
+              return FetchMany_wrap(std::move(statement), rows, size, options.charEncoding,
+                                    options.wcharEncoding, options.charCtype, messages);
+          });
     m.def("DDBCSQLFetchOne", &FetchOne_wrap, "Fetch one row from the result set",
           py::arg("StatementHandle"), py::arg("row"), py::arg("charEncoding") = "utf-16le",
           py::arg("wcharEncoding") = "utf-16le", py::arg("charCtype") = SQL_C_WCHAR,
@@ -6625,6 +6801,10 @@ PYBIND11_MODULE(ddbc_bindings, m) {
     // Add a version attribute
     m.attr("__version__") = "1.0.0";
 
+    m.def("_apply_output_converters", &RowFactory::apply_output_converters,
+          "Apply a cached converter map after native value materialization",
+          py::arg("values"), py::arg("converters"));
+
     // Fast Row construction in C++ — replaces Python list comprehension
     m.def("construct_rows", &RowFactory::construct_rows,
           "Build Row objects in C++ for fetchall/fetchmany fast path",
@@ -6632,6 +6812,23 @@ PYBIND11_MODULE(ddbc_bindings, m) {
           py::arg("column_map"), py::arg("cursor"),
           py::arg("column_map_lower") = py::none(),
           py::arg("column_names") = py::none());
+
+    // Owned by binding defaults and released with the module; no static Python handles.
+    const py::tuple rowAttributes = py::make_tuple(
+        "_values", "_column_map", "_cursor", "_column_map_lower", "_column_names");
+    m.def("construct_row", &RowFactory::construct_row,
+          "Build one compatible Row with checked ownership",
+          py::arg("values"), py::arg("row_class"), py::arg("column_map"), py::arg("cursor"),
+          py::arg("column_map_lower") = py::none(), py::arg("column_names") = py::none(),
+          py::arg("attributes") = rowAttributes);
+    m.def("DDBCSQLFetchRow", &FetchRow_wrap,
+          "Fetch and construct one compatible Row with ordered Python completion",
+          py::arg("statement"), py::arg("data"), py::arg("char_encoding"),
+          py::arg("wchar_encoding"), py::arg("char_ctype"), py::arg("messages"),
+          py::arg("many"), py::arg("complete"), py::arg("plan_token"),
+          py::arg("attributes") = rowAttributes, py::arg("row_global_name") = py::str("Row"),
+          py::arg("new_name") = py::str("__new__"),
+          py::arg("setattr_name") = py::str("__setattr__"));
 
     // Expose logger bridge function to Python
     m.def("update_log_level", &mssql_python::logging::LoggerBridge::updateLevel,
