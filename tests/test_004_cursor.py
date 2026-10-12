@@ -10412,6 +10412,7 @@ def test_setinputsizes_sql_decimal_unconvertible_value(db_connection):
         # ...and the sensitive value / raw row is NOT leaked into the message.
         assert sensitive_value not in message
         assert repr((sensitive_value,)) not in message  # no repr of the parameter tuple
+        assert exc_info.value.__cause__ is None
         # ...nor into the chained cause or the fully formatted traceback, which
         # is what tracebacks and APM/log shippers actually capture.
         formatted = "".join(

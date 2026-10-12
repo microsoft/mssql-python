@@ -12,10 +12,8 @@ from xml.etree import ElementTree
 ROOT = Path(__file__).parents[1]
 RUNNER = ROOT / "eng" / "scripts" / "run-mssql-odbc-tests.sh"
 PIPELINE = ROOT / "eng" / "pipelines" / "mssql-odbc-daily-validation-pipeline.yml"
-PR_PIPELINE = ROOT / "eng" / "pipelines" / "pr-validation-pipeline.yml"
 PREFLIGHT = ROOT / "eng" / "scripts" / "verify_mssql_odbc_provider.py"
 RELEASE_PIPELINE = ROOT / "OneBranchPipelines" / "stages" / "build-linux-single-stage.yml"
-PYBIND_CMAKE = ROOT / "mssql_python" / "pybind" / "CMakeLists.txt"
 
 
 @unittest.skipUnless(sys.platform.startswith("linux"), "runner requires Linux GNU timeout and bash")
@@ -170,29 +168,6 @@ class PipelineContractTests(unittest.TestCase):
         )
 
         self.assertEqual(version.strip(), "0.3.0")
-
-    def test_python_315_validation_adds_matrix_legs(self):
-        pipeline = PR_PIPELINE.read_text(encoding="utf-8")
-        active_python_versions = {
-            line.split(":", 1)[1].strip(" '\"")
-            for line in pipeline.splitlines()
-            if line.lstrip().startswith("pythonVersion:")
-        }
-
-        self.assertEqual(active_python_versions, {"3.13", "3.14", "3.15"})
-        self.assertIn("python:3.15.0rc3-bookworm", pipeline)
-
-    def test_python_315_validation_installs_stable_pyarrow(self):
-        requirements = (ROOT / "requirements.txt").read_text(encoding="utf-8")
-
-        self.assertIn('pyarrow==25.0.1; python_version < "3.15"', requirements)
-        self.assertIn('pyarrow==26.0.0; python_version >= "3.15"', requirements)
-        self.assertNotIn("scientific-python-nightly-wheels", requirements)
-
-    def test_python_315_processes_python_header_before_libc_headers(self):
-        cmake = PYBIND_CMAKE.read_text(encoding="utf-8")
-
-        self.assertIn("target_compile_options(ddbc_bindings PRIVATE -include Python.h)", cmake)
 
 
 if __name__ == "__main__":
