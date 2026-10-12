@@ -375,6 +375,20 @@ def test_executemany_auto_detection_scans_utf16_lengths_for_dae(cursor):
     assert [tuple(row) for row in cursor.fetchall()] == [(astral_value,), (bmp_value,)]
 
 
+def test_executemany_ignores_str_subclass_encode_override(cursor):
+    class HostileStr(str):
+        def encode(self, *args, **kwargs):
+            return b"x" * 100_000
+
+    cursor.execute("CREATE TABLE #str_subclass_encoding (value NVARCHAR(20))")
+    cursor.executemany(
+        "INSERT INTO #str_subclass_encoding (value) VALUES (?)",
+        [(HostileStr("safe"),), (HostileStr("text"),)],
+    )
+    cursor.execute("SELECT value FROM #str_subclass_encoding ORDER BY value")
+    assert [tuple(row) for row in cursor.fetchall()] == [("safe",), ("text",)]
+
+
 def test_setinputsizes_rejects_bytes_for_wide_character_binding(cursor):
     """Wide-character overrides require text rather than raw encoded bytes."""
     cursor.setinputsizes([(ddbc_sql_const.SQL_WVARCHAR.value, 1, 0)])

@@ -683,6 +683,12 @@ static SQLRETURN stream_unicode_dae_chunks(PyObject* value, const std::string& e
     return SQL_SUCCESS;
 }
 
+static py::object EncodeUnicodeValue(PyObject* value, const std::string& encoding) {
+    PyObject* encoded = PyUnicode_AsEncodedString(value, encoding.c_str(), "strict");
+    if (!encoded) throw py::error_already_set();
+    return steal(encoded);
+}
+
 static SQLRETURN StreamDAEParameter(SQLHSTMT hStmt, const ParamInfo& info,
                                     const std::string& charEncoding) {
     PyObject* value = info.dataPtr.ptr();
@@ -920,7 +926,8 @@ SQLRETURN BindParameters(SqlHandle& handle, SQLHANDLE hStmt, const py::list& par
                     if (py::isinstance<py::str>(param)) {
                         // Encode Unicode string using the specified encoding
                         try {
-                            py::object encoded = param.attr("encode")(charEncoding, "strict");
+                            py::object encoded =
+                                EncodeUnicodeValue(param.ptr(), charEncoding);
                             encodedStr = encoded.cast<std::string>();
                             LOG("BindParameters: param[%d] SQL_C_CHAR - Encoded with '%s', "
                                 "size=%zu bytes",
@@ -2742,7 +2749,7 @@ SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list&
                                                   std::to_string(paramIndex));
                             }
                             py::object encoded =
-                                columnValues[i].attr("encode")("utf-16-le", "strict");
+                                EncodeUnicodeValue(columnValues[i].ptr(), "utf-16-le");
                             char* encodedData = nullptr;
                             Py_ssize_t encodedSize = 0;
                             if (PyBytes_AsStringAndSize(encoded.ptr(), &encodedData,
@@ -2873,7 +2880,7 @@ SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list&
                                 // encoding
                                 try {
                                     encoded =
-                                        columnValues[i].attr("encode")(charEncoding, "strict");
+                                        EncodeUnicodeValue(columnValues[i].ptr(), charEncoding);
                                     if (PyBytes_AsStringAndSize(encoded.ptr(), &encodedData,
                                                                 &encodedSize) != 0) {
                                         throw py::error_already_set();
