@@ -352,7 +352,7 @@ def test_main_routes_native_effective_subdir_without_cross_target(tmp_path, monk
     monkeypatch.setattr(build, "gather_wheels", lambda *_args: ("1.2.3", "18.6.2", None))
     monkeypatch.setattr(environment, "find_or_install_conda", lambda _output_dir: "conda")
     monkeypatch.setattr(environment, "run", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(environment, "create_builder_env", lambda _conda: "conda_builder")
+    monkeypatch.setattr(environment, "create_builder_env", lambda *_args: "conda_builder")
     monkeypatch.setattr(build, "detect_pythons", lambda *_args: ["3.13"])
 
     def _build_env(_mssql_ver, _odbc_ver, _links, cross_target_subdir, _rs_ver):
@@ -856,6 +856,20 @@ def test_binding_selection_requires_the_requested_normal_abi(abi):
     assert not contracts.binding_wheel_matches_target(wheel, "win-64", ["3.13"])
 
 
+@pytest.mark.parametrize("subdir,platform", contracts._RS_PLATFORMS.items())
+def test_cp315_selects_ordinary_binding_and_existing_rs_abi3(tmp_path, subdir, platform):
+    binding = f"mssql_python-1.2.3-cp315-cp315-{platform}.whl"
+    assert contracts.binding_wheel_matches_target(binding, subdir, ["3.15"])
+    assert not contracts.binding_wheel_matches_target(
+        binding.replace("-cp315-cp315-", "-cp315-cp315t-"), subdir, ["3.15"]
+    )
+    selected = tmp_path / f"mssql_python_rs-0.3.0-cp310-abi3-{platform}.whl"
+    selected.touch()
+    (tmp_path / f"mssql_python_rs-0.3.0-cp315-cp315t-{platform}.whl").touch()
+    (tmp_path / f"mssql_python_rs-0.3.0-cp316-abi3-{platform}.whl").touch()
+    assert build._select_rs_wheel(str(tmp_path), "0.3.0", "cp315", subdir) == str(selected)
+
+
 @pytest.mark.parametrize(
     "state", ["valid", "missing-rs", "mismatched-rs", "odbc-core", "odbc-target"]
 )
@@ -1134,17 +1148,20 @@ def test_malformed_record_is_an_explicit_error(record):
 
 
 @pytest.mark.parametrize(
-    ("target_subdir", "expected_channels"),
+    ("target_subdir", "python_version", "expected_channels"),
     [
-        ("", ["microsoft", "conda-forge"]),
-        ("win-64", ["microsoft", "conda-forge"]),
-        ("osx-arm64", ["microsoft", "conda-forge"]),
-        ("linux-aarch64", ["microsoft", "conda-forge"]),
-        ("win-arm64", ["defaults", "microsoft", "conda-forge"]),
+        ("", "3.13", ["microsoft", "conda-forge"]),
+        ("win-64", "3.13", ["microsoft", "conda-forge"]),
+        ("osx-arm64", "3.13", ["microsoft", "conda-forge"]),
+        ("linux-aarch64", "3.13", ["microsoft", "conda-forge"]),
+        ("win-arm64", "3.12", ["defaults", "microsoft", "conda-forge"]),
+        ("win-arm64", "3.13", ["defaults", "microsoft", "conda-forge"]),
+        ("win-arm64", "3.14", ["defaults", "microsoft", "conda-forge"]),
+        ("win-arm64", "3.15", ["microsoft", "conda-forge"]),
     ],
 )
-def test_conda_build_uses_only_explicit_channels(
-    target_subdir, expected_channels, tmp_path, monkeypatch
+def test_conda_build_and_verify_use_only_explicit_channels(
+    target_subdir, python_version, expected_channels, tmp_path, monkeypatch
 ):
     calls = []
     croot = tmp_path / "croot"
@@ -1160,7 +1177,7 @@ def test_conda_build_uses_only_explicit_channels(
         "conda",
         "conda_builder",
         str(tmp_path / "recipe"),
-        ["3.13"],
+        [python_version],
         str(tmp_path / "conda-bld"),
         target_subdir,
         {},
@@ -1174,6 +1191,52 @@ def test_conda_build_uses_only_explicit_channels(
     assert [command[index + 1] for index, arg in enumerate(command) if arg == "-c"] == (
         expected_channels
     )
+    monkeypatch.setattr(environment, "run_ok", lambda *_args, **_kwargs: 0)
+    monkeypatch.setattr(environment, "run_capture", lambda *_args, **_kwargs: (0, ""))
+    verify._verify_impl(
+        "conda",
+        "local-channel",
+        str(tmp_path),
+        [python_version],
+        "1.2.3",
+        target_subdir,
+        True,
+        {},
+    )
+    creates = [cmd for cmd in calls if cmd[1:2] == ["create"]]
+    assert len(creates) == (2 if target_subdir == "win-arm64" else 1)
+    verify_channels = (
+        ["microsoft", "defaults"]
+        if target_subdir == "win-arm64" and python_version != "3.15"
+        else ["microsoft", "conda-forge"]
+    )
+    for command in creates:
+        assert [command[i + 1] for i, arg in enumerate(command) if arg == "-c"] == [
+            "local-channel",
+            *verify_channels,
+        ]
+
+
+@pytest.mark.parametrize(
+    "target,pyvers,spec",
+    [
+        ("win-64", ["3.10", "3.14"], "conda-build<26"),
+        ("win-arm64", ["3.12", "3.14"], "conda-build<26"),
+        ("win-64", ["3.10", "3.15"], "conda-build=26.9.1"),
+        ("win-arm64", ["3.12", "3.15"], "conda-build=26.9.1"),
+        ("linux-64", ["3.15"], "conda-build<26"),
+        ("linux-aarch64", ["3.15"], "conda-build<26"),
+        ("osx-64", ["3.15"], "conda-build<26"),
+        ("osx-arm64", ["3.15"], "conda-build<26"),
+    ],
+)
+def test_builder_upgrade_is_limited_to_windows_315(target, pyvers, spec, monkeypatch):
+    calls = []
+    monkeypatch.setattr(environment, "run_ok", lambda *_args, **_kwargs: 0)
+    monkeypatch.setattr(environment, "run", lambda cmd, **_kwargs: calls.append(cmd))
+    assert environment.create_builder_env("conda", target, pyvers) == "conda_builder"
+    assert len(calls) == 1
+    assert [arg for arg in calls[0] if arg.startswith("conda-build")] == [spec]
 
 
 @pytest.mark.parametrize("state", ["native", "pure-python", "foreign"])
