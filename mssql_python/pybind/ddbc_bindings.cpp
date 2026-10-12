@@ -3369,7 +3369,7 @@ SQLRETURN SQLExecuteMany_wrap(const SqlHandlePtr statementHandle, const std::u16
             LOG("SQLExecuteMany: SQLExecute for row %zu - initial_rc=%d", rowIndex, rc);
             size_t dae_chunk_count = 0;
             while (rc == SQL_NEED_DATA) {
-                SQLPOINTER token;
+                SQLPOINTER token = nullptr;
                 {
                     // Release the GIL around the blocking SQLParamData call.
                     py::gil_scoped_release release;
