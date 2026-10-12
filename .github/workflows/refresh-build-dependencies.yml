@@ -8,8 +8,6 @@ on:
       - eng/requirements-build-*.txt
       - eng/requirements-test-linux.in
       - eng/requirements-test-linux.txt
-      - eng/requirements-test-linux-py315.in
-      - eng/requirements-test-linux-py315.txt
       - requirements.txt
       - OneBranchPipelines/stages/build-*-single-stage.yml
       - OneBranchPipelines/stages/build-odbc-all-stage.yml
@@ -46,7 +44,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || 'main' }}
           persist-credentials: false
       - uses: astral-sh/setup-uv@3259c6206f993105e3a61b142c2d97bf4b9ef83d # v7.1.0
         with:
@@ -54,22 +52,20 @@ jobs:
           enable-cache: false
       - name: Compile Linux dependency locks
         run: |
-          uv pip compile ${{ github.event_name != 'pull_request' && '--upgrade' || '' }} --generate-hashes --no-emit-index-url --no-header --strip-extras --python-version 3.10 --default-index https://pypi.org/simple --output-file eng/requirements-build-linux.txt eng/requirements-build-linux.in
-          uv pip compile ${{ github.event_name != 'pull_request' && '--upgrade' || '' }} --generate-hashes --no-emit-index-url --no-header --strip-extras --python-version 3.10 --default-index https://pypi.org/simple --output-file eng/requirements-test-linux.txt eng/requirements-test-linux.in
-          uv pip compile ${{ github.event_name != 'pull_request' && '--upgrade' || '' }} --generate-hashes --no-emit-index-url --no-header --strip-extras --python-version 3.15 --default-index https://pypi.org/simple --output-file eng/requirements-test-linux-py315.txt eng/requirements-test-linux-py315.in
+          uv pip compile ${{ github.event_name != 'pull_request' && '--upgrade' || '' }} --universal --generate-hashes --no-emit-index-url --no-header --strip-extras --python-version 3.10 --default-index https://pypi.org/simple --output-file eng/requirements-build-linux.txt eng/requirements-build-linux.in
+          uv pip compile ${{ github.event_name != 'pull_request' && '--upgrade' || '' }} --universal --generate-hashes --no-emit-index-url --no-header --strip-extras --python-version 3.10 --default-index https://pypi.org/simple --output-file eng/requirements-test-linux.txt eng/requirements-test-linux.in
       - name: Verify committed Linux locks are current
         if: github.event_name == 'pull_request'
         run: |
           set -euo pipefail
-          git ls-files --error-unmatch -- eng/requirements-build-linux.txt eng/requirements-test-linux.txt eng/requirements-test-linux-py315.txt >/dev/null
-          git diff --exit-code -- eng/requirements-build-linux.txt eng/requirements-test-linux.txt eng/requirements-test-linux-py315.txt
+          git ls-files --error-unmatch -- eng/requirements-build-linux.txt eng/requirements-test-linux.txt >/dev/null
+          git diff --exit-code -- eng/requirements-build-linux.txt eng/requirements-test-linux.txt
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: build-lock-linux
           path: |
             eng/requirements-build-linux.txt
             eng/requirements-test-linux.txt
-            eng/requirements-test-linux-py315.txt
           if-no-files-found: error
 
   compile-platform:
@@ -84,26 +80,21 @@ jobs:
             os: macos-latest
             input: eng/requirements-build-macos.in
             output: eng/requirements-build-macos.txt
-          - name: macos-py315
-            os: macos-latest
-            input: eng/requirements-build-macos-py315.in
-            output: eng/requirements-build-macos-py315.txt
+            universal: --universal
           - name: windows
             os: windows-latest
             input: eng/requirements-build-windows.in
             output: eng/requirements-build-windows.txt
-          - name: windows-py315
-            os: windows-latest
-            input: eng/requirements-build-windows-py315.in
-            output: eng/requirements-build-windows-py315.txt
+            universal: --universal
           - name: odbc
             os: windows-latest
             input: eng/requirements-build-odbc.in
             output: eng/requirements-build-odbc.txt
+            universal: ""
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || 'main' }}
           persist-credentials: false
       - uses: astral-sh/setup-uv@3259c6206f993105e3a61b142c2d97bf4b9ef83d # v7.1.0
         with:
@@ -112,7 +103,7 @@ jobs:
       - name: Compile ${{ matrix.name }} dependency lock
         # Python 3.10 is the oldest supported release, so every lock remains
         # installable throughout the release pipeline's Python 3.10-3.14 matrix.
-        run: uv pip compile ${{ github.event_name != 'pull_request' && '--upgrade' || '' }} --generate-hashes --no-emit-index-url --no-header --strip-extras --python-version 3.10 --default-index https://pypi.org/simple --output-file "${{ matrix.output }}" "${{ matrix.input }}"
+        run: uv pip compile ${{ github.event_name != 'pull_request' && '--upgrade' || '' }} ${{ matrix.universal }} --generate-hashes --no-emit-index-url --no-header --strip-extras --python-version 3.10 --default-index https://pypi.org/simple --output-file "${{ matrix.output }}" "${{ matrix.input }}"
       - name: Verify committed ${{ matrix.name }} lock is current
         if: github.event_name == 'pull_request'
         shell: bash
@@ -148,7 +139,7 @@ jobs:
             platforms: "x86_64-manylinux_2_28 aarch64-manylinux_2_28 x86_64-unknown-linux-musl aarch64-unknown-linux-musl"
           - name: Linux test Python 3.15
             artifact: linux
-            lock: requirements-test-linux-py315.txt
+            lock: requirements-test-linux.txt
             versions: "3.15"
             platforms: "x86_64-manylinux_2_28 aarch64-manylinux_2_28 x86_64-unknown-linux-musl aarch64-unknown-linux-musl"
             allowSourceBuilds: true
@@ -158,10 +149,11 @@ jobs:
             versions: "3.10 3.11 3.12 3.13 3.14"
             platforms: "x86_64-apple-darwin aarch64-apple-darwin"
           - name: macOS Python 3.15
-            artifact: macos-py315
-            lock: requirements-build-macos-py315.txt
+            artifact: macos
+            lock: requirements-build-macos.txt
             versions: "3.15"
             platforms: "x86_64-apple-darwin aarch64-apple-darwin"
+            allowSourceBuilds: true
           # Windows ARM64 stages install build tools into the x64 host
           # interpreter before cross-compiling the target extension.
           - name: Windows build host
@@ -170,10 +162,11 @@ jobs:
             versions: "3.10 3.11 3.12 3.13 3.14"
             platforms: "x86_64-pc-windows-msvc"
           - name: Windows build host Python 3.15
-            artifact: windows-py315
-            lock: requirements-build-windows-py315.txt
+            artifact: windows
+            lock: requirements-build-windows.txt
             versions: "3.15"
             platforms: "x86_64-pc-windows-msvc"
+            allowSourceBuilds: true
           - name: ODBC
             artifact: odbc
             lock: requirements-build-odbc.txt
@@ -217,7 +210,7 @@ jobs:
   open-pull-request:
     name: Open dependency refresh pull request
     needs: validate-locks
-    if: false # Temporary while generating the new Python 3.15 locks.
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       contents: write

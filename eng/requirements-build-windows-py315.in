@@ -1,9 +1,0 @@
-# Python 3.15 Windows release-wheel build and test dependencies.
-pip
-psutil
-pybind11
-pytest
-pytest-asyncio
-setuptools
-wheel
-zstandard

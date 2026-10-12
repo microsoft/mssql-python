@@ -1,8 +1,0 @@
-# Python 3.15 macOS release-wheel build and test dependencies.
--r ../requirements.txt
-cmake
-# Cryptography 49+ does not publish an x86_64 macOS wheel usable by this
-# universal2 release leg.
-cryptography<49
-pip
-wheel

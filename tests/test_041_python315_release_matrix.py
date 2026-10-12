@@ -29,7 +29,7 @@ def test_release_pipeline_requires_all_41_wheels():
     assert 'if [ "$WHEEL_COUNT" -ne 41 ]' in consolidate
 
 
-def test_python_315_uses_dedicated_hashed_locks():
+def test_python_315_uses_shared_universal_hashed_locks():
     macos = (ROOT / "OneBranchPipelines" / "stages" / "build-macos-single-stage.yml").read_text(
         encoding="utf-8"
     )
@@ -37,9 +37,9 @@ def test_python_315_uses_dedicated_hashed_locks():
         encoding="utf-8"
     )
 
-    assert "requirements-build-macos-py315.txt" in macos
+    assert "requirements-build-macos.txt" in macos
     windows = (ROOT / "OneBranchPipelines" / "stages" / "build-windows-single-stage.yml").read_text(
         encoding="utf-8"
     )
-    assert "requirements-build-windows-py315.txt" in windows
-    assert "requirements-test-linux-py315.txt" in linux
+    assert "requirements-build-windows.txt" in windows
+    assert "requirements-test-linux.txt" in linux

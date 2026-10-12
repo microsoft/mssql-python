@@ -107,12 +107,7 @@ stages:
           - script: |
               python --version
               python -m pip --version
-              if [ "${{ parameters.pythonVersion }}" = "3.15" ]; then
-                lock=eng/requirements-build-macos-py315.txt
-              else
-                lock=eng/requirements-build-macos.txt
-              fi
-              python -m pip install --require-hashes -r "$lock"
+              python -m pip install --require-hashes -r eng/requirements-build-macos.txt
             displayName: 'Install dependencies'
           
           # =========================
