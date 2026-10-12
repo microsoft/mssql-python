@@ -3393,8 +3393,9 @@ SQLRETURN SQLExecuteMany_wrap(const SqlHandlePtr statementHandle, const std::u16
                     ThrowStdException(
                         "SQLExecuteMany: unrecognized paramToken from SQLParamData");
                 }
-                rc = StreamDAEParameter(hStmt, *matchedInfo, charEncoding);
-                if (!SQL_SUCCEEDED(rc)) return rc;
+                const SQLRETURN streamRc =
+                    StreamDAEParameter(hStmt, *matchedInfo, charEncoding);
+                if (!SQL_SUCCEEDED(streamRc)) return streamRc;
                 dae_chunk_count++;
             }
             LOG("SQLExecuteMany: DAE completed for row %zu - total_chunks=%zu, "

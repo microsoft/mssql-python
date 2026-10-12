@@ -416,6 +416,15 @@ def test_decimal_format_must_return_string(cursor):
         cursor.setinputsizes(None)
 
 
+def test_setinputsizes_rejects_oversized_numeric_text(cursor):
+    cursor.setinputsizes([(ddbc_sql_const.SQL_DECIMAL.value, 18, 0)])
+    try:
+        with pytest.raises(ValueError, match="numeric parameter text is too large"):
+            cursor.execute("SELECT ?", [decimal.Decimal("1e100000")])
+    finally:
+        cursor.setinputsizes(None)
+
+
 def test_setinputsizes_binary_dae(cursor):
     """Declared binary sizes over 8000 stream through the native DAE path."""
     value = b"\xab" * 10000
