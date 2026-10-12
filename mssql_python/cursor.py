@@ -2746,10 +2746,10 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                                 f"Failed to convert parameter to Decimal at row "
                                 f"{row_index}, column {i} (value type: {type(val).__name__})"
                             )
-                            # Split str(val) from the decimal parse so we only chain a
-                            # cause. Python 3.15's pure-Python decimal implementation
-                            # can retain the rejected input in traceback state, so every
-                            # conversion failure suppresses chaining.
+                            # Split str(val) from the decimal parse so every conversion
+                            # failure can suppress chaining. Python 3.15's pure-Python
+                            # decimal implementation can retain the rejected input in
+                            # traceback state.
                             try:
                                 val_text = str(val)
                             except Exception:  # pylint: disable=broad-exception-caught

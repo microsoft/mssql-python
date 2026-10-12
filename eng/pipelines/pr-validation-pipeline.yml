@@ -813,6 +813,7 @@ jobs:
       # Install dependencies in the container
       if [ "$(distroName)" = "Debian-Python315" ]; then
         docker exec test-container-$(distroName) bash -c "
+          set -e
           export DEBIAN_FRONTEND=noninteractive
           export TZ=UTC
           ln -snf /usr/share/zoneinfo/\$TZ /etc/localtime && echo \$TZ > /etc/timezone

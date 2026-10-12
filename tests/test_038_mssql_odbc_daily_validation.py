@@ -165,7 +165,7 @@ class PipelineContractTests(unittest.TestCase):
     def test_python_315_validation_installs_stable_pyarrow(self):
         requirements = (ROOT / "requirements.txt").read_text(encoding="utf-8")
 
-        self.assertIn("\npyarrow\n", requirements)
+        self.assertIn("\npyarrow==26.0.0\n", requirements)
         self.assertNotIn("scientific-python-nightly-wheels", requirements)
 
 

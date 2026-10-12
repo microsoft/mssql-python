@@ -172,6 +172,10 @@ def test_posix_hardening_flags_are_explicit():
         assert flag in cmake
 
 
+@pytest.mark.skipif(
+    not _CMAKE.is_file(),
+    reason="requires a source checkout; isolated wheel tests omit the source tree",
+)
 def test_python_headers_precede_standard_library_headers():
     header = (_ROOT / "mssql_python" / "pybind" / "ddbc_bindings.h").read_text(encoding="utf-8")
 
