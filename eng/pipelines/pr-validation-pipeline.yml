@@ -818,7 +818,7 @@ jobs:
           export TZ=UTC
           ln -snf /usr/share/zoneinfo/\$TZ /etc/localtime && echo \$TZ > /etc/timezone
           apt-get update &&
-          apt-get install -y cmake curl wget gnupg build-essential
+          apt-get install -y cmake curl wget gnupg build-essential &&
           python3 --version
         "
       elif [ "$(distroName)" = "Ubuntu" ]; then
