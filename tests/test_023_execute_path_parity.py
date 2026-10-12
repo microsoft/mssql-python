@@ -296,6 +296,24 @@ def test_setinputsizes_text_binding_normalizes_time(cursor):
     )
 
 
+def test_setinputsizes_measures_normalized_time_for_dae(cursor):
+    """A custom time string is measured after normalization and streamed when oversized."""
+
+    class LargeTime(datetime.time):
+        def isoformat(self, *args, **kwargs):
+            return "x" * 4001
+
+    assert (
+        _override_roundtrip(
+            cursor,
+            LargeTime(1, 2, 3),
+            ddbc_sql_const.SQL_VARCHAR.value,
+            1,
+        )
+        == "x" * 4001
+    )
+
+
 @pytest.mark.parametrize(
     ("value", "sql_type"),
     [
@@ -342,6 +360,19 @@ def test_executemany_setinputsizes_scans_mixed_text_values_for_dae(cursor):
     cursor.executemany("INSERT INTO #mixed_dae_batch (value) VALUES (?)", [(b"x",), (value,)])
     cursor.execute("SELECT value FROM #mixed_dae_batch ORDER BY LEN(value) DESC")
     assert [tuple(row) for row in cursor.fetchall()] == [(value,), ("x",)]
+
+
+def test_executemany_auto_detection_scans_utf16_lengths_for_dae(cursor):
+    """A shorter astral string cannot hide behind a longer BMP sample."""
+    bmp_value = "x" * 4000
+    astral_value = "\U0001f600" * 3000
+    cursor.execute("CREATE TABLE #auto_utf16_dae (value NVARCHAR(MAX))")
+    cursor.executemany(
+        "INSERT INTO #auto_utf16_dae (value) VALUES (?)",
+        [(bmp_value,), (astral_value,)],
+    )
+    cursor.execute("SELECT value FROM #auto_utf16_dae ORDER BY DATALENGTH(value) DESC")
+    assert [tuple(row) for row in cursor.fetchall()] == [(astral_value,), (bmp_value,)]
 
 
 def test_setinputsizes_rejects_bytes_for_wide_character_binding(cursor):

@@ -410,6 +410,11 @@ inline void ApplyInputSizeOverride(PyObject* params, PyObject* inputSize, Py_ssi
         throw py::type_error("bytes values cannot be bound as SQL_C_WCHAR");
     }
 
+    if (PyTime_Check(obj) && info.paramCType == PARAM_C_TYPE_TEXT) {
+        NormalizeTimeParam(params, index, info.columnSize);
+        obj = PyList_GET_ITEM(params, index);
+    }
+
     Py_ssize_t actualTextLength = 0;
     if (PyUnicode_Check(obj)) {
         actualTextLength = info.paramCType == SQL_C_CHAR
@@ -434,11 +439,6 @@ inline void ApplyInputSizeOverride(PyObject* params, PyObject* inputSize, Py_ssi
         info.columnSize =
             info.isDAE ? DAEColumnSize(info.paramSQLType, actualSize)
                        : std::max(info.columnSize, actualSize);
-    }
-
-    if (PyTime_Check(obj) && info.paramCType == PARAM_C_TYPE_TEXT) {
-        NormalizeTimeParam(params, index, info.columnSize);
-        obj = PyList_GET_ITEM(params, index);
     }
 
     if (info.isDAE) {
