@@ -10470,6 +10470,8 @@ def test_setinputsizes_sql_decimal_unconvertible_value(db_connection):
         # ...and the sensitive value / raw row is NOT leaked into the message.
         assert sensitive_value not in message
         assert repr((sensitive_value,)) not in message  # no repr of the parameter tuple
+        assert exc_info.value.__cause__ is None
+        assert exc_info.value.__context__ is None
         # ...nor into the chained cause or the fully formatted traceback, which
         # is what tracebacks and APM/log shippers actually capture.
         formatted = "".join(
@@ -10515,6 +10517,7 @@ def test_setinputsizes_sql_decimal_str_raises_no_leak(db_connection):
         # exposes it.
         assert secret not in str(exc_info.value)
         assert exc_info.value.__cause__ is None
+        assert exc_info.value.__context__ is None
         formatted = "".join(
             traceback.format_exception(
                 type(exc_info.value), exc_info.value, exc_info.value.__traceback__
@@ -10559,6 +10562,7 @@ def test_setinputsizes_sql_decimal_non_decimal_exception_no_leak(db_connection):
         assert "column 0" in message
         # ...no chained cause (the non-DecimalException branch suppresses it)...
         assert exc_info.value.__cause__ is None
+        assert exc_info.value.__context__ is None
         # ...and the input is absent from the message and formatted traceback.
         assert sensitive_value not in message
         formatted = "".join(
