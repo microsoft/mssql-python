@@ -38,4 +38,8 @@ def test_python_315_uses_dedicated_hashed_locks():
     )
 
     assert "requirements-build-macos-py315.txt" in macos
+    windows = (ROOT / "OneBranchPipelines" / "stages" / "build-windows-single-stage.yml").read_text(
+        encoding="utf-8"
+    )
+    assert "requirements-build-windows-py315.txt" in windows
     assert "requirements-test-linux-py315.txt" in linux

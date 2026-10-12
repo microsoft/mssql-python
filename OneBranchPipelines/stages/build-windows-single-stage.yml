@@ -155,7 +155,12 @@ stages:
           - powershell: |
               $ErrorActionPreference = "Stop"
               Write-Host "Installing Python dependencies..."
-              python -m pip install --require-hashes -r eng/requirements-build-windows.txt
+              if ("${{ parameters.pythonVersion }}" -eq "3.15") {
+                $lock = "eng/requirements-build-windows-py315.txt"
+              } else {
+                $lock = "eng/requirements-build-windows.txt"
+              }
+              python -m pip install --require-hashes -r $lock
               Write-Host "Dependencies installed successfully"
             displayName: 'Install Python dependencies'
           
