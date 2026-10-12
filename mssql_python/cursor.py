@@ -62,14 +62,21 @@ def _encoded_length_exceeds(value: str, encoding: str, limit: int) -> bool:
     encoder = codecs.getincrementalencoder(encoding)(errors="strict")
     total = 0
     chunk_size = 4096
-    for offset in range(0, len(value), chunk_size):
-        end = min(offset + chunk_size, len(value))
-        total += len(encoder.encode(value[offset:end], final=end == len(value)))
+    value_length = str.__len__(value)
+    for offset in range(0, value_length, chunk_size):
+        end = min(offset + chunk_size, value_length)
+        chunk = str.__getitem__(value, slice(offset, end))
+        total += len(encoder.encode(chunk, final=end == value_length))
         if total > limit:
             return True
-    if not value:
+    if value_length == 0:
         total += len(encoder.encode("", final=True))
     return total > limit
+
+
+def _utf16_length_exceeds(value: str, limit: int) -> bool:
+    bounded_value = str.__getitem__(value, slice(0, limit + 1))
+    return len(str.encode(bounded_value, "utf-16-le")) // 2 > limit
 
 
 # SQL BIGINT is a signed 64-bit integer. Ints outside this range have no BIGINT
@@ -2664,8 +2671,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                             )
                         else:
                             text_is_large = any(
-                                sum(2 if ord(char) > 0xFFFF else 1 for char in value)
-                                > MAX_INLINE_CHAR
+                                _utf16_length_exceeds(value, MAX_INLINE_CHAR)
                                 for value in text_values
                             )
                         binary_is_large = narrow_text_type and any(
@@ -2785,8 +2791,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                         ddbc_sql_const.SQL_WVARCHAR.value,
                         ddbc_sql_const.SQL_WLONGVARCHAR.value,
                     ) and any(
-                        isinstance(value, str)
-                        and sum(2 if ord(char) > 0xFFFF else 1 for char in value) > MAX_INLINE_CHAR
+                        isinstance(value, str) and _utf16_length_exceeds(value, MAX_INLINE_CHAR)
                         for value in column
                     ):
                         paraminfo.isDAE = True
