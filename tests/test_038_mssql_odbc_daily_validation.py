@@ -151,7 +151,7 @@ class PipelineContractTests(unittest.TestCase):
 
         self.assertEqual(version.strip(), "0.3.0")
 
-    def test_python_315_validation_adds_preview_matrix_legs(self):
+    def test_python_315_validation_adds_matrix_legs(self):
         pipeline = PR_PIPELINE.read_text(encoding="utf-8")
         active_python_versions = {
             line.split(":", 1)[1].strip(" '\"")
@@ -159,14 +159,14 @@ class PipelineContractTests(unittest.TestCase):
             if line.lstrip().startswith("pythonVersion:")
         }
 
-        self.assertEqual(active_python_versions, {"3.13", "3.14", "3.15.0-rc.3"})
-        self.assertIn("python:3.15.0rc2-bookworm", pipeline)
+        self.assertEqual(active_python_versions, {"3.13", "3.14", "3.15"})
+        self.assertIn("python:3.15.0rc3-bookworm", pipeline)
 
-    def test_python_315_validation_installs_pyarrow_nightly(self):
+    def test_python_315_validation_installs_stable_pyarrow(self):
         requirements = (ROOT / "requirements.txt").read_text(encoding="utf-8")
 
-        self.assertIn("scientific-python-nightly-wheels", requirements)
-        self.assertIn('pyarrow==26.0.0.dev323; python_version >= "3.15"', requirements)
+        self.assertIn("\npyarrow\n", requirements)
+        self.assertNotIn("scientific-python-nightly-wheels", requirements)
 
 
 if __name__ == "__main__":

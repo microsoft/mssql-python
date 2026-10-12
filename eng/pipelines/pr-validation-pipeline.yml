@@ -66,9 +66,9 @@ jobs:
       LocalDB_Python314:
         sqlVersion: 'LocalDB'
         pythonVersion: '3.14'
-      LocalDB_Python315Preview:
+      LocalDB_Python315:
         sqlVersion: 'LocalDB'
-        pythonVersion: '3.15.0-rc.3'
+        pythonVersion: '3.15'
 
   steps:
   - checkout: self
@@ -586,10 +586,10 @@ jobs:
         sqlServerImage: 'mcr.microsoft.com/mssql/server:2025-latest'
         sqlVersion: 'SQL2025'
         pythonVersion: '3.14'
-      SQL2025_Python315Preview:
+      SQL2025_Python315:
         sqlServerImage: 'mcr.microsoft.com/mssql/server:2025-latest'
         sqlVersion: 'SQL2025'
-        pythonVersion: '3.15.0-rc.3'
+        pythonVersion: '3.15'
 
   steps:
   - checkout: self
@@ -777,9 +777,9 @@ jobs:
         distroName: 'Debian-SQL2025'
         sqlServerImage: 'mcr.microsoft.com/mssql/server:2025-latest'
         useAzureSQL: 'false'
-      Debian_Python315Preview:
-        dockerImage: 'python:3.15.0rc2-bookworm'
-        distroName: 'Debian-Python315Preview'
+      Debian_Python315:
+        dockerImage: 'python:3.15.0rc3-bookworm'
+        distroName: 'Debian-Python315'
         sqlServerImage: 'mcr.microsoft.com/mssql/server:2025-latest'
         useAzureSQL: 'false'
 
@@ -811,7 +811,7 @@ jobs:
 
   - script: |
       # Install dependencies in the container
-      if [ "$(distroName)" = "Debian-Python315Preview" ]; then
+      if [ "$(distroName)" = "Debian-Python315" ]; then
         docker exec test-container-$(distroName) bash -c "
           export DEBIAN_FRONTEND=noninteractive
           export TZ=UTC
@@ -1102,9 +1102,9 @@ jobs:
         dockerImage: 'python:3.11-bookworm'
         distroName: 'Debian'
         archName: 'arm64'
-      Debian_Python315Preview_ARM64:
-        dockerImage: 'python:3.15.0rc2-bookworm'
-        distroName: 'Debian-Python315Preview'
+      Debian_Python315_ARM64:
+        dockerImage: 'python:3.15.0rc3-bookworm'
+        distroName: 'Debian-Python315'
         archName: 'arm64'
 
   steps:
