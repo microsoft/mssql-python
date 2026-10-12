@@ -42,7 +42,7 @@ PyBind11 provides:
 - **Python 3.15 Support** - Release wheels and validation now cover Python 3.15 across supported platforms (#817).
 - **Dictionary-Style Row Access** - `row._mapping` provides a read-only mapping view with dictionary conversion, keys, values, items, membership checks, and stable column metadata (#613).
 - **External Rust Runtime Dependency** - `mssql-python` now depends on the exact compatible `mssql-python-rs` package instead of embedding its files (#768).
-- **Optional `mssql-odbc` Provider** - Customers can opt into the Rust-based `mssql-odbc` provider distributed with `mssql-python-rs`; Microsoft ODBC Driver 18 (`msodbcsql18`) remains the default (#730, #804, via `mssql-python-rs`).
+- **Optional `mssql-odbc` Provider** - Customers can opt into the Rust-based provider distributed with `mssql-python-rs` by setting `MSSQL_PYTHON_NATIVE_PROVIDER=mssql-odbc` or `mssql_python.native_provider = "mssql-odbc"` before the first connection; Microsoft ODBC Driver 18 (`msodbcsql18`) remains the default (#730, #804, via `mssql-python-rs`).
 - **Stable-ABI Rust Runtime Wheels** - The Rust runtime now uses CPython's stable ABI and `mssql-python-rs` 0.3.0, eliminating Python-version-specific wheel variants while retaining separate wheels for each supported OS and architecture (#804, via `mssql-python-rs`).
 - **Updated ODBC Runtime Package** - `mssql-python` now pins `mssql-python-odbc==18.6.2.2`, whose Linux wheels separate glibc and musl payloads while retaining the same ODBC Driver 18.6 binaries (#798, #807).
 - **Faster Row Construction and Batch Fetching** - Optimized native Row construction and cursor bookkeeping reduce Python-side overhead in `fetchone()`, `fetchmany()`, and `fetchall()` (#558).
