@@ -3,7 +3,7 @@
 #
 # The OneBranch conda-build pipeline is `trigger: none` / `pr: none`, so its blocking
 # audit never runs on a PR. This lightweight GitHub Actions job builds ONE real
-# linux-64 conda package from a separately pinned PUBLISHED SMOKE baseline and runs
+# linux-64 conda package from the current published PyPI wheels and runs
 # python -m eng.conda_tools elf on it, so a regression in the $ORIGIN climb,
 # the declared conda deps (krb5/libtool/openssl), or the expected DT_NEEDED set fails
 # the PR automatically -- the full-agent runtime masking cannot hide it.
@@ -11,8 +11,8 @@
 # build.sh ALWAYS stamps the relative $ORIGIN climb onto the vendored Linux ODBC .so
 # (they are not code-signed, so the patch breaks no signature; an already-baked climb
 # is a byte-for-byte no-op). This gate builds one real linux-64 conda package from the
-# published baseline and audits the resulting climb (see conda/mssql-python/build.sh).
-# It is a historical embedded-core CPython 3.11 control, not current-source RS/3.15
+# published wheels and audits the resulting climb (see conda/mssql-python/build.sh).
+# It is a published CPython 3.11 packaging control, not current-source RS/3.15
 # qualification; source-only tests above it remain current-checkout and blocking.
 #
 # PR triggers are conda-specific: general package/version changes and shared wheel
@@ -74,12 +74,13 @@ jobs:
                            tests/test_038_conda_archive_limits.py \
                            tests/test_027_conda_release_metadata.py -q
 
-      - name: Fetch the pinned published CPython 3.11 smoke baseline
+      - name: Fetch the published CPython 3.11 smoke wheels from PyPI
+        id: public-wheels
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
-          # inputs.py maintains exact baseline versions, filenames and immutable hashes.
-          # PyPI hashes and actual METADATA/WHEEL/RECORD are still checked; no fallback.
+          # Select PyPI's current binding and its exact ODBC/RS dependencies, not source pins.
+          # Verify PyPI hashes and actual METADATA/WHEEL/RECORD; no older-release fallback.
           python -m eng.conda_tools fetch-wheels \
             --published-smoke \
             --wheel-dir "$PWD/wheels" --requirements-file "$PWD/wheel-inputs.txt" \
@@ -88,10 +89,18 @@ jobs:
 
       - name: Build + audit a linux-64 conda package
         working-directory: ${{ github.workspace }}
+        env:
+          RS_REQUIRED: ${{ steps.public-wheels.outputs.rsRequired }}
         run: |
           set -euo pipefail
-          # This baseline owns its embedded core; no current-source RS input is substituted.
+          rsArgs=()
+          if [[ "$RS_REQUIRED" == "true" ]]; then
+            rsArgs=(--rs-wheel-dir "$PWD/wheels")
+          elif [[ "$RS_REQUIRED" != "false" ]]; then
+            echo "Missing verified public wheel profile"; exit 1
+          fi
           python -m eng.conda_tools build \
+            "${rsArgs[@]}" \
             --mssql-wheel-dir "$PWD/wheels" \
             --odbc-wheel-dir "$PWD/wheels" \
             --odbc-wheel-filter "mssql_python_odbc-*.whl" \

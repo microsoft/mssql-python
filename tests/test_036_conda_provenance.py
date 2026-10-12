@@ -546,28 +546,55 @@ def test_source_bound_release_components(tmp_path, monkeypatch, capsys, problem,
     ), capsys.readouterr()
 
 
-@pytest.mark.parametrize("profile", ["source", "smoke", "smoke-bad-hash", "smoke-wrong-target"])
+@pytest.mark.parametrize(
+    "profile",
+    [
+        "source",
+        "smoke",
+        "smoke-rs",
+        "smoke-unavailable",
+        "smoke-bad-dependency",
+        "smoke-wrong-target",
+    ],
+)
 def test_published_smoke_is_explicit_and_independent_of_unpublished_source(
     tmp_path, monkeypatch, capsys, profile
 ):
     source = {"mssql-python": "1.16.0", "mssql-python-odbc": "18.6.2.2"}
-    reads, selected = [], []
+    published = {"mssql-python": "1.15.0", "mssql-python-odbc": "18.6.2.1"}
+    if profile == "smoke-rs":
+        published["mssql-python-rs"] = "0.3.0"
+    reads, requests, selected = [], [], []
     monkeypatch.setattr(inputs, "read_release_versions", lambda read: reads.append(True) or source)
+
+    def pypi(url, *, timeout):
+        assert url == "https://pypi.org/pypi/mssql-python/json" and timeout == 60
+        requests.append(url)
+        if profile == "smoke-unavailable":
+            raise HTTPError(url, 404, "not published", {}, None)
+        requirements = [
+            f"{name}=={version}" for name, version in published.items() if name != "mssql-python"
+        ]
+        if profile == "smoke-bad-dependency":
+            requirements = ["mssql-python-odbc>=18.6.2.1"]
+        return io.BytesIO(
+            json.dumps(
+                {
+                    "info": {
+                        "name": "mssql-python",
+                        "version": published["mssql-python"],
+                        "requires_dist": requirements,
+                    }
+                }
+            ).encode()
+        )
 
     def fetch(versions, *args):
         selected.append(versions)
-        for filename in inputs._PUBLISHED_SMOKE_SHA256:
-            (tmp_path / filename).touch()
         return versions
 
+    monkeypatch.setattr(inputs, "urlopen", pypi)
     monkeypatch.setattr(inputs, "fetch_wheels", fetch)
-    monkeypatch.setattr(
-        inputs,
-        "file_sha256",
-        lambda path: (
-            "0" * 64 if profile == "smoke-bad-hash" else inputs._PUBLISHED_SMOKE_SHA256[path.name]
-        ),
-    )
     output = tmp_path / "outputs"
     monkeypatch.setenv("GITHUB_OUTPUT", str(output))
     result = cli.main(
@@ -585,22 +612,15 @@ def test_published_smoke_is_explicit_and_independent_of_unpublished_source(
         ]
     )
     assert reads == ([True] if profile == "source" else [])
-    assert selected == (
-        []
-        if profile == "smoke-wrong-target"
-        else [
-            (
-                source
-                if profile == "source"
-                else {"mssql-python": "1.15.0", "mssql-python-odbc": "18.6.2.1"}
-            )
-        ]
-    )
-    failed = profile in {"smoke-bad-hash", "smoke-wrong-target"}
+    assert len(requests) == (0 if profile in {"source", "smoke-wrong-target"} else 1)
+    failed = profile in {"smoke-unavailable", "smoke-bad-dependency", "smoke-wrong-target"}
+    assert selected == ([] if failed else [source if profile == "source" else published])
     assert result == int(failed)
     assert output.exists() == (not failed)
     if failed:
         assert "ERROR:" in capsys.readouterr().err
+    else:
+        assert output.read_text() == f"rsRequired={str(profile == 'smoke-rs').lower()}\n"
 
 
 @pytest.mark.parametrize("with_rs", [False, True])

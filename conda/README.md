@@ -58,14 +58,14 @@ OneBranch pipelines/steps/jobs, their native/probe/archive/provenance and releas
 and the workflow itself. General package metadata/version changes and shared wheel-build
 infrastructure do not trigger it on their own; mixed PRs with a Conda change still do.
 Source-only tests remain current-checkout and blocking. The real Linux CPython 3.11
-build/audit uses `fetch-wheels --published-smoke`: a separate published baseline of
-binding **1.15.0** and its exact ODBC dependency **18.6.2.1**, with embedded core and
-no separate RS wheel. `eng/conda_tools/inputs.py` maintains its versions, exact wheel
-filenames and SHA256 pins; update them together after verifying the new wheel metadata
-and ownership. Source release bumps do not change this baseline. Missing wheels,
-metadata/dependency mismatches, digest changes and build/audit failures still fail the
-gate; there is no skip or automatic fallback. This historical packaging control does
-not qualify current-source RS or Python 3.15.
+build/audit uses `fetch-wheels --published-smoke`: PyPI's current published binding
+and its exact ODBC dependency (plus RS when required). No smoke versions or hashes
+are hardcoded; downloads are verified against PyPI's SHA256 values and actual wheel
+metadata/ownership. Source release bumps do not select unpublished smoke inputs.
+The selected versions are logged and hash-required requirements are generated per run.
+Missing wheels, metadata/dependency or hash mismatches and build/audit failures still
+fail the gate; there is no skip or older-release fallback. This published packaging
+control does not qualify current-source RS or Python 3.15.
 
 Run the source-only trigger regressions without a native build, SQL Server, or PyYAML:
 
@@ -300,7 +300,7 @@ provider and selected pin; unavailable releases, malformed declarations, or mism
 fail with no older-version or TLS fallback. Public availability does not gate the
 recorded ADO artifact path. Neither a public input check nor static archive checks
 establish installed SQL/runtime qualification.
-Only the explicit `--published-smoke` option selects the independent baseline above;
+Only the explicit `--published-smoke` option selects the published inputs above;
 production, provenance, preflight and release/publish version selection are unchanged.
 
 The driver-load probe's sole implementation is

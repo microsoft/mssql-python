@@ -19,18 +19,6 @@ from eng.scripts.download_mssql_python_rs_wheels import DEFAULT_FEED, PACKAGE_ID
 from . import archive, contracts
 
 
-# PR-only linux-64/cp311 packaging control, maintained independently of source releases.
-_PUBLISHED_SMOKE_VERSIONS = {"mssql-python": "1.15.0", "mssql-python-odbc": "18.6.2.1"}
-_PUBLISHED_SMOKE_SHA256 = {
-    "mssql_python-1.15.0-cp311-cp311-manylinux_2_28_x86_64.whl": (
-        "016c61a4c82a1b69a8f8a43c91dc3537463d8ca068da73fa91f7e348b48e6d22"
-    ),
-    "mssql_python_odbc-18.6.2.1-py3-none-manylinux_2_28_x86_64.whl": (
-        "b8aad821f3b8637b0e6d4637f4b730ed9897c4665fa99d47e44e97fd1c79c77a"
-    ),
-}
-
-
 def _is_sha256(value: object) -> bool:
     return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) is not None
 
@@ -188,7 +176,7 @@ def fetch_wheels(
     else:
         if source_versions.get("mssql-python-rs") != rs_version:
             raise ValueError(
-                "Published binding RS requirement differs from the maintained source pin."
+                "Published binding RS requirement differs from the selected pin."
             )
         versions["mssql-python-rs"] = rs_version
         hashes.update(
@@ -293,7 +281,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--published-smoke",
         action="store_true",
-        help="Use the separately pinned linux-64/cp311 PR baseline, not source release versions.",
+        help="Use PyPI's current published binding and its exact dependencies for the PR smoke.",
     )
     parser.add_argument(
         "--python-tag",
@@ -311,17 +299,13 @@ def fetch_cli(args: argparse.Namespace) -> int:
     try:
         if args.published_smoke:
             if (args.python_tag, args.conda_subdir) != ("cp311", "linux-64"):
-                raise ValueError("The published smoke baseline requires cp311 linux-64.")
-            source = _PUBLISHED_SMOKE_VERSIONS
+                raise ValueError("The published smoke requires cp311 linux-64.")
+            source = read_published_versions()
         else:
             source = read_release_versions(lambda path: Path(path).read_text(encoding="utf-8"))
         versions = fetch_wheels(
             source, args.wheel_dir, args.requirements_file, args.python_tag, args.conda_subdir
         )
-        if args.published_smoke:
-            actual = {path.name: file_sha256(path) for path in args.wheel_dir.glob("*.whl")}
-            if actual != _PUBLISHED_SMOKE_SHA256:
-                raise ValueError("Published smoke wheels differ from the pinned filenames/SHA256.")
         rs_required = "mssql-python-rs" in versions
         if output := os.environ.get("GITHUB_OUTPUT"):
             with open(output, "a", encoding="utf-8") as destination:
@@ -336,6 +320,32 @@ def fetch_cli(args: argparse.Namespace) -> int:
         else "Historical published packaging control; NOT current-source RS qualification."
     )
     return 0
+
+
+def read_published_versions() -> dict[str, str]:
+    """Select PyPI's current binding release, never independently mix latest components."""
+    try:
+        with urlopen("https://pypi.org/pypi/mssql-python/json", timeout=60) as response:
+            release = json.load(response)
+    except URLError as error:
+        raise ValueError(
+            "Cannot select the published binding from PyPI; no fallback is allowed."
+        ) from error
+    info = release.get("info") if isinstance(release, dict) else None
+    if not isinstance(info, dict) or info.get("name") != "mssql-python":
+        raise ValueError("Invalid published binding identity.")
+    requirements = info.get("requires_dist")
+    if not isinstance(requirements, list) or any(
+        not isinstance(item, str) for item in requirements
+    ):
+        raise ValueError("Invalid published binding dependencies.")
+    versions = {
+        "mssql-python": info.get("version"),
+        "mssql-python-odbc": contracts.exact_dependency_pin(requirements, "mssql-python-odbc"),
+    }
+    if rs_version := contracts.exact_dependency_pin(requirements, "mssql-python-rs"):
+        versions["mssql-python-rs"] = rs_version
+    return parse_release_versions(json.dumps(versions))
 
 
 def read_release_versions(read_source: Callable[[str], str]) -> dict[str, str]:
