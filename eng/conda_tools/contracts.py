@@ -418,6 +418,18 @@ def validate_rs_ownership(
     return errors
 
 
+def site_packages_root(python_tag: str, subdir: str) -> str:
+    """Canonical archive root for the supported ordinary CPython target, not the host."""
+    if not re.fullmatch(r"cp3\d+", python_tag) or subdir not in _RS_PLATFORMS:
+        raise ValueError(f"Unsupported Conda Python/platform target: {python_tag} {subdir}")
+    minor = int(python_tag[3:])
+    if subdir.startswith("win-"):
+        prefix = "lib/python" if minor >= 15 else "Lib"
+    else:
+        prefix = f"lib/python3.{minor}"
+    return f"{prefix}/site-packages/"
+
+
 def validate_native_contract(names: Iterable[str], index: dict[str, Any]) -> list[str]:
     """Require a target binding, core extension and initializer; platform audits check headers.
 
@@ -436,8 +448,7 @@ def validate_native_contract(names: Iterable[str], index: dict[str, Any]) -> lis
     subdir = index["subdir"]
     windows = subdir.startswith("win-")
     suffix = "pyd" if windows else "so"
-    prefix = "Lib" if windows else f"lib/python{abi[1]}"
-    root = f"{prefix}/site-packages/"
+    root = site_packages_root(f"cp{abi[2]}", subdir)
     names = [name.replace("\\", "/") for name in names]
     bindings = [
         name

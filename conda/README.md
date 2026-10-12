@@ -112,8 +112,9 @@ macOS retains its external Homebrew/MacPorts OpenSSL prerequisite for encryption
 Conda OpenSSL alone does not satisfy the driver's system-path lookup.
 
 The release goal is the matching PyPI release's public API and supported feature
-behavior on all 28 ordinary CPython variants: 3.10-3.14 on win-64, linux-64,
-linux-aarch64, osx-64 and osx-arm64; 3.12-3.14 on win-arm64. No silent removal of
+behavior on all 34 ordinary CPython variants: 3.10-3.15 on win-64, linux-64,
+linux-aarch64, osx-64 and osx-arm64; 3.12-3.15 on win-arm64. Free-threaded CPython
+(including `cp315t`) and musllinux are not Conda targets. No silent removal of
 required native functionality is acceptable. Optional features require their
 corresponding dependencies; Windows ARM64 PyArrow availability remains a blocker
 to qualifying those features, not permission to drop them.
@@ -125,7 +126,7 @@ load do not establish those results. Applicable OS, certificate and authenticati
 configuration remain external prerequisites.
 
 Use only organizationally approved channels and handle applicable terms separately;
-the Windows ARM64 dependency profile includes Anaconda `defaults`. Before unattended
+the Windows ARM64 3.12-3.14 dependency profile includes Anaconda `defaults`. Before unattended
 Windows ARM64 builds, agent owners must use approved provisioning to put a disposable
 Conda installation on `PATH`, with applicable channel terms handled for the job's
 execution identity. The orchestrator's automatic Miniforge installation does not
@@ -133,6 +134,25 @@ establish that approval. If Conda enforces terms that have not been handled, the
 or verification solve stops with Conda's diagnostic; provision the prerequisite before
 running again. Automatic acceptance, including an inherited
 `CONDA_PLUGINS_AUTO_ACCEPT_TOS` opt-in, remains disabled.
+
+Windows ARM64 3.15 uses `microsoft`, then `conda-forge`, for both build and verification
+(after the local verification channel), without `defaults`. Older targets retain their
+existing channel policies and the ARM64 3.12 manual ABI pin. The blocking full dependency
+solve remains; every 3.15 package must pass the `python_abi 3.15.* *_cp315` native audit.
+
+### Python 3.15 packaging
+
+Conda-forge's Windows Python 3.15 declares `lib/python/site-packages` instead of
+`Lib/site-packages` ([layout change](https://conda-forge.org/blog/2026/09/03/python-315/)).
+The Windows recipe uses the target's `SP_DIR` for binding/RS/ODBC extraction, with
+matching native and installed-metadata checks. Windows legs containing 3.15 use
+**conda-build 26.9.1** for all requested variants: its
+[26.9.0 fix](https://github.com/conda/conda-build/releases/tag/26.9.0) reads
+`python_site_packages_path` from the target Python record, including cross builds.
+25.x computes the old Windows path even for 3.15. Other legs retain `conda-build<26`;
+the publishing toolchain is unchanged. The existing RS 0.3.0 stable-ABI selection and
+ODBC `py3-none` wheels need no version change. PyArrow stays optional; no speculative
+`libpython` dependency or change to the Unix OS floors is introduced.
 
 Run this existing build workflow only in a disposable isolated installation: shared-environment
 ownership hardening is outside this change. Publication/provenance tooling is included

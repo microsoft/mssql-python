@@ -213,11 +213,7 @@ def validate_installed_inputs(
     if len(names) != len(set(names)):
         raise ValueError(f"{path}: duplicate payload members")
     metadata = {}
-    root = (
-        "Lib/site-packages/"
-        if subdir.startswith("win-")
-        else (f"lib/python{python_tag[2]}.{python_tag[3:]}/site-packages/")
-    )
+    root = contracts.site_packages_root(python_tag, subdir)
     for facts, present, owned, prefix in archive.installed_metadata(names, files):
         name = contracts.canonical_distribution_name(facts["name"])
         if name in metadata:

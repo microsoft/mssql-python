@@ -58,7 +58,7 @@ def release_sources():
     }
 
 
-def _component_files(name, version, rs=None):
+def _component_files(name, version, rs=None, python_tag="cp313"):
     prefix = f"{name.replace('-', '_')}-{version}.dist-info/"
     metadata = f"Metadata-Version: 2.4\nName: {name}\nVersion: {version}\n"
     files = {}
@@ -71,14 +71,23 @@ def _component_files(name, version, rs=None):
         files.update(
             {
                 "mssql_py_core/__init__.py": b"",
-                "mssql_py_core/mssql_py_core.cp313-win_amd64.pyd": b"native fixture",
+                f"mssql_py_core/mssql_py_core.{python_tag}-win_amd64.pyd": b"native fixture",
             }
         )
     if name == "mssql-python-rs":
         files.update(
             {path: b"private native fixture" for path in contracts.rs_private_libraries("win-64")}
         )
-    tag = "py3-none-win_amd64" if name == "mssql-python-odbc" else "cp313-cp313-win_amd64"
+    tag = (
+        "py3-none-win_amd64"
+        if name == "mssql-python-odbc"
+        else f"{python_tag}-{python_tag}-win_amd64"
+    )
+    if name == "mssql-python-rs" and python_tag == "cp315":
+        tag = "cp310-abi3-win_amd64"
+        files["mssql_py_core/mssql_py_core.pyd"] = files.pop(
+            f"mssql_py_core/mssql_py_core.{python_tag}-win_amd64.pyd"
+        )
     files[prefix + "METADATA"] = metadata.encode()
     files[prefix + "WHEEL"] = f"Wheel-Version: 1.0\nTag: {tag}\n".encode()
     files[prefix + "RECORD"] = "".join(
@@ -339,6 +348,7 @@ def test_public_wheel_controls_use_actual_metadata_ownership_and_hashes(
         "missing-record",
         "missing-wheel",
         "wrong-root",
+        "other-python-root",
         "duplicate-metadata",
         "unowned-core",
         "unrecorded-core",
@@ -378,19 +388,23 @@ def test_public_wheel_controls_use_actual_metadata_ownership_and_hashes(
         ),
     ],
 )
-def test_source_bound_release_components(tmp_path, monkeypatch, capsys, problem):
+@pytest.mark.parametrize("python_version", ["3.13", "3.15"])
+def test_source_bound_release_components(tmp_path, monkeypatch, capsys, problem, python_version):
+    python_tag = "cp" + python_version.replace(".", "")
+    minor = int(python_version.split(".")[1])
     with_rs = problem not in {"legacy", "new-source-legacy"} and not problem.startswith("legacy-")
     versions = {"mssql-python": "1.15.0", "mssql-python-odbc": "18.6.2.1"}
     if with_rs:
         versions["mssql-python-rs"] = "0.2.0"
     files = {}
     for name, version in versions.items():
-        files.update(_component_files(name, version, "0.2.0" if with_rs else None))
+        files.update(_component_files(name, version, "0.2.0" if with_rs else None, python_tag))
     if problem == "new-source-legacy":
         versions["mssql-python-rs"] = "0.2.0"
     rs_prefix = "mssql_python_rs-0.2.0.dist-info/"
     binding_key = "mssql_python-1.15.0.dist-info/METADATA"
-    selected = "mssql_python_rs-0.2.0-cp313-cp313-win_amd64.whl"
+    rs_tag = "cp310-abi3" if python_tag == "cp315" else "cp313-cp313"
+    selected = f"mssql_python_rs-0.2.0-{rs_tag}-win_amd64.whl"
     receipt = {
         "distribution_version": "0.2.0",
         "transport_version": "0.2.0-dev.transport",
@@ -464,21 +478,27 @@ def test_source_bound_release_components(tmp_path, monkeypatch, capsys, problem)
     elif problem == "wrong-wheel-tags":
         files[rs_prefix + "WHEEL"] = b"Tag: cp310-cp310-win_amd64\n"
     elif problem == "wrong-wheel-target":
-        wrong = selected.replace("313", "312")
+        wrong = "mssql_python_rs-0.2.0-cp316-cp316-win_amd64.whl"
         receipt["wheel_sha256"] = {wrong: "b" * 64}
         files[rs_prefix + "conda-wheel-source.txt"] = (wrong + "\n").encode()
-        files[rs_prefix + "WHEEL"] = b"Tag: cp312-cp312-win_amd64\n"
+        files[rs_prefix + "WHEEL"] = b"Tag: cp316-cp316-win_amd64\n"
     root = tmp_path / "conda"
-    package = root / "win-64" / "mssql-python-1.15.0-py313_0.tar.bz2"
+    package = root / "win-64" / f"mssql-python-1.15.0-py{python_tag[2:]}_0.tar.bz2"
     package.parent.mkdir(parents=True)
     index = {
         "name": "mssql-python",
         "version": "1.15.0",
         "subdir": "win-64",
-        "build": "py313_0",
-        "depends": ["python >=3.13,<3.14.0a0", "python_abi 3.13.* *_cp313"],
+        "build": f"py{python_tag[2:]}_0",
+        "depends": [
+            f"python >={python_version},<3.{minor + 1}.0a0",
+            f"python_abi {python_version}.* *_{python_tag}",
+        ],
     }
-    prefix = "wrong/site-packages/" if problem == "wrong-root" else "Lib/site-packages/"
+    canonical_root = "lib/python/site-packages/" if python_tag == "cp315" else "Lib/site-packages/"
+    prefix = "wrong/site-packages/" if problem == "wrong-root" else canonical_root
+    if problem == "other-python-root":
+        prefix = "Lib/site-packages/" if python_tag == "cp315" else "lib/python/site-packages/"
     members = [
         ("info/index.json", json.dumps(index).encode()),
         *((prefix + key, value) for key, value in files.items()),
@@ -486,7 +506,7 @@ def test_source_bound_release_components(tmp_path, monkeypatch, capsys, problem)
     if problem == "duplicate-payload":
         members.append(members[-1])
     elif problem == "core-root-alias":
-        members.append(("LIB/SITE-PACKAGES/mssql_py_core/unrecorded.py", b""))
+        members.append((canonical_root.upper() + "mssql_py_core/unrecorded.py", b""))
     with tarfile.open(package, "w:bz2") as contents:
         for name, data in members:
             entry = tarfile.TarInfo(name)
@@ -515,7 +535,7 @@ def test_source_bound_release_components(tmp_path, monkeypatch, capsys, problem)
             "--allowed-subdirs",
             "win-64",
             "--pythons",
-            "3.13",
+            python_version,
             "--mssql-python-version",
             "0.0.0" if problem == "mismatched-binding-override" else "1.15.0",
             "--release-versions",
