@@ -3679,6 +3679,17 @@ inline void ValidateWideCharByteLength(SQLLEN dataLen) {
     }
 }
 
+constexpr SQLLEN INVALID_FETCH_INDICATOR = std::numeric_limits<SQLLEN>::min();
+
+void ResetFetchIndicators(ColumnBuffers& buffers, size_t rowCount) {
+    for (auto& indicators : buffers.indicators) {
+        if (rowCount > indicators.size()) {
+            ThrowStdException("Fetch indicator reset exceeds the allocated row count");
+        }
+        std::fill_n(indicators.begin(), rowCount, INVALID_FETCH_INDICATOR);
+    }
+}
+
 static py::object FetchLobColumnDataImpl(
     SQLHSTMT hStmt, SQLUSMALLINT colIndex, SQLSMALLINT cType, bool isWideChar, bool isBinary,
     const std::string& charEncoding, py::handle messages, bool captureDiagnostics,
@@ -3694,7 +3705,7 @@ static py::object FetchLobColumnDataImpl(
     while (true) {
         ++loopCount;
         std::vector<char> chunk(DAE_CHUNK_SIZE, 0);
-        SQLLEN actualRead = 0;
+        SQLLEN actualRead = INVALID_FETCH_INDICATOR;
         {
             // Release the GIL during blocking SQLGetData LOB streaming
             py::gil_scoped_release release;
@@ -4985,6 +4996,9 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, const Metadata&
     LOG("FetchBatchData: Fetching data in batches");
     SQLRETURN ret;
     numRowsFetched = 0;
+    ResetFetchIndicators(buffers, buffers.indicators.empty()
+                                      ? 0
+                                      : buffers.indicators.front().size());
     {
         numRowsFetched = 0;
         // Release the GIL during the blocking ODBC fetch
@@ -5704,7 +5718,7 @@ SQLRETURN GetDataVar(SQLHSTMT hStmt, SQLUSMALLINT colNumber, SQLSMALLINT cType,
         if (availableBytes > static_cast<size_t>(std::numeric_limits<SQLLEN>::max())) {
             ThrowStdException("Variable-length fetch buffer is too large");
         }
-        SQLLEN localInd = 0;
+        SQLLEN localInd = INVALID_FETCH_INDICATOR;
         SQLRETURN ret = getData(
             hStmt, colNumber, cType, reinterpret_cast<uint8_t*>(dataVec.data() + start),
             static_cast<SQLLEN>(availableBytes),
@@ -5852,6 +5866,15 @@ SQLRETURN SQL_API TestSQLGetDataZeroFill(SQLHANDLE, SQLUSMALLINT, SQLSMALLINT,
     }
     *indicator = value;
     return ret;
+}
+
+SQLRETURN SQL_API TestSQLGetDataWithoutIndicator(SQLHANDLE, SQLUSMALLINT, SQLSMALLINT,
+                                                 SQLPOINTER target, SQLLEN targetLength,
+                                                 SQLLEN*) {
+    if (target != nullptr && targetLength > 0) {
+        std::memset(target, 'x', static_cast<size_t>(targetLength));
+    }
+    return SQL_SUCCESS;
 }
 
 bool TestHasTruncationDiagnostic(SQLHSTMT) { return true; }
@@ -6028,6 +6051,25 @@ py::object RunFetchValidationTest(const std::string& scenario) {
         FetchLobColumnDataImpl(nullptr, 1, SQL_C_BINARY, false, true, "",
                                py::none(), false, TestSQLGetData,
                                TestHasTruncationDiagnostic);
+    } else if (scenario == "lob_missing_indicator") {
+        FetchLobColumnDataImpl(nullptr, 1, SQL_C_BINARY, false, true, "",
+                               py::none(), false, TestSQLGetDataWithoutIndicator,
+                               TestHasTruncationDiagnostic);
+    } else if (scenario == "variable_missing_indicator") {
+        std::vector<uint8_t> data;
+        SQLLEN indicator = 0;
+        size_t reservedBytes = 0;
+        GetDataVar<uint8_t>(nullptr, 1, SQL_C_BINARY, data, &indicator,
+                            reservedBytes, py::none(), false,
+                            TestSQLGetDataWithoutIndicator,
+                            TestHasTruncationDiagnostic);
+    } else if (scenario == "stale_indicator_reset") {
+        ColumnBuffers buffers(1, 2);
+        buffers.indicators[0][0] = 7;
+        buffers.indicators[0][1] = 9;
+        ResetFetchIndicators(buffers, 1);
+        return py::make_tuple(buffers.indicators[0][0],
+                              buffers.indicators[0][1]);
     } else if (scenario == "lob_narrow_nul_progress") {
         testGetDataResults = {
             {static_cast<SQLRETURN>(SQL_SUCCESS_WITH_INFO), static_cast<SQLLEN>(1)},
@@ -6391,6 +6433,7 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules,
             fetchStateGuard.setRowArraySize(currentFetchSize);
         }
         numRowsFetched = 0;
+        ResetFetchIndicators(buffers, static_cast<size_t>(currentFetchSize));
         {
             // Release GIL during the blocking ODBC fetch
             py::gil_scoped_release release;
