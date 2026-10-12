@@ -2416,21 +2416,52 @@ static void CaptureFetchDiagnostics(SQLHSTMT hStmt, SQLRETURN ret, py::handle me
         AppendDiagRecords(hStmt, SQL_HANDLE_STMT, messages, internalTruncation);
 }
 
-static bool HasDataTruncationDiagnostic(SQLHSTMT hStmt) {
+constexpr SQLLEN INVALID_FETCH_INDICATOR = std::numeric_limits<SQLLEN>::min();
+
+static bool HasDataTruncationDiagnosticWithReader(SQLHSTMT hStmt,
+                                                  SQLGetDiagRecFunc getDiagRec) {
     SQLWCHAR state[6] = {};
     SQLINTEGER nativeError = 0;
     SQLWCHAR message[SQL_MAX_MESSAGE_LENGTH] = {};
     SQLSMALLINT messageLength = 0;
     for (SQLSMALLINT record = 1;; ++record) {
         const SQLRETURN ret =
-            SQLGetDiagRec_ptr(SQL_HANDLE_STMT, hStmt, record, state, &nativeError, message,
-                              SQL_MAX_MESSAGE_LENGTH, &messageLength);
+            getDiagRec(SQL_HANDLE_STMT, hStmt, record, state, &nativeError, message,
+                       SQL_MAX_MESSAGE_LENGTH, &messageLength);
         if (ret == SQL_NO_DATA) return false;
-        if (!SQL_SUCCEEDED(ret)) return false;
+        if (!SQL_SUCCEEDED(ret)) {
+            ThrowStdException("Failed to read truncation diagnostics");
+        }
         if (state[0] == '0' && state[1] == '1' && state[2] == '0' && state[3] == '0' &&
             state[4] == '4') {
             return true;
         }
+    }
+}
+
+static bool HasDataTruncationDiagnostic(SQLHSTMT hStmt) {
+    return HasDataTruncationDiagnosticWithReader(hStmt, SQLGetDiagRec_ptr);
+}
+
+inline void ValidateSqlVariantProbeIndicator(SQLLEN indicator) {
+    if (indicator == INVALID_FETCH_INDICATOR) {
+        ThrowStdException("Driver did not write the sql_variant probe indicator");
+    }
+}
+
+inline void ValidateBoundFetchIndicator(SQLLEN dataLen, size_t fixedValueSize) {
+    if (dataLen == SQL_NO_TOTAL) {
+        if (fixedValueSize != 0) {
+            ThrowStdException("Fixed-width data indicator cannot be SQL_NO_TOTAL");
+        }
+        return;
+    }
+    if (dataLen < 0 && dataLen != SQL_NULL_DATA) {
+        ThrowStdException("Unexpected negative data length");
+    }
+    if (fixedValueSize != 0 && dataLen != SQL_NULL_DATA &&
+        static_cast<uint64_t>(dataLen) != fixedValueSize) {
+        ThrowStdException("Fixed-width data indicator does not match the bound buffer size");
     }
 }
 
@@ -3686,8 +3717,6 @@ inline void ValidateWideCharByteLength(SQLLEN dataLen) {
     }
 }
 
-constexpr SQLLEN INVALID_FETCH_INDICATOR = std::numeric_limits<SQLLEN>::min();
-
 void ResetFetchIndicators(ColumnBuffers& buffers, size_t rowCount) {
     for (auto& indicators : buffers.indicators) {
         if (rowCount > indicators.size()) {
@@ -3990,6 +4019,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                           ret);
                 return ret;
             }
+            ValidateSqlVariantProbeIndicator(indicator);
             if (indicator == SQL_NULL_DATA) {
                 row.append(py::none());
                 continue;
@@ -5190,8 +5220,10 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, const Metadata&
             // processor and improves CPU branch prediction
             SQLLEN dataLen = buffers.indicators[col - 1][i];
 
-            // Handle NULL and special indicator values first (applies to ALL
-            // types)
+            const size_t fixedValueSize = columnInfos[col - 1].fixedValueSize;
+            ValidateBoundFetchIndicator(dataLen, fixedValueSize);
+
+            // Handle NULL and special indicator values first (applies to ALL types)
             if (dataLen == SQL_NULL_DATA) {
                 Py_INCREF(Py_None);
                 PyList_SET_ITEM(row, col - 1, Py_None);
@@ -5205,16 +5237,6 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, const Metadata&
                 PyList_SET_ITEM(row, col - 1, Py_None);
                 continue;
             }
-            if (dataLen < 0) {
-                ThrowStdException("Unexpected negative data length");
-            }
-            const size_t fixedValueSize = columnInfos[col - 1].fixedValueSize;
-            if (fixedValueSize != 0 &&
-                static_cast<uint64_t>(dataLen) != fixedValueSize) {
-                ThrowStdException(
-                    "Fixed-width data indicator does not match the bound buffer size");
-            }
-
             // Performance: Use function pointer dispatch for simple types (fast
             // path) This eliminates the switch statement from hot loop -
             // reduces 100,000 switch evaluations (1000 rows × 10 cols × 10
@@ -5888,6 +5910,12 @@ bool TestHasTruncationDiagnostic(SQLHSTMT) { return true; }
 
 bool TestHasUnrelatedWarning(SQLHSTMT) { return false; }
 
+SQLRETURN SQL_API TestSQLGetDiagRecFailure(SQLSMALLINT, SQLHANDLE, SQLSMALLINT,
+                                           SQLWCHAR*, SQLINTEGER*, SQLWCHAR*,
+                                           SQLSMALLINT, SQLSMALLINT*) {
+    return SQL_ERROR;
+}
+
 py::object RunFetchValidationTest(const std::string& scenario) {
     if (scenario == "oversized_rows") {
         ColumnBuffers buffers(1, 1);
@@ -6077,6 +6105,15 @@ py::object RunFetchValidationTest(const std::string& scenario) {
         ResetFetchIndicators(buffers, 1);
         return py::make_tuple(buffers.indicators[0][0],
                               buffers.indicators[0][1]);
+    } else if (scenario == "diagnostic_read_failure") {
+        HasDataTruncationDiagnosticWithReader(nullptr, TestSQLGetDiagRecFailure);
+    } else if (scenario == "variant_missing_probe_indicator") {
+        ValidateSqlVariantProbeIndicator(INVALID_FETCH_INDICATOR);
+    } else if (scenario == "fixed_no_total") {
+        ValidateBoundFetchIndicator(SQL_NO_TOTAL, sizeof(SQLINTEGER));
+    } else if (scenario == "variable_no_total") {
+        ValidateBoundFetchIndicator(SQL_NO_TOTAL, 0);
+        return py::bool_(true);
     } else if (scenario == "lob_narrow_nul_progress") {
         testGetDataResults = {
             {static_cast<SQLRETURN>(SQL_SUCCESS_WITH_INFO), static_cast<SQLLEN>(1)},
