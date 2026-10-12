@@ -81,6 +81,7 @@ def test_arrow_batch_rejects_unsafe_size_before_handle_access(batch_size):
         ("oversized_lob_success", "LOB data indicator exceeds the fetch buffer capacity"),
         ("lob_unrelated_warning_oversized", "LOB data indicator exceeds the fetch buffer capacity"),
         ("lob_unrelated_warning_no_total", "SQL_NO_TOTAL requires a truncation diagnostic"),
+        ("lob_first_call_no_data", "no data before making progress"),
         ("unrelated_warning_oversized", "data indicator exceeds the fetch buffer capacity"),
         ("odd_direct_wchar", "invalid byte length"),
         ("odd_lob_wchar", "invalid byte length"),
@@ -135,6 +136,13 @@ def test_lob_unrelated_warning_with_progress_completes():
     size, calls = ddbc._test_fetch_validation("lob_unrelated_warning_progress")
     assert size == 1
     assert calls == 1
+
+
+@pytest.mark.skipif(not DDBC_AVAILABLE, reason="ddbc_bindings not available")
+def test_lob_sql_no_total_completes_on_sql_no_data():
+    size, calls = ddbc._test_fetch_validation("lob_sql_no_total_no_data")
+    assert size == 8192
+    assert calls == 2
 
 
 @pytest.mark.skipif(not DDBC_AVAILABLE, reason="ddbc_bindings not available")

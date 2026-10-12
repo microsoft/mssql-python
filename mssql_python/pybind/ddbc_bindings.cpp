@@ -3703,6 +3703,12 @@ static py::object FetchLobColumnDataImpl(
             CaptureFetchDiagnostics(hStmt, ret, messages, true);
         }
 
+        if (ret == SQL_NO_DATA) {
+            if (dataSize == 0) {
+                ThrowStdException("LOB fetch returned no data before making progress");
+            }
+            break;
+        }
         if (ret == SQL_ERROR || !SQL_SUCCEEDED(ret) && ret != SQL_SUCCESS_WITH_INFO) {
             std::ostringstream oss;
             oss << "Error fetching LOB for column " << colIndex << ", cType=" << cType
@@ -6000,6 +6006,27 @@ py::object RunFetchValidationTest(const std::string& scenario) {
         testGetDataResultIndex = 0;
         FetchLobColumnDataImpl(nullptr, 1, SQL_C_BINARY, false, true, "", py::none(),
                                false, TestSQLGetData, TestHasUnrelatedWarning);
+    } else if (scenario == "lob_sql_no_total_no_data") {
+        testGetDataResults = {
+            {static_cast<SQLRETURN>(SQL_SUCCESS_WITH_INFO),
+             static_cast<SQLLEN>(SQL_NO_TOTAL)},
+            {static_cast<SQLRETURN>(SQL_NO_DATA), std::numeric_limits<SQLLEN>::max()},
+        };
+        testGetDataResultIndex = 0;
+        py::bytes value =
+            FetchLobColumnDataImpl(nullptr, 1, SQL_C_BINARY, false, true, "",
+                                   py::none(), false, TestSQLGetData,
+                                   TestHasTruncationDiagnostic)
+                .cast<py::bytes>();
+        return py::make_tuple(py::len(value), testGetDataResultIndex);
+    } else if (scenario == "lob_first_call_no_data") {
+        testGetDataResults = {
+            {static_cast<SQLRETURN>(SQL_NO_DATA), std::numeric_limits<SQLLEN>::max()},
+        };
+        testGetDataResultIndex = 0;
+        FetchLobColumnDataImpl(nullptr, 1, SQL_C_BINARY, false, true, "",
+                               py::none(), false, TestSQLGetData,
+                               TestHasTruncationDiagnostic);
     } else if (scenario == "lob_narrow_nul_progress") {
         testGetDataResults = {
             {static_cast<SQLRETURN>(SQL_SUCCESS_WITH_INFO), static_cast<SQLLEN>(1)},
