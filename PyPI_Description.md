@@ -42,7 +42,8 @@ PyBind11 provides:
 - **Python 3.15 Support** - Release wheels and validation now cover Python 3.15 across supported platforms (#817).
 - **Dictionary-Style Row Access** - `row._mapping` provides a read-only mapping view with dictionary conversion, keys, values, items, membership checks, and stable column metadata (#613).
 - **External Rust Runtime Dependency** - `mssql-python` now depends on the exact compatible `mssql-python-rs` package instead of embedding its files (#768).
-- **Stable-ABI Rust Runtime Wheels** - The Rust runtime now uses CPython's stable ABI and `mssql-python-rs` 0.3.0, reducing platform-specific wheel selection while supporting Python 3.10 and newer (#804).
+- **Stable-ABI Rust Runtime Wheels** - The Rust runtime now uses CPython's stable ABI and `mssql-python-rs` 0.3.0, reducing platform-specific wheel selection while supporting Python 3.10 and newer (#804, via `mssql-python-rs`).
+- **Updated ODBC Runtime Package** - `mssql-python` now pins `mssql-python-odbc==18.6.2.2`, whose Linux wheels separate glibc and musl payloads while retaining the same ODBC Driver 18.6 binaries (#798, #807).
 - **Faster Row Construction and Batch Fetching** - Optimized native Row construction and cursor bookkeeping reduce Python-side overhead in `fetchone()`, `fetchmany()`, and `fetchall()` (#558).
 - **Faster Temporal Fetch Conversion** - DATE, TIME, and TIMESTAMP values use checked CPython constructors to reduce object-construction overhead (#795).
 - **Reusable Result-Set Metadata** - Stable native column metadata is reused within a result set instead of being repeatedly described (#796).
@@ -58,9 +59,8 @@ PyBind11 provides:
 - **Safe Native Logging of Dynamic Metadata** - Server-controlled Arrow column metadata can no longer be interpreted as a native format string (#791).
 - **UDT Parameter Binding** - SQL Server UDT parameter identities are resolved before scalar or array binding, including typed NULLs and statement reuse (#818).
 - **Visible Unsupported Encoding Requests** - `setencoding()` now warns when a valid encoding request cannot be applied instead of silently ignoring it (#828).
-- **Correct Python-Specific Release Dependencies** - Release lock generation preserves environment markers so the Python 3.10 asyncio backport is not selected on newer Python versions (#832).
-- **Bounded Bulk Copy Timeouts** - Positive sub-second bulk-copy timeouts no longer become infinite and are rounded to one second via `mssql_py_core` (#804).
-- **Safe Bulk Copy Identifiers** - Bulk-copy destinations, columns, and collations are parsed, quoted, and validated consistently via `mssql_py_core` (#804).
+- **Bounded Bulk Copy Timeouts** - Positive sub-second bulk-copy timeouts no longer become infinite and are rounded to one second (#804, via `mssql-python-rs`).
+- **Safe Bulk Copy Identifiers** - Bulk-copy destinations, columns, and collations are parsed, quoted, and validated consistently (#804, via `mssql-python-rs`).
 
 For more information, please visit the project link on Github: https://github.com/microsoft/mssql-python
  
