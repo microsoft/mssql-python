@@ -105,6 +105,8 @@ Licensed under the MIT license.
 from mssql_python import db_connection
 import pytest
 import sys
+import warnings
+from unittest.mock import patch
 import mssql_python
 from mssql_python import connect, SQL_CHAR, SQL_WCHAR, SQL_WMETADATA
 from mssql_python.exceptions import (
@@ -123,6 +125,79 @@ def test_setencoding_default_settings(db_connection):
     settings = db_connection.getencoding()
     assert settings["encoding"] == "utf-16le", "Default encoding should be utf-16le"
     assert settings["ctype"] == -8, "Default ctype should be SQL_WCHAR (-8)"
+
+
+@pytest.mark.parametrize(
+    "encoding, ctype, expected_encoding, expected_ctype",
+    [
+        ("cp1252", SQL_CHAR, "cp1252", SQL_CHAR),
+        ("cp1252", None, "cp1252", SQL_CHAR),
+        ("ascii", SQL_CHAR, "ascii", SQL_CHAR),
+        ("UTF-8", None, "utf-8", SQL_CHAR),
+        ("shift_jis", SQL_CHAR, "shift_jis", SQL_CHAR),
+        ("utf-16le", SQL_CHAR, "utf-16le", SQL_CHAR),
+        (None, SQL_CHAR, "utf-16le", SQL_CHAR),
+        ("utf-16be", SQL_WCHAR, "utf-16be", SQL_WCHAR),
+        ("utf-16be", None, "utf-16be", SQL_WCHAR),
+    ],
+)
+def test_setencoding_warns_for_unsupported_binding(
+    conn_str, encoding, ctype, expected_encoding, expected_ctype
+):
+    with connect(conn_str) as conn:
+        with pytest.warns(UserWarning, match="UTF-16LE.*SQL_C_WCHAR") as caught:
+            conn.setencoding(encoding, ctype)
+
+        assert len(caught) == 1
+        assert caught[0].filename == __file__
+        assert conn.getencoding() == {
+            "encoding": expected_encoding,
+            "ctype": expected_ctype,
+        }
+
+
+@pytest.mark.parametrize(
+    "encoding, ctype",
+    [(None, None), ("utf-16le", None), ("utf-16le", SQL_WCHAR), ("UTF-16LE", SQL_WCHAR)],
+)
+def test_setencoding_supported_binding_is_silent(conn_str, encoding, ctype):
+    with connect(conn_str) as conn:
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            conn.setencoding(encoding, ctype)
+        assert not caught
+        assert conn.getencoding() == {"encoding": "utf-16le", "ctype": SQL_WCHAR}
+
+
+def test_setencoding_warning_as_error_preserves_settings(conn_str):
+    with connect(conn_str) as conn:
+        original = conn.getencoding()
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", UserWarning)
+            with pytest.raises(UserWarning, match="UTF-16LE.*SQL_C_WCHAR"):
+                conn.setencoding("ascii", SQL_CHAR)
+        assert conn.getencoding() == original
+
+
+@pytest.mark.parametrize(
+    "encoding, ctype, error",
+    [
+        ("invalid-encoding-name", SQL_CHAR, "Unsupported encoding"),
+        ("utf-8", 999, "Invalid ctype"),
+        ("utf-8", SQL_WCHAR, "SQL_WCHAR only supports UTF-16 encodings"),
+        ("ascii", SQL_WCHAR, "SQL_WCHAR only supports UTF-16 encodings"),
+        ("utf-16", SQL_WCHAR, "Byte Order Mark not supported"),
+    ],
+)
+def test_setencoding_invalid_request_raises_without_warning(conn_str, encoding, ctype, error):
+    with connect(conn_str) as conn:
+        original = conn.getencoding()
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            with pytest.raises(ProgrammingError, match=error):
+                conn.setencoding(encoding, ctype)
+        assert not caught
+        assert conn.getencoding() == original
 
 
 def test_setencoding_basic_functionality(db_connection):
@@ -3237,61 +3312,6 @@ def test_big5_encoding_chinese_traditional(db_connection):
         cursor.close()
 
 
-def test_shift_jis_encoding_japanese(db_connection):
-    """Test Shift-JIS encoding for Japanese characters."""
-    db_connection.setencoding(encoding="shift_jis", ctype=SQL_CHAR)
-    db_connection.setdecoding(SQL_CHAR, encoding="shift_jis", ctype=SQL_CHAR)
-
-    cursor = db_connection.cursor()
-    try:
-        cursor.execute("CREATE TABLE #test_sjis (id INT, data VARCHAR(200))")
-
-        japanese_tests = [
-            ("こんにちは", "Hello"),
-            ("東京", "Tokyo"),
-        ]
-
-        for japanese_text, meaning in japanese_tests:
-            if is_encoding_compatible_with_data("shift_jis", japanese_text):
-                cursor.execute("DELETE FROM #test_sjis")
-                cursor.execute("INSERT INTO #test_sjis VALUES (?, ?)", 1, japanese_text)
-                cursor.execute("SELECT data FROM #test_sjis WHERE id = 1")
-                result = cursor.fetchone()
-            else:
-                pass
-
-    finally:
-        cursor.close()
-
-
-def test_euc_kr_encoding_korean(db_connection):
-    """Test EUC-KR encoding for Korean characters."""
-    db_connection.setencoding(encoding="euc-kr", ctype=SQL_CHAR)
-    db_connection.setdecoding(SQL_CHAR, encoding="euc-kr", ctype=SQL_CHAR)
-
-    cursor = db_connection.cursor()
-    try:
-        cursor.execute("CREATE TABLE #test_euckr (id INT, data VARCHAR(200))")
-
-        korean_tests = [
-            ("안녕하세요", "Hello"),
-            ("서울", "Seoul"),
-            ("한글", "Hangul"),
-        ]
-
-        for korean_text, meaning in korean_tests:
-            if is_encoding_compatible_with_data("euc-kr", korean_text):
-                cursor.execute("DELETE FROM #test_euckr")
-                cursor.execute("INSERT INTO #test_euckr VALUES (?, ?)", 1, korean_text)
-                cursor.execute("SELECT data FROM #test_euckr WHERE id = 1")
-                result = cursor.fetchone()
-            else:
-                pass
-
-    finally:
-        cursor.close()
-
-
 # ====================================================================================
 # SINGLE-BYTE ENCODING TESTS (Latin-1, CP1252, ISO-8859-*, etc.)
 # ====================================================================================
@@ -5938,77 +5958,45 @@ def test_encoding_with_special_characters_in_sql_char(db_connection):
         cursor.close()
 
 
-def test_encoding_error_propagation_in_bind_parameters(db_connection):
-    """Test encoding behavior with incompatible characters (strict mode in C++ layer)."""
-    # Set ASCII encoding - in strict mode, C++ layer catches encoding errors
-    db_connection.setencoding(encoding="ascii", ctype=mssql_python.SQL_CHAR)
-
-    cursor = db_connection.cursor()
-    try:
-        cursor.execute("CREATE TABLE #test_encode_fail (id INT, data VARCHAR(100))")
-
-        # With ASCII encoding and non-ASCII characters, the C++ layer will:
-        # 1. Attempt to encode with Python's str.encode('ascii', 'strict')
-        # 2. Raise UnicodeEncodeError which gets caught and re-raised as RuntimeError
-        error_raised = False
-        try:
-            cursor.execute(
-                "INSERT INTO #test_encode_fail (id, data) VALUES (?, ?)", 1, "Unicode: 你好"
-            )
-        except (UnicodeEncodeError, RuntimeError, Exception) as e:
-            error_raised = True
-            # Verify it's an encoding-related error
-            error_str = str(e).lower()
-            assert (
-                "encode" in error_str
-                or "ascii" in error_str
-                or "unicode" in error_str
-                or "codec" in error_str
-                or "failed" in error_str
-            )
-
-        # If no error was raised, that's also acceptable behavior (data may be mangled)
-        # The key is that the C++ code path was exercised
-        if not error_raised:
-            # Verify the operation completed (even if data is mangled)
-            cursor.execute("SELECT COUNT(*) FROM #test_encode_fail")
-            count = cursor.fetchone()[0]
-            assert count >= 0
-
-    finally:
-        cursor.close()
-
-
-def test_sql_c_char_encoding_failure(db_connection):
-    """Test encoding failure handling in C++ layer (lines 337-345)."""
-    # Set an encoding and then try to encode data that can't be represented
-    db_connection.setencoding(encoding="ascii", ctype=mssql_python.SQL_CHAR)
-
-    cursor = db_connection.cursor()
-    try:
-        cursor.execute("CREATE TABLE #test_encode_fail_cpp (id INT, data VARCHAR(100))")
-
-        # Try to insert non-ASCII characters with ASCII encoding
-        # This should trigger the encoding error path (lines 337-345)
-        error_raised = False
-        try:
-            cursor.execute(
-                "INSERT INTO #test_encode_fail_cpp (id, data) VALUES (?, ?)",
-                1,
-                "Non-ASCII: 你好世界",
-            )
-        except (UnicodeEncodeError, RuntimeError, Exception) as e:
-            error_raised = True
-            error_msg = str(e).lower()
-            assert any(word in error_msg for word in ["encode", "ascii", "codec", "failed"])
-
-        # Error should be raised in strict mode
-        if not error_raised:
-            # Some implementations may handle this differently
-            pass
-
-    finally:
-        cursor.close()
+@pytest.mark.parametrize("encoding", ["ascii", "cp1252", "shift_jis"])
+@pytest.mark.parametrize("method", ["execute", "executemany"])
+@pytest.mark.parametrize("use_inputsizes", [False, True])
+@pytest.mark.parametrize("large", [False, True], ids=["inline", "streamed"])
+def test_setencoding_warning_preserves_unicode_binding(
+    conn_str, encoding, method, use_inputsizes, large
+):
+    """Unsupported settings warn, but do not change existing Unicode binding."""
+    text = "caf\u00e9 \u4f60\u597d" * (1000 if large else 1)
+    ddbc = mssql_python.ddbc_bindings
+    with connect(conn_str) as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("CREATE TABLE #encoding_warning (data NVARCHAR(MAX))")
+            with pytest.warns(UserWarning, match="UTF-16LE.*SQL_C_WCHAR"):
+                conn.setencoding(encoding, SQL_CHAR)
+            if use_inputsizes:
+                sql_type = mssql_python.SQL_WLONGVARCHAR if large else mssql_python.SQL_WVARCHAR
+                cursor.setinputsizes([(sql_type, len(text), 0)])
+            with (
+                patch.object(ddbc, "DDBCSQLExecute", wraps=ddbc.DDBCSQLExecute) as execute,
+                patch.object(ddbc, "SQLExecuteMany", wraps=ddbc.SQLExecuteMany) as executemany,
+            ):
+                if method == "executemany":
+                    cursor.executemany(
+                        "INSERT INTO #encoding_warning VALUES (?)", [(text,), (text,)]
+                    )
+                    expected = [text, text]
+                    # Streaming batches must use execute()'s UTF-16 DAE path.
+                    assert execute.call_count == (2 if large else 0)
+                    assert executemany.call_count == (0 if large else 1)
+                else:
+                    cursor.execute("INSERT INTO #encoding_warning VALUES (?)", text)
+                    expected = [text]
+                    assert execute.call_count == 1
+                    executemany.assert_not_called()
+            cursor.execute("SELECT data, CONVERT(VARBINARY(MAX), data) FROM #encoding_warning")
+            rows = cursor.fetchall()
+            assert [row[0] for row in rows] == expected
+            assert [row[1] for row in rows] == [value.encode("utf-16le") for value in expected]
 
 
 def test_dae_sql_c_char_with_various_data_types(db_connection):
@@ -6037,33 +6025,6 @@ def test_dae_sql_c_char_with_various_data_types(db_connection):
         assert len(rows) == 2
         assert rows[0][1] == 10000
         assert rows[1][1] == 10000
-
-    finally:
-        cursor.close()
-
-
-def test_dae_encoding_error_handling(db_connection):
-    """Test DAE encoding error handling (lines 1751-1755)."""
-    db_connection.setencoding(encoding="ascii", ctype=mssql_python.SQL_CHAR)
-
-    cursor = db_connection.cursor()
-    try:
-        cursor.execute("CREATE TABLE #test_dae_error (id INT, data VARCHAR(MAX))")
-
-        # Large non-ASCII string to trigger both DAE and encoding error
-        large_unicode = "你好" * 5000
-
-        error_raised = False
-        try:
-            cursor.execute("INSERT INTO #test_dae_error (id, data) VALUES (?, ?)", 1, large_unicode)
-        except (UnicodeEncodeError, RuntimeError, Exception) as e:
-            error_raised = True
-            error_msg = str(e).lower()
-            assert any(word in error_msg for word in ["encode", "ascii", "failed"])
-
-        # Should raise error in strict mode
-        if not error_raised:
-            pass  # Some implementations may handle differently
 
     finally:
         cursor.close()
@@ -6292,20 +6253,68 @@ def test_binary_lob_fetching(db_connection):
         cursor.close()
 
 
-def test_cpp_bind_params_str_encoding(db_connection):
-    """str encoding with SQL_C_CHAR."""
-    db_connection.setencoding(encoding="utf-8", ctype=mssql_python.SQL_CHAR)
-    cursor = db_connection.cursor()
-    try:
-        cursor.execute("CREATE TABLE #test_cpp_str (data VARCHAR(50))")
-        # This hits: py::isinstance<py::str>(param) == true
-        # and: param.attr("encode")(charEncoding, "strict")
-        # Note: VARCHAR stores in DB collation (Latin1), so we use ASCII-compatible chars
-        cursor.execute("INSERT INTO #test_cpp_str VALUES (?)", "Hello UTF-8 Test")
-        cursor.execute("SELECT data FROM #test_cpp_str")
-        assert cursor.fetchone()[0] == "Hello UTF-8 Test"
-    finally:
-        cursor.close()
+@pytest.mark.parametrize("method", ["execute", "executemany"])
+@pytest.mark.parametrize("use_inputsizes", [False, True])
+def test_cp1252_setting_warns_and_preserves_varchar_binding(conn_str, method, use_inputsizes):
+    with connect(conn_str) as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "CREATE TABLE #cp1252_warning "
+                "(data VARCHAR(50) COLLATE SQL_Latin1_General_CP1_CI_AS)"
+            )
+            with pytest.warns(UserWarning, match="UTF-16LE.*SQL_C_WCHAR"):
+                conn.setencoding("cp1252", SQL_CHAR)
+            if use_inputsizes:
+                cursor.setinputsizes([(mssql_python.SQL_VARCHAR, 50, 0)])
+            text = "caf\u00e9"
+            if method == "executemany":
+                cursor.executemany("INSERT INTO #cp1252_warning VALUES (?)", [(text,), (text,)])
+                expected = [b"caf\xe9", b"caf\xe9"]
+            else:
+                cursor.execute("INSERT INTO #cp1252_warning VALUES (?)", text)
+                expected = [b"caf\xe9"]
+            cursor.execute("SELECT CONVERT(VARBINARY(50), data) FROM #cp1252_warning")
+            assert [row[0] for row in cursor.fetchall()] == expected
+
+
+@pytest.mark.parametrize("method", ["execute", "executemany"])
+@pytest.mark.parametrize(
+    "settings, expected",
+    [
+        ({}, b"AB"),
+        ({"encoding": "utf-16le"}, b"AB"),
+        ({"encoding": "utf-16le", "ctype": SQL_WCHAR}, b"AB"),
+        ({"encoding": "utf-16le", "ctype": SQL_CHAR}, b"A\x00B\x00"),
+    ],
+)
+def test_native_narrow_binding_encoding_gate(conn_str, method, settings, expected):
+    """Both native entry points apply a codec only for a narrow-ctype request."""
+    ddbc = mssql_python.ddbc_bindings
+    with connect(conn_str) as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("CREATE TABLE #native_encoding_gate (data VARCHAR(50))")
+            query = "INSERT INTO #native_encoding_gate VALUES (?)"
+            # Bypass public type detection to exercise real ODBC SQL_C_CHAR (1).
+            if method == "execute":
+                result = ddbc.DDBCSQLExecute(
+                    cursor.hstmt,
+                    query,
+                    ["AB"],
+                    [(mssql_python.SQL_VARCHAR, SQL_CHAR, 50, 0)],
+                    [False],
+                    True,
+                    settings,
+                )
+            else:
+                info = ddbc.ParamInfo()
+                info.paramSQLType = mssql_python.SQL_VARCHAR
+                info.paramCType = SQL_CHAR
+                info.columnSize = 50
+                info.inputOutputType = 1
+                result = ddbc.SQLExecuteMany(cursor.hstmt, query, [["AB"]], [info], 1, settings)
+            assert result == 0
+            cursor.execute("SELECT CONVERT(VARBINARY(50), data) FROM #native_encoding_gate")
+            assert cursor.fetchone()[0] == expected
 
 
 def test_cpp_bind_params_bytes_encoding(db_connection):
@@ -6384,25 +6393,6 @@ def test_cpp_dae_bytes_encoding(db_connection):
         cursor.execute("INSERT INTO #test_cpp_dae_bytes VALUES (?)", large_bytes)
         cursor.execute("SELECT LEN(data) FROM #test_cpp_dae_bytes")
         assert cursor.fetchone()[0] == 10000
-    finally:
-        cursor.close()
-
-
-def test_cpp_dae_encoding_error(db_connection):
-    """encoding error in Data-At-Execution."""
-    db_connection.setencoding(encoding="ascii", ctype=mssql_python.SQL_CHAR)
-    cursor = db_connection.cursor()
-    try:
-        cursor.execute("CREATE TABLE #test_cpp_dae_err (data VARCHAR(MAX))")
-        # Large non-ASCII string to trigger DAE + encoding error
-        large_unicode = "你好世界 " * 3000
-        try:
-            cursor.execute("INSERT INTO #test_cpp_dae_err VALUES (?)", large_unicode)
-            # No error is OK - some implementations may handle it
-        except Exception as e:
-            # Expected: catch block lines 1753-1756
-            error_msg = str(e).lower()
-            assert "encode" in error_msg or "ascii" in error_msg
     finally:
         cursor.close()
 
@@ -6814,9 +6804,9 @@ def test_big5_encoding_traditional_chinese(db_connection):
 
 
 def test_shift_jis_encoding_japanese(db_connection):
-    """Test Shift-JIS encoding/decoding round-trip with Japanese characters using NVARCHAR."""
-    # Set encoding for INSERT (Shift-JIS) and decoding for SELECT (UTF-16LE from NVARCHAR)
-    db_connection.setencoding(encoding="shift_jis", ctype=SQL_CHAR)
+    """A Shift-JIS request warns; Japanese text still round-trips through UTF-16LE."""
+    with pytest.warns(UserWarning, match="UTF-16LE.*SQL_C_WCHAR"):
+        db_connection.setencoding(encoding="shift_jis", ctype=SQL_CHAR)
     db_connection.setdecoding(SQL_WCHAR, encoding="utf-16le", ctype=SQL_WCHAR)
 
     cursor = db_connection.cursor()
@@ -6826,7 +6816,6 @@ def test_shift_jis_encoding_japanese(db_connection):
         )
         cursor.execute("CREATE TABLE #test_shift_jis (id INT, data NVARCHAR(200))")
 
-        # Japanese strings (Shift-JIS encoding)
         japanese_strings = [
             "こんにちは",  # Hello (Hiragana)
             "ありがとう",  # Thank you (Hiragana)
@@ -6839,30 +6828,40 @@ def test_shift_jis_encoding_japanese(db_connection):
             "データベース",  # Database (Katakana)
         ]
 
-        inserted_indices = []
         for i, text in enumerate(japanese_strings, 1):
-            try:
-                cursor.execute("INSERT INTO #test_shift_jis (id, data) VALUES (?, ?)", i, text)
-                inserted_indices.append(i - 1)
-            except Exception:
-                # Shift-JIS encoding might fail with VARCHAR
-                pass
-
-        # If any data was inserted, verify round-trip integrity
-        if inserted_indices:
-            cursor.execute("SELECT id, data FROM #test_shift_jis ORDER BY id")
-            results = cursor.fetchall()
-
-            for idx, (row_id, retrieved_text) in enumerate(results):
-                original_idx = inserted_indices[idx]
-                expected_text = japanese_strings[original_idx]
-                assert retrieved_text == expected_text, (
-                    f"Round-trip failed for Japanese Shift-JIS text at index {original_idx}: "
-                    f"expected '{expected_text}', got '{retrieved_text}'"
-                )
+            cursor.execute("INSERT INTO #test_shift_jis (id, data) VALUES (?, ?)", i, text)
+        cursor.execute("SELECT data FROM #test_shift_jis ORDER BY id")
+        assert [row[0] for row in cursor.fetchall()] == japanese_strings
 
     finally:
         cursor.close()
+
+
+def test_euc_kr_encoding_korean_varchar(conn_str):
+    """Preserve Korean VARCHAR storage with the legacy SQL_CHAR/EUC-KR settings."""
+    korean_strings = ["안녕하세요", "서울", "한글"]
+    with connect(conn_str) as conn:
+        with pytest.warns(UserWarning, match="UTF-16LE.*SQL_C_WCHAR"):
+            conn.setencoding(encoding="euc-kr", ctype=SQL_CHAR)
+        conn.setdecoding(SQL_CHAR, encoding="euc-kr", ctype=SQL_CHAR)
+
+        with conn.cursor() as cursor:
+            # CP949 contains the EUC-KR characters used here; avoid the database's default code page.
+            cursor.execute(
+                "CREATE TABLE #test_euc_kr_varchar "
+                "(id INT, data VARCHAR(200) COLLATE Korean_Wansung_CI_AS)"
+            )
+            for index, text in enumerate(korean_strings):
+                cursor.execute("INSERT INTO #test_euc_kr_varchar VALUES (?, ?)", index, text)
+
+            cursor.execute(
+                "SELECT data, CONVERT(VARBINARY(200), data), CONVERT(NVARCHAR(200), data) "
+                "FROM #test_euc_kr_varchar ORDER BY id"
+            )
+            rows = cursor.fetchall()
+            # Keep the narrow fetch, but verify fidelity without Windows ANSI code-page conversion.
+            assert [row[1] for row in rows] == [text.encode("euc-kr") for text in korean_strings]
+            assert [row[2] for row in rows] == korean_strings
 
 
 def test_euc_kr_encoding_korean(db_connection):

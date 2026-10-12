@@ -2136,14 +2136,10 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
                            (SQLPOINTER)SQL_CONCUR_READ_ONLY, 0);
     }
 
-    // The encoding-settings dict has the form {"encoding": str, "ctype": int}.
-    // Note: the Python layer's SQL_C_CHAR constant is numerically -8, the same
-    // as ODBC's SQL_C_WCHAR. As a result, the only path that genuinely uses
-    // byte-level character encoding is when the user explicitly opts in via
-    // setencoding(..., ctype=mssql_python.SQL_CHAR) (which sends ctype=1, the
-    // real ODBC SQL_CHAR). We default to utf-8 and only honor the dict's
-    // encoding when ctype == 1 (real ODBC SQL_CHAR). Otherwise the user's
-    // "encoding" value is meant for the wide-char path and we leave it alone.
+    // This codec only applies to parameters already typed as real SQL_C_CHAR (1).
+    // Public text parameter detection uses SQL_C_WCHAR (-8), including the
+    // Python layer's legacy SQL_C_CHAR alias. setencoding() does not change
+    // paramCType and warns when the requested settings cannot be applied.
     std::string charEncoding = "utf-8";
     if (encoding_settings.contains("ctype") && encoding_settings.contains("encoding")) {
         int ctype = encoding_settings["ctype"].cast<int>();
@@ -2959,10 +2955,13 @@ SQLRETURN SQLExecuteMany_wrap(const SqlHandlePtr statementHandle, const std::u16
     }
     LOG("SQLExecuteMany: Parameter analysis - hasDAE=%s", hasDAE ? "true" : "false");
 
-    // Extract char encoding from encodingSettings dictionary
+    // Match SQLExecute_wrap: a wide-char codec must never encode narrow buffers.
     std::string charEncoding = "utf-8";  // default
-    if (encodingSettings.contains("encoding")) {
-        charEncoding = encodingSettings["encoding"].cast<std::string>();
+    if (encodingSettings.contains("ctype") && encodingSettings.contains("encoding")) {
+        int ctype = encodingSettings["ctype"].cast<int>();
+        if (ctype == SQL_C_CHAR) {
+            charEncoding = encodingSettings["encoding"].cast<std::string>();
+        }
     }
 
     if (!hasDAE) {

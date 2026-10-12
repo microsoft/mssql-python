@@ -75,6 +75,7 @@ class ConstantsDDBC(Enum):
     SQL_C_VARBINARY = -3
     SQL_C_LONGVARBINARY = -4
     SQL_C_LONGVARCHAR = -1
+    # Legacy alias: text parameters bind as ODBC SQL_C_WCHAR (-8), not SQL_C_CHAR (1).
     SQL_C_CHAR = -8
     SQL_C_NUMERIC = 2
     SQL_C_DECIMAL = 3
