@@ -22,7 +22,10 @@ import zlib
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-if not (ROOT / ".github/scripts/post_profiler_comment.py").is_file():
+if (
+    not (ROOT / "eng/profiler_benchmarks").is_dir()
+    or not (ROOT / ".github/scripts/post_profiler_comment.py").is_file()
+):
     pytest.skip("CI reporting tools are not installed in driver wheels", allow_module_level=True)
 
 from eng.profiler_benchmarks import controller
