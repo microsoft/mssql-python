@@ -35,12 +35,11 @@ parameters:
       - 'Official'
       - 'NonOfficial'
     default: 'NonOfficial'
-  # Python versions to build conda packages for (Windows loops these; the POSIX legs
-  # auto-detect the same set from the downloaded wheels).
+  # Ordinary CPython versions passed explicitly to the Windows and POSIX build legs.
   - name: pythonVersions
     displayName: 'Python versions (comma-separated)'
     type: string
-    default: '3.10,3.11,3.12,3.13,3.14'
+    default: '3.10,3.11,3.12,3.13,3.14,3.15'
   # H1: enable the minimal-base ldd reachability gate (CONDA_ASSERT_PREFIX_REACHABLE).
   # It fails CLOSED if the driver binds a system (or absent) krb5/gssapi/libltdl, so it
   # is only valid on a leg with NO system copies of those libs -- set true ONLY when
@@ -198,14 +197,14 @@ extends:
               # internally (so a broken/wrong-arch package is never staged), AND win-arm64 is in
               # the release gate's requiredSubdirs -- so a MISSING win-arm64 blocks the RELEASE.
               # Net: a win-arm64 failure isolates to win-arm64 (win-64 still ships) yet still
-              # blocks the publish via the gate. DELIBERATELY a FIXED set (3.12-3.14), INDEPENDENT
+              # blocks the publish via the gate. DELIBERATELY a FIXED set (3.12-3.15), INDEPENDENT
               # of the pythonVersions parameter: neither defaults nor conda-forge ships a
               # win-arm64 python for 3.10/3.11, so following the param would queue an unbuildable
               # 3.10/3.11 arm leg. Its own bld tree + subdir-scoped verify env keep it from
               # colliding with win-64 on this shared agent.
               - template: /OneBranchPipelines/steps/conda-build-validate-step.yml@self
                 parameters:
-                  pythonVersion: '3.12,3.13,3.14'
+                  pythonVersion: '3.12,3.13,3.14,3.15'
                   condaSubdir: 'win-arm64'
                   condaTargetSubdir: 'win-arm64'
                   odbcWheelDir: '$(Pipeline.Workspace)/odbc_wheels'
