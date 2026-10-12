@@ -1,0 +1,4 @@
+# Python 3.15 Linux release-wheel test environment.
+-r requirements-build-linux.in
+-c requirements-build-linux.txt
+-r ../requirements.txt

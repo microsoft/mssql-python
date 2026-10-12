@@ -22,4 +22,3 @@ variables:
   - name: PACKAGE_NAME
     value: 'mssql-python'
     readonly: true
-

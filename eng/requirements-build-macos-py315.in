@@ -1,0 +1,5 @@
+# Python 3.15 macOS release-wheel build and test dependencies.
+-r ../requirements.txt
+cmake
+pip
+wheel
