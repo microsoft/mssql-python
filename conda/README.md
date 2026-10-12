@@ -57,8 +57,15 @@ The `conda-audit` PR gate triggers only for `conda/`, `eng/conda_tools/`, Conda-
 OneBranch pipelines/steps/jobs, their native/probe/archive/provenance and release tests,
 and the workflow itself. General package metadata/version changes and shared wheel-build
 infrastructure do not trigger it on their own; mixed PRs with a Conda change still do.
-This scope does not change the unit-test runner, source-version wheel selection, or
-failure handling when a required wheel is unpublished.
+Source-only tests remain current-checkout and blocking. The real Linux CPython 3.11
+build/audit uses `fetch-wheels --published-smoke`: a separate published baseline of
+binding **1.15.0** and its exact ODBC dependency **18.6.2.1**, with embedded core and
+no separate RS wheel. `eng/conda_tools/inputs.py` maintains its versions, exact wheel
+filenames and SHA256 pins; update them together after verifying the new wheel metadata
+and ownership. Source release bumps do not change this baseline. Missing wheels,
+metadata/dependency mismatches, digest changes and build/audit failures still fail the
+gate; there is no skip or automatic fallback. This historical packaging control does
+not qualify current-source RS or Python 3.15.
 
 Run the source-only trigger regressions without a native build, SQL Server, or PyYAML:
 
@@ -282,17 +289,19 @@ members. This detects unowned or cross-owned additions; it cannot recover file o
 after an overwrite of an already owned path, which is why the raw pre-extraction gate
 is required.
 
-`fetch-wheels` uses exact current maintained versions, hash-required binary-only PyPI
+By default, `fetch-wheels` uses exact current maintained versions, hash-required binary-only PyPI
 downloads, and actual wheel metadata/ownership. Pip selects for its executing interpreter;
 the requested Python/platform must match the binding, ODBC and selected RS wheel tags
 before the command accepts the inputs. These arguments validate the download, rather
 than enabling cross-target pip resolution. An authentic published embedded-core
 binding is explicitly reported as a **historical published packaging control, not
 current-source RS qualification**. An RS-dependent published binding requires its exact
-provider and source pin; unavailable releases, malformed declarations, or mismatches
+provider and selected pin; unavailable releases, malformed declarations, or mismatches
 fail with no older-version or TLS fallback. Public availability does not gate the
 recorded ADO artifact path. Neither a public input check nor static archive checks
 establish installed SQL/runtime qualification.
+Only the explicit `--published-smoke` option selects the independent baseline above;
+production, provenance, preflight and release/publish version selection are unchanged.
 
 The driver-load probe's sole implementation is
 `eng/conda_tools/driver_load_probe.py`. It separates native connection execution,

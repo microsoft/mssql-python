@@ -546,6 +546,63 @@ def test_source_bound_release_components(tmp_path, monkeypatch, capsys, problem,
     ), capsys.readouterr()
 
 
+@pytest.mark.parametrize("profile", ["source", "smoke", "smoke-bad-hash", "smoke-wrong-target"])
+def test_published_smoke_is_explicit_and_independent_of_unpublished_source(
+    tmp_path, monkeypatch, capsys, profile
+):
+    source = {"mssql-python": "1.16.0", "mssql-python-odbc": "18.6.2.2"}
+    reads, selected = [], []
+    monkeypatch.setattr(inputs, "read_release_versions", lambda read: reads.append(True) or source)
+
+    def fetch(versions, *args):
+        selected.append(versions)
+        for filename in inputs._PUBLISHED_SMOKE_SHA256:
+            (tmp_path / filename).touch()
+        return versions
+
+    monkeypatch.setattr(inputs, "fetch_wheels", fetch)
+    monkeypatch.setattr(
+        inputs,
+        "file_sha256",
+        lambda path: (
+            "0" * 64 if profile == "smoke-bad-hash" else inputs._PUBLISHED_SMOKE_SHA256[path.name]
+        ),
+    )
+    output = tmp_path / "outputs"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+    result = cli.main(
+        [
+            "fetch-wheels",
+            "--wheel-dir",
+            str(tmp_path),
+            "--requirements-file",
+            str(tmp_path / "pins"),
+            "--python-tag",
+            "cp315" if profile == "smoke-wrong-target" else "cp311",
+            "--conda-subdir",
+            "linux-64",
+            *([] if profile == "source" else ["--published-smoke"]),
+        ]
+    )
+    assert reads == ([True] if profile == "source" else [])
+    assert selected == (
+        []
+        if profile == "smoke-wrong-target"
+        else [
+            (
+                source
+                if profile == "source"
+                else {"mssql-python": "1.15.0", "mssql-python-odbc": "18.6.2.1"}
+            )
+        ]
+    )
+    failed = profile in {"smoke-bad-hash", "smoke-wrong-target"}
+    assert result == int(failed)
+    assert output.exists() == (not failed)
+    if failed:
+        assert "ERROR:" in capsys.readouterr().err
+
+
 @pytest.mark.parametrize("with_rs", [False, True])
 def test_public_cli_reports_qualified_profile_without_importing_runtime(
     tmp_path, monkeypatch, capsys, with_rs
