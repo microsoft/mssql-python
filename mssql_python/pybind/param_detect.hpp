@@ -421,6 +421,9 @@ inline void ApplyInputSizeOverride(PyObject* params, PyObject* inputSize, Py_ssi
                                ? EncodedUnicodeLength(obj, charEncoding)
                                : UnicodeUtf16Length(obj);
     }
+    if (isNumeric && PyUnicode_Check(obj) && actualTextLength > MAX_INLINE_CHAR) {
+        throw py::value_error("numeric parameter text is too large");
+    }
     const bool textNeedsDAE =
         !isNumeric && PyUnicode_Check(obj) && actualTextLength > MAX_INLINE_CHAR;
     const bool binaryNeedsDAE =
