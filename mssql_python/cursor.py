@@ -2777,6 +2777,21 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                     ):
                         paraminfo.columnSize = max_decimal_len
 
+                    if paraminfo.paramSQLType in (
+                        ddbc_sql_const.SQL_CHAR.value,
+                        ddbc_sql_const.SQL_VARCHAR.value,
+                        ddbc_sql_const.SQL_LONGVARCHAR.value,
+                        ddbc_sql_const.SQL_WCHAR.value,
+                        ddbc_sql_const.SQL_WVARCHAR.value,
+                        ddbc_sql_const.SQL_WLONGVARCHAR.value,
+                    ) and any(
+                        isinstance(value, str)
+                        and sum(2 if ord(char) > 0xFFFF else 1 for char in value) > MAX_INLINE_CHAR
+                        for value in column
+                    ):
+                        paraminfo.isDAE = True
+                        paraminfo.columnSize = 0
+
                     # Special handling for binary data in auto-detected types
                     if paraminfo.paramSQLType in (
                         ddbc_sql_const.SQL_BINARY.value,
