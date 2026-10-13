@@ -302,6 +302,11 @@ def build_packages(
     croot = os.path.join(os.path.dirname(os.path.abspath(bld)), "croot")
     if os.path.isdir(croot):
         shutil.rmtree(croot)
+    build_env = env.copy()
+    if target_subdir.startswith("win-"):
+        # CONDA_SUBDIR also changes conda-build's build machine, selecting a /machine
+        # launcher on x64 -> ARM64. Keep the native process; target only the host variant.
+        build_env.pop("CONDA_SUBDIR", None)
     for py in pyvers:
         channels = ["microsoft", "conda-forge"]
         if target_subdir == "win-arm64" and py != "3.15":
@@ -325,10 +330,12 @@ def build_packages(
             "--croot",
             croot,
         ]
+        if target_subdir.startswith("win-"):
+            cmd += ["--variants", json.dumps({"target_platform": target_subdir})]
         for channel in channels:
             cmd += ["-c", channel]
         cmd.append("--override-channels")
-        environment.run(cmd, env=env, what=f"conda-build mssql-python (py {py})")
+        environment.run(cmd, env=build_env, what=f"conda-build mssql-python (py {py})")
 
     # A local channel is only valid if it ALSO carries noarch/repodata.json (even empty) --
     # conda-build wrote it only for the built subdir. Create it directly (miniforge has no

@@ -13,6 +13,7 @@ import ast
 import importlib.util
 import io
 import json
+import re
 import sys
 import tarfile
 import types
@@ -529,6 +530,25 @@ def test_conda_python_defaults_are_synchronized():
         f"pythonVersion: '{args.subdir_pythons.split('=')[1]}'\n"
         "                  condaSubdir: 'win-arm64'"
     ) in build_source
+
+
+@pytest.mark.parametrize("selected", ["3.10,3.11,3.12,3.13,3.14,3.15", "3.12,3.15", ""])
+def test_posix_python_selection_survives_public_pipeline_variables(selected):
+    source = (_ROOT / "OneBranchPipelines/steps/conda-build-validate-step-posix.yml").read_text(
+        encoding="utf-8"
+    )
+    parameters = {"pythonVersions": selected, "condaTargetSubdir": ""}
+    step_env = {
+        name: parameters[parameter]
+        for name, parameter in re.findall(
+            r"^      (\w+): \$\{\{ parameters\.(\w+) \}\}$", source, re.MULTILINE
+        )
+    }
+    # The agent overlays public pipeline variables after the explicit step environment.
+    step_env.update(PYTHON_VERSIONS="3.10,3.11,3.12,3.13,3.14")
+    argument = re.search(r'--python-versions "\$\{(\w+):-\}"', source)
+    assert argument is not None
+    assert step_env.get(argument[1], "") == selected
 
 
 def test_parse_subdir_pythons():

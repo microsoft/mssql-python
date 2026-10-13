@@ -147,6 +147,16 @@ Windows ARM64 3.15 uses `microsoft`, then `conda-forge`, for both build and veri
 existing channel policies and the ARM64 3.12 manual ABI pin. The blocking full dependency
 solve remains; every 3.15 package must pass the `python_abi 3.15.* *_cp315` native audit.
 
+Windows builds pass the package target through conda-build's `target_platform`
+variant, leaving its build process native (win-64 on the x64 agent). Only that
+command's environment removes `CONDA_SUBDIR`, avoiding the ARM64 `/machine`
+launcher on Windows Server 2022. Verification keeps `CONDA_SUBDIR=win-arm64`
+for both target environment creation and the full dependency dry-run.
+
+POSIX steps pass the requested Python matrix through `MSSQL_CONDA_PYTHON_VERSIONS`
+so the shared `PYTHON_VERSIONS` pipeline variable cannot replace it. Custom subsets
+and empty-input wheel auto-detection remain supported.
+
 ### Python 3.15 packaging
 
 Conda-forge's Windows Python 3.15 declares `lib/python/site-packages` instead of
