@@ -2334,7 +2334,7 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
             SQLRETURN resetResult;
             {
                 py::gil_scoped_release release;
-                SQLCancel_ptr(hStmt);
+                if (SQLCancel_ptr) SQLCancel_ptr(hStmt);
                 resetResult = SQLFreeStmt_ptr(hStmt, SQL_RESET_PARAMS);
             }
             SQLRETURN freeResult = statementHandle->freeHandle();
