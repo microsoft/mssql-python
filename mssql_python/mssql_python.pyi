@@ -16,10 +16,41 @@ from typing import (
     Callable,
     Iterator,
     Iterable,
+    AsyncIterable,
 )
 import datetime
 import logging
 import pyarrow
+
+class TableValuedParameter:
+    def __init__(
+        self,
+        type_name: str,
+        columns: Sequence[Union[Tuple[str, int], Tuple[str, int, int], Tuple[str, int, int, int]]],
+        rows: Union[
+            List[Sequence[Any]],
+            Tuple[Sequence[Any], ...],
+            Iterator[Sequence[Any]],
+            AsyncIterable[Sequence[Any]],
+        ],
+        *,
+        schema: Optional[str] = None,
+    ) -> None: ...
+    @property
+    def type_name(self) -> str: ...
+    @property
+    def schema(self) -> str: ...
+    @property
+    def columns(self) -> Tuple[Tuple[str, int, int, int], ...]: ...
+    @property
+    def rows(
+        self,
+    ) -> Union[
+        List[Sequence[Any]],
+        Tuple[Sequence[Any], ...],
+        Iterator[Sequence[Any]],
+        AsyncIterable[Sequence[Any]],
+    ]: ...
 
 # GLOBALS - DB-API 2.0 Required Module Globals
 # https://www.python.org/dev/peps/pep-0249/#module-interface

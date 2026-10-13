@@ -46,16 +46,17 @@
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wattributes"
 #endif
+namespace { struct TableParamState; }
 struct ParamInfo {
     SQLSMALLINT inputOutputType = SQL_PARAM_INPUT;
     SQLSMALLINT paramCType = SQL_C_DEFAULT;
     SQLSMALLINT paramSQLType = SQL_UNKNOWN_TYPE;
     SQLULEN columnSize = 0;
-    SQLULEN bufferSize = 0;
     SQLSMALLINT decimalDigits = 0;
     SQLLEN strLenOrInd = 0;  // Required for DAE
     bool isDAE = false;      // Indicates if we need to stream
     bool isTVP = false;
+    std::shared_ptr<TableParamState> table;
     // Strong reference to the Python object for DAE (data-at-execution) streaming.
     // py::object owns the refcount, so the compiler-generated destructor, copy and
     // move operations are all correct and this struct needs no rule-of-five.
@@ -314,24 +315,12 @@ inline std::vector<ParamInfo> DetectParamTypes(PyObject* params, PyObject* input
         info.isDAE = false;
         info.isTVP = false;
 
-        PyObject* obj = PyList_GET_ITEM(params, i);
-        if (PyList_Check(obj) || PyTuple_Check(obj)) {
-            if (i < inputSizeCount) {
-                throw py::type_error("setinputsizes cannot override table-valued parameters");
-            }
-            info.paramSQLType = SQL_SS_TABLE;
-            info.paramCType = SQL_C_BINARY;
-            info.columnSize = static_cast<SQLULEN>(PySequence_Size(obj));
-            info.decimalDigits = 0;
-            info.isTVP = true;
-            info.dataPtr = borrow(obj);
-            continue;
-        }
-
         if (i < inputSizeCount) {
             ApplyInputSizeOverride(params, PyList_GET_ITEM(inputSizes, i), i, info);
             continue;
         }
+
+        PyObject* obj = PyList_GET_ITEM(params, i);
 
         // --- None ---
         if (obj == Py_None) {
@@ -647,6 +636,15 @@ inline std::vector<ParamInfo> DetectParamTypes(PyObject* params, PyObject* input
                 // PyList_SetItem steals (decrefs) the item even on failure.
                 throw py::error_already_set();
             }
+            continue;
+        }
+
+        py::object tvpType = py::module_::import("mssql_python.table_valued_parameter")
+                                 .attr("TableValuedParameter");
+        if (py::isinstance(borrow(obj), tvpType)) {
+            info.paramSQLType = SQL_SS_TABLE;
+            info.paramCType = SQL_C_BINARY;
+            info.isTVP = true;
             continue;
         }
 

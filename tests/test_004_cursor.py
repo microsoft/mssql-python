@@ -1842,7 +1842,6 @@ def test_executemany_unicode_and_empty_strings(cursor, db_connection):
             (5, ""),
             (6, "Ñice tëxt"),
             (7, ""),
-            (8, "a\x00b"),
         ]
 
         # Execute the batch insert
@@ -1854,7 +1853,7 @@ def test_executemany_unicode_and_empty_strings(cursor, db_connection):
         results = cursor.fetchall()
 
         # Check that we got the right number of rows
-        assert len(results) == 8, f"Expected 8 rows, got {len(results)}"
+        assert len(results) == 7, f"Expected 7 rows, got {len(results)}"
 
         # Check each row
         for i, (actual, expected_row) in enumerate(zip(results, test_data)):

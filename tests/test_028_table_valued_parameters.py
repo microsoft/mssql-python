@@ -1,25 +1,40 @@
-"""
-Integration coverage for SQL Server table-valued parameters.
-"""
+"""Live SQL Server coverage for the shared explicit TVP contract and ODBC streaming."""
 
+import asyncio
 import datetime
+import inspect
 import os
 import subprocess
 import sys
+import threading
 import uuid
-from decimal import Decimal
+import weakref
+from decimal import Decimal, localcontext
 
 import pytest
+import pytest_asyncio
 
 from mssql_python import (
     DatabaseError,
     NotSupportedError,
-    ProgrammingError,
+    TableValuedParameter,
+    connect,
     SQL_INTEGER,
     SQL_WVARCHAR,
-    ddbc_bindings,
+    SQL_VARBINARY,
+    SQL_DECIMAL,
+    SQL_BIT,
+    SQL_TINYINT,
+    SQL_SMALLINT,
+    SQL_BIGINT,
+    SQL_DOUBLE,
+    SQL_TYPE_DATE,
+    SQL_TYPE_TIME,
+    SQL_TYPE_TIMESTAMP,
+    SQL_GUID,
 )
-from mssql_python.odbc_provider import ProviderManager
+from mssql_python.async_query import _AsyncConnection
+from mssql_python.constants import ConstantsDDBC
 from test_023_ssh_tunnel_gil_release import (
     WATCHDOG_SECONDS,
     _parse_server,
@@ -29,704 +44,627 @@ from test_023_ssh_tunnel_gil_release import (
 
 
 @pytest.fixture
-def tvp_procedure(cursor, db_connection):
+def tvp_schema(cursor, db_connection):
     suffix = uuid.uuid4().hex
-    type_name = f"pytest_tvp_type_{suffix}"
-    wildcard_match_type_name = type_name.replace("_", "X")
-    procedure_name = f"pytest_tvp_proc_{suffix}"
-
+    schema = f"pytest_tvp_{suffix}"
+    cursor.execute(f"CREATE SCHEMA [{schema}]")
+    cursor.execute(f"CREATE TYPE [{schema}].Items AS TABLE (id int, label nvarchar(max))")
+    cursor.execute(f"CREATE TABLE [{schema}].Calls (n int)")
+    cursor.execute(f"""
+        CREATE PROCEDURE [{schema}].Echo @prefix int, @items [{schema}].Items READONLY,
+                                       @suffix nvarchar(max)
+        AS BEGIN
+            SET NOCOUNT ON;
+            INSERT INTO [{schema}].Calls VALUES (1);
+            SELECT id + @prefix AS id, label + @suffix AS label FROM @items ORDER BY id;
+        END
+        """)
+    cursor.execute(f"""
+        CREATE PROCEDURE [{schema}].Pair @left [{schema}].Items READONLY,
+                                       @right [{schema}].Items READONLY
+        AS BEGIN
+            SET NOCOUNT ON;
+            SELECT id, label FROM @left UNION ALL SELECT id, label FROM @right;
+        END
+        """)
+    cursor.execute(f"""
+        CREATE PROCEDURE [{schema}].CountRows @items [{schema}].Items READONLY
+        AS BEGIN
+            SET NOCOUNT ON;
+            INSERT INTO [{schema}].Calls VALUES (1);
+            SELECT COUNT_BIG(*), SUM(CONVERT(bigint,id)) FROM @items;
+        END
+        """)
+    db_connection.commit()
     try:
-        cursor.execute(
-            f"CREATE TYPE dbo.[{type_name}] AS TABLE " "(id int NOT NULL, label nvarchar(100) NULL)"
-        )
-        cursor.execute(
-            f"CREATE TYPE dbo.[{wildcard_match_type_name}] AS TABLE " "(decoy_id bigint NOT NULL)"
-        )
-        cursor.execute(f"""
-            CREATE PROCEDURE dbo.[{procedure_name}]
-                @prefix int,
-                @items dbo.[{type_name}] READONLY,
-                @suffix nvarchar(20)
-            AS
-            BEGIN
-                SET NOCOUNT ON;
-                SELECT id + @prefix, label + @suffix
-                FROM @items
-                ORDER BY id;
-            END
-            """)
-        db_connection.commit()
-        yield type_name, procedure_name
+        yield schema
     finally:
-        cursor.execute(f"DROP PROCEDURE IF EXISTS dbo.[{procedure_name}]")
-        cursor.execute(f"DROP TYPE IF EXISTS dbo.[{type_name}]")
-        cursor.execute(f"DROP TYPE IF EXISTS dbo.[{wildcard_match_type_name}]")
+        cursor.execute(f"DROP PROCEDURE [{schema}].Echo")
+        cursor.execute(f"DROP PROCEDURE [{schema}].Pair")
+        cursor.execute(f"DROP PROCEDURE [{schema}].CountRows")
+        cursor.execute(f"DROP TYPE [{schema}].Items")
+        cursor.execute(f"DROP TABLE [{schema}].Calls")
+        cursor.execute(f"DROP SCHEMA [{schema}]")
         db_connection.commit()
 
 
-@pytest.fixture
-def typed_tvp_procedure(cursor, db_connection):
-    suffix = uuid.uuid4().hex
-    type_name = f"pytest_typed_tvp_type_{suffix}"
-    procedure_name = f"pytest_typed_tvp_proc_{suffix}"
-
-    try:
-        cursor.execute(f"""
-            CREATE TYPE dbo.[{type_name}] AS TABLE (
-                bit_value bit NULL,
-                tiny_value tinyint NULL,
-                small_value smallint NULL,
-                int_value int NULL,
-                big_value bigint NULL,
-                float_value float NULL,
-                decimal_value decimal(20, 6) NULL,
-                text_value nvarchar(100) NULL,
-                binary_value varbinary(100) NULL,
-                date_value date NULL,
-                time_value time(6) NULL,
-                datetime_value datetime2(6) NULL,
-                offset_value datetimeoffset(6) NULL,
-                guid_value uniqueidentifier NULL,
-                all_null_binary varbinary(16) NULL
-            )
-            """)
-        cursor.execute(f"""
-            CREATE PROCEDURE dbo.[{procedure_name}]
-                @items dbo.[{type_name}] READONLY
-            AS
-            BEGIN
-                SET NOCOUNT ON;
-                SELECT *
-                FROM @items
-                ORDER BY int_value;
-            END
-            """)
-        db_connection.commit()
-        yield procedure_name
-    finally:
-        cursor.execute(f"DROP PROCEDURE IF EXISTS dbo.[{procedure_name}]")
-        cursor.execute(f"DROP TYPE IF EXISTS dbo.[{type_name}]")
-        db_connection.commit()
-
-
-@pytest.fixture
-def multiple_tvp_procedure(cursor, db_connection):
-    suffix = uuid.uuid4().hex
-    type_name = f"pytest_multi_tvp_type_{suffix}"
-    procedure_name = f"pytest_multi_tvp_proc_{suffix}"
-
-    try:
-        cursor.execute(f"CREATE TYPE dbo.[{type_name}] AS TABLE (id int NOT NULL)")
-        cursor.execute(f"""
-            CREATE PROCEDURE dbo.[{procedure_name}]
-                @left_rows dbo.[{type_name}] READONLY,
-                @offset int,
-                @right_rows dbo.[{type_name}] READONLY
-            AS
-            BEGIN
-                SET NOCOUNT ON;
-                SELECT side, id + @offset
-                FROM (
-                    SELECT 'left' AS side, id FROM @left_rows
-                    UNION ALL
-                    SELECT 'right', id FROM @right_rows
-                ) AS combined
-                ORDER BY side, id;
-            END
-            """)
-        db_connection.commit()
-        yield procedure_name
-    finally:
-        cursor.execute(f"DROP PROCEDURE IF EXISTS dbo.[{procedure_name}]")
-        cursor.execute(f"DROP TYPE IF EXISTS dbo.[{type_name}]")
-        db_connection.commit()
-
-
-@pytest.fixture
-def schema_qualified_large_tvp(cursor, db_connection):
-    suffix = uuid.uuid4().hex
-    schema_name = f"pytest_tvp_schema_{suffix}"
-    type_name = f"pytest_large_tvp_type_{suffix}"
-    procedure_name = f"pytest_large_tvp_proc_{suffix}"
-
-    try:
-        cursor.execute(f"CREATE SCHEMA [{schema_name}]")
-        cursor.execute(f"""
-            CREATE TYPE [{schema_name}].[{type_name}] AS TABLE (
-                text_value nvarchar(max) NULL,
-                binary_value varbinary(max) NULL
-            )
-            """)
-        cursor.execute(f"""
-            CREATE PROCEDURE [{schema_name}].[{procedure_name}]
-                @items [{schema_name}].[{type_name}] READONLY
-            AS
-            BEGIN
-                SET NOCOUNT ON;
-                SELECT text_value, binary_value FROM @items;
-            END
-            """)
-        db_connection.commit()
-        yield schema_name, procedure_name
-    finally:
-        cursor.execute(f"DROP PROCEDURE IF EXISTS [{schema_name}].[{procedure_name}]")
-        cursor.execute(f"DROP TYPE IF EXISTS [{schema_name}].[{type_name}]")
-        cursor.execute(f"DROP SCHEMA IF EXISTS [{schema_name}]")
-        db_connection.commit()
-
-
-def test_tvp_positional_named_empty_and_statement_reuse(cursor, tvp_procedure):
-    _, procedure_name = tvp_procedure
-    sql = f"EXEC dbo.[{procedure_name}] ?, ?, ?"
-
-    cursor.execute(sql, (10, [(1, "Keyboard"), (2, None)], "!"))
-    assert [tuple(row) for row in cursor.fetchall()] == [(11, "Keyboard!"), (12, None)]
-
-    cursor.execute(sql, (10, [], "!"))
-    assert cursor.fetchall() == []
-
-    cursor.execute(sql, (None, [(3, "Nullable")], ""))
-    assert tuple(cursor.fetchone()) == (None, "Nullable")
-
-    cursor.execute(
-        f"EXEC dbo.[{procedure_name}] %(prefix)s, %(items)s, %(suffix)s",
-        {"prefix": 0, "items": [(4, "Mouse")], "suffix": "?"},
+def items(schema, rows):
+    return TableValuedParameter(
+        "Items", [("id", SQL_INTEGER), ("label", SQL_WVARCHAR, 0)], rows, schema=schema
     )
-    assert tuple(cursor.fetchone()) == (4, "Mouse?")
 
 
-def test_tvp_empty_first_and_all_null_column(cursor, tvp_procedure):
-    _, procedure_name = tvp_procedure
-    sql = f"EXEC dbo.[{procedure_name}] ?, ?, ?"
-
-    cursor.execute(sql, (0, [], ""))
-    assert cursor.fetchall() == []
-
-    cursor.execute(sql, (0, [(1, None), (2, None)], ""))
-    assert [tuple(row) for row in cursor.fetchall()] == [(1, None), (2, None)]
+async def call(method, *args, **kwargs):
+    result = method(*args, **kwargs)
+    return await result if inspect.isawaitable(result) else result
 
 
-def test_tvp_binds_supported_cell_types(cursor, typed_tvp_procedure):
-    first_guid = uuid.uuid4()
-    second_guid = uuid.uuid4()
-    offset = datetime.timezone(datetime.timedelta(hours=5, minutes=30))
-    rows = [
-        (
-            True,
-            255,
-            -32768,
-            -2147483648,
-            -(2**63),
-            1.25,
-            Decimal("-12345678901234.567890"),
-            "Grüße 😀",
-            b"\x00\xff",
-            datetime.date(2026, 9, 15),
-            datetime.time(12, 34, 56, 123456),
-            datetime.datetime(2026, 9, 15, 12, 34, 56, 123456),
-            datetime.datetime(2026, 9, 15, 12, 34, 56, 123456, tzinfo=offset),
-            first_guid,
-            None,
-        ),
-        (
-            False,
-            0,
-            32767,
-            2147483647,
-            2**63 - 1,
-            -2.5,
-            Decimal("12.345"),
-            "later row is longer",
-            b"\x01\x02\x03",
-            datetime.date(2026, 9, 16),
-            datetime.time(1, 2, 3, 4),
-            datetime.datetime(2026, 9, 16, 1, 2, 3, 4),
-            datetime.datetime(2026, 9, 16, 1, 2, 3, 4, tzinfo=datetime.timezone.utc),
-            second_guid,
-            None,
-        ),
-    ]
-
-    cursor.execute(f"EXEC dbo.[{typed_tvp_procedure}] ?", (rows,))
-    actual = [tuple(row) for row in cursor.fetchall()]
-
-    assert actual[0][:9] == rows[0][:9]
-    assert actual[1][:9] == rows[1][:9]
-    assert actual[0][9:13] == rows[0][9:13]
-    assert actual[1][9:13] == rows[1][9:13]
-    assert str(actual[0][13]) == str(first_guid)
-    assert str(actual[1][13]) == str(second_guid)
-    assert actual[0][14] is None
-    assert actual[1][14] is None
-
-    invalid_row = list(rows[0])
-    invalid_row[6] = Decimal("NaN")
-    with pytest.raises(ValueError, match="non-finite Decimal"):
-        cursor.execute(
-            f"EXEC dbo.[{typed_tvp_procedure}] ?",
-            ([tuple(invalid_row)],),
-        )
-
-
-def test_multiple_tvps_with_interleaved_scalar(cursor, multiple_tvp_procedure):
-    cursor.execute(
-        f"EXEC dbo.[{multiple_tvp_procedure}] ?, ?, ?",
-        ([(1,), (2,)], 10, [(3,), (4,)]),
-    )
-    assert [tuple(row) for row in cursor.fetchall()] == [
-        ("left", 11),
-        ("left", 12),
-        ("right", 13),
-        ("right", 14),
-    ]
-
-
-def test_schema_qualified_tvp_with_large_and_embedded_null_values(
-    cursor, schema_qualified_large_tvp
-):
-    schema_name, procedure_name = schema_qualified_large_tvp
-    large_text = "prefix\x00suffix" + "😀" * 2500
-    large_binary = b"\x00\xff" * 4501
-    rows = ((large_text, large_binary), (None, None))
-
-    cursor.execute(f"EXEC [{schema_name}].[{procedure_name}] ?", (rows,))
-    actual = [tuple(row) for row in cursor.fetchall()]
-
-    assert actual == [(large_text, large_binary), (None, None)]
-
-
-def test_failed_tvp_does_not_poison_cursor(cursor, tvp_procedure):
-    _, procedure_name = tvp_procedure
-    sql = f"EXEC dbo.[{procedure_name}] ?, ?, ?"
-
-    with pytest.raises(DatabaseError):
-        cursor.execute(sql, (0, [(None, "invalid")], ""))
-
-    cursor.execute("SELECT ?", 42)
-    assert cursor.fetchone()[0] == 42
-
-    cursor.execute(sql, (0, [(1, "valid")], ""))
-    assert tuple(cursor.fetchone()) == (1, "valid")
-
-
-def test_tvp_rejects_invalid_shape_and_cells(cursor, tvp_procedure):
-    _, procedure_name = tvp_procedure
-    sql = f"EXEC dbo.[{procedure_name}] ?, ?, ?"
-
-    with pytest.raises(ValueError, match="same number"):
-        cursor.execute(sql, (0, [(1, "valid"), (2,)], ""))
-    with pytest.raises(TypeError, match="incompatible Python types"):
-        cursor.execute(sql, (0, [(1, "valid"), ("2", "invalid")], ""))
-    with pytest.raises(TypeError, match="only be bound"):
-        cursor.execute("SELECT CAST(? AS int)", ([(1,)],))
-
-
-def test_tvp_rejected_by_executemany_before_first_write(cursor, tvp_procedure):
-    cursor.execute("CREATE TABLE #pytest_tvp_executemany (id int)")
-
-    with pytest.raises(NotSupportedError):
-        cursor.executemany(
-            "INSERT INTO #pytest_tvp_executemany VALUES (?)",
-            [(1,), ([(2, "label")],)],
-        )
-
-    cursor.execute("SELECT COUNT(*) FROM #pytest_tvp_executemany")
-    assert cursor.fetchone()[0] == 0
-
-
-def test_tvp_rejected_with_setinputsizes(cursor, tvp_procedure):
-    _, procedure_name = tvp_procedure
-    cursor.setinputsizes(
-        [
-            (SQL_INTEGER, 10, 0),
-            (SQL_WVARCHAR, 100, 0),
-            (SQL_WVARCHAR, 20, 0),
-        ]
-    )
+@pytest_asyncio.fixture(params=["sync", "async"])
+async def tvp_cursor(request, conn_str):
+    if request.param == "sync":
+        connection = connect(conn_str, autocommit=True)
+    else:
+        connection = await _AsyncConnection.connect(conn_str, autocommit=True)
+    cursor = connection.cursor()
     try:
-        with pytest.raises(NotSupportedError):
-            cursor.execute(
-                f"EXEC dbo.[{procedure_name}] ?, ?, ?",
-                (0, [(1, "label")], ""),
-            )
+        yield cursor
     finally:
-        cursor.setinputsizes(None)
+        await call(cursor.close)
+        await call(connection.close)
 
 
-def test_tvp_rejected_by_mssql_odbc_provider(cursor, tvp_procedure, monkeypatch):
-    _, procedure_name = tvp_procedure
-    monkeypatch.setattr(ProviderManager, "effective", lambda *_: "mssql-odbc")
-
-    with pytest.raises(NotSupportedError, match="mssql-odbc provider"):
-        cursor.execute(
-            f"EXEC dbo.[{procedure_name}] ?, ?, ?",
-            (0, [(1, "label")], ""),
-        )
-
-
-def test_tvp_metadata_handle_inherits_query_timeout(db_connection, tvp_procedure, monkeypatch):
-    _, procedure_name = tvp_procedure
-    real_set_stmt_attr = ddbc_bindings.DDBCSQLSetStmtAttr
-    timeout_handles = []
-
-    def record_timeout(statement_handle, attribute, value):
-        timeout_handles.append(statement_handle)
-        return real_set_stmt_attr(statement_handle, attribute, value)
-
-    db_connection.timeout = 2
-    monkeypatch.setattr(
-        ddbc_bindings,
-        "DDBCSQLSetStmtAttr",
-        record_timeout,
-    )
-    try:
-        with db_connection.cursor() as timeout_cursor:
-            timeout_cursor.execute(
-                f"EXEC dbo.[{procedure_name}] ?, ?, ?",
-                (0, [(1, "label")], ""),
-            )
-            assert tuple(timeout_cursor.fetchone()) == (1, "label")
-    finally:
-        db_connection.timeout = 0
-
-    assert len(timeout_handles) == 2
-    assert timeout_handles[0] is not timeout_handles[1]
-
-
-@pytest.fixture
-def conversion_tvp(cursor, db_connection, request):
-    suffix = uuid.uuid4().hex
-    type_name = f"pytest_conversion_type_{suffix}"
-    procedure_name = f"pytest_conversion_proc_{suffix}"
-    try:
-        cursor.execute(
-            f"CREATE TYPE dbo.[{type_name}] AS TABLE (position int, value {request.param} NULL)"
-        )
-        cursor.execute(
-            f"CREATE PROCEDURE dbo.[{procedure_name}] @items dbo.[{type_name}] READONLY AS "
-            "SET NOCOUNT ON; SELECT value FROM @items ORDER BY position"
-        )
-        db_connection.commit()
-        yield f"EXEC dbo.[{procedure_name}] ?"
-    finally:
-        cursor.execute(f"DROP PROCEDURE IF EXISTS dbo.[{procedure_name}]")
-        cursor.execute(f"DROP TYPE IF EXISTS dbo.[{type_name}]")
-        db_connection.commit()
-
-
-@pytest.mark.parametrize(
-    ("conversion_tvp", "values", "expected"),
-    [
-        (
-            "float",
-            [Decimal("1.5"), Decimal("123.45"), None, Decimal("1.50"), Decimal("-0.125")],
-            [1.5, 123.45, None, 1.5, -0.125],
-        ),
-        ("int", [Decimal("1.5"), Decimal("-123.45"), None], [1, -123, None]),
-        ("nvarchar(40)", [Decimal("1.5"), None], ["1.5", None]),
-        (
-            "nvarchar(40)",
-            [Decimal("1.5"), Decimal("123.45"), None, Decimal("-0.125")],
-            ["1.500", "123.450", None, "-0.125"],
-        ),
-        (
-            "decimal(5,2)",
-            [Decimal("1.239"), None, Decimal("-1.235"), Decimal("9.999")],
-            [Decimal("1.24"), None, Decimal("-1.24"), Decimal("10.00")],
-        ),
-        (
-            "decimal(8,2)",
-            ["000000000000000001.23", None, "-0000000000000001.239"],
-            [Decimal("1.23"), None, Decimal("-1.24")],
-        ),
-        (
-            "datetime",
-            [datetime.datetime(2026, 9, 15, 12, 34, 56, 456789), None],
-            [datetime.datetime(2026, 9, 15, 12, 34, 56, 457000), None],
-        ),
-        (
-            "datetime2(3)",
-            [datetime.datetime(2026, 9, 15, 23, 59, 59, 999999), None],
-            [datetime.datetime(2026, 9, 16), None],
-        ),
-        (
-            "time(3)",
-            [datetime.time(12, 34, 56, 456789), None],
-            [datetime.time(12, 34, 56, 457000), None],
-        ),
-        (
-            "datetimeoffset(3)",
-            [
-                datetime.datetime(2026, 9, 15, 23, 59, 59, 999999, tzinfo=datetime.timezone.utc),
-                None,
-            ],
-            [datetime.datetime(2026, 9, 16, tzinfo=datetime.timezone.utc), None],
-        ),
-    ],
-    indirect=["conversion_tvp"],
-)
-def test_tvp_source_precision_survives_destination_conversion(
-    cursor, conversion_tvp, values, expected
-):
-    rows = list(enumerate(values))
+@pytest.mark.asyncio
+@pytest.mark.parametrize("rows", [[], [(1, "Keyboard"), (2, None)], ((3, ""),)])
+@pytest.mark.parametrize("named", [False, True])
+async def test_common_rows_named_reuse_and_one_invocation(tvp_cursor, tvp_schema, rows, named):
+    value = items(tvp_schema, rows)
+    sql = f"EXEC [{tvp_schema}].Echo ?, ?, ?"
+    params = (10, value, "✓")
+    if named:
+        sql = f"EXEC [{tvp_schema}].Echo %(prefix)s, %(items)s, %(suffix)s"
+        params = {"prefix": 10, "items": value, "suffix": "✓"}
     for _ in range(2):
-        cursor.execute(conversion_tvp, (rows,))
-        assert [row[0] for row in cursor.fetchall()] == expected
-        assert rows == list(enumerate(values))
+        await call(tvp_cursor.execute, sql, params)
+        result = await call(tvp_cursor.fetchall)
+        assert [tuple(row) for row in result] == [
+            (row[0] + 10, None if row[1] is None else row[1] + "✓") for row in rows
+        ]
+    await call(tvp_cursor.execute, f"SELECT COUNT(*) FROM [{tvp_schema}].Calls")
+    assert (await call(tvp_cursor.fetchone))[0] == 2
 
 
-@pytest.mark.parametrize(
-    ("conversion_tvp", "value", "recovery"),
-    [
-        ("nvarchar(3)", "x" * 5000, "ok"),
-        ("nvarchar(3)", "\u0100" * 5000, "ok"),
-        ("varchar(8000)", "x" * 8001, "ok"),
-        ("varchar(8000) COLLATE Latin1_General_100_CI_AS", "\u00e9" * 8001, "ok"),
-        ("varbinary(8000)", b"x" * 8001, b"ok"),
-    ],
-    ids=["short-ascii", "short-unicode", "long-ascii", "long-unicode", "long-binary"],
-    indirect=["conversion_tvp"],
-)
-def test_tvp_destination_limits_leave_cursor_reusable(cursor, conversion_tvp, value, recovery):
-    with pytest.raises(ProgrammingError, match="would be truncated") as raised:
-        cursor.execute(conversion_tvp, ([(0, value)],))
-    assert raised.value.driver_error == "Syntax error or access violation"
-    cursor.execute("SELECT ?", 42)
-    assert cursor.fetchone()[0] == 42
-    cursor.execute(conversion_tvp, ([(0, recovery)],))
-    assert cursor.fetchone()[0] == recovery
+@pytest.mark.asyncio
+@pytest.mark.parametrize("left,right", [([], []), ([], [(2, "right")]), ([(1, None)], [(2, "")])])
+async def test_common_multiple_tvps(tvp_cursor, tvp_schema, left, right):
+    await call(
+        tvp_cursor.execute,
+        f"EXEC [{tvp_schema}].Pair ?, ?",
+        items(tvp_schema, left),
+        items(tvp_schema, right),
+    )
+    result = await call(tvp_cursor.fetchall)
+    assert sorted(tuple(row) for row in result) == sorted(left + right)
 
 
-@pytest.mark.parametrize("conversion_tvp", ["decimal(38,0)"], indirect=True)
-@pytest.mark.parametrize(
-    "value", [Decimal("NaN"), Decimal("Infinity"), Decimal("1E+39"), Decimal("1E-39")]
-)
-def test_tvp_decimal_validation_matches_scalar(cursor, conversion_tvp, value):
-    with pytest.raises(ValueError):
-        cursor.execute(conversion_tvp, ([(0, value)],))
-    cursor.execute(conversion_tvp, ([(0, Decimal("1E+37")), (1, None)],))
-    assert [row[0] for row in cursor.fetchall()] == [Decimal("1E+37"), None]
+@pytest.mark.asyncio
+async def test_common_null_scalars_with_tvp(tvp_cursor, tvp_schema):
+    await call(
+        tvp_cursor.execute,
+        f"EXEC [{tvp_schema}].Echo ?, ?, ?",
+        None,
+        items(tvp_schema, [(1, "one")]),
+        None,
+    )
+    assert tuple(await call(tvp_cursor.fetchone)) == (None, None)
 
 
-@pytest.mark.parametrize("conversion_tvp", ["bigint"], indirect=True)
-def test_tvp_integer_widening_and_nulls(cursor, conversion_tvp):
-    edges = [0, 255, -32768, 32767, -(2**31), 2**31 - 1, -(2**63), 2**63 - 1]
-    for ordered in (edges, list(reversed(edges))):
-        values = [None, *ordered, None]
-        cursor.execute(conversion_tvp, (list(enumerate(values)),))
-        assert [row[0] for row in cursor.fetchall()] == values
+def test_explicit_type_in_parameterized_batch(cursor, tvp_schema):
+    cursor.execute("SELECT id, label FROM ?", items(tvp_schema, iter([(1, "one")])))
+    assert tuple(cursor.fetchone()) == (1, "one")
 
 
-@pytest.mark.parametrize(
-    ("conversion_tvp", "values"),
-    [
-        ("nvarchar(max)", [None, "ascii first", "\U0001f600" * 4001, "a\x00b", ""]),
-        ("nvarchar(max)", ["\U0001f600", "later ascii", None]),
-        ("varchar(max)", [None, "x" * 8001, "a\x00b", ""]),
-        ("varbinary(max)", [b"", None, b"\x00\xff" * 4501, bytearray(b"last")]),
-    ],
-    indirect=["conversion_tvp"],
-)
-def test_tvp_source_buffers_cover_every_row(cursor, conversion_tvp, values):
-    cursor.execute(conversion_tvp, (list(enumerate(values)),))
-    assert [row[0] for row in cursor.fetchall()] == values
-
-
-@pytest.mark.parametrize(
-    "conversion_tvp", ["varchar(8000) COLLATE Latin1_General_100_CI_AS"], indirect=True
-)
-@pytest.mark.parametrize("length", [4000, 4001, 8000])
-def test_tvp_unicode_source_fits_bounded_varchar(cursor, conversion_tvp, length):
-    values = [None, "ascii first", "\u00e9" * length, ""]
-    for ordered in (values, list(reversed(values))):
-        cursor.execute(conversion_tvp, (list(enumerate(ordered)),))
-        assert [row[0] for row in cursor.fetchall()] == ordered
-
-
-def test_tvp_all_null_columns_use_declared_types(cursor, typed_tvp_procedure):
-    cursor.execute(f"EXEC dbo.[{typed_tvp_procedure}] ?", ([tuple([None] * 15)],))
-    assert tuple(cursor.fetchone()) == tuple([None] * 15)
-
-
-@pytest.mark.parametrize("conversion_tvp", ["float"], indirect=True)
-def test_tvp_rejects_unrepresentable_common_decimal_precision(cursor, conversion_tvp):
-    with pytest.raises(ValueError, match="precision greater than 38"):
-        cursor.execute(conversion_tvp, ([(0, Decimal("1E+37")), (1, Decimal("0.1"))],))
-    cursor.execute(conversion_tvp, ([(0, Decimal("0.1"))],))
-    assert cursor.fetchone()[0] == 0.1
-
-
-@pytest.mark.parametrize("conversion_tvp", ["decimal(5,2)"], indirect=True)
-def test_tvp_decimal_wire_format_is_independent_of_text_encoding(conn_str, conversion_tvp):
-    from mssql_python import SQL_CHAR, connect
-
-    with connect(conn_str) as connection:
-        connection.setencoding("utf-16le", ctype=SQL_CHAR)
-        with connection.cursor() as encoded_cursor:
-            encoded_cursor.execute(conversion_tvp, ([(0, Decimal("-1.239")), (1, None)],))
-            assert [row[0] for row in encoded_cursor.fetchall()] == [Decimal("-1.24"), None]
-
-
-@pytest.mark.parametrize("conversion_tvp", ["nvarchar(40)"], indirect=True)
-@pytest.mark.parametrize(
-    ("input_sizes", "error", "message"),
-    [
-        (None, RuntimeError, "metadata requires a valid statement handle"),
-        ([(SQL_INTEGER, 10, 0)], TypeError, "setinputsizes cannot override"),
-    ],
-)
-def test_tvp_native_entry_point_validates_metadata_and_overrides(
-    db_connection, conversion_tvp, input_sizes, error, message
-):
-    with db_connection.cursor() as native_cursor:
-        with pytest.raises(error, match=message):
-            ddbc_bindings.DDBCSQLExecute(
-                native_cursor.hstmt,
-                None,
-                conversion_tvp,
-                [[(0, "ok")]],
-                input_sizes,
-                [False],
-                True,
-                {},
-            )
-        native_cursor.execute(conversion_tvp, ([(0, "ok")],))
-        assert native_cursor.fetchone()[0] == "ok"
-
-
-@pytest.mark.parametrize(
-    ("rows", "error", "message"),
-    [
-        ([1], TypeError, "rows must be list or tuple"),
-        ([()], ValueError, "at least one column"),
-        ([(1,)], ValueError, "declared table type requires"),
-        ([(1, "ok"), 2], TypeError, "rows must be list or tuple"),
-        ([(1, [2])], TypeError, "nested row sequences"),
-        ([(1, Decimal("1")), (2, "2")], TypeError, "incompatible Python types"),
-    ],
-)
-def test_tvp_shape_and_type_errors_leave_cursor_reusable(
-    cursor, tvp_procedure, rows, error, message
-):
-    _, procedure_name = tvp_procedure
-    sql = f"EXEC dbo.[{procedure_name}] ?, ?, ?"
-    with pytest.raises(error, match=message):
-        cursor.execute(sql, (0, rows, ""))
-    cursor.execute(sql, (0, [(1, "ok")], ""))
-    assert tuple(cursor.fetchone()) == (1, "ok")
-
-
-@pytest.fixture
-def wide_tvp_procedure(cursor, db_connection):
-    suffix = uuid.uuid4().hex
-    type_name = f"pytest_wide_tvp_type_{suffix}"
-    procedure_name = f"pytest_wide_tvp_proc_{suffix}"
-    # Long column names make metadata span multiple network packets.
-    columns = ", ".join(["id int"] + [f"c{i}_{'x' * 100} int" for i in range(1, 1024)])
-    try:
-        cursor.execute(f"CREATE TYPE dbo.[{type_name}] AS TABLE ({columns})")
-        cursor.execute(
-            f"CREATE PROCEDURE dbo.[{procedure_name}] @items dbo.[{type_name}] READONLY AS "
-            "SET NOCOUNT ON; SELECT id FROM @items ORDER BY id"
+def test_reuse_with_empty_and_changing_sources(cursor, tvp_schema):
+    sql = f"EXEC [{tvp_schema}].Echo ?, ?, ?"
+    for rows in ([], [(1, None)], [(2, "two"), (3, "")], []):
+        value = TableValuedParameter(
+            "Items",
+            [("diagnostic_id", SQL_INTEGER), ("diagnostic_label", SQL_WVARCHAR, 100)],
+            iter(rows),
+            schema=tvp_schema,
         )
-        db_connection.commit()
-        yield procedure_name
+        cursor.execute(sql, 0, value, "")
+        assert [tuple(row) for row in cursor.fetchall()] == rows
+
+
+def test_declared_text_size_failure_recovers(cursor, tvp_schema):
+    value = TableValuedParameter(
+        "Items",
+        [("id", SQL_INTEGER), ("label", SQL_WVARCHAR, 3)],
+        iter([(1, "too long")]),
+        schema=tvp_schema,
+    )
+    with pytest.raises((DatabaseError, ValueError)):
+        cursor.execute(f"EXEC [{tvp_schema}].CountRows ?", value)
+    assert cursor.execute("SELECT 42").fetchone()[0] == 42
+
+
+@pytest.mark.asyncio
+async def test_common_typed_cells(tvp_cursor, cursor, db_connection):
+    suffix = uuid.uuid4().hex
+    name, proc = f"Typed_{suffix}", f"TypedProc_{suffix}"
+    declarations = [
+        ("bit_value", SQL_BIT, "bit"),
+        ("tiny_value", SQL_TINYINT, "tinyint"),
+        ("small_value", SQL_SMALLINT, "smallint"),
+        ("int_value", SQL_INTEGER, "int"),
+        ("big_value", SQL_BIGINT, "bigint"),
+        ("float_value", SQL_DOUBLE, "float"),
+        ("decimal_value", SQL_DECIMAL, "decimal(18,10)", 18, 10),
+        ("text_value", SQL_WVARCHAR, "nvarchar(max)", 0),
+        ("binary_value", SQL_VARBINARY, "varbinary(max)", 0),
+        ("date_value", SQL_TYPE_DATE, "date"),
+        ("time_value", SQL_TYPE_TIME, "time(7)"),
+        ("datetime_value", SQL_TYPE_TIMESTAMP, "datetime2(7)"),
+        ("offset_value", ConstantsDDBC.SQL_DATETIMEOFFSET.value, "datetimeoffset(7)"),
+        ("guid_value", SQL_GUID, "uniqueidentifier"),
+        ("all_null_binary", SQL_VARBINARY, "varbinary(16)", 16),
+    ]
+    columns = [(d[0], d[1], *d[3:]) for d in declarations]
+    row = (
+        True,
+        255,
+        -32768,
+        2147483647,
+        -(2**63),
+        1.25,
+        Decimal("12345678.1234567890"),
+        "long🚀漢字\x00" * 2000,
+        b"\x00\xff" * 10000,
+        datetime.date(2020, 2, 29),
+        datetime.time(1, 2, 3, 123456),
+        datetime.datetime(2021, 3, 4, 1, 2, 3, 123456),
+        datetime.datetime(
+            2021,
+            3,
+            4,
+            1,
+            2,
+            3,
+            123456,
+            tzinfo=datetime.timezone(datetime.timedelta(hours=-7, minutes=-30)),
+        ),
+        uuid.uuid4(),
+        None,
+    )
+    cursor.execute(
+        f"CREATE TYPE dbo.[{name}] AS TABLE ("
+        + ",".join(f"[{d[0]}] {d[2]} NULL" for d in declarations)
+        + ")"
+    )
+    projection = ",".join(
+        "CONVERT(varbinary(max),text_value) AS text_value" if d[0] == "text_value" else d[0]
+        for d in declarations
+    )
+    cursor.execute(
+        f"CREATE PROCEDURE dbo.[{proc}] @items dbo.[{name}] READONLY AS "
+        f"SELECT {projection} FROM @items"
+    )
+    db_connection.commit()
+    try:
+        with localcontext() as ctx:
+            ctx.prec = 5
+            source = [list(row), [None] * len(row)]
+            value = TableValuedParameter(f"dbo.{name}", columns, source)
+            await call(tvp_cursor.execute, f"EXEC dbo.[{proc}] ?", value)
+        results = [tuple(r) for r in await call(tvp_cursor.fetchall)]
+        assert len(results) == 2
+        actual = next(r for r in results if r[0] is not None)
+        expected = list(row)
+        # Verify every UTF-16 byte stored by SQL Server, including embedded NULs,
+        # independently of the result decoder's text-terminator handling.
+        expected[7] = row[7].encode("utf-16le")
+        assert actual == tuple(expected)
+        assert (None,) * len(row) in results
+        assert source == [list(row), [None] * len(row)]
     finally:
-        cursor.execute(f"DROP PROCEDURE IF EXISTS dbo.[{procedure_name}]")
-        cursor.execute(f"DROP TYPE IF EXISTS dbo.[{type_name}]")
+        cursor.execute(f"DROP PROCEDURE dbo.[{proc}]")
+        cursor.execute(f"DROP TYPE dbo.[{name}]")
         db_connection.commit()
 
 
-def _run_forwarded_tvp():
-    import mssql_python
+@pytest.mark.asyncio
+async def test_common_date_range(tvp_cursor, cursor, db_connection):
+    name = f"Dates_{uuid.uuid4().hex}"
+    rows = [
+        (None,),
+        (datetime.date.min,),
+        (datetime.date(1752, 12, 31),),
+        (datetime.date(1753, 1, 1),),
+        (datetime.date.max,),
+    ]
+    cursor.execute(f"CREATE TYPE dbo.[{name}] AS TABLE (value date NULL)")
+    db_connection.commit()
+    try:
+        value = TableValuedParameter(f"dbo.{name}", [("value", SQL_TYPE_DATE)], rows)
+        await call(tvp_cursor.execute, "SELECT value FROM ? ORDER BY value", value)
+        assert [tuple(row) for row in await call(tvp_cursor.fetchall)] == rows
+    finally:
+        cursor.execute(f"DROP TYPE dbo.[{name}]")
+        db_connection.commit()
 
-    base = os.environ["DB_CONNECTION_STRING"]
-    target = _parse_server(base)
-    assert target is not None, "Could not parse Server=host,port"
-    host, port = _start_forwarder(target)
-    mssql_python.pooling(enabled=False)
-    with mssql_python.connect(_replace_server(base, host, port)) as connection:
-        with connection.cursor() as cursor:
-            sql = f"EXEC dbo.[{os.environ['TVP_GIL_PROCEDURE']}] ?"
-            padding = (None,) * 1023
-            if os.environ["TVP_GIL_METADATA_ERROR"] == "1":
-                import ctypes
 
-                library = ctypes.CDLL(sys.modules["ddbc_bindings"].__file__)
-                slot = ctypes.c_void_p.in_dll(library, "SQLGetData_ptr")
-                original = slot.value
-                get_data_type = ctypes.CFUNCTYPE(
-                    ctypes.c_short,
-                    ctypes.c_void_p,
-                    ctypes.c_ushort,
-                    ctypes.c_short,
-                    ctypes.c_void_p,
-                    ctypes.c_ssize_t,
-                    ctypes.POINTER(ctypes.c_ssize_t),
-                )
-                get_data = get_data_type(original)
+def test_generator_is_lazy_bounded_and_invokes_once(cursor, tvp_schema):
+    seen = []
+    live = weakref.WeakSet()
+    peak = 0
 
-                @get_data_type
-                def invalid_metadata_column(handle, column, ctype, value, size, indicator):
-                    # Produce a real driver error before metadata is drained. Do not
-                    # wrap SQLFreeStmt: its original GIL behavior is what we exercise.
-                    slot.value = original
-                    return get_data(handle, 999, ctype, value, size, indicator)
+    class LiveRow(list):
+        __hash__ = object.__hash__
 
-                slot.value = ctypes.cast(invalid_metadata_column, ctypes.c_void_p).value
-                try:
-                    with pytest.raises(ProgrammingError, match="(?i)invalid descriptor index"):
-                        cursor.execute(sql, ([(1,) + padding],))
-                finally:
-                    slot.value = original
-                cursor.execute("SELECT ?", 42)
-                assert [tuple(row) for row in cursor.fetchall()] == [(42,)]
+    def rows():
+        nonlocal peak
+        for i in range(5000):
+            row = LiveRow((i, "x" * 1000))
+            live.add(row)
+            peak = max(peak, len(live))
+            assert len(live) <= 2, "The driver retained earlier generator rows"
+            seen.append(i)
+            yield row
 
-            # No pointer overrides on the normal path, including after error recovery.
-            for ids in ([1, 2], [3], []):
-                cursor.execute(sql, ([(i,) + padding for i in ids],))
-                assert [tuple(row) for row in cursor.fetchall()] == [(i,) for i in ids]
-    print("OK forwarded TVP metadata", flush=True)
+    value = items(tvp_schema, rows())
+    assert seen == []
+    cursor.execute(f"EXEC [{tvp_schema}].CountRows ?", value)
+    assert tuple(cursor.fetchone()) == (5000, 4999 * 5000 // 2)
+    assert len(seen) == 5000
+    assert peak <= 2
+    assert len(live) == 0
+    cursor.execute(f"SELECT COUNT(*) FROM [{tvp_schema}].Calls")
+    assert cursor.fetchone()[0] == 1
+
+
+@pytest.mark.parametrize("failure", [ValueError("source failed"), KeyboardInterrupt("interrupted")])
+def test_generator_failure_preserves_error_and_recovers(cursor, tvp_schema, failure):
+    def rows():
+        yield 1, "first"
+        raise failure
+
+    with pytest.raises(type(failure)) as error:
+        cursor.execute(f"EXEC [{tvp_schema}].Echo ?, ?, ?", 0, items(tvp_schema, rows()), "")
+    assert error.value is failure
+    assert cursor.execute("SELECT 42").fetchone()[0] == 42
+    cursor.execute(f"SELECT COUNT(*) FROM [{tvp_schema}].Calls")
+    assert cursor.fetchone()[0] == 0
+    cursor.execute(f"EXEC [{tvp_schema}].Echo ?, ?, ?", 0, items(tvp_schema, [(2, "ok")]), "")
+    assert tuple(cursor.fetchone()) == (2, "ok")
+
+
+@pytest.mark.parametrize("rows", [[], [(1, None)], [(1, ""), (2, "🚀" * 10000)]])
+def test_streaming_empty_null_and_large_cells(cursor, tvp_schema, rows):
+    cursor.execute(f"EXEC [{tvp_schema}].Echo ?, ?, ?", 0, items(tvp_schema, iter(rows)), "")
+    assert [tuple(row) for row in cursor.fetchall()] == rows
+
+
+@pytest.mark.parametrize("bad", [[(1,)], [(1, "a", "extra")], [1], [(1, object())]])
+def test_bad_stream_row_recovers(cursor, tvp_schema, bad):
+    with pytest.raises((TypeError, ValueError)):
+        cursor.execute(f"EXEC [{tvp_schema}].CountRows ?", items(tvp_schema, iter(bad)))
+    assert cursor.execute("SELECT 1").fetchone()[0] == 1
+
+
+def test_implicit_nested_sequences_are_not_tvps(cursor):
+    for value in ([], [(1, "a")], ((1, "a"),)):
+        with pytest.raises(TypeError, match="Unsupported parameter type"):
+            cursor.execute("SELECT ?", (value,))
+    assert cursor.execute("SELECT 1").fetchone()[0] == 1
+
+
+@pytest.mark.asyncio
+async def test_async_rejects_streaming_before_consumption(conn_str, tvp_schema):
+    seen = []
+
+    def rows():
+        seen.append(1)
+        yield 1, "never"
+
+    async def async_rows():
+        seen.append(1)
+        yield 1, "never"
+
+    connection = await _AsyncConnection.connect(conn_str, autocommit=True)
+    cursor = connection.cursor()
+    try:
+        for source in (rows(), async_rows()):
+            with pytest.raises(NotSupportedError, match="materialized"):
+                await cursor.execute(f"EXEC [{tvp_schema}].CountRows ?", items(tvp_schema, source))
+        assert seen == []
+        await cursor.execute("SELECT 42")
+        assert (await cursor.fetchone())[0] == 42
+    finally:
+        await cursor.close()
+        await connection.close()
 
 
 @pytest.mark.parametrize(
-    "metadata_error",
+    "kwargs,error",
     [
-        pytest.param(False, id="metadata-reads"),
-        pytest.param(
-            True,
-            id="metadata-error-cleanup",
-            marks=pytest.mark.skipif(
-                sys.platform == "win32", reason="Native function-pointer injection is Unix-only"
+        ({"rows": None}, TypeError),
+        ({"columns": []}, TypeError),
+        ({"columns": [("x", SQL_WVARCHAR)]}, ValueError),
+        ({"columns": [("x", SQL_DECIMAL, 39, 2)]}, ValueError),
+        ({"columns": [("x", SQL_DECIMAL, 4, 5)]}, ValueError),
+        ({"columns": [("x", 9999)]}, ValueError),
+        ({"type_name": "db.dbo.Items"}, ValueError),
+        ({"type_name": "dbo.Items", "schema": "dbo"}, ValueError),
+    ],
+)
+def test_explicit_contract_validation(kwargs, error):
+    arguments = {"type_name": "Items", "columns": [("id", SQL_INTEGER)], "rows": []}
+    arguments.update(kwargs)
+    with pytest.raises(error):
+        TableValuedParameter(**arguments)
+
+
+@pytest.mark.parametrize("bad", [2**31, -(2**31) - 1])
+def test_explicit_integer_width_does_not_truncate(cursor, tvp_schema, bad):
+    with pytest.raises(ValueError, match="out of range"):
+        cursor.execute(f"EXEC [{tvp_schema}].CountRows ?", items(tvp_schema, [(bad, None)]))
+    assert cursor.execute("SELECT 1").fetchone()[0] == 1
+
+
+def test_precise_decimal_streaming(cursor, db_connection):
+    name = f"Decimal_{uuid.uuid4().hex}"
+    proc = f"Proc_{name}"
+    cursor.execute(f"CREATE TYPE dbo.[{name}] AS TABLE (amount decimal(38,6))")
+    cursor.execute(
+        f"CREATE PROC dbo.[{proc}] @items dbo.[{name}] READONLY AS " "SELECT amount FROM @items"
+    )
+    db_connection.commit()
+    values = [
+        Decimal("12345678901234567890123456789012.123456"),
+        None,
+        Decimal("0.000001"),
+        Decimal("-99999999999999999999999999999999.999999"),
+    ]
+    try:
+        with localcontext() as context:
+            context.prec = 3
+            value = TableValuedParameter(
+                name, [("amount", SQL_DECIMAL, 38, 6)], ((v,) for v in values)
+            )
+            cursor.execute(f"EXEC dbo.[{proc}] ?", value)
+        assert [r[0] for r in cursor.fetchall()] == values
+        for value in (Decimal("NaN"), Decimal("Infinity")):
+            with pytest.raises(ValueError, match="non-finite"):
+                cursor.execute(
+                    f"EXEC dbo.[{proc}] ?",
+                    TableValuedParameter(name, [("amount", SQL_DECIMAL, 38, 6)], [(value,)]),
+                )
+            assert cursor.execute("SELECT 1").fetchone()[0] == 1
+    finally:
+        cursor.execute(f"DROP PROC dbo.[{proc}]")
+        cursor.execute(f"DROP TYPE dbo.[{name}]")
+        db_connection.commit()
+
+
+def test_sync_temporal_scale_six(cursor, db_connection):
+    name = f"Times_{uuid.uuid4().hex}"
+    proc = f"Proc_{name}"
+    cursor.execute(f"CREATE TYPE dbo.[{name}] AS TABLE (t time(6), d datetime2(6))")
+    cursor.execute(f"CREATE PROC dbo.[{proc}] @items dbo.[{name}] READONLY AS SELECT * FROM @items")
+    db_connection.commit()
+    rows = [
+        (datetime.time(1, 2, 3, 123456), datetime.datetime(2024, 2, 29, 1, 2, 3, 123456)),
+        (None, None),
+    ]
+    try:
+        value = TableValuedParameter(
+            name, [("t", SQL_TYPE_TIME, 16, 6), ("d", SQL_TYPE_TIMESTAMP, 26, 6)], iter(rows)
+        )
+        cursor.execute(f"EXEC dbo.[{proc}] ?", value)
+        assert [tuple(row) for row in cursor.fetchall()] == rows
+    finally:
+        cursor.execute(f"DROP PROC dbo.[{proc}]")
+        cursor.execute(f"DROP TYPE dbo.[{name}]")
+        db_connection.commit()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "columns,error",
+    [
+        ([("amount", SQL_DECIMAL, 20, 6)], "precision 18 and scale 10"),
+        ([("stamp", SQL_TYPE_TIMESTAMP, 26, 6)], "scale 7"),
+    ],
+)
+async def test_async_native_metadata_limit_is_not_hidden(conn_str, columns, error):
+    connection = await _AsyncConnection.connect(conn_str, autocommit=True)
+    cursor = connection.cursor()
+    try:
+        await cursor.execute("SELECT 42")
+        with pytest.raises(ValueError, match=error):
+            await cursor.execute("SELECT ?", TableValuedParameter("UnusedType", columns, []))
+        assert (await cursor.fetchone())[0] == 42
+    finally:
+        await cursor.close()
+        await connection.close()
+
+
+def test_schema_mismatch_and_server_error_recovery(cursor, tvp_schema):
+    with pytest.raises(DatabaseError):
+        cursor.execute(
+            f"EXEC [{tvp_schema}].CountRows ?",
+            TableValuedParameter("DoesNotExist", [("id", SQL_INTEGER)], [], schema=tvp_schema),
+        )
+    assert cursor.execute("SELECT 42").fetchone()[0] == 42
+    with pytest.raises(DatabaseError):
+        cursor.execute(
+            f"EXEC [{tvp_schema}].CountRows ?",
+            TableValuedParameter(
+                "Items", [("only_column", SQL_INTEGER)], [(1,)], schema=tvp_schema
             ),
+        )
+    assert cursor.execute("SELECT 43").fetchone()[0] == 43
+
+
+def test_multiple_generator_tvps_and_large_scalar(cursor, tvp_schema):
+    cursor.execute(
+        f"EXEC [{tvp_schema}].Pair ?, ?",
+        items(tvp_schema, iter([(1, "left"), (2, None)])),
+        items(tvp_schema, iter([(3, "right")])),
+    )
+    assert sorted(tuple(row) for row in cursor.fetchall()) == [(1, "left"), (2, None), (3, "right")]
+    suffix = "🚀" * 8000
+    cursor.execute(
+        f"EXEC [{tvp_schema}].Echo ?, ?, ?", 0, items(tvp_schema, iter([(1, "head")])), suffix
+    )
+    assert tuple(cursor.fetchone()) == (1, "head" + suffix)
+
+
+def test_executemany_and_inputsizes_reject_tvps_before_consumption(cursor, tvp_schema):
+    def rows():
+        pytest.fail("Unsupported operation consumed a TVP row source")
+        yield 1, "never"
+
+    value = items(tvp_schema, rows())
+    with pytest.raises(NotSupportedError, match="executemany"):
+        cursor.executemany(f"EXEC [{tvp_schema}].CountRows ?", [(value,)])
+    cursor.setinputsizes([SQL_INTEGER])
+    try:
+        with pytest.raises(NotSupportedError, match="setinputsizes"):
+            cursor.execute(f"EXEC [{tvp_schema}].CountRows ?", value)
+    finally:
+        cursor.setinputsizes([])
+    assert cursor.execute("SELECT 1").fetchone()[0] == 1
+
+
+@pytest.mark.parametrize("operation", ["execute", "close"])
+def test_generator_cannot_reenter_its_cursor(cursor, tvp_schema, operation):
+    def rows():
+        yield 1, "first"
+        if operation == "execute":
+            cursor.execute("SELECT 99")
+        else:
+            cursor.close()
+        yield 2, "second"
+
+    with pytest.raises(DatabaseError, match="while it is executing"):
+        cursor.execute(f"EXEC [{tvp_schema}].CountRows ?", items(tvp_schema, rows()))
+    assert cursor.execute("SELECT 42").fetchone()[0] == 42
+
+
+def _run_isolated_stream_checks(mode, schema):
+    connection_string = os.environ["DB_CONNECTION_STRING"]
+    if mode == "forwarder":
+        target = _parse_server(connection_string)
+        assert target is not None
+        connection_string = _replace_server(connection_string, *_start_forwarder(target))
+    connection = connect(connection_string, autocommit=True)
+    cursor = connection.cursor()
+    try:
+        if mode == "disconnect":
+            original = ValueError("original source failure after disconnect")
+            source_errors = []
+
+            def rows():
+                yield 1, "first"
+                try:
+                    connection.close()
+                except DatabaseError as error:
+                    source_errors.append(error)
+                    raise
+                source_errors.append(original)
+                raise original
+
+            try:
+                cursor.execute(f"EXEC [{schema}].CountRows ?", items(schema, rows()))
+            except (ValueError, DatabaseError) as error:
+                assert error is source_errors[0]
+            else:
+                raise AssertionError("Lost the original iterator error")
+            print("OK TVP streaming")
+            return
+        elif mode == "cancel":
+            waiting = threading.Event()
+            resume = threading.Event()
+            errors = []
+
+            def rows():
+                yield 1, "first"
+                waiting.set()
+                assert resume.wait(10)
+                yield 2, "second"
+
+            def execute():
+                try:
+                    cursor.execute(f"EXEC [{schema}].CountRows ?", items(schema, rows()))
+                except BaseException as error:
+                    errors.append(error)
+
+            worker = threading.Thread(target=execute)
+            worker.start()
+            assert waiting.wait(10)
+            try:
+                cursor.hstmt._cancel()
+            finally:
+                resume.set()
+            worker.join(10)
+            assert not worker.is_alive()
+            assert len(errors) == 1 and isinstance(errors[0], DatabaseError)
+        else:
+            count = 20000 if mode == "memory" else 1000
+            if mode == "memory":
+                import resource
+
+                before = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+            cursor.execute(
+                f"EXEC [{schema}].CountRows ?",
+                items(schema, ((i, str(i).ljust(4096, "x")) for i in range(count))),
+            )
+            assert tuple(cursor.fetchone()) == (count, count * (count - 1) // 2)
+            if mode == "memory":
+                growth = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss - before
+                if sys.platform != "darwin":
+                    growth *= 1024
+                # Input exceeds 80MB of Python text / 160MB UTF-16. Additional
+                # native and Python memory must stay below a table-sized copy.
+                assert growth < 64 * 1024 * 1024, growth
+                print(f"peak RSS growth: {growth} bytes")
+        assert cursor.execute("SELECT 42").fetchone()[0] == 42
+    finally:
+        cursor.close()
+        connection.close()
+    print("OK TVP streaming")
+
+
+@pytest.mark.parametrize(
+    "mode",
+    [
+        "cancel",
+        "forwarder",
+        "disconnect",
+        pytest.param(
+            "memory",
+            marks=pytest.mark.skipif(sys.platform == "win32", reason="POSIX resource accounting"),
         ),
     ],
 )
-def test_tvp_metadata_through_python_forwarder_does_not_deadlock(
-    conn_str, wide_tvp_procedure, metadata_error
-):
-    if not conn_str or _parse_server(conn_str) is None:
-        pytest.skip("Requires DB_CONNECTION_STRING with Server=host,port")
+def test_isolated_stream_lifecycle(conn_str, tvp_schema, mode):
+    if mode == "forwarder" and _parse_server(conn_str) is None:
+        pytest.skip("Requires a Server=host,port connection string")
     env = os.environ.copy()
     env["PYTHONPATH"] = os.pathsep.join(sys.path)
-    env["TVP_GIL_PROCEDURE"] = wide_tvp_procedure
-    env["TVP_GIL_METADATA_ERROR"] = str(int(metadata_error))
-    try:
-        result = subprocess.run(
-            [
-                sys.executable,
-                "-c",
-                "from test_028_table_valued_parameters import _run_forwarded_tvp; "
-                "_run_forwarded_tvp()",
-            ],
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=WATCHDOG_SECONDS,
-        )
-    except subprocess.TimeoutExpired:
-        pytest.fail(
-            f"TVP metadata through the Python forwarder deadlocked after {WATCHDOG_SECONDS}s"
-        )
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from test_028_table_valued_parameters import _run_isolated_stream_checks;"
+            f"_run_isolated_stream_checks({mode!r}, {tvp_schema!r})",
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=WATCHDOG_SECONDS,
+    )
     assert result.returncode == 0, result.stdout + result.stderr
-    assert "OK forwarded TVP metadata" in result.stdout
+    assert "OK TVP streaming" in result.stdout
+    print(result.stdout, end="")

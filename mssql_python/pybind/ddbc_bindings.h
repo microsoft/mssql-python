@@ -57,10 +57,6 @@ using py::literals::operator""_a;
 #define SQL_SS_TABLE (-153)
 #define SQL_CA_SS_VARIANT_TYPE (1215)
 #define SQL_SOPT_SS_PARAM_FOCUS (1236)
-#define SQL_SOPT_SS_NAME_SCOPE (1237)
-#define SQL_SS_NAME_SCOPE_TABLE (0L)
-#define SQL_SS_NAME_SCOPE_TABLE_TYPE (1L)
-#define SQL_CA_SS_CATALOG_NAME (1225)
 #define SQL_CA_SS_SCHEMA_NAME (1226)
 #define SQL_CA_SS_TYPE_NAME (1227)
 
@@ -97,8 +93,6 @@ typedef SQLRETURN(SQL_API* SQLExecuteFunc)(SQLHANDLE);
 typedef SQLRETURN(SQL_API* SQLRowCountFunc)(SQLHSTMT, SQLLEN*);
 typedef SQLRETURN(SQL_API* SQLSetDescFieldFunc)(SQLHDESC, SQLSMALLINT, SQLSMALLINT, SQLPOINTER,
                                                 SQLINTEGER);
-typedef SQLRETURN(SQL_API* SQLGetDescFieldFunc)(SQLHDESC, SQLSMALLINT, SQLSMALLINT, SQLPOINTER,
-                                                SQLINTEGER, SQLINTEGER*);
 typedef SQLRETURN(SQL_API* SQLGetStmtAttrFunc)(SQLHSTMT, SQLINTEGER, SQLPOINTER, SQLINTEGER,
                                                SQLINTEGER*);
 
@@ -186,7 +180,6 @@ extern SQLBindParameterFunc SQLBindParameter_ptr;
 extern SQLExecuteFunc SQLExecute_ptr;
 extern SQLRowCountFunc SQLRowCount_ptr;
 extern SQLSetDescFieldFunc SQLSetDescField_ptr;
-extern SQLGetDescFieldFunc SQLGetDescField_ptr;
 extern SQLGetStmtAttrFunc SQLGetStmtAttr_ptr;
 
 // Data retrieval APIs
@@ -299,13 +292,6 @@ struct DescribedParamInfo {
     SQLSMALLINT decimalDigits;
 };
 
-struct TvpParamInfo {
-    std::u16string catalog;
-    std::u16string schema;
-    std::u16string typeName;
-    std::vector<DescribedParamInfo> columns;
-};
-
 struct ConnectionCleanupState {
     std::mutex mutex;
     bool disconnected = false;  // Protected by mutex, shared with every child.
@@ -329,6 +315,9 @@ class SqlHandle {
     // unavailable.
     void cancel();
     bool isImplicitlyFreed() const { return _implicitly_freed; }
+    void retainFailedParameters(std::vector<std::shared_ptr<void>> buffers) {
+        _failedParameterBuffers = std::move(buffers);
+    }
 
     // Mark this handle as implicitly freed (freed by parent handle)
     // This prevents double-free attempts when the ODBC driver automatically
@@ -350,11 +339,7 @@ class SqlHandle {
     // on handle free. No mutex needed — ODBC statement handles are not
     // thread-safe by spec (same assumption as the rest of the driver).
     std::unordered_map<int, DescribedParamInfo> describeCache;
-    std::unordered_map<int, TvpParamInfo> tvpCache;
-    void clearDescribeCache() {
-        describeCache.clear();
-        tvpCache.clear();
-    }
+    void clearDescribeCache() { describeCache.clear(); }
     ResultMetadataCache resultMetadata;
 
   private:
@@ -364,6 +349,9 @@ class SqlHandle {
     SQLHANDLE _handle;
     bool _implicitly_freed = false;  // Tracks if handle was freed by parent
     std::shared_ptr<ConnectionCleanupState> _cleanupState;
+    // Only populated if both parameter reset and handle release fail. The
+    // handle is then unusable, but its bound storage lives through teardown.
+    std::vector<std::shared_ptr<void>> _failedParameterBuffers;
 };
 using SqlHandlePtr = std::shared_ptr<SqlHandle>;
 

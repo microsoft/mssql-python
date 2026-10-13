@@ -16,6 +16,7 @@ import logging
 import uuid
 import datetime
 import warnings
+from collections.abc import AsyncIterable
 from typing import List, Mapping, Union, Any, Optional, Tuple, Sequence, TYPE_CHECKING, Iterable
 from mssql_python.constants import ConstantsDDBC as ddbc_sql_const, SQLTypes
 from mssql_python.helpers import check_error, connstr_to_pycore_params
@@ -29,6 +30,7 @@ from mssql_python.exceptions import (
     DatabaseError,
 )
 from mssql_python.row import Row
+from mssql_python.table_valued_parameter import TableValuedParameter
 from mssql_python.perf_timer import perf_phase
 from mssql_python import get_settings
 from mssql_python.odbc_provider import ProviderManager, PROVIDER_MSSQL_ODBC
@@ -387,10 +389,10 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         # an HSTMT exists.
         self.closed: bool = False
         self.hstmt: Optional[Any] = None
-        self._tvp_metadata_hstmt: Optional[Any] = None
 
         self._connection: "Connection" = connection  # Store as private attribute
         self._timeout: int = timeout
+        self._executing = False
         self._inputsizes: Optional[List[Tuple[int, int, int, int]]] = None
         # self.connection.autocommit = False
         self._initialize_cursor()
@@ -1036,7 +1038,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         """
         self.hstmt = self._connection._conn.alloc_statement_handle()
 
-    def _set_timeout(self, statement_handle=None) -> None:
+    def _set_timeout(self) -> None:
         """
         Set the query timeout attribute on the statement handle.
         This is called once when the cursor is created and after any handle reallocation.
@@ -1046,13 +1048,12 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             logger.debug("_set_timeout: Setting query timeout=%d seconds", self._timeout)
             try:
                 timeout_value = int(self._timeout)
-                target_handle = statement_handle or self.hstmt
                 ret = ddbc_bindings.DDBCSQLSetStmtAttr(
-                    target_handle,
+                    self.hstmt,
                     ddbc_sql_const.SQL_ATTR_QUERY_TIMEOUT.value,
                     timeout_value,
                 )
-                check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, target_handle, ret)
+                check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
                 logger.debug("Query timeout set to %d seconds", timeout_value)
             except Exception as e:  # pylint: disable=broad-exception-caught
                 logger.warning("Failed to set query timeout: %s", str(e))
@@ -1107,6 +1108,8 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         if getattr(self, "closed", True):
             # Do nothing - not calling _check_closed() here since we want this to be idempotent
             return
+        if getattr(self, "_executing", False):
+            raise ProgrammingError("Cannot close a cursor while it is executing", "")
 
         # Clear messages per DBAPI
         self.messages = []
@@ -1122,9 +1125,6 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             self.hstmt.free()
             self.hstmt = None
             logger.debug("SQLFreeHandle succeeded")
-        if self._tvp_metadata_hstmt:
-            self._tvp_metadata_hstmt.free()
-            self._tvp_metadata_hstmt = None
         self._clear_rownumber()
         self.closed = True
 
@@ -1135,6 +1135,8 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         Raises:
             ProgrammingError: If the cursor is closed.
         """
+        if getattr(self, "_executing", False):
+            raise ProgrammingError("Cannot reuse a cursor while it is executing", "")
         if self.closed:
             raise ProgrammingError(
                 driver_error="Operation cannot be performed: The cursor is closed.",
@@ -1805,9 +1807,8 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         #
         # Important: If you pass a tuple/list/dict as the ONLY argument,
         # it will be unwrapped for parameter binding. This means you cannot
-        # pass a tuple as a single scalar parameter value. A TVP remains one
-        # parameter by wrapping its rows in the ordinary outer parameter tuple:
-        # execute("EXEC dbo.proc ?", (rows,))
+        # pass a tuple as a single scalar parameter value. A TVP is explicitly
+        # wrapped in TableValuedParameter and remains one parameter.
         with perf_phase("py::execute::param_prep"):
             if parameters:
                 # Check if single parameter is a nested container that should be unwrapped
@@ -1843,9 +1844,19 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         # Getting encoding setting
         encoding_settings = self._get_encoding_settings()
 
+        if any(
+            isinstance(parameter, TableValuedParameter)
+            and isinstance(parameter.rows, AsyncIterable)
+            for parameter in parameters
+        ):
+            raise NotSupportedError(
+                "Synchronous TVPs require a synchronous row source",
+                "Use a list, tuple, or synchronous iterator",
+            )
+
         # Validate that inputsizes matches parameter count if both are present
         if parameters and self._inputsizes:
-            if any(isinstance(parameter, (list, tuple)) for parameter in parameters):
+            if any(isinstance(parameter, TableValuedParameter) for parameter in parameters):
                 raise NotSupportedError(
                     "setinputsizes does not support table-valued parameters",
                     "Remove setinputsizes for statements that pass TVP rows",
@@ -1867,24 +1878,19 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             self.is_stmt_prepared = [False]
         effective_use_prepare = use_prepare and not same_sql
 
+        self._executing = True
         try:
             with perf_phase("py::execute::cpp_call"):
                 if parameters:
-                    if any(isinstance(parameter, (list, tuple)) for parameter in parameters):
+                    if any(isinstance(parameter, TableValuedParameter) for parameter in parameters):
                         if ProviderManager.effective() == PROVIDER_MSSQL_ODBC:
                             raise NotSupportedError(
                                 "Table-valued parameters are not supported by "
                                 "the mssql-odbc provider",
                                 "Use the default msodbcsql18 provider for TVP statements",
                             )
-                        if self._tvp_metadata_hstmt is None:
-                            self._tvp_metadata_hstmt = (
-                                self._connection._conn.alloc_statement_handle()
-                            )
-                            self._set_timeout(self._tvp_metadata_hstmt)
                     ret = ddbc_bindings.DDBCSQLExecute(
                         self.hstmt,
-                        self._tvp_metadata_hstmt,
                         operation,
                         parameters,
                         self._inputsizes,
@@ -1896,10 +1902,17 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                     ret = ddbc_bindings.DDBCSQLExecDirect(self.hstmt, operation)
             # Check for errors but don't raise exceptions for info/warning messages
             check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
-        except Exception as e:  # pylint: disable=broad-exception-caught
+        except BaseException as e:  # Reset even when a TVP iterator raises KeyboardInterrupt.
             logger.warning("Execute failed, resetting cursor: %s", e)
-            self._reset_cursor()
+            try:
+                self._reset_cursor()
+            except Exception as cleanup_error:
+                # A callback may have closed the connection. Preserve its
+                # original error instead of replacing it with an allocation error.
+                logger.warning("Cursor recovery failed: %s", cleanup_error)
             raise
+        finally:
+            self._executing = False
 
         # Capture any diagnostic messages (SQL_SUCCESS_WITH_INFO, etc.)
         with perf_phase("py::execute::diag_records"):
@@ -2507,6 +2520,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             if hasattr(seq_of_parameters, "__getitem__")
             else next(iter(seq_of_parameters))
         )
+
         if isinstance(first_row, dict):
             # pyformat style - convert all rows
             # Parse parameter names from SQL (determines order for all rows)
@@ -2571,15 +2585,16 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         # Prepare parameter type information
         with perf_phase("py::executemany::param_type_detection"):
             for col_index in range(param_count):
-                column = []
-                for row in seq_of_parameters:
-                    value = row[col_index]
-                    if isinstance(value, (list, tuple)):
-                        raise NotSupportedError(
-                            "executemany does not support table-valued parameters",
-                            "Use execute for each TVP operation",
-                        )
-                    column.append(value)
+                column = (
+                    [row[col_index] for row in seq_of_parameters]
+                    if hasattr(seq_of_parameters, "__getitem__")
+                    else []
+                )
+                if any(isinstance(value, TableValuedParameter) for value in column):
+                    raise NotSupportedError(
+                        "executemany does not support table-valued parameters",
+                        "Use execute for each TVP operation",
+                    )
                 sample_value, min_val, max_val, _ = self._compute_column_type(column)
 
                 if self._inputsizes and col_index < len(self._inputsizes):

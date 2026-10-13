@@ -7,10 +7,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 ## [Unreleased]
 
 ### Added
-- **AB#48177:** Added input table-valued parameter support for stored procedure
-  calls. Pass a materialized list or tuple of rows as one `execute()` parameter,
-  including empty tables and positional or named parameters. The Rust ODBC
-  provider does not yet support TVPs.
+- **AB#48177:** Added explicit `TableValuedParameter(type_name, columns, rows,
+  schema=...)` input values. Sync `execute()` streams lists, tuples and iterators
+  through native ODBC data-at-execution using one row of additional storage and
+  one procedure invocation, without discovering table metadata. Async execution
+  adapts materialized rows to the pinned native core; iterator streaming is not
+  available asynchronously. See README for current native async schema limits.
 - New feature: Support for macOS and Linux.
 - Documentation: Added API documentation in the Wiki.
 - New `token_provider=` parameter on `connect()` / `Connection` for Microsoft
