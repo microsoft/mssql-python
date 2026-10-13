@@ -479,7 +479,13 @@ def rehearse_auth() -> None:
     from binstar_client.utils import get_server_api  # type: ignore[import-not-found]
 
     api = get_server_api(token=token, config={"url": _ANACONDA_API_URL, "ssl_verify": True})
-    api.session.request = partial(api.session.request, timeout=(15, 60), allow_redirects=False)
+    request = api.session.request
+
+    def rehearsal_request(*args: Any, **kwargs: Any) -> Any:
+        kwargs.update(timeout=(15, 60), allow_redirects=False)
+        return request(*args, **kwargs)
+
+    api.session.request = rehearsal_request
     try:
         api.user()
     except Unauthorized as error:

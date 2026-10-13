@@ -1977,7 +1977,10 @@ def test_rehearsal_auth_rejects_only_401_without_writes(monkeypatch, capsys, out
         return {"login": "unexpected"}
 
     api = types.SimpleNamespace(session=types.SimpleNamespace(request=request))
-    api.user = lambda: api.session.request("GET", "https://api.anaconda.org/user")
+    # Requests Session.get supplies this default at call time.
+    api.user = lambda: api.session.request(
+        "GET", "https://api.anaconda.org/user", allow_redirects=True
+    )
 
     def get_server_api(**kwargs):
         clients.append(kwargs)
