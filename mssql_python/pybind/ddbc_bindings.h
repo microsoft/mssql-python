@@ -292,9 +292,20 @@ struct DescribedParamInfo {
     SQLSMALLINT decimalDigits;
 };
 
+class FailedParameterBuffers {
+  public:
+    explicit FailedParameterBuffers(std::vector<std::shared_ptr<void>> buffers);
+    ~FailedParameterBuffers();
+    void release() { _buffers.reset(); }
+
+  private:
+    std::unique_ptr<std::vector<std::shared_ptr<void>>> _buffers;
+};
+
 struct ConnectionCleanupState {
     std::mutex mutex;
     bool disconnected = false;  // Protected by mutex, shared with every child.
+    std::vector<std::shared_ptr<FailedParameterBuffers>> failedParameterBuffers;
 };
 
 class SqlHandle {
@@ -315,9 +326,7 @@ class SqlHandle {
     // unavailable.
     void cancel();
     bool isImplicitlyFreed() const { return _implicitly_freed; }
-    void retainFailedParameters(std::vector<std::shared_ptr<void>> buffers) {
-        _failedParameterBuffers = std::move(buffers);
-    }
+    void retainFailedParameters(std::vector<std::shared_ptr<void>> buffers);
 
     // Mark this handle as implicitly freed (freed by parent handle)
     // This prevents double-free attempts when the ODBC driver automatically
@@ -350,8 +359,8 @@ class SqlHandle {
     bool _implicitly_freed = false;  // Tracks if handle was freed by parent
     std::shared_ptr<ConnectionCleanupState> _cleanupState;
     // Only populated if both parameter reset and handle release fail. The
-    // handle is then unusable, but its bound storage lives through teardown.
-    std::vector<std::shared_ptr<void>> _failedParameterBuffers;
+    // The connection also retains this native storage if the wrapper is dropped.
+    std::shared_ptr<FailedParameterBuffers> _failedParameterBuffers;
 };
 using SqlHandlePtr = std::shared_ptr<SqlHandle>;
 

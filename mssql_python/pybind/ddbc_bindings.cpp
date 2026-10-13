@@ -1621,6 +1621,18 @@ void DriverLoader::loadDriver() {
     }
 }
 
+FailedParameterBuffers::FailedParameterBuffers(std::vector<std::shared_ptr<void>> buffers)
+    : _buffers(std::make_unique<std::vector<std::shared_ptr<void>>>(std::move(buffers))) {}
+
+FailedParameterBuffers::~FailedParameterBuffers() {
+    if (_buffers) {
+        // If even parent teardown failed, the driver may still use these addresses.
+        // Abandon native storage to process teardown rather than free bound buffers.
+        std::fputs("mssql-python: retaining parameter storage after failed native teardown\n", stderr);
+        _buffers.release();
+    }
+}
+
 // SqlHandle definition
 SqlHandle::SqlHandle(SQLSMALLINT type, SQLHANDLE rawHandle,
                      std::shared_ptr<ConnectionCleanupState> cleanupState)
@@ -1640,7 +1652,18 @@ std::unique_lock<std::mutex> SqlHandle::lockForCleanup() const {
 }
 
 SQLHANDLE SqlHandle::get() const {
-    return _failedParameterBuffers.empty() ? _handle : nullptr;
+    return _failedParameterBuffers ? nullptr : _handle;
+}
+
+void SqlHandle::retainFailedParameters(std::vector<std::shared_ptr<void>> buffers) {
+    _failedParameterBuffers = std::make_shared<FailedParameterBuffers>(std::move(buffers));
+    py::gil_scoped_release release;
+    auto cleanupLock = lockForCleanup();
+    if (!_handle || _implicitly_freed || (_cleanupState && _cleanupState->disconnected)) {
+        _failedParameterBuffers->release();
+    } else if (_cleanupState) {
+        _cleanupState->failedParameterBuffers.push_back(_failedParameterBuffers);
+    }
 }
 
 SQLSMALLINT SqlHandle::type() const {
@@ -1698,13 +1721,13 @@ SQLRETURN SqlHandle::freeHandle() {
             return SQL_INVALID_HANDLE;
         }
         clearDescribeCache();
-        if (_implicitly_freed || (_cleanupState && _cleanupState->disconnected)) {
-            _handle = nullptr;
-            return SQL_SUCCESS;
+        SQLRETURN ret = SQL_SUCCESS;
+        if (!_implicitly_freed && !(_cleanupState && _cleanupState->disconnected)) {
+            ret = SQLFreeHandle_ptr(_type, _handle);
         }
-        SQLRETURN ret = SQLFreeHandle_ptr(_type, _handle);
         if (SQL_SUCCEEDED(ret)) {
             _handle = nullptr;
+            if (_failedParameterBuffers) _failedParameterBuffers->release();
         }
         return ret;
     };
