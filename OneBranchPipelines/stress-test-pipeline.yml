@@ -387,7 +387,7 @@ jobs:
 
   # Run original stress tests
   - script: |
-      python -m pytest tests/test_011_singlethreaded_stress.py -v -m "stress" --junitxml=perf-stress-test-results-linux.xml --timeout=1800 --capture=tee-sys
+      python -m pytest tests/test_011_singlethreaded_stress.py "tests/test_028_table_valued_parameters.py::test_isolated_stream_lifecycle[memory]" -v -m "stress" --junitxml=perf-stress-test-results-linux.xml --timeout=1800 --capture=tee-sys
     displayName: 'Run Single-Threaded Stress Tests'
     env:
       DB_CONNECTION_STRING: 'Server=localhost;Database=StressTestDB;Uid=testuser;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
@@ -437,6 +437,7 @@ jobs:
       echo "Tests executed:"
       echo "  - test_020_multithreaded_stress.py (stress marker)"
       echo "  - test_011_singlethreaded_stress.py (stress marker)"
+      echo "  - test_028_table_valued_parameters.py::test_isolated_stream_lifecycle[memory] (Linux stress)"
       echo ""
       echo "See individual job results for details."
     displayName: 'Print Summary'

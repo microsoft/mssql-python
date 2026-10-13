@@ -644,7 +644,10 @@ def _run_isolated_stream_checks(mode, schema):
         "disconnect",
         pytest.param(
             "memory",
-            marks=pytest.mark.skipif(sys.platform == "win32", reason="POSIX resource accounting"),
+            marks=[
+                pytest.mark.stress,
+                pytest.mark.skipif(sys.platform == "win32", reason="POSIX resource accounting"),
+            ],
         ),
     ],
 )
@@ -655,18 +658,31 @@ def test_isolated_stream_lifecycle(conn_str, tvp_schema, mode):
             pytest.skip("TCP forwarding requires a host, not a LocalDB or named-pipe instance")
     env = os.environ.copy()
     env["PYTHONPATH"] = os.pathsep.join(sys.path)
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            "from test_028_table_valued_parameters import _run_isolated_stream_checks;"
-            f"_run_isolated_stream_checks({mode!r}, {tvp_schema!r})",
-        ],
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=WATCHDOG_SECONDS,
-    )
+    # The memory stress case sends 160MB, unlike the short deadlock probes.
+    # Keep the same row count and RSS bound, but allow slower transport.
+    timeout = 120 if mode == "memory" else WATCHDOG_SECONDS
+    try:
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-u",
+                "-c",
+                "import faulthandler;"
+                f"faulthandler.dump_traceback_later({timeout - 5});"
+                "from test_028_table_valued_parameters import _run_isolated_stream_checks;"
+                f"_run_isolated_stream_checks({mode!r}, {tvp_schema!r})",
+            ],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as error:
+        output = "".join(
+            chunk.decode(errors="replace") if isinstance(chunk, bytes) else chunk or ""
+            for chunk in (error.stdout, error.stderr)
+        )
+        pytest.fail(f"TVP {mode} subprocess exceeded {timeout}s:\n{output}")
     assert result.returncode == 0, result.stdout + result.stderr
     assert "OK TVP streaming" in result.stdout
     print(result.stdout, end="")
