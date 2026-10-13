@@ -7,6 +7,7 @@ import sys
 import threading
 import uuid
 import weakref
+from collections import UserList
 from decimal import Decimal, localcontext
 
 import pytest
@@ -346,6 +347,14 @@ def test_explicit_contract_validation(kwargs, error):
     arguments.update(kwargs)
     with pytest.raises(error):
         TableValuedParameter(**arguments)
+
+
+@pytest.mark.parametrize("container", [list, tuple, UserList])
+def test_column_sequences_match_public_contract(container):
+    columns = container([("id", SQL_INTEGER), ("label", SQL_WVARCHAR, 100)])
+    value = TableValuedParameter("Items", columns, [])
+    assert value.columns == (("id", SQL_INTEGER, 10, 0), ("label", SQL_WVARCHAR, 100, 0))
+    assert columns == container([("id", SQL_INTEGER), ("label", SQL_WVARCHAR, 100)])
 
 
 @pytest.mark.parametrize("bad", [2**31, -(2**31) - 1])

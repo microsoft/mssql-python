@@ -1,6 +1,6 @@
 """Explicit, transport-neutral input values for SQL Server table types."""
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from datetime import date, datetime, time
 from decimal import Decimal
 from uuid import UUID
@@ -37,8 +37,8 @@ class TableValuedParameter:
                 or len(name.encode("utf-16le")) > 256
             ):
                 raise ValueError("TVP names must be unquoted identifiers of 1–128 UTF-16 units")
-        if not isinstance(columns, (list, tuple)) or not columns:
-            raise TypeError("TVP columns must be a non-empty list or tuple")
+        if not isinstance(columns, Sequence) or not columns:
+            raise TypeError("TVP columns must be a non-empty sequence")
         normalized = []
         for column in columns:
             if not isinstance(column, tuple) or not 2 <= len(column) <= 4:
