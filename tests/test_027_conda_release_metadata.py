@@ -551,6 +551,93 @@ def test_posix_python_selection_survives_public_pipeline_variables(selected):
     assert step_env.get(argument[1], "") == selected
 
 
+def _run_conda_powershell(script, env=None):
+    import shutil
+    import subprocess
+
+    shell = shutil.which("powershell") or shutil.which("pwsh")
+    assert shell is not None, "The Windows Conda tasks require PowerShell"
+    return subprocess.run(
+        [
+            shell,
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "$ErrorActionPreference = 'Stop'\n" + script,
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+
+@pytest.fixture(params=["release", "publish"])
+def conda_matrix_step(request):
+    source = (_ROOT / f"OneBranchPipelines/steps/conda-{request.param}-step.yml").read_text(
+        encoding="utf-8"
+    )
+    parameters = dict(
+        re.findall(r"- name: (\w+)\n    type: string\n    default: '([^']*)'", source)
+    )
+    step = source.rsplit("  - task: PowerShell@2\n", 1)[1]
+    environment = dict(
+        re.findall(r"^      (\w+): '\$\{\{ parameters\.(\w+) \}\}'$", step, re.MULTILINE)
+    )
+    return request.param, step, parameters, environment
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Release tasks run on Windows")
+@pytest.mark.parametrize("selected", [None, "3.12,3.15", "", " \t "])
+def test_release_matrix_powershell_arguments(conda_matrix_step, selected):
+    import os
+    import textwrap
+
+    kind, step, parameters, environment = conda_matrix_step
+    if selected is not None:
+        parameters["pythonVersions"] = selected
+    env = dict(os.environ)
+    env.update({name: parameters[parameter] for name, parameter in environment.items()})
+    env["PYTHON_VERSIONS"] = "3.10,3.11,3.12,3.13,3.14"
+    if kind == "release":
+        start = step.index("        foreach ($policy in @(")
+        script = step[start:]
+    else:
+        start = step.index("        & $pythonExecutable -m eng.conda_tools validate `")
+        script = step[start : step.index("        $promoter =")]
+    # Execute the production guard/argument construction, but never publish or contact a service.
+    result = _run_conda_powershell(
+        """
+$root = 'unused'
+$pythonExecutable = 'python'
+function python {
+    Write-Output ('GATE_ARGS:' + (ConvertTo-Json -InputObject @($args) -Compress))
+    $global:LASTEXITCODE = 0
+}
+""" + textwrap.dedent(script),
+        env=env,
+    )
+    expected = parameters["pythonVersions"]
+    if kind == "release" and not expected.strip():
+        assert result.returncode != 0
+        assert "is empty. Refusing to weaken the release matrix." in result.stderr
+        assert "GATE_ARGS:" not in result.stdout
+    else:
+        assert result.returncode == 0, result.stdout + result.stderr
+        calls = [
+            json.loads(line.removeprefix("GATE_ARGS:"))
+            for line in result.stdout.splitlines()
+            if line.startswith("GATE_ARGS:")
+        ]
+        assert len(calls) == 1
+        assert calls[0][:3] == ["-m", "eng.conda_tools", "validate"]
+        arguments = cli.parser().parse_args(calls[0][2:])
+        assert arguments.pythons == expected
+        assert arguments.required_subdirs == parameters["requiredSubdirs"]
+        assert arguments.allowed_subdirs == parameters["allowedSubdirs"]
+        assert "--release-versions" in calls[0]
+
+
 def test_parse_subdir_pythons():
     assert vcr._parse_subdir_pythons("") == {}
     assert vcr._parse_subdir_pythons("a=3.10;b=3.11,3.12") == {
@@ -1753,46 +1840,273 @@ def test_publication_lock_covers_the_complete_release_stage():
     assert "- job: PublishConda" in jobs
 
 
-def test_dry_release_excludes_the_complete_publication_job():
+def test_dry_release_shares_the_official_publisher_without_credentials():
     pipeline = (_ROOT / "OneBranchPipelines" / "conda-release-pipeline.yml").read_text()
-    assert "    default: false  # Safety: default to a validate-only dry run." in pipeline
-    guarded_job = pipeline.split(
-        "          - ${{ if eq(parameters.publishToConda, true) }}:\n"
-        "            - job: PublishConda\n",
-        1,
-    )[1]
-    assert "              dependsOn: ValidateConda\n" in guarded_job
-    assert "                type: releaseJob\n                isProduction: true\n" in guarded_job
+    assert "default: false  # Safety: default to a secretless" in pipeline
+    assert "OneBranch.NonOfficial" not in pipeline
+    guarded_job = pipeline.split("          - job: PublishConda\n", 1)[1]
+    assert "            dependsOn: ValidateConda\n" in guarded_job
+    assert (
+        "              type: releaseJob\n"
+        "              isProduction: ${{ parameters.publishToConda }}\n"
+    ) in guarded_job
     template = "/OneBranchPipelines/steps/conda-publish-step.yml@self"
     assert pipeline.count(template) == 1
     assert template in guarded_job
+    assert "                  publishToConda: ${{ parameters.publishToConda }}" in guarded_job
+    assert "path: s" in guarded_job
+    assert (
+        "WindowsContainerImage: 'onebranch.azurecr.io/windows/ltsc2022/vse2022:latest'"
+        in guarded_job.split("            steps:\n", 1)[0]
+    )
+    assert pipeline.count("task: UsePythonVersion@0") == 1
     publisher = (_ROOT / "OneBranchPipelines" / "steps" / "conda-publish-step.yml").read_text()
+    assert (
+        "      ${{ if eq(parameters.publishToConda, true) }}:\n"
+        "        ANACONDA_API_TOKEN: $(ANACONDA_API_TOKEN)\n"
+        "      ${{ else }}:\n"
+        "        ANACONDA_API_TOKEN: ''\n"
+    ) in publisher
+    assert publisher.index("foreach ($audit") < publisher.index("rehearse_auth()")
+    assert publisher.index("rehearse_auth()") < publisher.index("Invoke-Anaconda @('upload'")
     assert "Invoke-Anaconda @('upload'" in publisher
-    assert "python -m eng.conda_tools promote `" in publisher
+    assert "& $pythonExecutable -m eng.conda_tools promote `" in publisher
     assert "--cleanup-staging `" in publisher
     assert "\nstages:" not in publisher and "\njobs:" not in publisher
 
 
-@pytest.mark.skipif(sys.platform != "win32", reason="Publishing task runs on Windows")
-@pytest.mark.parametrize("token", [None, "", " \t ", "synthetic-reviewed-token"])
-@pytest.mark.parametrize("other_token", [None, "", "synthetic-other-token"])
-def test_upload_task_uses_only_reviewed_token(tmp_path, token, other_token):
+def test_publisher_reuses_verified_image_python_without_fallback():
+    source = (_ROOT / "OneBranchPipelines/steps/conda-publish-step.yml").read_text(encoding="utf-8")
+    bootstrap, publisher = source.split("  - task: PowerShell@2\n")[1:]
+    assert "container: windows_build_container\n      commands: restricted" in bootstrap
+    assert '\'@ | & $basePython -I - "$baseDirectory"' in bootstrap
+    assert "sys.version_info[:2] == (3, 12)" in bootstrap
+    assert 'sysconfig.get_platform() == "win-amd64"' in bootstrap
+    assert "for m in (ssl, venv, encodings, _ssl, ensurepip, et)" in bootstrap
+    assert bootstrap.index("PUBLISHER_BASE_STDLIB_OK") < bootstrap.index("-I -m venv")
+    assert bootstrap.index("PUBLISHER_VENV_OK") < bootstrap.index("-m pip --isolated install")
+    assert "variable=pythonExecutable;isOutput=true;isReadOnly=true" in bootstrap
+    assert "MSSQL_CONDA_PUBLISHER_PYTHON: '$(PublisherBootstrap.pythonExecutable)'" in publisher
+    assert not re.search(r"^\s+python ", publisher, re.MULTILINE)
+    assert "UsePythonVersion" not in source
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Publisher preparation runs on Windows")
+@pytest.mark.parametrize("outcome", ["success", "missing", "invalid-runtime"])
+def test_publisher_checks_image_before_creating_environment(outcome):
     import os
-    import shutil
-    import subprocess
     import textwrap
 
-    shell = shutil.which("powershell") or shutil.which("pwsh")
-    assert shell is not None, "The Windows publishing task requires PowerShell"
+    source = (_ROOT / "OneBranchPipelines/steps/conda-publish-step.yml").read_text()
+    bootstrap = source.split("  - task: PowerShell@2\n")[1]
+    script = textwrap.dedent(bootstrap.split("      script: |\n", 1)[1]).split("$lock =", 1)[0]
+    health = script.split("@'\n", 1)[1].split("\n'@ |", 1)[0]
+    compile(health, "<publisher-image-check>", "exec")
+    result = _run_conda_powershell(
+        """
+Import-Module Microsoft.PowerShell.Management
+function Join-Path {
+    param($Path, $ChildPath)
+    if ($ChildPath -eq 'python.exe') { return 'mock-python' }
+    Microsoft.PowerShell.Management\\Join-Path $Path $ChildPath
+}
+function Test-Path {
+    param($LiteralPath, $PathType)
+    if ($PathType -ne 'Leaf') { throw 'Wrong image executable check' }
+    return $env:TEST_OUTCOME -ne 'missing'
+}
+function mock-python {
+    $input | Out-Null
+    if ($args[0] -ne '-I' -or $args[1] -ne '-' -or
+        -not $args[2].EndsWith('\\Programs\\Python\\Python312')) { throw 'Wrong image interpreter arguments' }
+    Write-Host 'IMAGE_HEALTH_CHECK'
+    $global:LASTEXITCODE = [int]($env:TEST_OUTCOME -eq 'invalid-runtime')
+}
+""" + script + "\nWrite-Host 'RUNTIME_BOUNDARY'",
+        env=dict(os.environ, TEST_OUTCOME=outcome),
+    )
+    assert ("IMAGE_HEALTH_CHECK" in result.stdout) == (outcome != "missing"), result.stderr
+    assert ("RUNTIME_BOUNDARY" in result.stdout) == (outcome == "success")
+    assert (result.returncode == 0) == (outcome == "success"), result.stderr
+    if outcome != "success":
+        assert "No installation or fallback is permitted" in result.stderr
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Publisher interpreter handoff runs on Windows")
+@pytest.mark.parametrize("outcome", ["valid", "blank", "outside", "directory"])
+def test_publisher_interpreter_output_is_job_owned(tmp_path, outcome):
+    import os
+    import textwrap
+
+    source = (_ROOT / "OneBranchPipelines/steps/conda-publish-step.yml").read_text()
+    start = source.index("        $pythonExecutable = $env:MSSQL_CONDA_PUBLISHER_PYTHON")
+    end = source.index("        foreach ($variable in @('PYTHONHOME', 'PYTHONPATH'))")
+    script = textwrap.dedent(source[start:end]).replace("$(Agent.TempDirectory)", str(tmp_path))
+    path = tmp_path / ("conda-publisher-" + "a" * 32) / "venv" / "Scripts" / "python.exe"
+    if outcome == "outside":
+        path = tmp_path / "unexpected.exe"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if outcome == "directory":
+        path.mkdir()
+    else:
+        path.write_bytes(b"")
+    result = _run_conda_powershell(
+        script + "\nWrite-Host 'INTERPRETER_ACCEPTED'",
+        env=dict(os.environ, MSSQL_CONDA_PUBLISHER_PYTHON="" if outcome == "blank" else str(path)),
+    )
+    assert (result.returncode == 0) == (outcome == "valid"), result.stdout + result.stderr
+    assert ("INTERPRETER_ACCEPTED" in result.stdout) == (outcome == "valid")
+
+
+@pytest.mark.parametrize("outcome", [401, 403, 500, "network", "accepted"])
+def test_rehearsal_auth_rejects_only_401_without_writes(monkeypatch, capsys, outcome):
+    import os
+
+    class Unauthorized(Exception):
+        pass
+
+    requests = []
+    clients = []
+
+    def request(*args, **kwargs):
+        requests.append((args, kwargs))
+        if outcome == "network":
+            raise OSError("network unavailable")
+        if outcome != "accepted":
+            raise Unauthorized("test response", outcome)
+        return {"login": "unexpected"}
+
+    api = types.SimpleNamespace(session=types.SimpleNamespace(request=request))
+    api.user = lambda: api.session.request("GET", "https://api.anaconda.org/user")
+
+    def get_server_api(**kwargs):
+        clients.append(kwargs)
+        return api
+
+    monkeypatch.setitem(sys.modules, "binstar_client", types.ModuleType("binstar_client"))
+    monkeypatch.setitem(
+        sys.modules, "binstar_client.errors", types.SimpleNamespace(Unauthorized=Unauthorized)
+    )
+    monkeypatch.setitem(
+        sys.modules, "binstar_client.utils", types.SimpleNamespace(get_server_api=get_server_api)
+    )
+    monkeypatch.setenv("ANACONDA_API_TOKEN", "ambient-must-not-be-used")
+    monkeypatch.setenv("BINSTAR_API_TOKEN", "competing-must-not-be-used")
+    expected = {
+        401: SystemExit,
+        403: Unauthorized,
+        500: Unauthorized,
+        "network": OSError,
+        "accepted": RuntimeError,
+    }[outcome]
+    with pytest.raises(expected) as error:
+        promoter.rehearse_auth()
+    if outcome == 401:
+        assert error.value.code == 1
+    assert ("EXPECTED_REHEARSAL_AUTH_REJECTION:" in capsys.readouterr().out) == (outcome == 401)
+    assert len(clients) == 1
+    token = clients[0]["token"]
+    assert re.fullmatch(r"mssql-python-invalid-rehearsal-[0-9a-f]{32}", token)
+    assert os.environ["ANACONDA_API_TOKEN"] == token
+    assert "BINSTAR_API_TOKEN" not in os.environ
+    assert clients[0]["config"] == {"url": "https://api.anaconda.org", "ssl_verify": True}
+    assert requests == [
+        (("GET", "https://api.anaconda.org/user"), {"timeout": (15, 60), "allow_redirects": False})
+    ]
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Publishing task runs on Windows")
+@pytest.mark.parametrize(
+    "publish,auth_exit", [("True", 0), ("False", 0), ("False", 1), ("False", 7)]
+)
+def test_rehearsal_never_falls_through_to_publication(publish, auth_exit):
+    import textwrap
+
+    source = (_ROOT / "OneBranchPipelines/steps/conda-publish-step.yml").read_text()
+    script = source[
+        source.index(
+            "        if ('${{ parameters.publishToConda }}' -eq 'False')",
+            source.index("foreach ($audit"),
+        ) : source.index("        # Staged-then-promoted publish:")
+    ]
+    script = textwrap.dedent(script).replace("${{ parameters.publishToConda }}", publish)
+    result = _run_conda_powershell(
+        "$pythonExecutable = 'python'\n"
+        f"function python {{ Write-Output 'AUTH_PROBE'; $global:LASTEXITCODE = {auth_exit} }}\n"
+        + script
+        + "\nWrite-Output 'PUBLICATION_BOUNDARY'",
+    )
+    assert ("AUTH_PROBE" in result.stdout) == (publish == "False")
+    assert ("PUBLICATION_BOUNDARY" in result.stdout) == (publish == "True")
+    assert (result.returncode == 0) == (publish == "True")
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Publishing task runs on Windows")
+@pytest.mark.parametrize("failed_audit", ["", "elf", "pe", "macho"])
+def test_publisher_native_audits_fail_closed_before_upload(failed_audit):
+    import os
+    import textwrap
+
+    source = (_ROOT / "OneBranchPipelines/steps/conda-publish-step.yml").read_text()
+    start = source.index("        foreach ($audit in @('elf', 'pe', 'macho'))")
+    end = source.index("        # Staged-then-promoted publish:")
+    assert source.index("--check-local-only") < start < end < source.index("Invoke-Anaconda @(")
+    result = _run_conda_powershell(
+        """
+$root = 'artifact path with spaces'
+$pythonExecutable = 'python'
+function python {
+    Write-Output ('AUDIT_ARGS:' + (ConvertTo-Json -InputObject @($args) -Compress))
+    $global:LASTEXITCODE = [int]($args[2] -eq $env:TEST_FAILED_AUDIT)
+}
+""" + textwrap.dedent(source[start:end]),
+        env=dict(os.environ, TEST_FAILED_AUDIT=failed_audit),
+    )
+    calls = [
+        json.loads(line.removeprefix("AUDIT_ARGS:"))
+        for line in result.stdout.splitlines()
+        if line.startswith("AUDIT_ARGS:")
+    ]
+    audits = ["elf", "pe", "macho"]
+    expected = audits[: audits.index(failed_audit) + 1] if failed_audit else audits
+    assert calls == [
+        ["-m", "eng.conda_tools", audit, "--root", "artifact path with spaces"]
+        for audit in expected
+    ]
+    assert (result.returncode != 0) == bool(failed_audit), result.stdout + result.stderr
+    if failed_audit:
+        assert "native artifact audit failed before upload" in result.stderr
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Publishing task runs on Windows")
+@pytest.mark.parametrize(
+    "publish,token,other_token",
+    [
+        ("True", None, "synthetic-other-token"),
+        ("True", "", None),
+        ("True", " \t ", ""),
+        ("True", "synthetic-reviewed-token", None),
+        ("True", "synthetic-reviewed-token", "synthetic-other-token"),
+        ("False", None, None),
+        ("False", "synthetic-reviewed-token", "synthetic-other-token"),
+    ],
+)
+def test_upload_task_uses_only_reviewed_token(tmp_path, token, other_token, publish):
+    import os
+    import textwrap
+
     template = (_ROOT / "OneBranchPipelines" / "steps" / "conda-publish-step.yml").read_text()
-    start = template.index("        if ([string]::IsNullOrWhiteSpace($env:ANACONDA_API_TOKEN))")
+    start = template.index("        if ('${{ parameters.publishToConda }}' -eq 'False')")
     end = template.index("        if ([string]::IsNullOrWhiteSpace($env:BINSTAR_CONFIG_DIR))")
-    guard = textwrap.dedent(template[start:end])
+    guard = textwrap.dedent(template[start:end]).replace(
+        "${{ parameters.publishToConda }}", publish
+    )
     probe = tmp_path / "inspect_environment.py"
+    expected_token = "synthetic-reviewed-token" if publish == "True" else None
     probe.write_text(
         "import os\n"
         'assert "BINSTAR_API_TOKEN" not in os.environ\n'
-        'assert os.environ["ANACONDA_API_TOKEN"] == "synthetic-reviewed-token"\n'
+        f'assert os.environ.get("ANACONDA_API_TOKEN") == {expected_token!r}\n'
         'print("PUBLISHER_TOKEN_OK")\n',
         encoding="utf-8",
     )
@@ -1802,27 +2116,19 @@ def test_upload_task_uses_only_reviewed_token(tmp_path, token, other_token):
             env.pop(name, None)
         else:
             env[name] = value
-    result = subprocess.run(
-        [
-            shell,
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            "$ErrorActionPreference = 'Stop'\n" + guard + """
+    result = _run_conda_powershell(
+        guard + """
 $process = Start-Process -FilePath $env:TEST_PUBLISHER_PYTHON `
     -ArgumentList ('"' + $env:TEST_PUBLISHER_PROBE + '"') -NoNewWindow -PassThru
 $null = $process.Handle
 $process.WaitForExit()
 exit $process.ExitCode
 """,
-        ],
         env=env,
-        capture_output=True,
-        text=True,
-        timeout=30,
     )
-    assert result.returncode == (0 if token and token.strip() else 1), result.stderr
-    if token and token.strip():
+    accepted = publish == "False" or bool(token and token.strip())
+    assert result.returncode == (0 if accepted else 1), result.stderr
+    if accepted:
         assert result.stdout.strip() == "PUBLISHER_TOKEN_OK"
     else:
         assert "ANACONDA_API_TOKEN is not set" in result.stderr

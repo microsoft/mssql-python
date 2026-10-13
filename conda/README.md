@@ -225,13 +225,56 @@ access. `promote --check-local-only` needs neither a publishing token nor an
 Anaconda client; actual publication and recovery require restricted credentials and
 the shared protected release stage described below. Module placement is not a new
 authorization boundary. The PowerShell upload process deadlines, attempted-file
-tracking, process-tree termination, and dry-run plan remain in their pipeline tasks.
+tracking and process-tree termination remain in their pipeline tasks.
 Network publication and recovery require an explicit nonblank `ANACONDA_API_TOKEN`,
 not an ambient or cached login. The publishing task removes `BINSTAR_API_TOKEN`
 only from its process and children so the CLI uploader uses the same reviewed credential.
 User/machine environment settings and saved credentials are not modified.
 
-Only trusted, reviewed release revisions may be queued, including validate-only feature
+The official Windows publisher invokes the image's existing interpreter by its
+full path: `%LOCALAPPDATA%\Programs\Python\Python312\python.exe` (the account's
+LocalApplicationData special folder, not a PATH search). It requires CPython 3.12
+Windows x64, without unnecessarily pinning the patch version. Before creating any
+environment, it checks executable/prefix/base-prefix coherence and required
+SSL/native, encoding, venv and XML module ownership. A missing or unusable image
+interpreter fails explicitly; there is no automatic installation, uninstall,
+registry repair, runtime download or fallback to another interpreter.
+
+The bootstrap creates a unique job-owned venv under `Agent.TempDirectory` and
+verifies that it belongs to the checked image interpreter. Only that venv's absolute
+path is passed to the publishing task through a read-only task output. Dependencies
+still use the unchanged hash lock and explicit package-feed-proxy `--index-url`
+with pip's `--isolated` mode. Both production and rehearsal use this same code.
+
+With `publishToConda=false` (the default), the release pipeline now rehearses the
+publisher instead of only printing an upload plan. Both modes use the Official
+template, Windows 2022 managed container, network isolation, independent producer
+download, Python 3.12 bootstrap, hash-locked dependencies and metadata/native audits.
+The publisher checkout explicitly uses `path: s`, matching OneBranch's injected
+checkout so the lock, Python modules and artifacts share `Build.SourcesDirectory`
+on the host and in the container; restricted task commands remain enabled.
+
+Rehearsal omits `Anaconda Publishing` and its production lock, marks the job
+nonproduction and uses a newly generated invalid token, never a supplied or cached
+credential. After all shared gates pass, the pinned client makes only an authenticated
+`GET https://api.anaconda.org/user`. The expected result is a **failed task** with
+`EXPECTED_REHEARSAL_AUTH_REJECTION` and HTTP 401. Network/TLS/setup errors, other HTTP
+statuses and unexpectedly accepted credentials are failures, not successful rehearsals.
+No rehearsal path can reach upload, promotion or cleanup. This tests the authentication
+boundary, not valid-token authorization or successful publication/recovery.
+
+To rehearse a reviewed PR branch, queue the existing release definition with that
+exact branch/commit, `publishToConda=false` and the intended recorded Conda producer
+run. Inspect actual hosted logs through the expected rejection; a compiled preview
+or a local interpreter check does not establish hosted image/venv/dependency coverage.
+Resource or policy denials must be resolved by the owner, never by weakening the
+production checks. `publishToConda=true` retains the main-branch provenance guard,
+publishing credential group and shared exclusive lock.
+The old upload-plan-only task and duplicate interpreter selection in the validation
+job are removed. Superseded MSI cleanup and temporary installer diagnostics are removed;
+the short base-library check remains. Independent publisher artifact rechecks are retained.
+
+Only trusted, reviewed release revisions may be queued, including rehearsal feature
 branches: their YAML and Python run with `System.AccessToken`. YAML provenance checks
 cannot sandbox an untrusted queued revision or protect that token from it. Administrators
 must restrict pipeline editing/queueing and source access, minimize the job identity's
@@ -248,8 +291,8 @@ must fail before the stage receives the publishing credential. Preserve existing
 permissions and approvals, and restrict permission to administer or bypass the check.
 Do not grant broader pipeline access as part of configuring it.
 
-The existing `publishToConda` condition omits this group for validate-only runs, so
-trusted feature-branch validation remains separate from credentialed publication.
+The existing `publishToConda` condition omits this group for rehearsal runs, so
+trusted feature-branch rehearsal remains separate from credentialed publication.
 Neither a checkout-local branch check nor a secondary pinned checkout can replace
 the resource-side control: editable YAML could bypass either. These external checks
 are not installed by this repository; production must remain unapproved until the
@@ -265,7 +308,7 @@ create the external check. The lock spans validation, staged uploads, the initia
 label snapshot, promotion, rollback and staging cleanup until the stage ends.
 All publishers and recovery paths for `microsoft/mssql-python` must consume that
 same resource, across versions and target labels; separate groups would not serialize
-them. Keep the group and lock behavior absent from validate-only runs.
+them. Keep the group and lock behavior absent from rehearsal runs.
 
 Recover by rerunning the original protected release stage with its original artifact
 inputs, preserving the build-specific staging label and reacquiring the shared lock.
