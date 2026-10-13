@@ -4,7 +4,13 @@ REM vendor the ODBC Driver 18 payload inside it. conda-build exports PKG_NAME /
 REM PKG_VERSION / CONDA_PY; the pipeline exports WHEELS_DIR + MSSQL_ODBC_VERSION.
 setlocal enabledelayedexpansion
 
-set "SP=%PREFIX%\Lib\site-packages"
+REM conda-build 26.9+ reads the target Python's python_site_packages_path (CFEP-27).
+REM Python 3.15 uses lib\python\site-packages; older Windows targets use Lib\site-packages.
+if not defined SP_DIR (
+  echo ERROR: conda-build must supply the target Python site-packages in SP_DIR.
+  exit /b 1
+)
+set "SP=%SP_DIR%"
 if not exist "%SP%" mkdir "%SP%"
 set "PKG_UNDERSCORE=%PKG_NAME:-=_%"
 
