@@ -2,7 +2,20 @@ from types import ModuleType
 
 import pytest
 
+import mssql_python.async_query as async_query
 import mssql_python.async_query._native as native
+
+
+def test_async_entry_points_are_internal():
+    from mssql_python.async_query import _AsyncConnection  # pyright: ignore[reportPrivateUsage]
+    from mssql_python.async_query import _AsyncCursor  # pyright: ignore[reportPrivateUsage]
+
+    assert _AsyncConnection.__name__ == "_AsyncConnection"
+    assert _AsyncCursor.__name__ == "_AsyncCursor"
+    for name in ("AsyncConnection", "AsyncCursor"):
+        assert not hasattr(async_query, name)
+        assert name not in async_query.__all__
+        assert f"_{name}" not in async_query.__all__
 
 
 def test_load_py_core_uses_direct_native_dependency():

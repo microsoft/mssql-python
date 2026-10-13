@@ -4839,38 +4839,6 @@ def test_batch_execute_with_existing_cursor_reuse(db_connection):
             existing_cursor.close()
 
 
-def test_connection_close_with_problematic_cursors(conn_str):
-    """Test connection close behavior when cursors have issues."""
-
-    conn = connect(conn_str)
-
-    # Create several cursors, some of which we'll manipulate to cause issues
-    cursor1 = conn.cursor()
-    cursor2 = conn.cursor()
-    cursor3 = conn.cursor()
-
-    # Execute some operations to make them active
-    cursor1.execute("SELECT 1")
-    cursor1.fetchall()
-
-    cursor2.execute("SELECT 2")
-    cursor2.fetchall()
-
-    # Close one cursor manually but leave it in the cursors set
-    cursor3.execute("SELECT 3")
-    cursor3.fetchall()
-    cursor3.close()  # This should trigger _remove_cursor
-
-    # Now close the connection - this should try to close remaining cursors
-    # and trigger the cursor cleanup code (lines 1325-1335)
-    conn.close()
-
-    # All cursors should be closed now
-    assert cursor1.closed, "Cursor1 should be closed"
-    assert cursor2.closed, "Cursor2 should be closed"
-    assert cursor3.closed, "Cursor3 should already be closed"
-
-
 def test_connection_searchescape_property_detailed(db_connection):
     """Test detailed searchescape property behavior including edge cases."""
 

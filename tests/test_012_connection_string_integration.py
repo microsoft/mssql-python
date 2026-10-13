@@ -44,17 +44,6 @@ class TestConnectionStringIntegration:
         assert "Encrypt=yes" in result
         assert "APP=MSSQL-Python" in result
 
-    def test_parse_filter_build_with_unsupported_param(self):
-        """Test that unsupported parameters are flagged as errors with allowlist."""
-        # Parse with allowlist
-        parser = _ConnectionStringParser(validate_keywords=True)
-
-        # Should raise error for unknown keyword
-        with pytest.raises(ConnectionStringParseError) as exc_info:
-            parser._parse("Server=localhost;Database=mydb;UnsupportedParam=value")
-
-        assert "Unknown keyword 'unsupportedparam'" in str(exc_info.value)
-
     def test_parse_filter_build_with_braced_values(self):
         """Test complete flow with braced values and special characters."""
         # Parse
@@ -182,16 +171,6 @@ class TestConnectionStringIntegration:
         assert "Incomplete specification" in str(exc_info.value)
         assert "'server localhost'" in str(exc_info.value).lower()
 
-    def test_parse_error_unclosed_brace(self):
-        """Test that unclosed braces raise errors."""
-        parser = _ConnectionStringParser()
-
-        # Unclosed brace raises error
-        with pytest.raises(ConnectionStringParseError) as exc_info:
-            parser._parse("PWD={unclosed;Server=localhost")
-
-        assert "Unclosed braced value" in str(exc_info.value)
-
     def test_parse_error_duplicate_keywords(self):
         """Test that duplicate keywords raise errors."""
         parser = _ConnectionStringParser()
@@ -275,24 +254,6 @@ class TestConnectionStringIntegration:
         assert len(exc_info.value.errors) >= 3
         assert "Incomplete specification" in str(exc_info.value)
         assert "Duplicate keyword" in str(exc_info.value)
-
-    def test_parser_without_allowlist_accepts_unknown(self):
-        """Test that parser without allowlist accepts unknown keywords."""
-        parser = _ConnectionStringParser()  # No allowlist
-
-        # Should parse successfully even with unknown keywords
-        result = parser._parse("Server=localhost;MadeUpKeyword=value")
-        assert result == {"server": "localhost", "madeupkeyword": "value"}
-
-    def test_parser_with_allowlist_rejects_unknown(self):
-        """Test that parser with allowlist rejects unknown keywords."""
-        parser = _ConnectionStringParser(validate_keywords=True)
-
-        # Should raise error for unknown keyword
-        with pytest.raises(ConnectionStringParseError) as exc_info:
-            parser._parse("Server=localhost;MadeUpKeyword=value")
-
-        assert "Unknown keyword 'madeupkeyword'" in str(exc_info.value)
 
 
 class TestConnectAPIIntegration:

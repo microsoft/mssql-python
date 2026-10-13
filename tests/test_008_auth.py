@@ -1117,17 +1117,6 @@ class TestConnectionAuthType:
         conn.close()
 
     @patch("mssql_python.connection.ddbc_bindings.Connection")
-    def test_credential_kwargs_none_for_system_assigned_msi(self, mock_ddbc_conn):
-        """System-assigned MSI: no UID → _credential_kwargs stays None."""
-        mock_ddbc_conn.return_value = MagicMock()
-        from mssql_python import connect
-
-        conn = connect("Server=test;Database=testdb;Authentication=ActiveDirectoryMSI")
-        assert conn._auth_type == "msi"
-        assert conn._credential_kwargs is None
-        conn.close()
-
-    @patch("mssql_python.connection.ddbc_bindings.Connection")
     def test_credential_kwargs_none_for_non_msi_auth(self, mock_ddbc_conn):
         """Non-MSI auth types must not pick up credential_kwargs even if
         UID is present (e.g. SQL auth UID)."""

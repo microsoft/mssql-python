@@ -41,6 +41,9 @@ REFACTOR: (short-description)
 > For performance improvements
 PERF: (short-description)
 
+> For AI tooling, agents, skills, prompts, or AI-assisted development workflows
+AI: (short-description)
+
 > For release related changes, without any feature changes
 RELEASE: #<RELEASE_VERSION> (short-description) 
 

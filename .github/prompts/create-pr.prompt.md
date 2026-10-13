@@ -218,6 +218,8 @@ The PR title **MUST** start with one of these prefixes (enforced by CI):
 | `CHORE:` | Maintenance tasks |
 | `STYLE:` | Code style/formatting |
 | `REFACTOR:` | Code refactoring |
+| `PERF:` | Performance improvements |
+| `AI:` | AI tooling, agents, skills, prompts, or AI-assisted development workflows |
 | `RELEASE:` | Release-related changes |
 
 > ⚠️ **CONFIRM #1 - PR Title:** Suggest 3-5 title options to the developer and ask them to pick or modify one.
@@ -414,7 +416,7 @@ Before submitting, verify:
 
 **Cause:** PR title doesn't match required format
 
-**Valid prefixes:** `FEAT:`, `FIX:`, `DOC:`, `CHORE:`, `STYLE:`, `REFACTOR:`, `RELEASE:`
+**Valid prefixes:** `FEAT:`, `FIX:`, `DOC:`, `CHORE:`, `STYLE:`, `REFACTOR:`, `PERF:`, `AI:`, `RELEASE:`
 
 **Fix:** Edit PR title in GitHub to start with a valid prefix
 
@@ -541,6 +543,8 @@ git push --force-with-lease
 | `CHORE:` | Maintenance |
 | `STYLE:` | Formatting |
 | `REFACTOR:` | Refactoring |
+| `PERF:` | Performance improvements |
+| `AI:` | AI tooling, agents, skills, prompts, or AI-assisted development workflows |
 | `RELEASE:` | Releases |
 
 ### Common Git Commands for PRs

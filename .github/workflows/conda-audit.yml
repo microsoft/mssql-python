@@ -3,7 +3,7 @@
 #
 # The OneBranch conda-build pipeline is `trigger: none` / `pr: none`, so its blocking
 # audit never runs on a PR. This lightweight GitHub Actions job builds ONE real
-# linux-64 conda package from the SHIPPED PyPI wheels and runs
+# linux-64 conda package from the current published PyPI wheels and runs
 # python -m eng.conda_tools elf on it, so a regression in the $ORIGIN climb,
 # the declared conda deps (krb5/libtool/openssl), or the expected DT_NEEDED set fails
 # the PR automatically -- the full-agent runtime masking cannot hide it.
@@ -11,7 +11,12 @@
 # build.sh ALWAYS stamps the relative $ORIGIN climb onto the vendored Linux ODBC .so
 # (they are not code-signed, so the patch breaks no signature; an already-baked climb
 # is a byte-for-byte no-op). This gate builds one real linux-64 conda package from the
-# shipped PyPI wheels and audits the resulting climb (see conda/mssql-python/build.sh).
+# published wheels and audits the resulting climb (see conda/mssql-python/build.sh).
+# It is a published CPython 3.11 packaging control, not current-source RS/3.15
+# qualification; source-only tests above it remain current-checkout and blocking.
+#
+# PR triggers are conda-specific: general package/version changes and shared wheel
+# build infrastructure do not run this gate unless the PR also changes a path below.
 name: conda-audit
 
 on:
@@ -19,15 +24,9 @@ on:
     paths:
       - 'conda/**'
       - 'eng/conda_tools/**'
-      - 'eng/scripts/download_mssql_python_rs_wheels.py'
-      - 'eng/scripts/resolve_nuget_feed.py'
-      - 'eng/scripts/mssql_python_build_safety.py'
-      - 'eng/versions/mssql-python-rs*.version'
       - 'OneBranchPipelines/conda-build-pipeline.yml'
       - 'OneBranchPipelines/steps/conda-build-validate-step*.yml'
       - 'OneBranchPipelines/jobs/consolidate-conda-artifacts-job.yml'
-      - 'OneBranchPipelines/jobs/consolidate-artifacts-job.yml'
-      - 'OneBranchPipelines/variables/*.yml'
       - 'OneBranchPipelines/conda-release-pipeline.yml'
       - 'OneBranchPipelines/steps/conda-release-step.yml'
       - 'OneBranchPipelines/steps/conda-publish-step.yml'
@@ -38,12 +37,7 @@ on:
       - 'tests/test_034_conda_verify_cwd.py'
       - 'tests/test_035_conda_macho_assert.py'
       - 'tests/test_036_conda_provenance.py'
-      - 'tests/test_037_rs_wheel_download.py'
       - 'tests/test_038_conda_archive_limits.py'
-      - 'requirements.txt'
-      - 'setup.py'
-      - 'mssql_python/__init__.py'
-      - 'mssql_python_odbc/__init__.py'
       - '.github/workflows/conda-audit.yml'
 
 permissions:
@@ -80,15 +74,15 @@ jobs:
                            tests/test_038_conda_archive_limits.py \
                            tests/test_027_conda_release_metadata.py -q
 
-      - name: Fetch the shipped linux wheels from PyPI
+      - name: Fetch the published CPython 3.11 smoke wheels from PyPI
         id: public-wheels
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
-          # Exact maintained release versions and PyPI digests, never an older/latest fallback.
-          # Fetch RS only if binding METADATA requires it, using its distribution (not NuGet) pin.
-          # Embedded-core public wheels are historical controls, not current-source RS proof.
+          # Select PyPI's current binding and its exact ODBC/RS dependencies, not source pins.
+          # Verify PyPI hashes and actual METADATA/WHEEL/RECORD; no older-release fallback.
           python -m eng.conda_tools fetch-wheels \
+            --published-smoke \
             --wheel-dir "$PWD/wheels" --requirements-file "$PWD/wheel-inputs.txt" \
             --python-tag cp311 --conda-subdir linux-64
           echo "Downloaded:"; ls -1 wheels
@@ -99,10 +93,9 @@ jobs:
           RS_REQUIRED: ${{ steps.public-wheels.outputs.rsRequired }}
         run: |
           set -euo pipefail
-          # The verified public dependency/ownership facts select the actual input set.
           rsArgs=()
           if [[ "$RS_REQUIRED" == "true" ]]; then
-            rsArgs=(--rs-wheel-dir "$PWD/wheels" --rs-version-file "$PWD/eng/versions/mssql-python-rs.version")
+            rsArgs=(--rs-wheel-dir "$PWD/wheels")
           elif [[ "$RS_REQUIRED" != "false" ]]; then
             echo "Missing verified public wheel profile"; exit 1
           fi

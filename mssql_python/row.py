@@ -222,6 +222,8 @@ class Row:
 
     def __getitem__(self, index) -> Any:
         """Allow accessing by numeric index (row[0]) or column name (row["col"])."""
+        if type(index) is int:
+            return self._values[index]
         if isinstance(index, str):
             # A row built without a column map has no named columns, so any
             # string key is simply absent (KeyError), never a TypeError.

@@ -22,7 +22,7 @@ jobs:
             // Validate title prefix for all contributors
             const validTitlePrefixes = [
               'FEAT:', 'CHORE:', 'FIX:', 'DOC:', 'STYLE:', 'REFACTOR:', 
-              'PERF:', 'RELEASE:'
+              'PERF:', 'RELEASE:', 'AI:'
             ];
 
             const hasValidPrefix = validTitlePrefixes.some(prefix => 

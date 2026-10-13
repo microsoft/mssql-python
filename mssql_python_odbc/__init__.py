@@ -32,12 +32,15 @@ __all__ = ["get_libs_dir", "__version__"]
 # The bundled Microsoft ODBC driver is 18.6; the trailing components are
 # mssql-python-odbc's own packaging-revision counter. 18.6.2.1 is a metadata-only
 # re-release of 18.6.2 (license label corrected MIT -> proprietary; identical
-# binaries) -- the trailing ".1" is packaging revision 1. A literal "v1" suffix
-# is not a valid PEP 440 version and +local versions are rejected by PyPI, so the
-# revision is expressed as a fourth numeric component. ``mssql_python/pybind/
-# CMakeLists.txt`` parses only the leading MAJOR.MINOR from this value, so the
-# extra component does not affect the resolved driver filename.
-__version__ = "18.6.2.1"
+# binaries). 18.6.2.2 separates Linux wheel contents by libc: manylinux ships
+# glibc variants, while musllinux ships only Alpine/musl, for x86-64 and ARM64.
+# This is a packaging-only revision, not a new native driver build. A literal
+# "v1" suffix is not a valid PEP 440 version and +local versions are rejected by
+# PyPI, so the revision is expressed as a fourth numeric component.
+# ``mssql_python/pybind/CMakeLists.txt`` uses the leading MAJOR.MINOR, while
+# ``configure_dylibs.sh`` uses only MAJOR. Both accept the packaging revision
+# without changing the resolved native driver filenames.
+__version__ = "18.6.2.2"
 
 
 def get_libs_dir() -> str:

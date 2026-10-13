@@ -16,11 +16,11 @@ The driver is compatible with all the Python versions >= 3.10
 >
 > - Package: `mssql-python-odbc`
 > - Import name: `mssql_python_odbc`
-> - Current version: **18.6.2.1**
+> - Source dependency version (release preparation): **18.6.2.2**
 >
-> `mssql-python` depends on `mssql-python-odbc==18.6.2.1`. The ODBC driver is loaded lazily when the first connection is created. `pip install mssql-python` transparently pulls the companion package alongside it — no separate install step is required.
+> Builds from this source pin `mssql-python-odbc==18.6.2.2`, a packaging-only revision that separates glibc (manylinux) and Alpine/musl (musllinux) wheel contents without changing the native driver binaries. This release preparation does not publish the package. Already-published `mssql-python` releases that pin `mssql-python-odbc==18.6.2.1` retain that dependency; they do not automatically adopt the new revision. The ODBC driver is loaded lazily when the first connection is created. `pip install mssql-python` transparently pulls the companion version required by the selected release — no separate install step is required.
 >
-> Starting with v1.13.0, the bundled `libs/` fallback that shipped in v1.12.0 has been removed. For pip installations, creating a connection will fail if `mssql-python-odbc` is not installed. If you install `mssql-python` from a private index or with `--no-deps`, make sure `mssql-python-odbc==18.6.2.1` is installed alongside it.
+> Starting with v1.13.0, the bundled `libs/` fallback that shipped in v1.12.0 has been removed. For pip installations, creating a connection will fail if `mssql-python-odbc` is not installed. If you install `mssql-python` from a private index or with `--no-deps`, make sure the exact `mssql-python-odbc` version specified in that release's dependency metadata is installed alongside it.
 >
 > The **temporary Conda candidate** instead combines the code and ODBC payload in one `mssql-python` Conda package. It does not require a separately installed Conda ODBC package. This is not an announcement of public channel availability or release qualification; see the [Conda installation, migration, and readiness guide](conda/README.md).
 >
@@ -151,6 +151,25 @@ By adhering to the DB API 2.0 specification, the mssql-python module ensures com
  
 The driver offers a suite of Pythonic enhancements that streamline database interactions, making it easier for developers to execute queries, manage connections, and handle data more efficiently.
  
+### Text encoding
+
+SQL statements and Python `str` parameters always use UTF-16LE. Text parameters are
+bound as ODBC `SQL_C_WCHAR` on every supported platform, for both `execute()` and
+`executemany()`, including calls that use `setinputsizes()`. Declaring a `VARCHAR`
+SQL type does not switch to narrow C buffers; SQL Server performs the conversion
+to the destination column's character set.
+
+`Connection.setencoding()` retains requested settings for compatibility, but does
+not change statement encoding or parameter binding. Requests that pass validation
+but differ from `encoding="utf-16le", ctype=SQL_WCHAR` emit `UserWarning`, including
+an explicitly requested or automatically selected `SQL_CHAR`. Invalid codec names,
+invalid ctypes, and incompatible combinations (such as UTF-8 with `SQL_WCHAR`)
+raise `ProgrammingError` before any warning is emitted or settings are stored.
+`getencoding()` returns the requested settings, not the effective binding. For
+example, requesting ASCII with `SQL_CHAR` does not cause non-ASCII parameters to
+raise encoding errors. Use `setencoding()` with no arguments to restore the
+supported defaults. `setdecoding()` independently controls how result data is read.
+
 ## Getting Started Examples
 Connect to SQL Server and execute a simple query:
  

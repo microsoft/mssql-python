@@ -612,6 +612,13 @@ def test_arrow_reader_drains_diagnostics_when_close_cursor_succeeds(
         "post-close drain was skipped on the SQL_CLOSE success path "
         "(SQL_SUCCESS_WITH_INFO warnings would be lost)"
     )
+    assert call_count["n"] == 2
+
+    reader = cursor.execute("SELECT 1 AS a UNION ALL SELECT 2").arrow_reader(batch_size=1)
+    call_count["n"] = 0
+    assert sum(batch.num_rows for batch in reader) == 2
+    assert call_count["n"] == 1, "Natural exhaustion must only drain SQL_CLOSE diagnostics"
+    assert cursor.messages == [("01000", "synthetic warning #1")]
 
 
 def test_arrow_reader_close_retries_after_failed_attempt(cursor: mssql_python.Cursor):

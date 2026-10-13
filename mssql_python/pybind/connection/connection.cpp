@@ -115,6 +115,7 @@ void Connection::connect(const py::dict& attrs_before) {
 
 void Connection::disconnect(bool rollbackBeforeDisconnect) {
     PERF_TIMER("Connection::disconnect");
+    clearResultMetadata();
     // Determine GIL state once, up front. disconnect() runs both from
     // pybind11-bound methods (GIL held) and from GIL-less destructor / shutdown
     // paths: Connection::~Connection() dropping the last shared_ptr, or teardown
@@ -265,6 +266,24 @@ void Connection::checkError(SQLRETURN ret) const {
     }
 }
 
+void Connection::clearResultMetadata() {
+    std::vector<SqlHandlePtr> handles;
+    {
+        std::lock_guard<std::mutex> lock(_childHandlesMutex);
+        handles.reserve(_childStatementHandles.size());
+        for (const auto& weakHandle : _childStatementHandles) {
+            if (auto handle = weakHandle.lock()) {
+                handles.push_back(std::move(handle));
+            }
+        }
+    }
+    // Releasing the last handle can acquire the connection cleanup gate.
+    // Keep that destruction outside the child-list lock.
+    for (const auto& handle : handles) {
+        handle->resultMetadata.clear();
+    }
+}
+
 void Connection::commit() {
     PERF_TIMER("Connection::commit");
     if (!_dbcHandle) {
@@ -272,6 +291,7 @@ void Connection::commit() {
     }
     updateLastUsed();
     LOG("Committing transaction");
+    clearResultMetadata();
     SQLRETURN ret;
     {
         // Release the GIL during the blocking SQLEndTran network round-trip.
@@ -288,6 +308,7 @@ void Connection::rollback() {
     }
     updateLastUsed();
     LOG("Rolling back transaction");
+    clearResultMetadata();
     SQLRETURN ret;
     {
         // Release the GIL during the blocking SQLEndTran network round-trip.
@@ -302,6 +323,7 @@ void Connection::setAutocommit(bool enable) {
     if (!_dbcHandle) {
         ThrowStdException("Connection handle not allocated");
     }
+    clearResultMetadata();
     SQLINTEGER value = enable ? SQL_AUTOCOMMIT_ON : SQL_AUTOCOMMIT_OFF;
     LOG("Setting autocommit=%d", enable);
     SQLRETURN ret;
@@ -395,6 +417,7 @@ SqlHandlePtr Connection::allocStatementHandle() {
 }
 
 SQLRETURN Connection::setAttribute(SQLINTEGER attribute, py::object value) {
+    clearResultMetadata();
     LOG("Setting SQL attribute=%d", attribute);
     // SQLPOINTER ptr = nullptr;
     // SQLINTEGER length = 0;
@@ -581,6 +604,7 @@ bool Connection::reset() {
     if (!_dbcHandle) {
         ThrowStdException("Connection handle not allocated");
     }
+    clearResultMetadata();
     LOG("Resetting connection via SQL_ATTR_RESET_CONNECTION");
     // NOTE: SQL_ATTR_RESET_CONNECTION is a pool-checkin reset: it asks the
     // driver to wipe per-session state (temp tables, open cursors, SET

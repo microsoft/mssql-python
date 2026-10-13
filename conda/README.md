@@ -53,6 +53,26 @@ from `requirements-audit.txt` with `--require-hashes --only-binary=:all:`.
 This audit-only lock is separate from the Windows publisher lock; it does not pin
 the hosted runner image or every input to the later Conda build.
 
+The `conda-audit` PR gate triggers only for `conda/`, `eng/conda_tools/`, Conda-specific
+OneBranch pipelines/steps/jobs, their native/probe/archive/provenance and release tests,
+and the workflow itself. General package metadata/version changes and shared wheel-build
+infrastructure do not trigger it on their own; mixed PRs with a Conda change still do.
+Source-only tests remain current-checkout and blocking. The real Linux CPython 3.11
+build/audit uses `fetch-wheels --published-smoke`: PyPI's current published binding
+and its exact ODBC dependency (plus RS when required). No smoke versions or hashes
+are hardcoded; downloads are verified against PyPI's SHA256 values and actual wheel
+metadata/ownership. Source release bumps do not select unpublished smoke inputs.
+The selected versions are logged and hash-required requirements are generated per run.
+Missing wheels, metadata/dependency or hash mismatches and build/audit failures still
+fail the gate; there is no skip or older-release fallback. This published packaging
+control does not qualify current-source RS or Python 3.15.
+
+Run the source-only trigger regressions without a native build, SQL Server, or PyYAML:
+
+```text
+python -m pytest --noconftest tests/test_027_conda_release_metadata.py -k conda_audit -q
+```
+
 Direct recipe builds must set `MSSQL_PYTHON_VERSION` to the exact selected code-wheel
 version before rendering/building. The shared orchestrator derives and supplies it
 automatically; omitted input fails recipe rendering instead of choosing a release.
@@ -99,8 +119,9 @@ macOS retains its external Homebrew/MacPorts OpenSSL prerequisite for encryption
 Conda OpenSSL alone does not satisfy the driver's system-path lookup.
 
 The release goal is the matching PyPI release's public API and supported feature
-behavior on all 28 ordinary CPython variants: 3.10-3.14 on win-64, linux-64,
-linux-aarch64, osx-64 and osx-arm64; 3.12-3.14 on win-arm64. No silent removal of
+behavior on all 34 ordinary CPython variants: 3.10-3.15 on win-64, linux-64,
+linux-aarch64, osx-64 and osx-arm64; 3.12-3.15 on win-arm64. Free-threaded CPython
+(including `cp315t`) and musllinux are not Conda targets. No silent removal of
 required native functionality is acceptable. Optional features require their
 corresponding dependencies; Windows ARM64 PyArrow availability remains a blocker
 to qualifying those features, not permission to drop them.
@@ -112,7 +133,7 @@ load do not establish those results. Applicable OS, certificate and authenticati
 configuration remain external prerequisites.
 
 Use only organizationally approved channels and handle applicable terms separately;
-the Windows ARM64 dependency profile includes Anaconda `defaults`. Before unattended
+the Windows ARM64 3.12-3.14 dependency profile includes Anaconda `defaults`. Before unattended
 Windows ARM64 builds, agent owners must use approved provisioning to put a disposable
 Conda installation on `PATH`, with applicable channel terms handled for the job's
 execution identity. The orchestrator's automatic Miniforge installation does not
@@ -120,6 +141,25 @@ establish that approval. If Conda enforces terms that have not been handled, the
 or verification solve stops with Conda's diagnostic; provision the prerequisite before
 running again. Automatic acceptance, including an inherited
 `CONDA_PLUGINS_AUTO_ACCEPT_TOS` opt-in, remains disabled.
+
+Windows ARM64 3.15 uses `microsoft`, then `conda-forge`, for both build and verification
+(after the local verification channel), without `defaults`. Older targets retain their
+existing channel policies and the ARM64 3.12 manual ABI pin. The blocking full dependency
+solve remains; every 3.15 package must pass the `python_abi 3.15.* *_cp315` native audit.
+
+### Python 3.15 packaging
+
+Conda-forge's Windows Python 3.15 declares `lib/python/site-packages` instead of
+`Lib/site-packages` ([layout change](https://conda-forge.org/blog/2026/09/03/python-315/)).
+The Windows recipe uses the target's `SP_DIR` for binding/RS/ODBC extraction, with
+matching native and installed-metadata checks. Windows legs containing 3.15 use
+**conda-build 26.9.1** for all requested variants: its
+[26.9.0 fix](https://github.com/conda/conda-build/releases/tag/26.9.0) reads
+`python_site_packages_path` from the target Python record, including cross builds.
+25.x computes the old Windows path even for 3.15. Other legs retain `conda-build<26`;
+the publishing toolchain is unchanged. The existing RS 0.3.0 stable-ABI selection and
+ODBC `py3-none` wheels need no version change. PyArrow stays optional; no speculative
+`libpython` dependency or change to the Unix OS floors is introduced.
 
 Run this existing build workflow only in a disposable isolated installation: shared-environment
 ownership hardening is outside this change. Publication/provenance tooling is included
@@ -249,17 +289,19 @@ members. This detects unowned or cross-owned additions; it cannot recover file o
 after an overwrite of an already owned path, which is why the raw pre-extraction gate
 is required.
 
-`fetch-wheels` uses exact current maintained versions, hash-required binary-only PyPI
+By default, `fetch-wheels` uses exact current maintained versions, hash-required binary-only PyPI
 downloads, and actual wheel metadata/ownership. Pip selects for its executing interpreter;
 the requested Python/platform must match the binding, ODBC and selected RS wheel tags
 before the command accepts the inputs. These arguments validate the download, rather
 than enabling cross-target pip resolution. An authentic published embedded-core
 binding is explicitly reported as a **historical published packaging control, not
 current-source RS qualification**. An RS-dependent published binding requires its exact
-provider and source pin; unavailable releases, malformed declarations, or mismatches
+provider and selected pin; unavailable releases, malformed declarations, or mismatches
 fail with no older-version or TLS fallback. Public availability does not gate the
 recorded ADO artifact path. Neither a public input check nor static archive checks
 establish installed SQL/runtime qualification.
+Only the explicit `--published-smoke` option selects the published inputs above;
+production, provenance, preflight and release/publish version selection are unchanged.
 
 The driver-load probe's sole implementation is
 `eng/conda_tools/driver_load_probe.py`. It separates native connection execution,

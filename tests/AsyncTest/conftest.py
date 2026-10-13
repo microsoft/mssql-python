@@ -1,7 +1,7 @@
 import pytest
 import pytest_asyncio
 
-from mssql_python.async_query import AsyncConnection
+from mssql_python.async_query import _AsyncConnection  # pyright: ignore[reportPrivateUsage]
 
 
 @pytest.fixture
@@ -13,7 +13,7 @@ def async_connection_string(conn_str):
 
 @pytest_asyncio.fixture
 async def async_connection(async_connection_string):
-    connection = await AsyncConnection.connect(async_connection_string)
+    connection = await _AsyncConnection.connect(async_connection_string)
     try:
         yield connection
     finally:
