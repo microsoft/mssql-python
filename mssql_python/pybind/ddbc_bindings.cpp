@@ -2339,9 +2339,15 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
             }
             SQLRETURN freeResult = statementHandle->freeHandle();
             if (!SQL_SUCCEEDED(resetResult) && !SQL_SUCCEEDED(freeResult)) {
-                paramBuffers.push_back(
-                    std::make_shared<std::vector<ParamInfo>>(std::move(paramInfos)));
+                auto retainedInfos = std::make_shared<std::vector<ParamInfo>>(std::move(paramInfos));
+                paramBuffers.push_back(retainedInfos);
                 statementHandle->retainFailedParameters(std::move(paramBuffers));
+                // Bound tokens/indicators are native storage. Drop Python owners
+                // with the GIL held, before retained storage can outlive Python.
+                for (auto& info : *retainedInfos) {
+                    info.dataPtr = py::object();
+                    if (info.table) info.table->releasePythonState();
+                }
             }
         }
         throw;

@@ -86,6 +86,13 @@ struct TableParamState {
         }
         return true;
     }
+
+    void releasePythonState() {
+        value = py::object();
+        iterator = py::object();
+        sizes.release().dec_ref();
+        row.release().dec_ref();
+    }
 };
 
 static SQLRETURN BindTableValuedParameter(const SqlHandlePtr& handle, int paramIndex,
