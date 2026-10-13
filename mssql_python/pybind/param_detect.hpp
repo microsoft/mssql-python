@@ -38,6 +38,13 @@
 // Parameter description types
 //-------------------------------------------------------------------------------------------------
 
+// External linkage for ParamInfo ownership; match its pybind11 members' visibility.
+#ifdef __GNUC__
+struct __attribute__((visibility("hidden"))) TableParamState;
+#else
+struct TableParamState;
+#endif
+
 // This struct is shared between C++ & Python code.
 // Suppress -Wattributes warning for ParamInfo struct
 // The warning is triggered because pybind11 handles visibility attributes automatically,
@@ -46,7 +53,6 @@
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wattributes"
 #endif
-namespace { struct TableParamState; }
 struct ParamInfo {
     SQLSMALLINT inputOutputType = SQL_PARAM_INPUT;
     SQLSMALLINT paramCType = SQL_C_DEFAULT;

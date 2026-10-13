@@ -894,7 +894,11 @@ static void PrepareParamBuffer(const py::handle& param, ParamInfo& paramInfo,
         }
 }
 
+}  // namespace
+
 #include "tvp.hpp"
+
+namespace {
 
 // Given a list of parameters and their ParamInfo, calls SQLBindParameter on
 // each of them with appropriate arguments

@@ -649,8 +649,10 @@ def _run_isolated_stream_checks(mode, schema):
     ],
 )
 def test_isolated_stream_lifecycle(conn_str, tvp_schema, mode):
-    if mode == "forwarder" and _parse_server(conn_str) is None:
-        pytest.skip("Requires a Server=host,port connection string")
+    if mode == "forwarder":
+        target = _parse_server(conn_str)
+        if target is None or "\\" in target[0]:
+            pytest.skip("TCP forwarding requires a host, not a LocalDB or named-pipe instance")
     env = os.environ.copy()
     env["PYTHONPATH"] = os.pathsep.join(sys.path)
     result = subprocess.run(
