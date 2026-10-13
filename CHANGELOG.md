@@ -10,9 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 - **AB#48177:** Added explicit `TableValuedParameter(type_name, columns, rows,
   schema=...)` input values. Sync `execute()` streams lists, tuples and iterators
   through native ODBC data-at-execution using one row of additional storage and
-  one procedure invocation, without discovering table metadata. Async execution
-  adapts materialized rows to the pinned native core; iterator streaming is not
-  available asynchronously. See README for current native async schema limits.
+  one procedure invocation, without discovering table metadata.
 - New feature: Support for macOS and Linux.
 - Documentation: Added API documentation in the Wiki.
 - New `token_provider=` parameter on `connect()` / `Connection` for Microsoft

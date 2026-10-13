@@ -16,7 +16,6 @@ import logging
 import uuid
 import datetime
 import warnings
-from collections.abc import AsyncIterable
 from typing import List, Mapping, Union, Any, Optional, Tuple, Sequence, TYPE_CHECKING, Iterable
 from mssql_python.constants import ConstantsDDBC as ddbc_sql_const, SQLTypes
 from mssql_python.helpers import check_error, connstr_to_pycore_params
@@ -1843,16 +1842,6 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
         # Getting encoding setting
         encoding_settings = self._get_encoding_settings()
-
-        if any(
-            isinstance(parameter, TableValuedParameter)
-            and isinstance(parameter.rows, AsyncIterable)
-            for parameter in parameters
-        ):
-            raise NotSupportedError(
-                "Synchronous TVPs require a synchronous row source",
-                "Use a list, tuple, or synchronous iterator",
-            )
 
         # Validate that inputsizes matches parameter count if both are present
         if parameters and self._inputsizes:

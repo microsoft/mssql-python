@@ -40,7 +40,6 @@ steps:
 - ${{ if eq(parameters.platform, 'windows') }}:
   - task: PowerShell@2
     displayName: 'Install mssql-python-rs${{ parameters.displaySuffix }}'
-    retryCountOnTaskFailure: 2
     inputs:
       targetType: 'filePath'
       filePath: 'eng/scripts/install-mssql-py-core.ps1'
@@ -51,7 +50,6 @@ steps:
       chmod +x eng/scripts/install-mssql-py-core.sh
       ./eng/scripts/install-mssql-py-core.sh
     displayName: 'Install mssql-python-rs${{ parameters.displaySuffix }}'
-    retryCountOnTaskFailure: 2
 
 # Inside a Docker container
 - ${{ if eq(parameters.platform, 'container') }}:
@@ -62,4 +60,3 @@ steps:
         ./eng/scripts/install-mssql-py-core.sh
       "
     displayName: 'Install mssql-python-rs in ${{ parameters.containerName }}${{ parameters.displaySuffix }}'
-    retryCountOnTaskFailure: 2

@@ -1,6 +1,6 @@
 """Explicit, transport-neutral input values for SQL Server table types."""
 
-from collections.abc import AsyncIterable, Iterator
+from collections.abc import Iterator
 from datetime import date, datetime, time
 from decimal import Decimal
 from uuid import UUID
@@ -78,7 +78,7 @@ class TableValuedParameter:
             ):
                 raise ValueError(f"TVP column {name}: fixed-length columns require a positive size")
             normalized.append((name, sql_type, size, scale))
-        if not isinstance(rows, (list, tuple, Iterator, AsyncIterable)):
+        if not isinstance(rows, (list, tuple, Iterator)):
             raise TypeError("TVP rows must be a list, tuple, or iterator; use [] for an empty TVP")
         self._type_name, self._schema = type_name, schema
         self._columns, self._rows = tuple(normalized), rows

@@ -1,8 +1,6 @@
-"""Live SQL Server coverage for the shared explicit TVP contract and ODBC streaming."""
+"""Live SQL Server coverage for explicit TVPs and synchronous ODBC streaming."""
 
-import asyncio
 import datetime
-import inspect
 import os
 import subprocess
 import sys
@@ -12,7 +10,6 @@ import weakref
 from decimal import Decimal, localcontext
 
 import pytest
-import pytest_asyncio
 
 from mssql_python import (
     DatabaseError,
@@ -33,7 +30,6 @@ from mssql_python import (
     SQL_TYPE_TIMESTAMP,
     SQL_GUID,
 )
-from mssql_python.async_query import _AsyncConnection
 from mssql_python.constants import ConstantsDDBC
 from test_023_ssh_tunnel_gil_release import (
     WATCHDOG_SECONDS,
@@ -94,29 +90,9 @@ def items(schema, rows):
     )
 
 
-async def call(method, *args, **kwargs):
-    result = method(*args, **kwargs)
-    return await result if inspect.isawaitable(result) else result
-
-
-@pytest_asyncio.fixture(params=["sync", "async"])
-async def tvp_cursor(request, conn_str):
-    if request.param == "sync":
-        connection = connect(conn_str, autocommit=True)
-    else:
-        connection = await _AsyncConnection.connect(conn_str, autocommit=True)
-    cursor = connection.cursor()
-    try:
-        yield cursor
-    finally:
-        await call(cursor.close)
-        await call(connection.close)
-
-
-@pytest.mark.asyncio
 @pytest.mark.parametrize("rows", [[], [(1, "Keyboard"), (2, None)], ((3, ""),)])
 @pytest.mark.parametrize("named", [False, True])
-async def test_common_rows_named_reuse_and_one_invocation(tvp_cursor, tvp_schema, rows, named):
+def test_rows_named_reuse_and_one_invocation(cursor, tvp_schema, rows, named):
     value = items(tvp_schema, rows)
     sql = f"EXEC [{tvp_schema}].Echo ?, ?, ?"
     params = (10, value, "✓")
@@ -124,38 +100,34 @@ async def test_common_rows_named_reuse_and_one_invocation(tvp_cursor, tvp_schema
         sql = f"EXEC [{tvp_schema}].Echo %(prefix)s, %(items)s, %(suffix)s"
         params = {"prefix": 10, "items": value, "suffix": "✓"}
     for _ in range(2):
-        await call(tvp_cursor.execute, sql, params)
-        result = await call(tvp_cursor.fetchall)
+        cursor.execute(sql, params)
+        result = cursor.fetchall()
         assert [tuple(row) for row in result] == [
             (row[0] + 10, None if row[1] is None else row[1] + "✓") for row in rows
         ]
-    await call(tvp_cursor.execute, f"SELECT COUNT(*) FROM [{tvp_schema}].Calls")
-    assert (await call(tvp_cursor.fetchone))[0] == 2
+    cursor.execute(f"SELECT COUNT(*) FROM [{tvp_schema}].Calls")
+    assert cursor.fetchone()[0] == 2
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize("left,right", [([], []), ([], [(2, "right")]), ([(1, None)], [(2, "")])])
-async def test_common_multiple_tvps(tvp_cursor, tvp_schema, left, right):
-    await call(
-        tvp_cursor.execute,
+def test_multiple_tvps(cursor, tvp_schema, left, right):
+    cursor.execute(
         f"EXEC [{tvp_schema}].Pair ?, ?",
         items(tvp_schema, left),
         items(tvp_schema, right),
     )
-    result = await call(tvp_cursor.fetchall)
+    result = cursor.fetchall()
     assert sorted(tuple(row) for row in result) == sorted(left + right)
 
 
-@pytest.mark.asyncio
-async def test_common_null_scalars_with_tvp(tvp_cursor, tvp_schema):
-    await call(
-        tvp_cursor.execute,
+def test_null_scalars_with_tvp(cursor, tvp_schema):
+    cursor.execute(
         f"EXEC [{tvp_schema}].Echo ?, ?, ?",
         None,
         items(tvp_schema, [(1, "one")]),
         None,
     )
-    assert tuple(await call(tvp_cursor.fetchone)) == (None, None)
+    assert tuple(cursor.fetchone()) == (None, None)
 
 
 def test_explicit_type_in_parameterized_batch(cursor, tvp_schema):
@@ -188,8 +160,7 @@ def test_declared_text_size_failure_recovers(cursor, tvp_schema):
     assert cursor.execute("SELECT 42").fetchone()[0] == 42
 
 
-@pytest.mark.asyncio
-async def test_common_typed_cells(tvp_cursor, cursor, db_connection):
+def test_typed_cells(cursor, db_connection):
     suffix = uuid.uuid4().hex
     name, proc = f"Typed_{suffix}", f"TypedProc_{suffix}"
     declarations = [
@@ -255,8 +226,8 @@ async def test_common_typed_cells(tvp_cursor, cursor, db_connection):
             ctx.prec = 5
             source = [list(row), [None] * len(row)]
             value = TableValuedParameter(f"dbo.{name}", columns, source)
-            await call(tvp_cursor.execute, f"EXEC dbo.[{proc}] ?", value)
-        results = [tuple(r) for r in await call(tvp_cursor.fetchall)]
+            cursor.execute(f"EXEC dbo.[{proc}] ?", value)
+        results = [tuple(r) for r in cursor.fetchall()]
         assert len(results) == 2
         actual = next(r for r in results if r[0] is not None)
         expected = list(row)
@@ -272,8 +243,7 @@ async def test_common_typed_cells(tvp_cursor, cursor, db_connection):
         db_connection.commit()
 
 
-@pytest.mark.asyncio
-async def test_common_date_range(tvp_cursor, cursor, db_connection):
+def test_date_range(cursor, db_connection):
     name = f"Dates_{uuid.uuid4().hex}"
     rows = [
         (None,),
@@ -286,8 +256,8 @@ async def test_common_date_range(tvp_cursor, cursor, db_connection):
     db_connection.commit()
     try:
         value = TableValuedParameter(f"dbo.{name}", [("value", SQL_TYPE_DATE)], rows)
-        await call(tvp_cursor.execute, "SELECT value FROM ? ORDER BY value", value)
-        assert [tuple(row) for row in await call(tvp_cursor.fetchall)] == rows
+        cursor.execute("SELECT value FROM ? ORDER BY value", value)
+        assert [tuple(row) for row in cursor.fetchall()] == rows
     finally:
         cursor.execute(f"DROP TYPE dbo.[{name}]")
         db_connection.commit()
@@ -356,32 +326,6 @@ def test_implicit_nested_sequences_are_not_tvps(cursor):
         with pytest.raises(TypeError, match="Unsupported parameter type"):
             cursor.execute("SELECT ?", (value,))
     assert cursor.execute("SELECT 1").fetchone()[0] == 1
-
-
-@pytest.mark.asyncio
-async def test_async_rejects_streaming_before_consumption(conn_str, tvp_schema):
-    seen = []
-
-    def rows():
-        seen.append(1)
-        yield 1, "never"
-
-    async def async_rows():
-        seen.append(1)
-        yield 1, "never"
-
-    connection = await _AsyncConnection.connect(conn_str, autocommit=True)
-    cursor = connection.cursor()
-    try:
-        for source in (rows(), async_rows()):
-            with pytest.raises(NotSupportedError, match="materialized"):
-                await cursor.execute(f"EXEC [{tvp_schema}].CountRows ?", items(tvp_schema, source))
-        assert seen == []
-        await cursor.execute("SELECT 42")
-        assert (await cursor.fetchone())[0] == 42
-    finally:
-        await cursor.close()
-        await connection.close()
 
 
 @pytest.mark.parametrize(
@@ -466,27 +410,6 @@ def test_sync_temporal_scale_six(cursor, db_connection):
         cursor.execute(f"DROP PROC dbo.[{proc}]")
         cursor.execute(f"DROP TYPE dbo.[{name}]")
         db_connection.commit()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "columns,error",
-    [
-        ([("amount", SQL_DECIMAL, 20, 6)], "precision 18 and scale 10"),
-        ([("stamp", SQL_TYPE_TIMESTAMP, 26, 6)], "scale 7"),
-    ],
-)
-async def test_async_native_metadata_limit_is_not_hidden(conn_str, columns, error):
-    connection = await _AsyncConnection.connect(conn_str, autocommit=True)
-    cursor = connection.cursor()
-    try:
-        await cursor.execute("SELECT 42")
-        with pytest.raises(ValueError, match=error):
-            await cursor.execute("SELECT ?", TableValuedParameter("UnusedType", columns, []))
-        assert (await cursor.fetchone())[0] == 42
-    finally:
-        await cursor.close()
-        await connection.close()
 
 
 def test_schema_mismatch_and_server_error_recovery(cursor, tvp_schema):

@@ -219,7 +219,7 @@ CREATE PROCEDURE dbo.ProcessItems @items dbo.ItemBatch READONLY
 AS SELECT id, label FROM @items;
 ```
 
-Pass one explicit value to `execute()`; ordinary nested lists/tuples are **not**
+Pass one explicit value to synchronous `execute()`; ordinary nested lists/tuples are **not**
 implicitly treated as TVPs:
 
 ```python
@@ -238,7 +238,7 @@ driver's integer `SQL_*` constants. Columns bind **positionally**; names are
 diagnostic labels, not a schema lookup. Character and binary columns require a
 size; `0` means MAX for variable-length types. Decimal columns require both
 precision and scale, e.g. `("amount", SQL_DECIMAL, 20, 6)`. Precision is 1–38;
-scale is 0–precision. Temporal scale defaults to 7 (0–7 supported synchronously).
+scale is 0–precision. Temporal scale defaults to 7 (0–7 supported).
 Sizes for Unicode columns are UTF-16 code units; binary sizes are bytes.
 Rows must contain one cell per column. Supported cells include integers, floats,
 bools, `Decimal`, strings, bytes/bytearray, date/time/datetime, UUID and `None`.
@@ -259,16 +259,6 @@ Iterator exceptions, including `KeyboardInterrupt`, cancel/reset the statement
 before releasing its buffers. `executemany()` and `setinputsizes()` overrides
 for statements containing TVPs are not supported. The `mssql-odbc` provider does
 not currently support this ODBC TVP path.
-
-The **same Python value** is accepted by preview async `execute()`, with
-materialized list/tuple rows only. The pinned `mssql-python-rs` 0.3.0 constructor
-materializes its native table; generators and async generators raise
-`NotSupportedError` **without being consumed**, not a hidden `list()` conversion.
-Its current TVP metadata builder additionally requires **DECIMAL/NUMERIC(18,10)**
-and **temporal scale 7**, even when every cell is non-NULL. Other declarations
-propagate the native error. Native streaming and arbitrary decimal/temporal
-metadata require follow-up in `mssql-rs`; this driver does not implement or
-promise those Rust features.
 
 ## Still have questions?
  

@@ -16,7 +16,6 @@ from typing import (
     Callable,
     Iterator,
     Iterable,
-    AsyncIterable,
 )
 import datetime
 import logging
@@ -31,7 +30,6 @@ class TableValuedParameter:
             List[Sequence[Any]],
             Tuple[Sequence[Any], ...],
             Iterator[Sequence[Any]],
-            AsyncIterable[Sequence[Any]],
         ],
         *,
         schema: Optional[str] = None,
@@ -49,7 +47,6 @@ class TableValuedParameter:
         List[Sequence[Any]],
         Tuple[Sequence[Any], ...],
         Iterator[Sequence[Any]],
-        AsyncIterable[Sequence[Any]],
     ]: ...
 
 # GLOBALS - DB-API 2.0 Required Module Globals

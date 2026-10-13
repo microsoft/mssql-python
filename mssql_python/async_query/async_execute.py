@@ -4,9 +4,7 @@ import asyncio
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
-from ..exceptions import NotSupportedError, OperationalError, ProgrammingError
-from ..table_valued_parameter import TableValuedParameter
-from ._native import load_py_core
+from ..exceptions import OperationalError, ProgrammingError
 from ..logging import logger
 from ..row import Row
 from .exception_translator import translate_py_core_exceptions
@@ -51,42 +49,6 @@ async def execute(
     """Execute a statement using the py-core async cursor."""
     if len(parameters) == 1 and isinstance(parameters[0], (tuple, list, Row)):
         parameters = tuple(parameters[0])
-
-    def adapt(value):
-        if not isinstance(value, TableValuedParameter):
-            return value
-        if not isinstance(value.rows, (list, tuple)):
-            raise NotSupportedError(
-                "Async TVPs currently require materialized list/tuple rows",
-                "Use synchronous execute for streaming; native async TVP streaming is not available",
-            )
-        for index, row in enumerate(value.rows):
-            value._validate_row(row, index)
-        return load_py_core().TableValuedParameter(
-            value.type_name,
-            # py-core selects MAX above the inline width, whereas ODBC uses 0.
-            columns=[
-                (
-                    {-1: 12, -10: -9, -4: -3}.get(sql_type, sql_type),
-                    2147483647 if size == 0 and sql_type in (12, -9, -3, -1, -10, -4) else size,
-                    scale,
-                )
-                for _, sql_type, size, scale in value.columns
-            ],
-            rows=value.rows,
-            schema=value.schema,
-        )
-
-    # Named parameter dictionaries are passed intact to py-core, just like
-    # ordinary execute; adapt only explicit TVP values.
-    parameters = tuple(
-        (
-            {key: adapt(value) for key, value in parameter.items()}
-            if isinstance(parameter, Mapping)
-            else adapt(parameter)
-        )
-        for parameter in parameters
-    )
 
     logger.debug(
         "AsyncCursor.execute: starting; param_count=%d; use_prepare=%s; reset_cursor=%s",
