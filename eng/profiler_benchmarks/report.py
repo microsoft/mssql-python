@@ -46,7 +46,8 @@ MAX_COMMENT_CHARS = 60000
 MAX_DIAGNOSTIC_ROWS = 20
 MAX_FINGERPRINT_TASKS = 4
 MARKER = "<!-- mssql-python-profiler-ci -->"
-THRESHOLD = 0.20
+SMALL_THRESHOLD = 0.10
+LARGE_THRESHOLD = 0.20
 MIN_DELTA_MS = 1.0
 
 
@@ -181,7 +182,21 @@ def _validate(report, build_id=None, head=None, source=None, base=None):
                 number(scenario["wall_ms"])
                 if scenario["wall_ms"] <= 0:
                     raise ValueError("Zero workload time")
-                identity = text(scenario["work"])
+                repetitions = scenario.get("repetitions", 1)
+                warmups = scenario.get("warmups", 0)
+                if type(repetitions) is not int or not 1 <= repetitions <= 100:
+                    raise ValueError("Invalid measurement repetitions")
+                if type(warmups) is not int or not 0 <= warmups <= 3:
+                    raise ValueError("Invalid scenario warmup count")
+                if "repetitions" in scenario:
+                    times = scenario["wall_samples_ms"]
+                    if not isinstance(times, list) or len(times) != repetitions:
+                        raise ValueError("Invalid inner timing samples")
+                    if any(number(value) <= 0 for value in times) or not math.isclose(
+                        statistics.mean(times), scenario["wall_ms"], rel_tol=1e-9
+                    ):
+                        raise ValueError("Inconsistent per-workload time")
+                identity = (text(scenario["work"]), repetitions, warmups)
                 if name in work and work[name] != identity:
                     raise ValueError(f"Workload changed for {name}")
                 work[name] = identity
@@ -276,18 +291,20 @@ def comparisons(report):
         old = statistics.median(s["wall_ms"] for s in base)
         new = statistics.median(s["wall_ms"] for s in candidate)
         ratio = statistics.median(ratios)
-        # Requiring 80% of paired samples to agree avoids flagging one noisy pass.
-        agrees = sum(r > 1 + THRESHOLD for r in ratios) >= math.ceil(len(ratios) * 0.8)
-        improves = sum(r < 1 - THRESHOLD for r in ratios) >= math.ceil(len(ratios) * 0.8)
-        status = (
-            "regression"
-            if ratio > 1 + THRESHOLD and new - old >= MIN_DELTA_MS and agrees
-            else (
-                "improvement"
-                if ratio < 1 - THRESHOLD and old - new >= MIN_DELTA_MS and improves
-                else ("noisy" if ratio > 1 + THRESHOLD and new - old >= MIN_DELTA_MS else "ok")
-            )
-        )
+        status, impact = "ok", None
+        threshold = SMALL_THRESHOLD
+        direction = 1 if ratio > 1 else -1
+        agreement = sum(r > 1 + threshold if direction == 1 else r < 1 - threshold for r in ratios)
+        for tier, limit in (("large", LARGE_THRESHOLD), ("small", SMALL_THRESHOLD)):
+            pairs = sum(r > 1 + limit if direction == 1 else r < 1 - limit for r in ratios)
+            if (
+                (ratio > 1 + limit if direction == 1 else ratio < 1 - limit)
+                and direction * (new - old) >= MIN_DELTA_MS
+                and pairs >= math.ceil(len(ratios) * 0.8)
+            ):
+                status = "regression" if direction == 1 else "improvement"
+                impact, threshold, agreement = tier, limit, pairs
+                break
         phase_deltas = []
         changed_counts = []
         for layer in ("cpp", "py"):
@@ -298,13 +315,23 @@ def comparisons(report):
                 if not all(before) or not all(after):
                     changed_counts.append(f"{label} (added, removed, or intermittent)")
                     continue
-                before_calls = statistics.median(s["calls"] for s in before)
-                after_calls = statistics.median(s["calls"] for s in after)
+                before_calls = statistics.median(
+                    s["calls"] / sample.get("repetitions", 1) for s, sample in zip(before, base)
+                )
+                after_calls = statistics.median(
+                    s["calls"] / sample.get("repetitions", 1) for s, sample in zip(after, candidate)
+                )
                 if before_calls != after_calls:
                     changed_counts.append(f"{label} ({before_calls:g} -> {after_calls:g} calls)")
                 delta = (
-                    statistics.median(s["total_us"] for s in after)
-                    - statistics.median(s["total_us"] for s in before)
+                    statistics.median(
+                        s["total_us"] / sample.get("repetitions", 1)
+                        for s, sample in zip(after, candidate)
+                    )
+                    - statistics.median(
+                        s["total_us"] / sample.get("repetitions", 1)
+                        for s, sample in zip(before, base)
+                    )
                 ) / 1000
                 if delta:
                     phase_deltas.append((delta, label))
@@ -320,6 +347,10 @@ def comparisons(report):
                 candidate_ms=new,
                 change_pct=(ratio - 1) * 100,
                 status=status,
+                impact=impact,
+                agreement=agreement,
+                pairs=len(ratios),
+                threshold_pct=round(threshold * 100),
                 phases=phases,
                 counts=sorted(changed_counts)[:3],
             )
@@ -371,12 +402,7 @@ def render(reports, head, build_id, issues=()):
         for row in rows
         if row["status"] == "improvement"
     ]
-    noisy = [
-        (leg, row)
-        for leg, (_, rows) in completed.items()
-        for row in rows
-        if row["status"] == "noisy"
-    ]
+    large_regressions = [(leg, row) for leg, row in regressions if row["impact"] == "large"]
     missing = len(LEGS) - len(completed)
 
     highlighted = [
@@ -389,16 +415,13 @@ def render(reports, head, build_id, issues=()):
             f"{tasks} database task{'s' if tasks != 1 else ''} consistently slowed down across "
             f"{environments} measured environment{'s' if environments != 1 else ''}."
         )
-        verdict = "⚠️ Performance regression detected"
-    elif noisy:
-        tasks = len({row["name"] for _, row in noisy})
-        environments = len({leg for leg, _ in noisy})
-        opening = (
-            f"{tasks} database task{'s' if tasks != 1 else ''} produced inconsistent slowdown "
-            f"signals across {environments} measured environment"
-            f"{'s' if environments != 1 else ''}."
+        verdict = (
+            "⚠️ Large performance regression detected"
+            if large_regressions
+            else "🔍 Tentative small performance regression"
         )
-        verdict = "🔍 Performance needs review"
+        if not large_regressions:
+            opening += " No large-impact slowdowns were detected."
     elif improvements:
         tasks = len({row["name"] for _, row in improvements})
         environments = len({leg for leg, _ in improvements})
@@ -407,7 +430,11 @@ def render(reports, head, build_id, issues=()):
             f"{environments} measured environment{'s' if environments != 1 else ''}. "
             "No consistent slowdowns were detected."
         )
-        verdict = "✅ Performance improved"
+        verdict = (
+            "✅ Large performance improvement detected"
+            if any(row["impact"] == "large" for _, row in improvements)
+            else "✅ Tentative small performance improvement"
+        )
     elif not completed:
         opening = (
             "Performance could not be assessed because no environment produced a complete result."
@@ -423,10 +450,13 @@ def render(reports, head, build_id, issues=()):
             f"No consistent slowdowns in the {len(completed)} completed {completed_label}. "
             f"No result is available for {missing} {missing_label}."
         )
-        verdict = "✅ No regression detected"
+        verdict = "⚠️ Performance assessment incomplete"
 
-    improvement_tasks = len({row["name"] for _, row in improvements})
-    regression_tasks = len({row["name"] for _, row in regressions})
+    badges = []
+    for tier in ("small", "large"):
+        for entries, label in ((improvements, "IMPROVEMENT"), (regressions, "SLOWDOWN")):
+            tasks = len({row["name"] for _, row in entries if row["impact"] == tier})
+            badges.append(f"<kbd>{tasks} {tier.upper()} {label}{'S' if tasks != 1 else ''}</kbd>")
     lines = [
         MARKER,
         "## PR Performance Report",
@@ -435,19 +465,9 @@ def render(reports, head, build_id, issues=()):
         "",
         f"**{opening}**",
         "",
-        f"<kbd>{improvement_tasks} IMPROVEMENT"
-        f"{'S' if improvement_tasks != 1 else ''}</kbd> "
-        f"<kbd>{regression_tasks} SLOWDOWN"
-        f"{'S' if regression_tasks != 1 else ''}</kbd> "
-        f"<kbd>{len(completed)}/{len(LEGS)} ENVIRONMENTS</kbd>",
+        " ".join(badges) + f" <kbd>{len(completed)}/{len(LEGS)} ENVIRONMENTS</kbd>",
         "",
     ]
-    if noisy:
-        noisy_tasks = len({row["name"] for _, row in noisy})
-        lines += [
-            f"<kbd>{noisy_tasks} INCONSISTENT SLOWDOWN" f"{'S' if noisy_tasks != 1 else ''}</kbd>",
-            "",
-        ]
     affected_tasks = [name for name in CASES if any(row["name"] == name for _, row in highlighted)]
     if highlighted and len(affected_tasks) <= MAX_FINGERPRINT_TASKS:
         affected_legs = [leg for leg in LEGS if any(item_leg == leg for item_leg, _ in highlighted)]
@@ -466,12 +486,10 @@ def render(reports, head, build_id, issues=()):
                 row = by_signal.get((leg, name))
                 if row is None:
                     cells.append("No signal")
-                elif row["status"] == "improvement":
-                    cells.append(f"**{abs(row['change_pct']):.1f}% faster**")
-                elif row["status"] == "regression":
-                    cells.append(f"**{abs(row['change_pct']):.1f}% slower**")
                 else:
-                    cells.append(f"**{abs(row['change_pct']):.1f}% inconsistent**")
+                    direction = "faster" if row["status"] == "improvement" else "slower"
+                    tier = "large" if row["impact"] == "large" else "tentative small"
+                    cells.append(f"**{abs(row['change_pct']):.1f}% {direction} ({tier})**")
             lines.append(f"| {escape(TASK_NAMES[name])} | " + " | ".join(cells) + " |")
         lines.append("")
     if regressions:
@@ -479,11 +497,6 @@ def render(reports, head, build_id, issues=()):
             "The largest recorded phase increases for these tasks are shown below. "
             "Phase timings are supporting evidence, not root-cause proof."
         )
-        if noisy:
-            lines.append(
-                f"{len(noisy)} additional inconsistent slowdown"
-                f"{'s' if len(noisy) != 1 else ''} also need review."
-            )
         lines.append("")
 
     lines += [
@@ -564,19 +577,19 @@ def render(reports, head, build_id, issues=()):
         lines += [
             "",
             f"### {environment_name(leg)}",
-            "| Database task | Before | After | Paired change | Result |",
-            "|---|---:|---:|---:|---|",
+            "| Database task | Before | After | Paired change | Agreement | Result |",
+            "|---|---:|---:|---:|---|---|",
         ]
         for row in rows:
-            result = {
-                "regression": "consistent slowdown",
-                "improvement": "consistent improvement",
-                "noisy": "inconsistent slowdown",
-                "ok": "no signal",
-            }[row["status"]]
+            result = "no signal"
+            if row["impact"]:
+                tier = "large" if row["impact"] == "large" else "tentative small"
+                direction = "slowdown" if row["status"] == "regression" else "improvement"
+                result = f"{tier} {direction}"
             lines.append(
                 f"| {TASK_NAMES[row['name']]} | {row['base_ms']:.3f} ms | "
-                f"{row['candidate_ms']:.3f} ms | {row['change_pct']:+.1f}% | {result} |"
+                f"{row['candidate_ms']:.3f} ms | {row['change_pct']:+.1f}% | "
+                f"{row['agreement']}/{row['pairs']} beyond {row['threshold_pct']}% | {result} |"
             )
     lines += [
         "",
@@ -603,17 +616,29 @@ def render(reports, head, build_id, issues=()):
             lines.append(
                 f"- {environment_name(leg)}: Python {escape(env['python'])}, "
                 f"{escape(env['architecture'])}, SQL {escape(env['sql_version'])}; "
-                f"{report['samples']} paired comparisons and {report['warmups']} warmup."
+                f"{report['samples']} paired comparisons and {report['warmups']} discarded warmup pair."
             )
+            repeated = [
+                f"{TASK_NAMES[name]}: {scenario['repetitions']} repetitions"
+                for name, scenario in report["pairs"][0]["base"]["scenarios"].items()
+                if scenario.get("repetitions", 1) > 1
+            ]
+            if repeated:
+                lines.append(
+                    "  Steady-state tasks warm up once inside each worker; connection opening "
+                    "remains cold. Short-task blocks: " + "; ".join(repeated) + "."
+                )
     lines += [
         "",
-        "A consistent change requires more than 20% median paired movement, at least "
-        "1 ms between the median runtimes, and at least 80% of pairs exceeding the "
-        "relative threshold in the same direction. A slowdown without enough pair "
-        "agreement is reported as inconsistent.",
+        "Tentative small impact requires more than 10% median paired movement; large impact "
+        "requires more than 20%. Both require at least 1 ms between the median per-workload "
+        "runtimes and at least 80% of pairs exceeding that tier's threshold in the same "
+        "direction. Large impact is evaluated first. Unconfirmed movement remains no signal.",
         "",
         "The displayed change is the median of paired before-and-after ratios. It is not "
-        "recalculated from the two displayed median runtimes.",
+        "recalculated from the two displayed median runtimes. Repeated blocks use the mean "
+        "time per original workload; phase timings and call counts are normalized per "
+        "repetition. Inner repetitions are not additional independent pairs.",
     ]
     if issues:
         lines += ["", "Unavailable or rejected data: " + ", ".join(escape(x) for x in issues)]
