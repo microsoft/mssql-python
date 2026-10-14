@@ -83,6 +83,33 @@ def reset_pooling_state():
 # =============================================================================
 
 
+def test_pooled_positive_login_timeout_reaches_native_attrs():
+    """Exercise the Python boundary paired with native timeout call-count tests."""
+    from unittest.mock import MagicMock, patch
+    from mssql_python.constants import ConstantsDDBC
+
+    pooling(enabled=True, max_size=2, idle_timeout=30)
+    native = MagicMock()
+    with patch("mssql_python.connection.ddbc_bindings.Connection", return_value=native) as create:
+        for _ in range(3):
+            connection = connect(
+                "Server=testserver;Database=mydb;Trusted_Connection=yes;",
+                timeout=30,
+                autocommit=True,
+            )
+            assert create.call_args.args[1] is True
+            assert create.call_args.args[2] == {ConstantsDDBC.SQL_ATTR_LOGIN_TIMEOUT.value: 30}
+            assert connection.timeout == 0  # Query timeout is independent.
+            connection.close()
+    assert create.call_count == 3
+    assert native.set_autocommit.call_count == 3
+    native.set_autocommit.assert_called_with(True)
+    assert native.close.call_count == 3
+    native.close.assert_called_with(rollback_before_disconnect=True)
+    native.get_autocommit.assert_not_called()
+    native.rollback.assert_not_called()
+
+
 def test_connection_pooling_basic(conn_str):
     """Test basic connection pooling functionality with multiple connections."""
     # Enable pooling with small pool size
@@ -172,6 +199,13 @@ def test_pooled_close_paths_leave_no_open_transaction(conn_str):
                     None,
                     None,
                 ),
+                (
+                    "explicit transaction with noexec",
+                    True,
+                    "BEGIN TRANSACTION; SELECT 1; SET NOEXEC ON",
+                    None,
+                    None,
+                ),
             )
             expected_spid = None
             for name, autocommit, sql, params, action in scenarios:
@@ -224,7 +258,8 @@ def test_pooled_close_paths_leave_no_open_transaction(conn_str):
     )
 
 
-def test_autocommit_explicit_transaction_is_rolled_back_on_pool_checkin(conn_str):
+@pytest.mark.parametrize("execution", ["execute", "executemany", "failed_execute"])
+def test_autocommit_explicit_transaction_is_rolled_back_on_pool_checkin(conn_str, execution):
     """Autocommit normalization must not commit an explicit SQL transaction."""
     _run_in_subprocess(
         """
@@ -233,7 +268,8 @@ def test_autocommit_explicit_transaction_is_rolled_back_on_pool_checkin(conn_str
         import mssql_python
 
         conn_str = os.environ["DB_CONNECTION_STRING"]
-        table = "pytest_pool_explicit_autocommit_transaction"
+        execution = EXECUTION_MODE
+        table = f"pytest_pool_explicit_autocommit_transaction_{execution}"
         mssql_python.pooling(enabled=True, max_size=2, idle_timeout=30)
         observer = mssql_python.connect(conn_str, autocommit=True)
         try:
@@ -271,7 +307,38 @@ def test_autocommit_explicit_transaction_is_rolled_back_on_pool_checkin(conn_str
                 )
                 sys.exit(77)
 
-            subject_cursor.execute(f"BEGIN TRANSACTION; INSERT INTO {table} VALUES (1)")
+            subject_cursor.close()
+            subject.close()
+            # Exercise proven-clean, no-statement leases before reintroducing
+            # explicit work. Inspect the parked session without borrowing it.
+            for _ in range(3):
+                empty = mssql_python.connect(conn_str, autocommit=True)
+                empty.close()
+                observer_cursor.execute(
+                    "SELECT open_transaction_count "
+                    "FROM sys.dm_exec_sessions WHERE session_id = ?",
+                    [subject_spid],
+                )
+                row = observer_cursor.fetchone()
+                assert row is not None and row[0] == 0
+
+            subject = mssql_python.connect(conn_str, autocommit=True)
+            subject_cursor = subject.cursor()
+            subject_cursor.execute("BEGIN TRANSACTION")
+            if execution == "executemany":
+                subject_cursor.executemany(
+                    f"INSERT INTO {table} VALUES (?)", [(1,), (2,)]
+                )
+            elif execution == "failed_execute":
+                subject_cursor.execute(f"INSERT INTO {table} VALUES (1)")
+                try:
+                    subject_cursor.execute(f"INSERT INTO {table} VALUES (1)")
+                except mssql_python.IntegrityError:
+                    pass
+                else:
+                    raise AssertionError("Expected duplicate-key execution failure")
+            else:
+                subject_cursor.execute(f"INSERT INTO {table} VALUES (1)")
             subject_cursor.close()
             subject.close()
 
@@ -303,7 +370,7 @@ def test_autocommit_explicit_transaction_is_rolled_back_on_pool_checkin(conn_str
         finally:
             observer.close()
             mssql_python.pooling(enabled=False)
-        """,
+        """.replace("EXECUTION_MODE", repr(execution)),
         conn_str,
     )
 
