@@ -118,7 +118,7 @@ def test_consistent_slowdown_is_advisory_regression(report):
         row["status"] == "regression" and row["change_pct"] == pytest.approx(30) for row in rows
     )
     body = reporting.render([report], "c" * 40, 42)
-    assert "### ⚠️ Performance regression detected" in body
+    assert "### ⚠️ Large performance regression detected" in body
     assert f"{len(reporting.CASES)} database tasks consistently slowed down" in body
     assert "| Unix / SQL Server 2022 | Connection opening |" in body
     assert "Unavailable: Unix / SQL Server 2025 (incomplete benchmark)." in body
@@ -131,7 +131,7 @@ def test_noisy_slowdown_and_submillisecond_change_are_not_regressions(report):
     for pair in report["pairs"][:2]:
         pair["candidate"]["scenarios"]["select"]["wall_ms"] = 8
     report["pairs"][0]["candidate"]["scenarios"]["connect"]["wall_ms"] = 1000
-    assert reporting.comparisons(report)[1]["status"] == "noisy"
+    assert reporting.comparisons(report)[1]["status"] == "ok"
     for pair in report["pairs"]:
         pair["base"]["scenarios"]["insert"]["wall_ms"] = 0.1
         pair["candidate"]["scenarios"]["insert"]["wall_ms"] = 0.2
@@ -292,14 +292,155 @@ def clear_slowdowns(report):
     return report
 
 
-def test_impact_summary_handles_single_inconsistent_and_complete_clean_results(report):
+@pytest.mark.parametrize(
+    "scale,status,impact",
+    [
+        (1.10, "ok", None),
+        (1.11, "regression", "small"),
+        (1.20, "regression", "small"),
+        (1.21, "regression", "large"),
+        (0.90, "ok", None),
+        (0.89, "improvement", "small"),
+        (0.80, "improvement", "small"),
+        (0.79, "improvement", "large"),
+    ],
+)
+def test_impact_tiers_use_strict_boundaries(report, scale, status, impact):
+    for pair in report["pairs"]:
+        pair["base"]["scenarios"]["fetchall"]["wall_ms"] = 100
+        pair["candidate"]["scenarios"]["fetchall"]["wall_ms"] = 100 * scale
+    row = reporting.comparisons(report)[4]
+    assert (row["status"], row["impact"]) == (status, impact)
+
+
+@pytest.mark.parametrize("scales", [(1.3, 1.3, 1.3, 1.15, 1), (0.7, 0.7, 0.7, 0.85, 1)])
+def test_large_median_with_only_small_tier_agreement_is_small_impact(report, scales):
+    for pair, scale in zip(report["pairs"], scales):
+        pair["candidate"]["scenarios"]["fetchall"]["wall_ms"] = 10 * scale
+    row = reporting.comparisons(report)[4]
+    assert row["impact"] == "small"
+    assert row["agreement"] == 4 and row["threshold_pct"] == 10
+
+
+@pytest.mark.parametrize("scale", [1.15, 0.85])
+def test_small_impact_is_advisory_and_visible(report, scale):
+    clean = clear_slowdowns(report)
+    for pair in clean["pairs"]:
+        pair["candidate"]["scenarios"]["fetchall"]["wall_ms"] *= scale
+    body = reporting.render([clean], "c" * 40, 42)
+    direction = "regression" if scale > 1 else "improvement"
+    assert f"Tentative small performance {direction}" in body
+    assert "5/5 beyond 10%" in body
+    assert "tentative small" in body
+    assert "Advisory result; does not block merging." in body
+
+
+def test_submillisecond_changes_remain_unconfirmed_in_both_tiers(report):
+    for pair in report["pairs"]:
+        for name, scale in (("select", 1.15), ("fetchone", 1.3)):
+            pair["base"]["scenarios"][name]["wall_ms"] = 1
+            pair["candidate"]["scenarios"][name]["wall_ms"] = scale
+    assert all(row["status"] == "ok" for row in reporting.comparisons(report)[1:2])
+    assert reporting.comparisons(report)[5]["status"] == "ok"
+
+
+def test_neutral_pr_835_outlier_does_not_produce_an_improvement(report):
+    clear_slowdowns(report)
+    for pair, old, new in zip(
+        report["pairs"],
+        (35.691, 44.641, 104.950, 36.531, 60.489),
+        (36.599, 35.560, 36.926, 36.407, 36.442),
+    ):
+        pair["base"]["scenarios"]["prepared_named"]["wall_ms"] = old
+        pair["candidate"]["scenarios"]["prepared_named"]["wall_ms"] = new
+    row = next(row for row in reporting.comparisons(report) if row["name"] == "prepared_named")
+    assert row["change_pct"] == pytest.approx(-20.3, abs=0.1)
+    assert row["status"] == "ok" and row["agreement"] == 3
+    body = reporting.render([report], "c" * 40, 42)
+    assert "Signal fingerprint" not in body
+    assert "-20.3% | 3/5 beyond 10% | no signal" in body
+
+
+def repeated_report(report):
+    for pair in report["pairs"]:
+        for sample in pair.values():
+            scenario = sample["scenarios"]["select"]
+            scenario.update(repetitions=2, warmups=1, wall_samples_ms=[scenario["wall_ms"]] * 2)
+            scenario["cpp"] = {
+                "ddbc::query": dict(calls=2, total_us=2000, min_us=1000, max_us=1000)
+            }
+    return report
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("repetitions", True),
+        ("repetitions", 0),
+        ("repetitions", 101),
+        ("warmups", -1),
+        ("wall_samples_ms", [13]),
+        ("wall_samples_ms", [13, float("nan")]),
+        ("wall_samples_ms", [13, -13]),
+        ("wall_samples_ms", [12, 12]),
+    ],
+)
+def test_repeated_samples_are_bounded_and_consistent(report, field, value):
+    repeated_report(report)["pairs"][0]["candidate"]["scenarios"]["select"][field] = value
+    with pytest.raises(ValueError):
+        reporting.validate(report)
+
+
+@pytest.mark.parametrize("field", ["repetitions", "warmups"])
+def test_repetition_contract_must_match_between_revisions(report, field):
+    repeated_report(report)
+    scenario = report["pairs"][0]["candidate"]["scenarios"]["select"]
+    scenario[field] = 3
+    if field == "repetitions":
+        scenario["wall_samples_ms"] = [scenario["wall_ms"]] * 3
+    with pytest.raises(ValueError, match="Workload changed"):
+        reporting.validate(report)
+
+
+def test_phase_diagnostics_are_normalized_per_repetition(report):
+    repeated_report(report)
+    for pair in report["pairs"]:
+        pair["candidate"]["scenarios"]["select"]["cpp"]["ddbc::query"] = dict(
+            calls=4, total_us=6000, min_us=1500, max_us=1500
+        )
+    reporting.validate(report)
+    row = reporting.comparisons(report)[1]
+    assert row["base_ms"] == 10 and row["candidate_ms"] == 13
+    assert row["phases"] == [(2.0, "ddbc::query")]
+    assert row["counts"] == ["ddbc::query (1 -> 2 calls)"]
+    assert row["pairs"] == 5
+
+
+def test_repetition_does_not_inflate_absolute_impact_floor(report):
+    for pair in report["pairs"]:
+        for side, wall in (("base", 1), ("candidate", 1.3)):
+            pair[side]["scenarios"]["select"].update(
+                wall_ms=wall,
+                wall_samples_ms=[wall] * 100,
+                repetitions=100,
+                warmups=1,
+                cpp={"ddbc::query": dict(calls=100, total_us=100000, min_us=1000, max_us=1000)},
+            )
+    reporting.validate(report)
+    row = reporting.comparisons(report)[1]
+    assert row["agreement"] == 5 and row["pairs"] == 5
+    assert row["status"] == "ok" and row["impact"] is None
+
+
+def test_inconsistent_movement_stays_out_of_summary_and_signals(report):
     clean = clear_slowdowns(copy.deepcopy(report))
     for pair, scale in zip(clean["pairs"], (1.3, 1.3, 1.3, 0.8, 0.8)):
         pair["candidate"]["scenarios"]["fetchone"]["wall_ms"] *= scale
     noisy = reporting.render([clean], "c" * 40, 42)
-    assert "### 🔍 Performance needs review" in noisy
-    assert "1 database task produced inconsistent slowdown signals" in noisy
-    assert "<kbd>1 INCONSISTENT SLOWDOWN</kbd>" in noisy
+    assert "### ⚠️ Performance assessment incomplete" in noisy
+    assert "INCONSISTENT" not in noisy
+    assert "Signal fingerprint" not in noisy
+    assert "+30.0% | 3/5 beyond 10% | no signal" in noisy
 
     complete = [set_leg(clear_slowdowns(copy.deepcopy(report)), leg) for leg in reporting.LEGS]
     clean_body = reporting.render(complete, "c" * 40, 42)
@@ -313,7 +454,7 @@ def test_impact_summary_handles_single_regression_partial_and_no_results(report)
     for pair in single["pairs"]:
         pair["candidate"]["scenarios"]["fetchone"]["wall_ms"] *= 1.3
     body = reporting.render([single], "c" * 40, 42)
-    assert "### ⚠️ Performance regression detected" in body
+    assert "### ⚠️ Large performance regression detected" in body
     assert "**1 database task consistently slowed down across 1 measured environment.**" in body
     assert "<summary><b>Performance diagnostics</b></summary>" in body
     assert "<summary><b>All database tasks and timings</b></summary>" in body
@@ -349,19 +490,21 @@ def test_impact_summary_reports_consistent_improvements(report):
     assert rows[4]["status"] == "improvement"
     assert rows[4]["phases"] == [(-0.5, "ddbc::query")]
     body = reporting.render(reports, "c" * 40, 42)
-    assert "### ✅ Performance improved" in body
+    assert "### ✅ Large performance improvement detected" in body
     assert (
         "**2 database tasks consistently improved across 2 measured environments. "
         "No consistent slowdowns were detected.**"
     ) in body
-    assert "<kbd>2 IMPROVEMENTS</kbd> <kbd>0 SLOWDOWNS</kbd> <kbd>2/2 ENVIRONMENTS</kbd>" in body
-    assert "| Fetch-all queries | **30.0% faster** | **28.0% faster** |" in body
+    assert "<kbd>2 LARGE IMPROVEMENTS</kbd> <kbd>0 LARGE SLOWDOWNS</kbd>" in body
+    assert "<kbd>2/2 ENVIRONMENTS</kbd>" in body
+    assert "| Fetch-all queries | **30.0% faster (large)** | **28.0% faster (large)** |" in body
     assert (
-        "| Insertion with explicit input sizes | **40.0% faster** | " "**39.0% faster** |"
+        "| Insertion with explicit input sizes | **40.0% faster (large)** | "
+        "**39.0% faster (large)** |"
     ) in body
     assert "Spread" not in body
     assert "<summary><b>Measured timings</b></summary>" in body
-    assert "| Fetch-all queries |" in body and "| consistent improvement |" in body
+    assert "| Fetch-all queries |" in body and "| large improvement |" in body
     assert "ddbc::query -0.500 ms" in body
 
 
@@ -371,20 +514,21 @@ def test_regression_headline_keeps_precedence_over_improvement(report):
         pair["candidate"]["scenarios"]["fetchall"]["wall_ms"] *= 0.7
         pair["candidate"]["scenarios"]["fetchone"]["wall_ms"] *= 1.3
     body = reporting.render([mixed], "c" * 40, 42)
-    assert "### ⚠️ Performance regression detected" in body
-    assert "<kbd>1 IMPROVEMENT</kbd> <kbd>1 SLOWDOWN</kbd>" in body
+    assert "### ⚠️ Large performance regression detected" in body
+    assert "<kbd>1 LARGE IMPROVEMENT</kbd> <kbd>1 LARGE SLOWDOWN</kbd>" in body
 
 
-def test_inconsistent_slowdown_keeps_precedence_over_improvement(report):
+def test_inconsistent_slowdown_does_not_override_consistent_improvement(report):
     mixed = clear_slowdowns(copy.deepcopy(report))
     for pair in mixed["pairs"]:
         pair["candidate"]["scenarios"]["fetchall"]["wall_ms"] *= 0.7
     for pair, scale in zip(mixed["pairs"], (1.3, 1.3, 1.3, 0.8, 0.8)):
         pair["candidate"]["scenarios"]["fetchone"]["wall_ms"] *= scale
     body = reporting.render([mixed], "c" * 40, 42)
-    assert "### 🔍 Performance needs review" in body
-    assert "<kbd>1 IMPROVEMENT</kbd> <kbd>0 SLOWDOWNS</kbd>" in body
-    assert "<kbd>1 INCONSISTENT SLOWDOWN</kbd>" in body
+    assert "### ✅ Large performance improvement detected" in body
+    assert "<kbd>1 LARGE IMPROVEMENT</kbd> <kbd>0 LARGE SLOWDOWNS</kbd>" in body
+    assert "INCONSISTENT" not in body
+    assert "+30.0% | 3/5 beyond 10% | no signal" in body
 
 
 @pytest.mark.parametrize(
@@ -868,10 +1012,80 @@ def test_legacy_insert_workload_executes_both_variants(input_sizes):
     context.disable.assert_called_once()
 
 
+def test_short_measurements_warm_inside_worker_and_retain_raw_repetitions(monkeypatch):
+    monkeypatch.setitem(benchmark_workloads.MEASUREMENT_REPEATS, "select", 2)
+
+    def sample(wall, calls, total):
+        return dict(
+            wall_ms=wall,
+            cpp={"ddbc::query": dict(calls=calls, total_us=total, min_us=100, max_us=200)},
+            py={},
+            detail="Rows: 100",
+        )
+
+    profiler = MagicMock()
+    profiler.run.side_effect = [
+        [sample(1000, 1000, 100000)],
+        [sample(4, 2, 400)],
+        [sample(8, 3, 600)],
+    ]
+    result = controller.measure_scenario(profiler, "select")
+    assert profiler.run.call_count == 3
+    assert result["warmups"] == 1 and result["repetitions"] == 2
+    assert result["wall_samples_ms"] == [4, 8] and result["wall_ms"] == 6
+    assert result["cpp"]["ddbc::query"] == dict(calls=5, total_us=1000, min_us=100, max_us=200)
+    assert result["work"] == "Rows: 100"
+
+
+def test_connection_measurement_remains_cold_and_single_pass():
+    profiler = MagicMock()
+    profiler.run.return_value = [dict(wall_ms=10, cpp={"ddbc::connect": {}}, py={})]
+    result = controller.measure_scenario(profiler, "connect")
+    profiler.run.assert_called_once_with("connect")
+    assert result["warmups"] == 0 and result["repetitions"] == 1
+    assert result["work"] == "Connection: 1"
+
+
+def test_long_steady_state_task_warms_once_without_repeating_measurement():
+    profiler = MagicMock()
+    profiler.run.side_effect = [
+        [dict(wall_ms=9000, cpp={"ddbc::fetch": {}}, py={}, detail="Rows: 1200000")],
+        [dict(wall_ms=3000, cpp={"ddbc::fetch": {}}, py={}, detail="Rows: 1200000")],
+    ]
+    result = controller.measure_scenario(profiler, "fetch_1_2m")
+    assert profiler.run.call_count == 2
+    assert result["warmups"] == 1 and result["repetitions"] == 1
+    assert result["wall_ms"] == 3000 and result["wall_samples_ms"] == [3000]
+
+
+def test_in_process_warmup_failure_is_not_hidden():
+    profiler = MagicMock()
+    profiler.run.side_effect = RuntimeError("warmup failed")
+    with pytest.raises(RuntimeError, match="warmup failed"):
+        controller.measure_scenario(profiler, "select")
+    profiler.run.assert_called_once()
+
+
+def test_repeated_workload_cannot_change_after_warmup(monkeypatch):
+    monkeypatch.setitem(benchmark_workloads.MEASUREMENT_REPEATS, "select", 2)
+    profiler = MagicMock()
+    profiler.run.side_effect = [
+        [dict(wall_ms=1, cpp={"ddbc::query": {}}, py={}, detail=f"Rows: {rows}")]
+        for rows in (100, 200)
+    ]
+    with pytest.raises(RuntimeError, match="Workload changed"):
+        controller.measure_scenario(profiler, "select")
+
+
 @pytest.mark.parametrize("fail", [False, True])
 def test_worker_checkpoints_completed_and_active_scenarios(tmp_path, monkeypatch, capsys, fail):
     output = tmp_path / "base-0.json"
-    result = dict(wall_ms=10.0, cpp={"ddbc::run": {}}, py={}, detail="Rows: 10")
+    result = dict(
+        wall_ms=10.0,
+        cpp={"ddbc::run": dict(calls=1, total_us=1000, min_us=1000, max_us=1000)},
+        py={},
+        detail="Rows: 10",
+    )
     profiler = MagicMock()
     profiler.__enter__.return_value = profiler
     profiler._conn.cursor.return_value.__enter__.return_value.fetchone.return_value = ("16.0",)
