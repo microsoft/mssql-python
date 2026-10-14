@@ -10,6 +10,7 @@ from ..row import Row
 from .exception_translator import translate_py_core_exceptions
 
 if TYPE_CHECKING:
+    from .._pycore_types import AsyncCoreCursor
     from .async_cursor import _AsyncCursor  # pyright: ignore[reportPrivateUsage]
 
 _ResultSnapshot = tuple[
@@ -21,7 +22,7 @@ _ResultSnapshot = tuple[
 ]
 
 
-def _get_py_core_async_cursor(cursor: "_AsyncCursor") -> Any:
+def _get_py_core_async_cursor(cursor: "_AsyncCursor") -> "AsyncCoreCursor":
     return cursor._py_core_async_cursor  # pyright: ignore[reportPrivateUsage]
 
 

@@ -11,6 +11,7 @@ import sys
 import threading
 import warnings
 from concurrent.futures import ThreadPoolExecutor
+from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 from mssql_python.auth import (
     AADAuth,
@@ -1554,19 +1555,28 @@ class TestCustomTokenProviderConnect:
     @patch("mssql_python.connection.ddbc_bindings.Connection")
     def test_concurrent_connections_with_same_token_provider(self, mock_ddbc_conn):
         """Concurrent connect() calls with one token provider should succeed."""
-        mock_ddbc_conn.return_value = MagicMock()
-        mock_cred = MagicMock()
-        mock_cred.get_token.return_value = MagicMock(token=SAMPLE_TOKEN)
+        mock_ddbc_conn.side_effect = lambda *args, **kwargs: MagicMock()
+        scopes = []
+        lock = threading.Lock()
+
+        class Credential:
+            def get_token(self, scope):
+                # Mock.call_count can lose increments across concurrent calls.
+                with lock:
+                    scopes.append(scope)
+                return SimpleNamespace(token=SAMPLE_TOKEN)
+
+        credential = Credential()
         from mssql_python import connect
 
         def _open_and_close(i):
-            conn = connect(f"Server=test{i};Database=testdb", token_provider=mock_cred)
+            conn = connect(f"Server=test{i};Database=testdb", token_provider=credential)
             conn.close()
 
         with ThreadPoolExecutor(max_workers=8) as executor:
             list(executor.map(_open_and_close, range(20)))
 
-        assert mock_cred.get_token.call_count == 20
+        assert scopes == [_SQL_SCOPE] * 20
 
 
 class TestTokenProviderValidation:

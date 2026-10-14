@@ -104,3 +104,42 @@ All pull requests must include:
 Use `AI:` for changes to AI tooling, agents, skills, prompts, or AI-assisted
 development workflows. It describes the subject of the change, not whether
 AI helped write it; ordinary driver fixes and features keep their usual prefixes.
+
+## Type Checking
+
+The typing harness checks Python source (`.py`) and stub (`.pyi`) files recursively
+under `mssql_python` only, excluding generated `build` directories and their
+downloaded third-party sources. `tests` and `mssql_python_odbc` are not targets of
+this typing gate. It does not execute the checked code or require a live database;
+the existing runtime test jobs are unchanged.
+
+After installing `requirements.txt` and building the native extension using
+`.github/prompts/build-ddbc.prompt.md`, run:
+
+```console
+python -m pytest tests/test_typing.py -m typing -v
+```
+
+The harness runs mypy in strict mode, including checks inside unannotated function
+bodies. It reports source, stub, and import errors without suppressing errors in
+the driver. Explicit package bases resolve module names from the repository root.
+Keep the mypy version pinned in `requirements.txt` aligned
+with the existing locked development dependencies.
+
+To run the same package check directly:
+
+```console
+python -m mypy --config-file= --strict --explicit-package-bases --exclude "(^|/)build/" --no-incremental mssql_python
+```
+
+Private `_ddbc_types.pyi` and `_pycore_types.pyi` declarations describe the native
+boundaries; they do not replace or hide the Python implementations from mypy.
+Keep these declarations aligned with the C++/Rust APIs, and keep the static
+constant declarations aligned with the dynamically exported integer aliases.
+The dependency tests check the native export names and constant declaration parity.
+
+The existing required `MSSQL-Python-PR-Validation` pipeline runs the harness once,
+in the Ubuntu CodeQL job immediately after its native build. Typing failures fail
+the pipeline and block PR merging; no separate GitHub workflow or required check
+is needed. The `typing` marker is excluded from default pytest runs so the same
+static checks are not repeated across the database/OS matrix.

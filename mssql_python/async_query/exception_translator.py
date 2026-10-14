@@ -4,16 +4,16 @@ from contextlib import contextmanager
 from typing import Iterator
 
 from ..exceptions import (
-    DataError,
-    DatabaseError,
-    Error,
-    IntegrityError,
-    InterfaceError,
-    InternalError,
-    NotSupportedError,
-    OperationalError,
-    ProgrammingError,
-    Warning,
+    DataError as DataError,
+    DatabaseError as DatabaseError,
+    Error as Error,
+    IntegrityError as IntegrityError,
+    InterfaceError as InterfaceError,
+    InternalError as InternalError,
+    NotSupportedError as NotSupportedError,
+    OperationalError as OperationalError,
+    ProgrammingError as ProgrammingError,
+    Warning as Warning,
 )
 from ..logging import logger
 
@@ -65,7 +65,9 @@ def _translate_known_builtin_error(error: Exception) -> Exception:
     return error
 
 
-def _classify_database_error(error: Exception, default_type: type[DatabaseError]):
+def _classify_database_error(
+    error: Exception, default_type: type[DatabaseError]
+) -> type[DatabaseError]:
     diagnostics = getattr(error, "sql_errors", ())
     numbers = {item.get("number") for item in diagnostics if isinstance(item, dict)}
     if numbers & _DATA_ERROR_NUMBERS:
@@ -86,7 +88,7 @@ def translate_py_core_exception(error: Exception) -> Exception:
         if public_type is None:
             continue
         if public_type is DatabaseError:
-            public_type = _classify_database_error(error, public_type)
+            public_type = _classify_database_error(error, DatabaseError)
 
         logger.debug(
             "Async exception translation: %s -> %s",

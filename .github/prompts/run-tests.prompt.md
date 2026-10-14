@@ -61,6 +61,11 @@ python -c "import pytest; print('✅ pytest ready:', pytest.__version__)"
 pip install pytest pytest-cov
 ```
 
+The typing harness checks only `mssql_python` source/stub files, not `tests` or
+`mssql_python_odbc`, and does not require a database. After building the native
+extension, run `python -m pytest tests/test_typing.py -m typing -v`
+without completing the database checks below.
+
 ### Step 3: Verify Database Connection String
 
 ```bash
@@ -126,16 +131,17 @@ Help the developer run tests to validate their changes. Follow this process base
 
 | Category | Description | When to Use |
 |----------|-------------|-------------|
-| **All tests** | Full test suite (excluding stress) | Before creating PR |
+| **Default tests** | Test suite excluding stress and separately gated typing tests | Before creating PR |
 | **Specific file** | Single test file | Testing one area |
 | **Specific test** | Single test function | Debugging a failure |
 | **Stress tests** | Long-running, resource-intensive | Performance validation |
+| **Typing tests** | Strict checking of `mssql_python` sources/stubs only; no database required | Python typing changes |
 | **With coverage** | Tests + coverage report | Checking coverage |
 
 ### Ask the Developer
 
 > "What would you like to test?"
-> 1. **All tests** - Run full suite (recommended before PR)
+> 1. **Default tests** - Run the suite excluding stress and separately gated typing tests
 > 2. **Specific tests** - Tell me which file(s) or test name(s)
 > 3. **With coverage** - Generate coverage report
 
@@ -143,16 +149,16 @@ Help the developer run tests to validate their changes. Follow this process base
 
 ## STEP 2: Run Tests
 
-### Option A: Run All Tests (Default - Excludes Stress Tests)
+### Option A: Run Default Tests (Excludes Stress and Typing Tests)
 
 ```bash
 # From repository root
 python -m pytest -v
 
-# This automatically applies: -m "not stress" (from pytest.ini)
+# This automatically applies: -m "not stress and not typing" (from pytest.ini)
 ```
 
-### Option B: Run All Tests Including Stress Tests
+### Option B: Run All Tests Including Stress and Typing Tests
 
 ```bash
 python -m pytest -v -m ""
@@ -384,7 +390,7 @@ python -m pytest tests/ -v
 ### Common Commands
 
 ```bash
-# Run all tests (default, excludes stress)
+# Run default tests (excludes stress and separately gated typing tests)
 python -m pytest -v
 
 # Run specific file
@@ -417,9 +423,11 @@ The project uses these default settings in `pytest.ini`:
 [pytest]
 markers =
     stress: marks tests as stress tests (long-running, resource-intensive)
+    slow: marks tests as extra-slow (sustained load, multi-minute duration)
+    typing: static mssql_python source and stub type checks (run separately in PR validation)
 
-# Default: Skips stress tests
-addopts = -m "not stress"
+# Default: Skips stress and separately gated typing tests
+addopts = -m "not stress and not typing"
 ```
 
 ---

@@ -20,7 +20,20 @@ distinguish from C++ timers.
 import threading
 import time
 from contextlib import contextmanager
-from typing import NamedTuple
+from typing import Iterator, Literal, NamedTuple, TypedDict
+
+
+class PhaseStats(TypedDict):
+    calls: int
+    total_us: float
+    min_us: float
+    max_us: float
+
+
+class TimelineEvent(TypedDict):
+    name: str
+    start_us: int
+    duration_us: int
 
 
 class _Counter(NamedTuple):
@@ -47,7 +60,7 @@ _epoch_ns: int = 0
 
 
 @contextmanager
-def _bookkeeping():
+def _bookkeeping() -> Iterator[None]:
     # GC can run SQL-cleanup finalizers during our own allocations. Suppress only
     # recursive samples on this thread, not the cleanup or ordinary nested phases.
     depth = getattr(_local, "depth", 0)
@@ -58,7 +71,7 @@ def _bookkeeping():
         _local.depth = depth
 
 
-def enable():
+def enable() -> None:
     global _enabled, _window_start_ns
     with _bookkeeping():
         release = _lock.release
@@ -70,7 +83,7 @@ def enable():
             release()
 
 
-def disable():
+def disable() -> None:
     global _enabled
     with _bookkeeping():
         release = _lock.release
@@ -85,10 +98,11 @@ def is_enabled() -> bool:
     return _enabled
 
 
-def reset():
+def reset() -> None:
     global _window_start_ns, _stats, _timeline
     with _bookkeeping():
-        stats, timeline = {}, []
+        stats: dict[str, _Counter] = {}
+        timeline: list[_Event] = []
         release = _lock.release
         _lock.acquire()
         try:
@@ -99,10 +113,10 @@ def reset():
             release()
 
 
-def reset_stats_only():
+def reset_stats_only() -> None:
     global _window_start_ns, _stats
     with _bookkeeping():
-        stats = {}
+        stats: dict[str, _Counter] = {}
         release = _lock.release
         _lock.acquire()
         try:
@@ -112,14 +126,14 @@ def reset_stats_only():
             release()
 
 
-def enable_timeline():
+def enable_timeline() -> None:
     global _timeline_enabled, _epoch_ns, _timeline
     # Clear any previously recorded events when (re)setting the epoch, so every
     # event in _timeline shares the current epoch. Otherwise a second
     # enable_timeline() without an intervening reset() would leave stale events
     # whose offsets were computed from an older epoch, corrupting the sort.
     with _bookkeeping():
-        timeline = []
+        timeline: list[_Event] = []
         release = _lock.release
         _lock.acquire()
         try:
@@ -130,7 +144,7 @@ def enable_timeline():
             release()
 
 
-def disable_timeline():
+def disable_timeline() -> None:
     global _timeline_enabled
     with _bookkeeping():
         release = _lock.release
@@ -141,7 +155,7 @@ def disable_timeline():
             release()
 
 
-def get_timeline() -> list[dict]:
+def get_timeline() -> list[TimelineEvent]:
     with _bookkeeping():
         # Built-in container copies hold the GIL on supported CPython builds.
         # Immutable entries stay stable; no profiler lock surrounds GC allocations.
@@ -156,10 +170,10 @@ def get_timeline() -> list[dict]:
         ]
 
 
-def get_stats() -> dict:
+def get_stats() -> dict[str, PhaseStats]:
     with _bookkeeping():
         snapshot = _stats.copy()
-        out = {}
+        out: dict[str, PhaseStats] = {}
         for name, s in snapshot.items():
             # Keep fractional microseconds when converting accumulated samples.
             out[name] = {
@@ -182,10 +196,10 @@ class _NullPhase:
 
     __slots__ = ()
 
-    def __enter__(self):
+    def __enter__(self) -> None:
         return None
 
-    def __exit__(self, *exc):
+    def __exit__(self, *exc: object) -> Literal[False]:
         return False
 
 
@@ -199,14 +213,14 @@ class _Phase:
 
     __slots__ = ("_name", "_t0")
 
-    def __init__(self, name: str):
+    def __init__(self, name: str) -> None:
         self._name = name
 
-    def __enter__(self):
+    def __enter__(self) -> None:
         self._t0 = perf_start()
         return None
 
-    def __exit__(self, *exc):
+    def __exit__(self, *exc: object) -> Literal[False]:
         perf_stop(self._name, self._t0)
         return False
 
@@ -214,7 +228,7 @@ class _Phase:
 _NULL_PHASE = _NullPhase()
 
 
-def perf_phase(name: str):
+def perf_phase(name: str) -> _NullPhase | _Phase:
     if not _enabled:
         return _NULL_PHASE
     return _Phase(name)
@@ -226,7 +240,7 @@ def perf_start() -> int:
     return time.perf_counter_ns()
 
 
-def perf_stop(name: str, t0: int):
+def perf_stop(name: str, t0: int) -> None:
     # t0 == 0 means perf_start() ran while disabled (or was never called); a
     # falsy start has no valid interval, so record nothing rather than a bogus
     # "now - 0" duration.
@@ -235,7 +249,7 @@ def perf_stop(name: str, t0: int):
     _record(name, time.perf_counter_ns() - t0, t0)
 
 
-def _record(name: str, elapsed: int, start_ns: int = 0):
+def _record(name: str, elapsed: int, start_ns: int = 0) -> None:
     if getattr(_local, "depth", 0):
         return
     with _bookkeeping():
