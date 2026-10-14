@@ -94,7 +94,7 @@ async def test_default_logger_combines_python_and_py_core_operation_logs(
         "AsyncCursor.fetchmany: starting; requested_size=1",
         "AsyncCursor.fetchmany: completed; row_count=1; rowcount=2",
         "AsyncCursor.fetchall: completed; row_count=1; rowcount=1",
-        "AsyncCursor.executemany: starting; batch_count=2",
+        "AsyncCursor.executemany: starting; use_prepare=True",
         "AsyncCursor.executemany: completed; rowcount=-1",
     )
     for expected in expected_python_messages:
