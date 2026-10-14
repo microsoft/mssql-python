@@ -208,6 +208,58 @@ connection.close()
  
 ```
  
+### Table-valued parameters
+
+Declare a table type and an input `READONLY` parameter on SQL Server:
+
+```sql
+CREATE TYPE dbo.ItemBatch AS TABLE (id int, label nvarchar(100));
+GO
+CREATE PROCEDURE dbo.ProcessItems @items dbo.ItemBatch READONLY
+AS SELECT id, label FROM @items;
+```
+
+Pass one explicit value to synchronous `execute()`; ordinary nested lists/tuples are **not**
+implicitly treated as TVPs:
+
+```python
+from mssql_python import TableValuedParameter, SQL_INTEGER, SQL_WVARCHAR
+
+items = TableValuedParameter(
+    type_name="dbo.ItemBatch",
+    columns=[("id", SQL_INTEGER), ("label", SQL_WVARCHAR, 100)],
+    rows=[(1, "Keyboard"), (2, None)],
+)
+cursor.execute("EXEC dbo.ProcessItems ?", items)
+```
+
+Column tuples are `(name, sql_type[, size_or_precision[, scale]])`. Use the
+driver's integer `SQL_*` constants. Columns bind **positionally**; names are
+diagnostic labels, not a schema lookup. Character and binary columns require a
+size; `0` means MAX for variable-length types. Decimal columns require both
+precision and scale, e.g. `("amount", SQL_DECIMAL, 20, 6)`. Precision is 1–38;
+scale is 0–precision. Temporal scale defaults to 7 (0–7 supported).
+Sizes for Unicode columns are UTF-16 code units; binary sizes are bytes.
+Rows must contain one cell per column. Supported cells include integers, floats,
+bools, `Decimal`, strings, bytes/bytearray, date/time/datetime, UUID and `None`.
+
+Use an unquoted `schema.Type` or `type_name="ItemBatch", schema="dbo"` (default
+schema: `dbo`); SQL quoting/bracket syntax and database-qualified names are not
+parsed. The constructor does not consume rows. `rows=None` is invalid: use `[]`
+for an empty table; individual cells may be `None`.
+
+With the default **msodbcsql18** sync provider, `rows` can also be a synchronous
+iterator/generator. It is pulled during `execute()`, with one row of additional
+driver-side binding storage regardless of total input length. A large cell still
+occupies memory for that cell. This is one SQL execution, **not** `executemany()`;
+multiple TVPs, scalar parameters and named parameters can be combined. The
+native row-count descriptor permits up to 2,147,483,647 rows. Materialized sources
+can be reused; iterators are one-shot and may be partially consumed on failure.
+Iterator exceptions, including `KeyboardInterrupt`, cancel/reset the statement
+before releasing its buffers. `executemany()` and `setinputsizes()` overrides
+for statements containing TVPs are not supported. The `mssql-odbc` provider does
+not currently support this ODBC TVP path.
+
 ## Still have questions?
  
 Check out our [FAQ](https://github.com/microsoft/mssql-python/wiki/Frequently-Asked-Questions). Still not answered? Create an [issue](https://github.com/microsoft/mssql-python/issues/new/choose) to ask a question.

@@ -173,6 +173,10 @@ void Connection::disconnect(bool rollbackBeforeDisconnect) {
                 for (const auto& handle : childHandles) {
                     handle->markImplicitlyFreed();
                 }
+                for (const auto& buffers : _cleanupState->failedParameterBuffers) {
+                    buffers->release();
+                }
+                _cleanupState->failedParameterBuffers.clear();
                 _childStatementHandles.clear();
                 _allocationsSinceCompaction = 0;
             }

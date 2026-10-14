@@ -348,6 +348,8 @@ template<typename PutDataFn>
 // The callable hides whether the caller wraps SQLPutData with GIL management; chunk sizing stays shared.
 static SQLRETURN stream_dae_chunks(const void* data, size_t total_bytes, PutDataFn put_data_fn) {
     const char* bytes = static_cast<const char*>(data);
+    if (total_bytes == 0)
+        return put_data_fn(const_cast<void*>(data), 0);
     for (size_t offset = 0; offset < total_bytes; offset += DAE_CHUNK_SIZE) {
         size_t len = std::min(static_cast<size_t>(DAE_CHUNK_SIZE), total_bytes - offset);
         SQLRETURN rc = put_data_fn(
@@ -452,6 +454,15 @@ static void PreResolveUnknownNullTypes(SqlHandle& handle, SQLHANDLE hStmt,
     }
 }
 
+[[noreturn]] static void ThrowParameterError(const SqlHandlePtr& statementHandle, SQLRETURN rc,
+                                        const std::string& operation) {
+    ErrorInfo error = SQLCheckError_Wrap(SQL_HANDLE_STMT, statementHandle, rc);
+    py::object raiseException =
+        py::module_::import("mssql_python.exceptions").attr("raise_exception");
+    raiseException(error.sqlState, operation + ": " + error.ddbcErrorMsg);
+    throw std::runtime_error(operation);
+}
+
 static SQLRETURN PreResolveUdtTypes(SQLHANDLE hStmt, std::vector<ParamInfo>& paramInfos) {
     bool hasUdt = false;
     for (const auto& info : paramInfos) {
@@ -491,33 +502,10 @@ static SQLRETURN PreResolveUdtTypes(SQLHANDLE hStmt, std::vector<ParamInfo>& par
     return SQL_SUCCESS;
 }
 
-// Given a list of parameters and their ParamInfo, calls SQLBindParameter on
-// each of them with appropriate arguments
-SQLRETURN BindParameters(SqlHandle& handle, SQLHANDLE hStmt, const py::list& params,
-                         std::vector<ParamInfo>& paramInfos,
-                         std::vector<std::shared_ptr<void>>& paramBuffers,
-                         const std::string& charEncoding = "utf-8") {
-    PERF_TIMER("BindParameters");
-    LOG("BindParameters: Starting parameter binding for statement handle %p "
-        "with %zu parameters",
-        (void*)hStmt, params.size());
-
-    SQLRETURN describeRc = PreResolveUdtTypes(hStmt, paramInfos);
-    if (!SQL_SUCCEEDED(describeRc)) return describeRc;
-    // GH-627: resolve unknown NULL param SQL types before binding any param.
-    PreResolveUnknownNullTypes(handle, hStmt, paramInfos, &params);
-    for (int paramIndex = 0; paramIndex < params.size(); paramIndex++) {
-        const auto& param = params[paramIndex];
-        ParamInfo& paramInfo = paramInfos[paramIndex];
-        LOG("BindParameters: Processing param[%d] - C_Type=%d, SQL_Type=%d, "
-            "ColumnSize=%lu, DecimalDigits=%d, InputOutputType=%d",
-            paramIndex, paramInfo.paramCType, paramInfo.paramSQLType,
-            (unsigned long)paramInfo.columnSize, paramInfo.decimalDigits,
-            paramInfo.inputOutputType);
-        void* dataPtr = nullptr;
-        SQLLEN bufferLength = 0;
-        SQLLEN* strLenOrIndPtr = nullptr;
-
+static void PrepareParamBuffer(const py::handle& param, ParamInfo& paramInfo,
+                               std::vector<std::shared_ptr<void>>& paramBuffers,
+                               const std::string& charEncoding, int paramIndex,
+                               void*& dataPtr, SQLLEN& bufferLength, SQLLEN*& strLenOrIndPtr) {
         // TODO: Add more data types like money, guid, interval, TVPs etc.
         switch (paramInfo.paramCType) {
             case SQL_C_CHAR: {
@@ -530,7 +518,7 @@ SQLRETURN BindParameters(SqlHandle& handle, SQLHANDLE hStmt, const py::list& par
                         "(Data-At-Execution) for large string streaming",
                         paramIndex);
                     dataPtr =
-                        const_cast<void*>(reinterpret_cast<const void*>(&paramInfos[paramIndex]));
+                        const_cast<void*>(reinterpret_cast<const void*>(&paramInfo));
                     strLenOrIndPtr = AllocateParamBuffer<SQLLEN>(paramBuffers);
                     *strLenOrIndPtr = SQL_LEN_DATA_AT_EXEC(0);
                     bufferLength = 0;
@@ -591,7 +579,7 @@ SQLRETURN BindParameters(SqlHandle& handle, SQLHANDLE hStmt, const py::list& par
                         "for VARBINARY(MAX) streaming",
                         paramIndex);
                     dataPtr =
-                        const_cast<void*>(reinterpret_cast<const void*>(&paramInfos[paramIndex]));
+                        const_cast<void*>(reinterpret_cast<const void*>(&paramInfo));
                     strLenOrIndPtr = AllocateParamBuffer<SQLLEN>(paramBuffers);
                     *strLenOrIndPtr = SQL_LEN_DATA_AT_EXEC(0);
                     bufferLength = 0;
@@ -626,7 +614,7 @@ SQLRETURN BindParameters(SqlHandle& handle, SQLHANDLE hStmt, const py::list& par
                         "NVARCHAR(MAX) streaming",
                         paramIndex);
                     dataPtr =
-                        const_cast<void*>(reinterpret_cast<const void*>(&paramInfos[paramIndex]));
+                        const_cast<void*>(reinterpret_cast<const void*>(&paramInfo));
                     strLenOrIndPtr = AllocateParamBuffer<SQLLEN>(paramBuffers);
                     *strLenOrIndPtr = SQL_LEN_DATA_AT_EXEC(0);
                     bufferLength = 0;
@@ -744,9 +732,9 @@ SQLRETURN BindParameters(SqlHandle& handle, SQLHANDLE hStmt, const py::list& par
                     ThrowStdException(MakeParamMismatchErrorStr(paramInfo.paramCType, paramIndex));
                 }
                 int year = param.attr("year").cast<int>();
-                if (year < 1753 || year > 9999) {
+                if (year < 1 || year > 9999) {
                     ThrowStdException("Date out of range for SQL Server "
-                                      "(1753-9999) at paramIndex " +
+                                      "(1-9999) at paramIndex " +
                                       std::to_string(paramIndex));
                 }
                 // TODO: can be moved to python by registering SQL_DATE_STRUCT
@@ -904,6 +892,52 @@ SQLRETURN BindParameters(SqlHandle& handle, SQLHANDLE hStmt, const py::list& par
                 ThrowStdException(errorString.str());
             }
         }
+}
+
+}  // namespace
+
+#include "tvp.hpp"
+
+namespace {
+
+// Given a list of parameters and their ParamInfo, calls SQLBindParameter on
+// each of them with appropriate arguments
+SQLRETURN BindParameters(const SqlHandlePtr& statementHandle, SQLHANDLE hStmt, const py::list& params,
+                         std::vector<ParamInfo>& paramInfos,
+                         std::vector<std::shared_ptr<void>>& paramBuffers,
+                         const std::string& charEncoding = "utf-8") {
+    PERF_TIMER("BindParameters");
+    SqlHandle& handle = *statementHandle;
+    LOG("BindParameters: Starting parameter binding for statement handle %p "
+        "with %zu parameters",
+        (void*)hStmt, params.size());
+
+    SQLRETURN describeRc = PreResolveUdtTypes(hStmt, paramInfos);
+    if (!SQL_SUCCEEDED(describeRc)) return describeRc;
+    // GH-627: resolve unknown NULL param SQL types before binding any param.
+    PreResolveUnknownNullTypes(handle, hStmt, paramInfos, &params);
+    for (int paramIndex = 0; paramIndex < params.size(); paramIndex++) {
+        const auto& param = params[paramIndex];
+        ParamInfo& paramInfo = paramInfos[paramIndex];
+        LOG("BindParameters: Processing param[%d] - C_Type=%d, SQL_Type=%d, "
+            "ColumnSize=%lu, DecimalDigits=%d, InputOutputType=%d",
+            paramIndex, paramInfo.paramCType, paramInfo.paramSQLType,
+            (unsigned long)paramInfo.columnSize, paramInfo.decimalDigits,
+            paramInfo.inputOutputType);
+        void* dataPtr = nullptr;
+        SQLLEN bufferLength = 0;
+        SQLLEN* strLenOrIndPtr = nullptr;
+
+        if (paramInfo.isTVP) {
+            RETCODE rc = BindTableValuedParameter(statementHandle, paramIndex, param, paramInfo);
+            if (!SQL_SUCCEEDED(rc)) {
+                return rc;
+            }
+            continue;
+        }
+
+        PrepareParamBuffer(param, paramInfo, paramBuffers, charEncoding, paramIndex,
+                           dataPtr, bufferLength, strLenOrIndPtr);
         assert(SQLBindParameter_ptr && SQLGetStmtAttr_ptr && SQLSetDescField_ptr);
         RETCODE rc;
         {
@@ -1525,17 +1559,17 @@ DriverHandle LoadDriverOrThrowException() {
 
     SQLDescribeParam_ptr = GetFunctionPointer<SQLDescribeParamFunc>(handle, "SQLDescribeParam");
 
-    bool success = SQLAllocHandle_ptr && SQLSetEnvAttr_ptr && SQLSetConnectAttr_ptr &&
-                   SQLSetStmtAttr_ptr && SQLGetConnectAttr_ptr && SQLDriverConnect_ptr &&
-                   SQLExecDirect_ptr && SQLPrepare_ptr && SQLBindParameter_ptr && SQLExecute_ptr &&
-                   SQLRowCount_ptr && SQLGetStmtAttr_ptr && SQLSetDescField_ptr && SQLFetch_ptr &&
-                   SQLFetchScroll_ptr && SQLGetData_ptr && SQLNumResultCols_ptr && SQLBindCol_ptr &&
-                   SQLDescribeCol_ptr && SQLMoreResults_ptr && SQLColAttribute_ptr &&
-                   SQLEndTran_ptr && SQLDisconnect_ptr && SQLFreeHandle_ptr && SQLFreeStmt_ptr &&
-                   SQLGetDiagRec_ptr && SQLGetInfo_ptr && SQLParamData_ptr && SQLPutData_ptr &&
-                   SQLTables_ptr && SQLDescribeParam_ptr && SQLGetTypeInfo_ptr &&
-                   SQLProcedures_ptr && SQLForeignKeys_ptr && SQLPrimaryKeys_ptr &&
-                   SQLSpecialColumns_ptr && SQLStatistics_ptr && SQLColumns_ptr;
+    bool success =
+        SQLAllocHandle_ptr && SQLSetEnvAttr_ptr && SQLSetConnectAttr_ptr && SQLSetStmtAttr_ptr &&
+        SQLGetConnectAttr_ptr && SQLDriverConnect_ptr && SQLExecDirect_ptr && SQLPrepare_ptr &&
+        SQLBindParameter_ptr && SQLExecute_ptr && SQLRowCount_ptr && SQLGetStmtAttr_ptr &&
+        SQLSetDescField_ptr && SQLFetch_ptr && SQLFetchScroll_ptr &&
+        SQLGetData_ptr && SQLNumResultCols_ptr && SQLBindCol_ptr && SQLDescribeCol_ptr &&
+        SQLMoreResults_ptr && SQLColAttribute_ptr && SQLEndTran_ptr && SQLDisconnect_ptr &&
+        SQLFreeHandle_ptr && SQLFreeStmt_ptr && SQLGetDiagRec_ptr && SQLGetInfo_ptr &&
+        SQLParamData_ptr && SQLPutData_ptr && SQLTables_ptr && SQLDescribeParam_ptr &&
+        SQLGetTypeInfo_ptr && SQLProcedures_ptr && SQLForeignKeys_ptr && SQLPrimaryKeys_ptr &&
+        SQLSpecialColumns_ptr && SQLStatistics_ptr && SQLColumns_ptr;
 
     if (!success) {
         ThrowStdException("Failed to load required function pointers from driver.");
@@ -1587,6 +1621,18 @@ void DriverLoader::loadDriver() {
     }
 }
 
+FailedParameterBuffers::FailedParameterBuffers(std::vector<std::shared_ptr<void>> buffers)
+    : _buffers(std::make_unique<std::vector<std::shared_ptr<void>>>(std::move(buffers))) {}
+
+FailedParameterBuffers::~FailedParameterBuffers() {
+    if (_buffers) {
+        // If even parent teardown failed, the driver may still use these addresses.
+        // Abandon native storage to process teardown rather than free bound buffers.
+        std::fputs("mssql-python: retaining parameter storage after failed native teardown\n", stderr);
+        _buffers.release();
+    }
+}
+
 // SqlHandle definition
 SqlHandle::SqlHandle(SQLSMALLINT type, SQLHANDLE rawHandle,
                      std::shared_ptr<ConnectionCleanupState> cleanupState)
@@ -1606,7 +1652,18 @@ std::unique_lock<std::mutex> SqlHandle::lockForCleanup() const {
 }
 
 SQLHANDLE SqlHandle::get() const {
-    return _handle;
+    return _failedParameterBuffers ? nullptr : _handle;
+}
+
+void SqlHandle::retainFailedParameters(std::vector<std::shared_ptr<void>> buffers) {
+    _failedParameterBuffers = std::make_shared<FailedParameterBuffers>(std::move(buffers));
+    py::gil_scoped_release release;
+    auto cleanupLock = lockForCleanup();
+    if (!_handle || _implicitly_freed || (_cleanupState && _cleanupState->disconnected)) {
+        _failedParameterBuffers->release();
+    } else if (_cleanupState) {
+        _cleanupState->failedParameterBuffers.push_back(_failedParameterBuffers);
+    }
 }
 
 SQLSMALLINT SqlHandle::type() const {
@@ -1663,14 +1720,14 @@ SQLRETURN SqlHandle::freeHandle() {
         if (!_handle || !SQLFreeHandle_ptr) {
             return SQL_INVALID_HANDLE;
         }
-        describeCache.clear();
-        if (_implicitly_freed || (_cleanupState && _cleanupState->disconnected)) {
-            _handle = nullptr;
-            return SQL_SUCCESS;
+        clearDescribeCache();
+        SQLRETURN ret = SQL_SUCCESS;
+        if (!_implicitly_freed && !(_cleanupState && _cleanupState->disconnected)) {
+            ret = SQLFreeHandle_ptr(_type, _handle);
         }
-        SQLRETURN ret = SQLFreeHandle_ptr(_type, _handle);
         if (SQL_SUCCEEDED(ret)) {
             _handle = nullptr;
+            if (_failedParameterBuffers) _failedParameterBuffers->release();
         }
         return ret;
     };
@@ -2114,12 +2171,9 @@ SQLRETURN SQLTables_wrap(SqlHandlePtr StatementHandle, const std::u16string& cat
 // When false and not prepared, throws (matching slow path behavior).
 // ---------------------------------------------------------------------------
 SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
-                              const std::u16string& query,
-                              py::list params,
-                              const py::object& input_sizes,
-                              py::list is_stmt_prepared,
-                              bool use_prepare,
-                              const py::dict& encoding_settings) {
+                          const std::u16string& query,
+                          py::list params, const py::object& input_sizes, py::list is_stmt_prepared,
+                          bool use_prepare, const py::dict& encoding_settings) {
     PERF_TIMER("SQLExecute_wrap");
     if (!statementHandle || !statementHandle->get()) {
         return SQL_INVALID_HANDLE;
@@ -2181,8 +2235,9 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
     }
 
     std::vector<std::shared_ptr<void>> paramBuffers;
-    rc = BindParameters(*statementHandle, hStmt, params, paramInfos, paramBuffers, charEncoding);
-    if (!SQL_SUCCEEDED(rc)) return rc;
+    try {
+    rc = BindParameters(statementHandle, hStmt, params, paramInfos, paramBuffers, charEncoding);
+    if (!SQL_SUCCEEDED(rc)) ThrowParameterError(statementHandle, rc, "Binding parameters");
 
     {
         py::gil_scoped_release release;
@@ -2196,8 +2251,17 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
     if (rc == SQL_NEED_DATA) {
         SQLPOINTER paramToken = nullptr;
         auto putData = [&](SQLPOINTER data, SQLLEN len) {
-            py::gil_scoped_release release;
-            return SQLPutData_ptr(hStmt, data, len);
+            if (statementHandle->get() != hStmt || statementHandle->isImplicitlyFreed())
+                throw std::runtime_error("Statement closed while producing parameter data");
+            SQLRETURN result;
+            {
+                py::gil_scoped_release release;
+                result = SQLPutData_ptr(hStmt, data, len);
+            }
+            if (!SQL_SUCCEEDED(result))
+                ThrowParameterError(statementHandle, result,
+                                "Sending parameter data (length " + std::to_string(len) + ")");
+            return result;
         };
         while (true) {
             {
@@ -2205,6 +2269,11 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
                 rc = SQLParamData_ptr(hStmt, &paramToken);
             }
             if (rc != SQL_NEED_DATA) break;
+
+            if (SendTableData(paramToken, paramInfos, putData, rc)) {
+                if (!SQL_SUCCEEDED(rc)) ThrowParameterError(statementHandle, rc, "Sending TVP data");
+                continue;
+            }
 
             // The DAE token is the &paramInfos[i] we handed to SQLBindParameter as the
             // parameter value (see BindParameters), and paramInfos is sized up front and
@@ -2219,8 +2288,7 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
             }
             PyObject* pyObj = matchedInfo->dataPtr.ptr();
             if (!pyObj || pyObj == Py_None) {
-                py::gil_scoped_release release;
-                SQLPutData_ptr(hStmt, nullptr, 0);
+                putData(nullptr, 0);
                 continue;
             }
 
@@ -2270,16 +2338,43 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
                 ThrowStdException("SQLExecute: DAE only supported for str or bytes");
             }
         }
-        if (!SQL_SUCCEEDED(rc) && rc != SQL_NO_DATA) return rc;
+        if (!SQL_SUCCEEDED(rc) && rc != SQL_NO_DATA)
+            ThrowParameterError(statementHandle, rc, "Executing parameters");
     }
 
-    if (!SQL_SUCCEEDED(rc) && rc != SQL_NO_DATA) return rc;
+    if (!SQL_SUCCEEDED(rc) && rc != SQL_NO_DATA)
+        ThrowParameterError(statementHandle, rc, "Executing parameters");
 
     // Unbind parameter buffers before they go out of scope.
-    // Not called on error paths — diagnostics must remain readable.
     SQLRETURN exec_rc = rc;
-    SQLFreeStmt_ptr(hStmt, SQL_RESET_PARAMS);
+    rc = SQLFreeStmt_ptr(hStmt, SQL_RESET_PARAMS);
+    if (!SQL_SUCCEEDED(rc)) ThrowParameterError(statementHandle, rc, "Resetting parameters");
     return exec_rc;
+    } catch (...) {
+        // Convert diagnostics to the original Python exception before cleanup
+        // can overwrite them. Keep every buffer alive until NEED_DATA is left.
+        if (statementHandle->get() == hStmt && !statementHandle->isImplicitlyFreed()) {
+            SQLRETURN resetResult;
+            {
+                py::gil_scoped_release release;
+                if (SQLCancel_ptr) SQLCancel_ptr(hStmt);
+                resetResult = SQLFreeStmt_ptr(hStmt, SQL_RESET_PARAMS);
+            }
+            SQLRETURN freeResult = statementHandle->freeHandle();
+            if (!SQL_SUCCEEDED(resetResult) && !SQL_SUCCEEDED(freeResult)) {
+                auto retainedInfos = std::make_shared<std::vector<ParamInfo>>(std::move(paramInfos));
+                paramBuffers.push_back(retainedInfos);
+                statementHandle->retainFailedParameters(std::move(paramBuffers));
+                // Bound tokens/indicators are native storage. Drop Python owners
+                // with the GIL held, before retained storage can outlive Python.
+                for (auto& info : *retainedInfos) {
+                    info.dataPtr = py::object();
+                    if (info.table) info.table->releasePythonState();
+                }
+            }
+        }
+        throw;
+    }
 }
 
 SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list& columnwise_params,
@@ -2999,7 +3094,7 @@ SQLRETURN SQLExecuteMany_wrap(const SqlHandlePtr statementHandle, const std::u16
             py::list rowParams = columnwise_params[rowIndex];
 
             std::vector<std::shared_ptr<void>> paramBuffers;
-            rc = BindParameters(*statementHandle, hStmt, rowParams, paramInfos,
+            rc = BindParameters(statementHandle, hStmt, rowParams, paramInfos,
                                 paramBuffers, charEncoding);
             if (!SQL_SUCCEEDED(rc)) {
                 LOG("SQLExecuteMany: BindParameters failed for row %zu - rc=%d", rowIndex, rc);
@@ -6494,8 +6589,8 @@ PYBIND11_MODULE(ddbc_bindings, m) {
     }, "Disable global connection pooling and close all pools");
     m.def("DDBCSQLExecDirect", &SQLExecDirect_wrap, "Execute a SQL query directly");
     m.def("DDBCSQLExecute", &SQLExecute_wrap,
-          "DetectParamTypes + BindParameters + SQLExecute all in C++",
-          py::arg("statementHandle"), py::arg("query"), py::arg("params"),
+          "DetectParamTypes + BindParameters + SQLExecute all in C++", py::arg("statementHandle"),
+          py::arg("query"), py::arg("params"),
           py::arg("inputSizes"), py::arg("isStmtPrepared"), py::arg("usePrepare"),
           py::arg("encodingSettings"));
     m.def("SQLExecuteMany", &SQLExecuteMany_wrap, "Execute statement with multiple parameter sets",
