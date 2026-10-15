@@ -15,7 +15,7 @@ import uuid
 from ..exceptions import OperationalError
 from ..helpers import get_settings
 from ..logging import logger
-from ..row import Row
+from ..row import Row, _ColumnNames
 from . import async_execute, async_fetch
 from .exception_translator import translate_py_core_exceptions
 
@@ -64,7 +64,7 @@ class _AsyncCursor:
             ((column[0].lower() if settings.lowercase else column[0]), *column[1:])
             for column in description
         ]
-        self._column_names = tuple(column[0] for column in self._description)
+        self._column_names = _ColumnNames(column[0] for column in self._description)
         self._column_map = {column[0]: index for index, column in enumerate(self._description)}
         self._column_map_lower = (
             {name.lower(): index for name, index in self._column_map.items()}

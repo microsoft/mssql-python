@@ -28,7 +28,7 @@ from mssql_python.exceptions import (
     OperationalError,
     DatabaseError,
 )
-from mssql_python.row import Row
+from mssql_python.row import Row, _ColumnNames
 from mssql_python.perf_timer import perf_phase
 from mssql_python import get_settings
 from mssql_python.parameter_helper import (
@@ -1513,7 +1513,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         # Snapshot canonical column names once per result set (identity-tracked against
         # self.description) so each Row carries stable names even after the cursor is reused.
         if self.description is not None and self._result_columns_src is not self.description:
-            self._cached_result_columns = tuple(col_desc[0] for col_desc in self.description)
+            self._cached_result_columns = _ColumnNames(col_desc[0] for col_desc in self.description)
             self._result_columns_src = self.description
 
         return column_map, converter_map, self._cached_column_map_lower

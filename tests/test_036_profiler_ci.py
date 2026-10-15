@@ -91,7 +91,10 @@ def report():
             ),
             scenarios={
                 name: dict(
-                    wall_ms=10 * scale, work="Rows: 100", cpp={"ddbc::query": counter}, py={}
+                    wall_ms=10 * scale,
+                    work="Rows: 100",
+                    cpp={} if name == "row_to_dict" else {"ddbc::query": counter},
+                    py={},
                 )
                 for name in reporting.CASES
             },
@@ -146,6 +149,23 @@ def test_phase_call_changes_are_reported_without_summing_nested_totals(report):
     row = reporting.comparisons(report)[1]
     assert row["counts"] == ["ddbc::query (1 -> 2 calls)"]
     assert row["phases"] == [(4.0, "ddbc::query")]
+    reporting.validate(report)
+    conversion = reporting.comparisons(report)[-1]
+    assert conversion["name"] == "row_to_dict"
+    assert conversion["counts"] == conversion["phases"] == []
+    sample = report["pairs"][0]["candidate"]["scenarios"]
+    for invalid in (None, [], {"ddbc::query": {"calls": 0}}):
+        sample["row_to_dict"]["cpp"] = invalid
+        with pytest.raises(ValueError):
+            reporting.validate(report)
+    sample["row_to_dict"]["cpp"] = {}
+    sample["row_to_dict"]["py"] = None
+    with pytest.raises(ValueError):
+        reporting.validate(report)
+    sample["row_to_dict"]["py"] = {}
+    sample["select"]["cpp"] = {}
+    with pytest.raises(ValueError, match="Missing or oversized profiling data"):
+        reporting.validate(report)
 
 
 @pytest.mark.parametrize("case", ["nan", "missing", "environment", "work", "few", "prefix", "zero"])
@@ -690,11 +710,106 @@ def test_checkout_is_safe_and_compatible_with_python_310(tmp_path, monkeypatch, 
 def test_report_cases_match_the_executed_workload_registry():
     _, workloads = controller.load_suite()
     assert tuple(workloads.registry()) == reporting.CASES
-    assert len(reporting.CASES) == 22
+    assert len(reporting.CASES) == 23
+    assert reporting.CASES[-1] == "row_to_dict"
+    assert workloads.registry()["row_to_dict"] == (workloads.row_to_dict, True)
     assert workloads.registry()["scalar_fetchval"] == (workloads.scalar_fetchval, True)
     assert [name for name in reporting.CASES if name.startswith("lob_")] == [
         "lob_varchar_256k_fetchall",
     ]
+
+
+def test_row_to_dict_workload_times_only_warm_conversion(monkeypatch, report):
+    from mssql_python.row import Row
+
+    names = tuple(f"c{column}" for column in range(32))
+    columns = dict(zip(names, range(32)))
+    visits = [0] * 10_000
+    context = MagicMock()
+    context.collect.return_value = ({}, {})
+    clock = MagicMock()
+
+    class ObservedRow:
+        def __init__(self, index):
+            self.index = index
+            self.row = Row(
+                [None if index % 7 == 0 else index + column for column in range(32)],
+                columns,
+                column_names=names,
+            )
+
+        @property
+        def _mapping(self):
+            if visits[self.index] == 0:
+                context.enable.assert_not_called()
+                clock.assert_not_called()
+            else:
+                context.enable.assert_called_once()
+                assert clock.call_count == 1
+            context.collect.assert_not_called()
+            visits[self.index] += 1
+            return self.row._mapping
+
+    rows = [ObservedRow(index) for index in range(10_000)]
+    cursor = MagicMock()
+    cursor.fetchall.return_value = rows
+    cursor.messages = []
+    connection = MagicMock()
+    connection.cursor.return_value.__enter__.return_value = cursor
+    sql = "SELECT TOP (10000) " + ", ".join(
+        f"CASE WHEN int_col % 7 = 0 THEN CAST(NULL AS INT) "
+        f"ELSE int_col + {column} END AS {name}"
+        for column, name in enumerate(names)
+    )
+    sql += " FROM #perf_test ORDER BY id"
+
+    def tick():
+        cursor.execute.assert_called_once_with(sql)
+        cursor.fetchall.assert_called_once_with()
+        context.enable.assert_called_once()
+        context.collect.assert_not_called()
+        assert visits == [clock.call_count] * 10_000
+        return 1.0 if clock.call_count == 1 else 1.1
+
+    clock.side_effect = tick
+    monkeypatch.setattr(benchmark_workloads.time, "perf_counter", clock)
+    result = benchmark_workloads.row_to_dict(connection, "#perf_test", context)
+    assert result["wall_ms"] == pytest.approx(100)
+    assert result["detail"] == (
+        "Rows: 10000; columns: 32; types: int/NULL; API: dict(row._mapping); mode: warm"
+    )
+    assert result["cpp"] == result["py"] == {}
+    assert clock.call_count == 2
+    assert visits == [2] * 10_000
+    cursor.fetchone.assert_not_called()
+    cursor.fetchmany.assert_not_called()
+    context.collect.assert_called_once()
+    context.disable.assert_called_once()
+    connection.cursor.return_value.__exit__.assert_called_once()
+    assert reporting.TASK_NAMES["row_to_dict"] in reporting.render([report], "c" * 40, 42)
+
+    # Equality alone would accept True as the expected integer 1.
+    rows[1].row._values[0] = True
+    visits[:] = [0] * 10_000
+    clock.reset_mock()
+    context.reset_mock()
+    cursor.reset_mock()
+    connection.cursor.return_value.__exit__.reset_mock()
+    with pytest.raises(AssertionError):
+        benchmark_workloads.row_to_dict(connection, "#perf_test", context)
+    assert clock.call_count == 2
+    context.collect.assert_called_once()
+    context.disable.assert_called_once()
+    connection.cursor.return_value.__exit__.assert_called_once()
+
+    context.reset_mock()
+    connection.cursor.return_value.__exit__.reset_mock()
+    cursor.fetchall.side_effect = RuntimeError("fetch failed")
+    with pytest.raises(RuntimeError, match="fetch failed"):
+        benchmark_workloads.row_to_dict(connection, "#perf_test", context)
+    context.enable.assert_not_called()
+    context.disable.assert_called_once()
+    connection.cursor.return_value.__exit__.assert_called_once()
 
 
 def test_scalar_fetchval_workload_times_only_fetch_and_reaches_eof(monkeypatch, report):
@@ -871,7 +986,12 @@ def test_legacy_insert_workload_executes_both_variants(input_sizes):
 @pytest.mark.parametrize("fail", [False, True])
 def test_worker_checkpoints_completed_and_active_scenarios(tmp_path, monkeypatch, capsys, fail):
     output = tmp_path / "base-0.json"
-    result = dict(wall_ms=10.0, cpp={"ddbc::run": {}}, py={}, detail="Rows: 10")
+    result = dict(
+        wall_ms=10.0,
+        cpp={"ddbc::run": dict(calls=1, total_us=1, min_us=1, max_us=1)},
+        py={},
+        detail="Rows: 10",
+    )
     profiler = MagicMock()
     profiler.__enter__.return_value = profiler
     profiler._conn.cursor.return_value.__enter__.return_value.fetchone.return_value = ("16.0",)
@@ -880,14 +1000,14 @@ def test_worker_checkpoints_completed_and_active_scenarios(tmp_path, monkeypatch
         partial = json.loads(output.read_text())
         assert partial["active_scenario"] == name
         if name == "second":
-            assert set(partial["scenarios"]) == {"first"}
+            assert set(partial["scenarios"]) == {"row_to_dict"}
             if fail:
                 raise RuntimeError("workload failure")
-        return [result]
+        return [dict(result, cpp={}) if name == "row_to_dict" else result]
 
     profiler.run.side_effect = run
     core = SimpleNamespace(Profiler=lambda: profiler)
-    workloads = SimpleNamespace(registry=lambda: {"first": None, "second": None})
+    workloads = SimpleNamespace(registry=lambda: {"row_to_dict": None, "second": None})
     monkeypatch.setattr(controller, "check_build", lambda *a, **kw: None)
     monkeypatch.setattr(controller, "load_suite", lambda: (core, workloads))
     args = SimpleNamespace(source_root=tmp_path, scenarios=None, output=output)
@@ -899,10 +1019,30 @@ def test_worker_checkpoints_completed_and_active_scenarios(tmp_path, monkeypatch
         controller.worker(args)
         final = json.loads(output.read_text())
         assert final["environment"]["sql_version"] == "16.0"
-        assert set(final["scenarios"]) == {"first", "second"}
+        assert set(final["scenarios"]) == {"row_to_dict", "second"}
+        assert final["scenarios"]["row_to_dict"]["cpp"] == {}
         assert "active_scenario" not in final
     assert "Starting scenario: second" in capsys.readouterr().out
     profiler.__exit__.assert_called_once()
+    if not fail:
+        profiler.run.side_effect = None
+        for name, cpp, error in (
+            ("second", {}, RuntimeError),
+            ("row_to_dict", None, RuntimeError),
+            ("row_to_dict", [], ValueError),
+            ("row_to_dict", {"ddbc::run": {"calls": 0}}, ValueError),
+        ):
+            args.scenarios = [name]
+            profiler.run.return_value = [dict(result, cpp=cpp)]
+            with pytest.raises(error):
+                controller.worker(args)
+            partial = json.loads(output.read_text())
+            assert partial["active_scenario"] == name
+            assert partial["scenarios"] == {}
+        args.scenarios = ["row_to_dict"]
+        profiler.run.return_value = [dict(result, cpp={}, py=None)]
+        with pytest.raises(RuntimeError, match="was skipped"):
+            controller.worker(args)
 
 
 def test_measure_timeout_retains_partial_results_and_log(tmp_path, monkeypatch):

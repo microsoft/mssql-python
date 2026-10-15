@@ -14,6 +14,7 @@
 #include "py_type_cache.hpp"
 #include "fetch_temporal.hpp"
 #include "row_factory.hpp"
+#include "row_mapping.hpp"
 #include "utf_utils.h"
 #include "fetch_text.hpp"
 
@@ -6624,6 +6625,8 @@ PYBIND11_MODULE(ddbc_bindings, m) {
 
     // Add a version attribute
     m.attr("__version__") = "1.0.0";
+
+    m.def("_make_row_mapping_base", &RowMappingView::make_base);
 
     // Fast Row construction in C++ — replaces Python list comprehension
     m.def("construct_rows", &RowFactory::construct_rows,
