@@ -296,6 +296,116 @@ def test_setinputsizes_text_binding_normalizes_time(cursor):
     )
 
 
+def test_setinputsizes_measures_normalized_time_for_dae(cursor):
+    """A custom time string is measured after normalization and streamed when oversized."""
+
+    class LargeTime(datetime.time):
+        def isoformat(self, *args, **kwargs):
+            return "x" * 4001
+
+    assert (
+        _override_roundtrip(
+            cursor,
+            LargeTime(1, 2, 3),
+            ddbc_sql_const.SQL_VARCHAR.value,
+            1,
+        )
+        == "x" * 4001
+    )
+
+
+@pytest.mark.parametrize(
+    ("value", "sql_type"),
+    [
+        ("x" * 4001, ddbc_sql_const.SQL_VARCHAR.value),
+        ("\U0001f600" * 3000, ddbc_sql_const.SQL_WVARCHAR.value),
+        (b"x" * 8001, ddbc_sql_const.SQL_VARBINARY.value),
+    ],
+)
+def test_setinputsizes_uses_actual_value_size_for_dae(cursor, value, sql_type):
+    """A too-small declared size cannot bypass streaming for a large value."""
+    assert _override_roundtrip(cursor, value, sql_type, 1) == value
+
+
+@pytest.mark.parametrize(
+    ("value", "sql_type"),
+    [
+        pytest.param("x" * 4001, ddbc_sql_const.SQL_VARCHAR.value, id="varchar-encoded-bytes"),
+        pytest.param(
+            "\U0001f600" * 2001,
+            ddbc_sql_const.SQL_WVARCHAR.value,
+            id="nvarchar-utf16-units",
+        ),
+    ],
+)
+def test_executemany_setinputsizes_uses_actual_text_size_for_dae(cursor, value, sql_type):
+    """A too-small declared size cannot bypass streaming for an array-bound text value."""
+    table_name = (
+        "#dae_batch_varchar"
+        if sql_type == ddbc_sql_const.SQL_VARCHAR.value
+        else "#dae_batch_nvarchar"
+    )
+    cursor.execute(f"CREATE TABLE {table_name} (value NVARCHAR(MAX))")
+    cursor.setinputsizes([(sql_type, 1, 0)])
+    cursor.executemany(f"INSERT INTO {table_name} (value) VALUES (?)", [(value,), ("short",)])
+    cursor.execute(f"SELECT value FROM {table_name} ORDER BY LEN(value) DESC")
+    assert [tuple(row) for row in cursor.fetchall()] == [(value,), ("short",)]
+
+
+def test_executemany_setinputsizes_scans_mixed_text_values_for_dae(cursor):
+    """A bytes sample cannot hide a later oversized string from DAE selection."""
+    value = "x" * 4001
+    cursor.execute("CREATE TABLE #mixed_dae_batch (value VARCHAR(MAX))")
+    cursor.setinputsizes([(ddbc_sql_const.SQL_VARCHAR.value, 1, 0)])
+    cursor.executemany("INSERT INTO #mixed_dae_batch (value) VALUES (?)", [(b"x",), (value,)])
+    cursor.execute("SELECT value FROM #mixed_dae_batch ORDER BY LEN(value) DESC")
+    assert [tuple(row) for row in cursor.fetchall()] == [(value,), ("x",)]
+
+
+def test_executemany_auto_detection_scans_utf16_lengths_for_dae(cursor):
+    """A shorter astral string cannot hide behind a longer BMP sample."""
+    bmp_value = "x" * 4000
+    astral_value = "\U0001f600" * 3000
+    cursor.execute("CREATE TABLE #auto_utf16_dae (value NVARCHAR(MAX))")
+    cursor.executemany(
+        "INSERT INTO #auto_utf16_dae (value) VALUES (?)",
+        [(bmp_value,), (astral_value,)],
+    )
+    cursor.execute("SELECT value FROM #auto_utf16_dae ORDER BY DATALENGTH(value) DESC")
+    assert [tuple(row) for row in cursor.fetchall()] == [(astral_value,), (bmp_value,)]
+
+
+def test_executemany_ignores_str_subclass_encode_override(cursor):
+    class HostileStr(str):
+        def __len__(self):
+            return 1
+
+        def __iter__(self):
+            return iter("x")
+
+        def __getitem__(self, key):
+            return "x"
+
+        def encode(self, *args, **kwargs):
+            return b"x" * 100_000
+
+    large_value = HostileStr("\U0001f600" * 3000)
+    cursor.execute("CREATE TABLE #str_subclass_encoding (value NVARCHAR(MAX))")
+    cursor.executemany(
+        "INSERT INTO #str_subclass_encoding (value) VALUES (?)",
+        [(HostileStr("safe"),), (large_value,)],
+    )
+    cursor.execute("SELECT value FROM #str_subclass_encoding ORDER BY DATALENGTH(value)")
+    assert [tuple(row) for row in cursor.fetchall()] == [("safe",), (str(large_value),)]
+
+
+def test_setinputsizes_rejects_bytes_for_wide_character_binding(cursor):
+    """Wide-character overrides require text rather than raw encoded bytes."""
+    cursor.setinputsizes([(ddbc_sql_const.SQL_WVARCHAR.value, 1, 0)])
+    with pytest.raises(TypeError, match="SQL_C_WCHAR"):
+        cursor.execute("SELECT ?", [b"x" * 8001])
+
+
 @pytest.mark.parametrize("sql_type", [None, ddbc_sql_const.SQL_VARCHAR.value])
 def test_time_isoformat_must_return_string(cursor, sql_type):
     """Native time normalization rejects a broken subclass contract on either path."""
@@ -326,6 +436,15 @@ def test_decimal_format_must_return_string(cursor):
     try:
         with pytest.raises(TypeError, match=r"__format__\(\) must return a str"):
             cursor.execute("SELECT ?", [BadDecimal("1.25")])
+    finally:
+        cursor.setinputsizes(None)
+
+
+def test_setinputsizes_rejects_oversized_numeric_text(cursor):
+    cursor.setinputsizes([(ddbc_sql_const.SQL_DECIMAL.value, 18, 0)])
+    try:
+        with pytest.raises(ValueError, match="numeric parameter text is too large"):
+            cursor.execute("SELECT ?", [decimal.Decimal("1e100000")])
     finally:
         cursor.setinputsizes(None)
 
