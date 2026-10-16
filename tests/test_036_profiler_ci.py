@@ -154,7 +154,13 @@ def test_phase_call_changes_are_reported_without_summing_nested_totals(report):
     assert conversion["name"] == "row_to_dict"
     assert conversion["counts"] == conversion["phases"] == []
     sample = report["pairs"][0]["candidate"]["scenarios"]
-    for invalid in (None, [], {"ddbc::query": {"calls": 0}}):
+    for invalid in (
+        None,
+        [],
+        {"ddbc::query": {"calls": 0}},
+        {"ddbc::query": dict(calls=1, total_us=2, min_us=2, max_us=1)},
+        {"ddbc::query": dict(calls=1, total_us=1, min_us=1, max_us=2)},
+    ):
         sample["row_to_dict"]["cpp"] = invalid
         with pytest.raises(ValueError):
             reporting.validate(report)

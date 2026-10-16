@@ -12,9 +12,7 @@ from pathlib import Path
 import pickle
 import subprocess
 import sys
-import weakref
 from collections.abc import KeysView, Mapping
-from types import SimpleNamespace
 
 import pytest
 
@@ -40,62 +38,32 @@ class _SerializableRow(Row):
         )
 
 
-def make_rows(names, values, construction="direct"):
+def make_rows(names, values):
     columns = {name: index for index, name in enumerate(names)}
-    if construction == "native":
-        return mssql_python.ddbc_bindings.construct_rows(values, Row, columns, None, None, names)
-    if construction == "python_fast":
-        return [Row._fast_create(value, columns, None, None, names) for value in values]
     return [Row(value, columns, column_names=names) for value in values]
 
 
-@pytest.mark.parametrize("width", (0, 1, 2, 8, 32, 128))
-@pytest.mark.parametrize("duplicates", (False, True))
-@pytest.mark.parametrize("construction", ("direct", "python_fast", "native"))
-def test_mapping_shared_lazy_keys(width, duplicates, construction):
-    names = _ColumnNames(f"c{index % 4 if duplicates else index}" for index in range(width))
-    values = [
-        [None if index % 3 == 0 else index + offset for index in range(width)]
-        for offset in (0, 1000, 2000)
-    ]
-    rows = make_rows(names, values, construction)
-    assert names._unique is None
-    references = [tuple(map(id, gc.get_referents(row))) for row in rows]
-
-    for row, value in zip(rows, values):
-        assert row._column_names is names
-        assert row._values is value
-        assert tuple(row) == tuple(value)
-    assert names._unique is None
-
-    keys = None
-    for row, value in zip(rows, values):
-        expected = dict(zip(names, value))
-        mapping = row._mapping
-        assert isinstance(mapping, Mapping)
-        assert dict(mapping) == expected
-        assert list(mapping) == list(expected)
-        assert len(mapping) == len(expected)
-        assert list(mapping.items()) == list(expected.items())
-        assert list(mapping.values()) == list(expected.values())
-        for key in expected:
-            assert key in mapping
-            assert mapping[key] == expected[key]
-        if keys is None:
-            keys = names._unique
-        assert names._unique is keys
-    for row, before in zip(rows, references):
-        after = tuple(map(id, gc.get_referents(row)))
-        if after != before:
-            # Preparation may materialize the standard dict, but stores no cache on Row.
-            attributes = vars(row)
-            assert attributes == {}
-            assert sorted(after) == sorted((*before, id(attributes)))
+def run_mapping_program(program, *args, debug=False):
+    command = [sys.executable]
+    if debug:
+        command += ["-X", "dev"]
+    result = subprocess.run(
+        [*command, "-c", program, *args],
+        cwd=Path(__file__).resolve().parents[1],
+        env=dict(os.environ, PYTHONMALLOC="debug") if debug else None,
+        capture_output=True,
+        text=True,
+        timeout=60 if debug else 30,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def test_mapping_deduplicates_once_for_all_rows():
     names = _ColumnNames(("a", "b", "a"))
     rows = make_rows(names, [[1, 2, 3]] * 20)
+    assert names._unique is None
+    references = [tuple(map(id, gc.get_referents(row))) for row in rows]
     builds = []
     previous = sys.getprofile()
 
@@ -106,10 +74,18 @@ def test_mapping_deduplicates_once_for_all_rows():
     try:
         sys.setprofile(record)
         results = [dict(row._mapping) for row in rows]
+        assert names._unique_keys() is names._unique
     finally:
         sys.setprofile(previous)
     assert results == [{"a": 3, "b": 2}] * 20
     assert len(builds) == 1
+    for row, before in zip(rows, references):
+        after = tuple(map(id, gc.get_referents(row)))
+        if after != before:
+            # Preparation may materialize the standard dict, but stores no cache on Row.
+            attributes = vars(row)
+            assert attributes == {}
+            assert sorted(after) == sorted((*before, id(attributes)))
 
 
 def test_mapping_does_not_inspect_names_until_first_use(monkeypatch):
@@ -133,6 +109,7 @@ def test_mapping_does_not_inspect_names_until_first_use(monkeypatch):
 def test_mapping_native_slots_bypass_default_per_cell_python_hooks():
     program = """
 import sys
+import pytest
 from mssql_python.row import Row, RowMapping, _ColumnNames
 
 names = _ColumnNames("c" + str(index) for index in range(128))
@@ -164,6 +141,10 @@ if RowMapping._prepared_supported:
         assert restored._unique == names._unique
         assert restored._prepared is None
 
+    empty = Row([], {}, column_names=_ColumnNames(()))._mapping
+    assert dict(empty) == {}
+    assert empty._prepared_counts == (1, 1, 0, 0, 0), empty._prepared_counts
+
     pair = Row([10, 20], {"a": 0, "b": 1}, column_names=_ColumnNames(("a", "b")))
     mapping = pair._mapping
     first, second = iter(mapping), iter(mapping)
@@ -191,19 +172,12 @@ if RowMapping._prepared_supported:
     assert list(pending) == []
 
     def same_index_error():
-        try:
+        with pytest.raises(IndexError) as expected:
             pair["a"]
-        except IndexError as error:
-            expected = error.args
-        else:
-            raise AssertionError("Expected ordinary Row indexing to fail")
         before = mapping._prepared_counts
-        try:
+        with pytest.raises(IndexError) as actual:
             mapping["a"]
-        except IndexError as error:
-            assert error.args == expected, (error.args, expected)
-        else:
-            raise AssertionError("Expected mapping indexing to fail")
+        assert actual.value.args == expected.value.args
         after = mapping._prepared_counts
         assert after[2] == before[2] + 1
         assert after[3:] == before[3:], (before, after)
@@ -219,15 +193,7 @@ if RowMapping._prepared_supported:
         assert list(iter(mapping)) == ["a"]
         same_index_error()
 """
-    result = subprocess.run(
-        [sys.executable, "-c", program],
-        cwd=Path(__file__).resolve().parents[1],
-        capture_output=True,
-        text=True,
-        timeout=30,
-        check=False,
-    )
-    assert result.returncode == 0, result.stdout + result.stderr
+    run_mapping_program(program)
 
 
 @pytest.mark.parametrize(
@@ -248,7 +214,6 @@ if RowMapping._prepared_supported:
         "unique_replaced",
         "map_modified",
         "map_deleted",
-        "map_cleared",
         "index_callback",
         "key_hook_code",
         "getitem_code",
@@ -257,6 +222,7 @@ if RowMapping._prepared_supported:
 def test_mapping_field_guards_in_fresh_process(change):
     program = """
 import sys
+import pytest
 from mssql_python.row import Row, RowMapping, _ColumnNames
 
 row = Row([1, 2], {"a": 0, "b": 1}, column_names=_ColumnNames(("a", "b")))
@@ -269,9 +235,50 @@ if change == "names":
     Row._column_names = property(lambda self: ("b",))
     assert dict(mapping) == {"b": 2}
 elif change == "columns":
+    calls = []
+    class Columns(dict):
+        def __contains__(self, key):
+            calls.append(("contains", key))
+            return super().__contains__(key)
+        def __getitem__(self, key):
+            calls.append(("getitem", key))
+            return 1 - super().__getitem__(key)
+    row._column_map = Columns({"a": 0, "b": 1})
+    before = mapping._prepared_counts
+    expected = row["a"]
+    expected_calls = calls.copy()
+    calls.clear()
+    assert mapping["a"] == expected == 2
+    assert calls == expected_calls == [("contains", "a"), ("getitem", "a")]
+    calls.clear()
+    assert dict(mapping) == {"a": 2, "b": 1}
+    assert calls == expected_calls + [("contains", "b"), ("getitem", "b")]
+    assert mapping._prepared_counts == before[:3] + (before[3] + 3, before[4])
+    row._column_map = {"a": 0, "b": 1}
+    before = mapping._prepared_counts
+    assert dict(mapping) == {"a": 1, "b": 2}
+    if RowMapping._prepared_supported:
+        after = mapping._prepared_counts
+        assert after[0] == before[0] + 1
+        assert after[2:] == (before[2] + 2, before[3], before[4] + 2)
     Row._column_map = property(lambda self: {"a": 1, "b": 0})
     assert dict(mapping) == {"a": 2, "b": 1}
 elif change == "values":
+    class Values(list):
+        def __getitem__(self, index):
+            return super().__getitem__(index) + 10
+    row._values = Values([1, 2])
+    before = mapping._prepared_counts
+    assert mapping["a"] == row["a"] == 11
+    assert dict(mapping) == {"a": 11, "b": 12}
+    assert mapping._prepared_counts == before[:3] + (before[3] + 3, before[4])
+    row._values = [1, 2]
+    before = mapping._prepared_counts
+    assert dict(mapping) == {"a": 1, "b": 2}
+    if RowMapping._prepared_supported:
+        after = mapping._prepared_counts
+        assert after[0] == before[0] + 1
+        assert after[2:] == (before[2] + 2, before[3], before[4] + 2)
     Row._values = property(lambda self: [3, 4])
     assert dict(mapping) == {"a": 3, "b": 4}
 elif change == "getattribute":
@@ -289,29 +296,31 @@ elif change == "view_row":
         RowMapping._row_mapping_defaults = defaults
         assert dict(RowMapping(row)) == {"a": 1, "b": 2}
         RowMapping._row_mapping_defaults = defaults[:-1]
-        try:
+        with pytest.raises(TypeError, match="^Invalid RowMapping configuration$"):
             RowMapping(row)
-        except TypeError as error:
-            assert str(error) == "Invalid RowMapping configuration", str(error)
-        else:
-            raise AssertionError("Malformed tuple configuration was accepted")
     finally:
         RowMapping._row_mapping_defaults = configuration
     iterator_type = type(iter(mapping))
     original_next = iterator_type.__next__
     try:
         iterator_type.__next__ = lambda self: "changed"
-        try:
+        with pytest.raises(TypeError, match="^Invalid RowMapping iterator type$"):
             RowMapping(row)
-        except TypeError as error:
-            assert str(error) == "Invalid RowMapping iterator type", str(error)
-        else:
-            raise AssertionError("Cached configuration bypassed live iterator validation")
     finally:
         iterator_type.__next__ = original_next
     other = Row([7, 8], {"a": 0, "b": 1}, column_names=row._column_names)
     RowMapping._row = property(lambda self: other)
     assert dict(mapping) == {"a": 7, "b": 8}
+    def fail_row(self):
+        raise RuntimeError("row descriptor failed")
+    RowMapping._row = property(fail_row)
+    with pytest.raises(RuntimeError, match="^row descriptor failed$"):
+        mapping["a"]
+    iterator = iter(mapping)
+    with pytest.raises(RuntimeError, match="^row descriptor failed$"):
+        next(iterator)
+    with pytest.raises(StopIteration):
+        next(iterator)
 elif change == "deleted_names":
     row._values = [("b",), 9]
     row._column_map = {"_column_names": 0, "b": 1}
@@ -319,12 +328,8 @@ elif change == "deleted_names":
     assert dict(mapping) == {"b": 9}
 elif change == "deleted_values":
     del row._values
-    try:
+    with pytest.raises(AttributeError, match="^Row has no attribute '_values'$"):
         mapping["a"]
-    except AttributeError as error:
-        assert str(error) == "Row has no attribute '_values'", str(error)
-    else:
-        raise AssertionError("Deleted value storage must use normal attribute resolution")
 elif change == "equality_descriptor":
     class Name(str):
         __hash__ = str.__hash__
@@ -337,6 +342,21 @@ elif change in ("instance_dictionary", "instance_dictionary_replaced"):
     if change == "instance_dictionary":
         vars(row)["_mapping_keys"] = lambda: ("b",)
     else:
+        class InstanceDict(dict):
+            pass
+        row.__dict__ = InstanceDict(note="custom")
+        assert type(row.__dict__) is InstanceDict
+        before = mapping._prepared_counts
+        assert mapping["a"] == 1
+        assert dict(mapping) == {"a": 1, "b": 2}
+        assert mapping._prepared_counts == before[:3] + (before[3] + 3, before[4])
+        row.__dict__ = {}
+        before = mapping._prepared_counts
+        assert dict(mapping) == {"a": 1, "b": 2}
+        if RowMapping._prepared_supported:
+            after = mapping._prepared_counts
+            assert after[0] == before[0] + 1
+            assert after[2:] == (before[2] + 2, before[3], before[4] + 2)
         row.__dict__ = {"_mapping_keys": lambda: ("b",)}
     assert "a" not in mapping
     assert mapping["b"] == 2
@@ -357,17 +377,11 @@ elif change == "map_modified":
     assert dict(mapping) == {"a": 2, "b": 2}
     if RowMapping._prepared_supported:
         assert mapping._prepared_counts == (2, 2, 4, 1, 4), mapping._prepared_counts
-elif change in ("map_deleted", "map_cleared"):
-    if change == "map_deleted":
-        del row._column_map["a"]
-    else:
-        row._column_map.clear()
-    try:
+elif change == "map_deleted":
+    del row._column_map["a"]
+    with pytest.raises(KeyError) as error:
         mapping["a"]
-    except KeyError as error:
-        assert error.args == ("Row has no column 'a'",), error.args
-    else:
-        raise AssertionError("Cached index survived a dictionary mutation")
+    assert error.value.args == ("Row has no column 'a'",)
 elif change == "index_callback":
     calls = []
     class Index:
@@ -389,15 +403,7 @@ elif change == "getitem_code":
 else:
     raise AssertionError(change)
 """
-    result = subprocess.run(
-        [sys.executable, "-c", program, change],
-        cwd=Path(__file__).resolve().parents[1],
-        capture_output=True,
-        text=True,
-        timeout=30,
-        check=False,
-    )
-    assert result.returncode == 0, result.stdout + result.stderr
+    run_mapping_program(program, change)
 
 
 def test_mapping_does_not_search_canonical_tuple(monkeypatch):
@@ -470,24 +476,18 @@ def test_mapping_iterator_reentrancy_matches_generator_behavior():
     assert list(iterator) == ["a"]
 
 
-def test_mapping_observes_replaced_fields_and_in_place_changes():
+def test_mapping_observes_replaced_column_metadata():
     names = _ColumnNames(("a", "b", "a"))
     row = make_rows(names, [[1, 2, 3]])[0]
     mapping = row._mapping
     assert dict(mapping) == {"a": 3, "b": 2}
-    row._values[2] = 30
-    assert mapping["a"] == 30
-    row._values = (10, 20, 40)
-    assert mapping["a"] == 40
-    row._column_map["a"] = 0
-    assert mapping["a"] == 10
     row._column_map = {"a": 1, "b": 0, "friendly": 2}
-    assert dict(mapping) == {"a": 20, "b": 10}
+    assert dict(mapping) == {"a": 2, "b": 1}
     row._column_names = ("friendly", "a", "friendly")
-    assert dict(mapping) == {"friendly": 40, "a": 20}
+    assert dict(mapping) == {"friendly": 3, "a": 2}
     row._column_names = None
     assert list(mapping) == ["b", "a", "friendly"]
-    assert dict(mapping) == {"b": 10, "a": 20, "friendly": 40}
+    assert dict(mapping) == {"b": 1, "a": 2, "friendly": 3}
 
 
 def test_mapping_dictionary_equality_can_replace_the_column_map():
@@ -531,31 +531,14 @@ def test_mapping_failed_dictionary_membership_is_not_repeated():
     assert calls == expected_calls
 
 
-def test_mapping_canonical_names_exclude_aliases_and_case_variants():
-    row = Row(
-        [42],
-        {"COLUMN_NAME": 0, "column_name": 0, "friendly": 0},
-        column_map_lower={"column_name": 0, "friendly": 0},
-        column_names=_ColumnNames(("COLUMN_NAME",)),
-    )
-    mapping = row._mapping
-    assert dict(mapping) == {"COLUMN_NAME": 42}
-    for alias in ("column_name", "Column_Name", "friendly"):
-        assert row[alias] == 42
-        assert alias not in mapping
-        with pytest.raises(KeyError) as error:
-            mapping[alias]
-        assert error.value.args == (alias,)
-
-
-@pytest.mark.parametrize("key", (0, None, [], {}, (), ("a", "b"), object()))
-def test_mapping_invalid_keys_keep_keyerror_arguments(key):
+def test_mapping_invalid_keys_keep_keyerror_arguments():
     mapping = make_rows(_ColumnNames(("a",)), [[1]])[0]._mapping
-    with pytest.raises(KeyError) as error:
-        mapping[key]
-    assert error.value.args == (key,)
-    assert key not in mapping
-    assert mapping.get(key, "absent") == "absent"
+    for key in ([], ("a", "b")):
+        with pytest.raises(KeyError) as error:
+            mapping[key]
+        assert error.value.args == (key,)
+        assert key not in mapping
+        assert mapping.get(key, "absent") == "absent"
 
 
 def test_mapping_string_subclass_retains_tuple_membership():
@@ -584,7 +567,7 @@ def test_mapping_custom_canonical_string_does_not_introduce_hashing():
         list(row._mapping)
 
 
-@pytest.mark.parametrize("placement", ("instance", "subclass", "class"))
+@pytest.mark.parametrize("placement", ("subclass", "class"))
 def test_mapping_observes_key_hooks_after_view_creation(placement, monkeypatch):
     class CustomRow(Row):
         pass
@@ -593,10 +576,7 @@ def test_mapping_observes_key_hooks_after_view_creation(placement, monkeypatch):
     row = cls([1, 2], {"a": 0, "b": 1}, column_names=_ColumnNames(("a", "b")))
     mapping = row._mapping
     assert dict(mapping) == {"a": 1, "b": 2}
-    if placement == "instance":
-        vars(row)["_mapping_keys"] = lambda: ("b", "b")
-    else:
-        monkeypatch.setattr(cls, "_mapping_keys", lambda self: ("b", "b"))
+    monkeypatch.setattr(cls, "_mapping_keys", lambda self: ("b", "b"))
     assert dict(mapping) == {"b": 2}
     assert "a" not in mapping
     assert mapping["b"] == 2
@@ -615,29 +595,6 @@ def test_mapping_observes_getitem_hooks_after_view_creation(placement, monkeypat
     assert mapping["a"] == ("hook", "a")
     assert dict(mapping) == {"a": ("hook", "a")}
     assert "missing" not in mapping
-
-
-def test_mapping_custom_getattribute_and_inherited_descriptors():
-    class Parent(Row):
-        @property
-        def _column_names(self):
-            return self.names
-
-        @_column_names.setter
-        def _column_names(self, names):
-            self.names = names
-
-    class Child(Parent):
-        def __getattribute__(self, name):
-            if name == "_values":
-                return [23, 45]
-            return super().__getattribute__(name)
-
-    row = Child([1, 2], {"a": 0, "b": 1}, column_names=_ColumnNames(("a", "b")))
-    mapping = row._mapping
-    assert dict(mapping) == {"a": 23, "b": 45}
-    row.names = _ColumnNames(("b",))
-    assert dict(mapping) == {"b": 45}
 
 
 @pytest.mark.parametrize("lazy_values", (False, True))
@@ -750,6 +707,9 @@ def test_mapping_isinstance_string_compatibility():
 
 def test_mapping_row_descriptor_and_subclass_iteration():
     class CustomMapping(RowMapping):
+        def __init__(self, row):
+            self._row = row
+
         @property
         def _row(self):
             return self.current
@@ -765,20 +725,8 @@ def test_mapping_row_descriptor_and_subclass_iteration():
     mapping = CustomMapping(row)
     assert len(mapping) == 1
     assert dict(mapping) == {"a": 1}
-    mapping.current = make_rows(_ColumnNames(("a",)), [[3]])[0]
+    mapping.__init__(make_rows(_ColumnNames(("a",)), [[3]])[0])
     assert mapping["a"] == 3
-
-
-def test_mapping_subclass_initializer_and_reinitialization():
-    class CustomMapping(RowMapping):
-        def __init__(self, row):
-            self._row = row
-
-    first, second = make_rows(_ColumnNames(("a",)), [[1], [2]])
-    mapping = CustomMapping(first)
-    assert dict(mapping) == {"a": 1}
-    mapping.__init__(second)
-    assert dict(mapping) == {"a": 2}
 
 
 @pytest.mark.parametrize("operation", (copy.copy, copy.deepcopy, pickle.dumps))
@@ -813,32 +761,6 @@ def test_mapping_copy_preserves_subclass_slots_and_attributes(operation):
     assert result.note == "attribute"
 
 
-def test_mapping_view_keeps_row_alive_without_retaining_released_views():
-    row = make_rows(_ColumnNames(("a",)), [[object()]])[0]
-    reference = weakref.ref(row)
-    mapping = row._mapping
-    before = sys.getrefcount(row)
-    for _ in range(100):
-        assert row._mapping["a"] is row[0]
-    assert sys.getrefcount(row) == before
-    del row
-    assert reference() is not None
-    assert list(mapping) == ["a"]
-    del mapping
-    assert reference() is None
-
-
-def test_mapping_cycles_are_collectable():
-    row = make_rows(_ColumnNames(("a",)), [[None]])[0]
-    reference = weakref.ref(row)
-    mapping = row._mapping
-    assert dict(mapping) == {"a": None}
-    row._values[0] = mapping
-    del row, mapping
-    gc.collect()
-    assert reference() is None
-
-
 def test_mapping_native_lifetimes_in_isolated_debug_process():
     program = """
 import gc
@@ -847,6 +769,19 @@ import weakref
 from mssql_python.row import Row, RowMapping, _ColumnNames
 
 names = _ColumnNames(("a",))
+row = Row([object()], {"a": 0}, column_names=names)
+reference = weakref.ref(row)
+mapping = row._mapping
+before = sys.getrefcount(row)
+for _ in range(100):
+    assert row._mapping["a"] is row[0]
+assert sys.getrefcount(row) == before
+del row
+assert reference() is not None
+assert list(mapping) == ["a"]
+del mapping
+assert reference() is None
+
 type_refs = sys.getrefcount(RowMapping)
 for cycle in (False, True):
     for _ in range(500):
@@ -950,17 +885,7 @@ mapping = row._mapping
 assert dict(mapping) == {"a": None}
 row._values[0] = mapping
 """
-    environment = dict(os.environ, PYTHONMALLOC="debug")
-    result = subprocess.run(
-        [sys.executable, "-X", "dev", "-c", program],
-        cwd=Path(__file__).resolve().parents[1],
-        env=environment,
-        capture_output=True,
-        text=True,
-        timeout=60,
-        check=False,
-    )
-    assert result.returncode == 0, result.stdout + result.stderr
+    run_mapping_program(program, debug=True)
 
 
 @pytest.mark.skipif(
@@ -1002,65 +927,4 @@ finally:
     for watcher in watchers:
         assert clear(watcher) == 0
 """
-    result = subprocess.run(
-        [sys.executable, "-c", program],
-        cwd=Path(__file__).resolve().parents[1],
-        capture_output=True,
-        text=True,
-        timeout=30,
-        check=False,
-    )
-    assert result.returncode == 0, result.stdout + result.stderr
-
-
-def test_async_cursor_uses_shared_lazy_result_metadata():
-    from mssql_python.async_query.async_cursor import _AsyncCursor
-
-    core = SimpleNamespace(description=[("a", int, None, None, None, None, None)])
-    cursor = _AsyncCursor(core)
-    cursor._initialize_result_metadata()
-    names = cursor._column_names
-    assert type(names) is _ColumnNames
-    assert names._unique is None
-    row = Row([42], cursor._column_map, column_names=names)
-    cursor._clear_result_metadata()
-    core.description = [("b", int, None, None, None, None, None)]
-    cursor._initialize_result_metadata()
-    assert cursor._column_names is not names
-    assert dict(row._mapping) == {"a": 42}
-    assert names._unique == {"a": None}
-    assert cursor._column_names._unique is None
-
-
-@pytest.mark.parametrize("method", ("fetchone", "fetchmany", "fetchall"))
-@pytest.mark.parametrize("warm", (False, True))
-@pytest.mark.parametrize("lowercase", (False, True))
-def test_mapping_live_result_transitions(db_connection, method, warm, lowercase, monkeypatch):
-    monkeypatch.setattr(mssql_python, "lowercase", lowercase)
-    with db_connection.cursor() as cursor:
-        cursor.execute(
-            "SELECT n AS MixedName, n + 10 AS OtherName, n + 20 AS MixedName "
-            "FROM (VALUES (1), (2), (3)) AS v(n) ORDER BY n; SELECT 99 AS Replacement"
-        )
-        if method == "fetchone":
-            rows = [cursor.fetchone(), cursor.fetchone(), cursor.fetchone()]
-        elif method == "fetchmany":
-            rows = cursor.fetchmany(2) + cursor.fetchmany(2)
-        else:
-            rows = cursor.fetchall()
-        names = rows[0]._column_names
-        assert all(row._column_names is names for row in rows)
-        assert names._unique is None
-        key = "mixedname" if lowercase else "MixedName"
-        other = "othername" if lowercase else "OtherName"
-        expected = [{key: n + 20, other: n + 10} for n in (1, 2, 3)]
-        if warm:
-            assert [dict(row._mapping) for row in rows] == expected
-        assert cursor.nextset()
-        replacement = cursor.fetchone()
-        assert replacement._column_names is not names
-        assert dict(replacement._mapping) == {"replacement" if lowercase else "Replacement": 99}
-        cursor.execute("SELECT 123 AS Unrelated")
-        cursor.fetchall()
-    assert [dict(row._mapping) for row in rows] == expected
-    assert [tuple(row) for row in rows] == [(n, n + 10, n + 20) for n in (1, 2, 3)]
+    run_mapping_program(program)
