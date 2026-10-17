@@ -228,8 +228,12 @@ sudo apt-get install -y cmake build-essential python3-dev
 
 **If missing (RHEL/CentOS/Fedora):**
 ```bash
-sudo dnf install -y cmake gcc-c++ python3-devel
+sudo dnf install -y cmake gcc-c++ python3-devel glibc-gconv-extra
 ```
+
+`glibc-gconv-extra` supplies ODBC's iconv conversions for legacy code pages such
+as Korean CP949. Minimal UBI/RHEL images omit these modules; install them before
+running the encoding tests on either x64 or ARM64.
 
 **If missing (SUSE):**
 ```bash
