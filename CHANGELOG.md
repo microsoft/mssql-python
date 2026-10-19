@@ -57,6 +57,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
   does not change the default provider or ship any Rust driver binaries.
 
 ### Changed
+- Cursor fetch/Arrow batch sizes and bulk-copy batch/commit sizes are now capped
+  at 1,000,000 rows; `arraysize` must be positive. Negative row counts raise
+  `ValueError` and boolean row counts raise `TypeError`. Zero-size fetches remain
+  empty, zero-size Arrow requests are schema-only, and bulk-copy zero retains
+  native default batching. Native array-bound `executemany()` calls are also
+  capped at 1,000,000 parameter sets.
+- Native fetch buffers and parameter-array buffers each have a cumulative
+  256 MiB allocation budget. Array limits depend on batch size and column widths,
+  including slots for NULLs; reduce batch sizes or oversized `setinputsizes()`
+  hints when a budget is exceeded. Non-numeric hints are capped at 268,435,456
+  size units, while numeric precision/scale normalization is preserved.
+  Negative/boolean size hints are rejected. These are native buffer limits, not
+  process-memory or total-result limits; see the README's cursor-size guidance.
+- Oversized formatted DECIMAL/NUMERIC text is rejected with `ValueError` before
+  native binding on both scalar and array-bound execution paths.
 - Fetches reuse owned native metadata for stable columns within a result set;
   `fetchmany()` avoids the Python metadata-dictionary roundtrip. Re-execution,
   result transitions and statement/connection cleanup invalidate this metadata.

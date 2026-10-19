@@ -1209,6 +1209,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
     @property
     def arraysize(self) -> int:
+        """Default fetchmany row count: an integer from 1 to 1,000,000, not bool."""
         return self._arraysize
 
     @arraysize.setter
@@ -1253,6 +1254,13 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         Args:
             sizes: A sequence of tuples, one for each parameter. Each tuple contains
                 (sql_type, size, decimal_digits) where size and decimal_digits are optional.
+                Non-numeric sizes must be integers from 0 to 268,435,456 in the SQL
+                type's size units; booleans and negative sizes/scales are rejected.
+                Numeric precision/scale hints retain normalization to SQL Server's
+                supported precision (up to 38), rather than being byte lengths.
+                Array-bound executemany buffers across all columns must fit within
+                256 MiB, including NULL slots and length indicators. Reduce batch
+                sizes or excessive size hints if this native allocation limit is hit.
         """
 
         # Get valid SQL types from centralized constants
@@ -2529,8 +2537,13 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         Args:
             operation: SQL query or command.
             seq_of_parameters: Sequence of sequences or mappings of parameters.
+                Native array binding supports at most 1,000,000 parameter sets and
+                256 MiB of parameter buffers per call, depending on column widths
+                and length indicators (including NULL slots). Split larger inputs
+                into smaller calls. These limits do not bound total process memory.
         Raises:
             Error: If the operation fails.
+            ValueError: If formatted DECIMAL/NUMERIC text exceeds 4000 UTF-16 code units.
         """
         logger.debug(
             "executemany: Starting - operation_length=%d, batch_count=%d",
@@ -2882,6 +2895,8 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                                 conversion_failed = True
                             if conversion_failed:
                                 raise ValueError(err_msg) from None
+                        if _utf16_length_exceeds(processed_row[i], MAX_INLINE_CHAR):
+                            raise ValueError("numeric parameter text is too large")
                 processed_parameters.append(processed_row)
 
         # Now transpose the processed parameters
@@ -3023,7 +3038,13 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         Fetch the next set of rows of a query result.
 
         Args:
-            size: Number of rows to fetch at a time.
+            size: Integer from 0 to 1,000,000, not bool. None uses arraysize.
+                Zero returns an empty list without fetching. Native fetch buffers
+                must also fit within 256 MiB; reduce size for wide columns.
+
+        Raises:
+            TypeError: If size is a boolean or another non-integer.
+            ValueError: If size is negative or exceeds 1,000,000.
 
         Returns:
             List of Row objects.
@@ -3184,7 +3205,10 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         query result set.
 
         Args:
-            batch_size: Maximum number of rows to fetch in the Record Batch.
+            batch_size: Maximum rows, an integer from 0 to 1,000,000, not bool.
+                Zero returns schema only, without advancing the result set.
+                Native fetch buffers must fit within 256 MiB; reduce batch_size
+                for wide columns. This does not bound total process memory.
 
         Returns:
             A pyarrow RecordBatch object containing up to batch_size rows.
@@ -3225,7 +3249,10 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         Fetch the entire result as a pyarrow Table.
 
         Args:
-            batch_size: Size of the Record Batches which make up the Table.
+            batch_size: Rows per Record Batch, from 0 to 1,000,000, not bool.
+                Zero returns schema only. Each batch is subject to the native
+                fetch buffer budget described by arrow_batch; the complete
+                Table's memory consumption is not bounded by that budget.
 
         Returns:
             A pyarrow Table containing all remaining rows from the result set.
@@ -3264,7 +3291,10 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         is **not** closed and can be re-executed.  ``close()`` is idempotent.
 
         Args:
-            batch_size: Size of the Record Batches produced by the reader.
+            batch_size: Rows per Record Batch, from 0 to 1,000,000, not bool.
+                Zero yields no data batches. Validation occurs when reading.
+                Each batch uses the native fetch budget described by arrow_batch;
+                retaining batches can still grow total process memory.
 
         Returns:
             A pyarrow-compatible RecordBatchReader for the result set.
@@ -3654,7 +3684,9 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 - The number of values in each row must match the number of columns
                   in the target table
 
-            batch_size: Number of rows to send per batch. Default 0 uses server optimal.
+            batch_size: Rows per batch/commit, an integer from 0 to 1,000,000,
+                not bool. Default 0 uses native core defaults. This does not
+                limit the total number of input rows or total process memory.
 
             timeout: Operation timeout in seconds. Default is 30. 0 disables the
                 bulk copy operation timeout.
@@ -3843,7 +3875,9 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         Args:
             table_name: Target table name (may include schema, e.g. 'dbo.MyTable').
             source: Arrow source (see above).
-            batch_size: Rows per TDS commit. Default 0 uses server optimal.
+            batch_size: Rows per TDS commit, an integer from 0 to 1,000,000,
+                not bool. Default 0 uses native core defaults. This does not
+                limit the total source rows or total process memory.
             timeout: Operation timeout in seconds. Default 30. 0 disables the
                 bulk copy operation timeout.
             column_mappings: Same two formats as :meth:`bulkcopy`. When omitted,
