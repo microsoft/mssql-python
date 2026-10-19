@@ -16,6 +16,7 @@ import time
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 from urllib.error import URLError
+import weakref
 import zipfile
 import zlib
 
@@ -148,7 +149,9 @@ def test_phase_call_changes_are_reported_without_summing_nested_totals(report):
     assert row["phases"] == [(4.0, "ddbc::query")]
 
 
-@pytest.mark.parametrize("case", ["nan", "missing", "environment", "work", "few", "prefix", "zero"])
+@pytest.mark.parametrize(
+    "case", ["nan", "missing", "environment", "work", "few", "prefix", "zero", "empty-native"]
+)
 def test_reject_invalid_or_incomparable_data(report, case):
     sample = report["pairs"][0]["candidate"]
     if case == "nan":
@@ -167,6 +170,8 @@ def test_reject_invalid_or_incomparable_data(report, case):
         sample["scenarios"]["select"]["cpp"] = {
             "not-native": sample["scenarios"]["select"]["cpp"]["ddbc::query"]
         }
+    elif case == "empty-native":
+        sample["scenarios"]["output_converter_fetchall"]["cpp"] = {}
     with pytest.raises(ValueError):
         reporting.validate(report)
 
@@ -690,11 +695,177 @@ def test_checkout_is_safe_and_compatible_with_python_310(tmp_path, monkeypatch, 
 def test_report_cases_match_the_executed_workload_registry():
     _, workloads = controller.load_suite()
     assert tuple(workloads.registry()) == reporting.CASES
-    assert len(reporting.CASES) == 22
+    assert len(reporting.CASES) == 24
     assert workloads.registry()["scalar_fetchval"] == (workloads.scalar_fetchval, True)
+    assert workloads.registry()["output_converter_fetchall"] == (
+        workloads.output_converter_fetch,
+        True,
+    )
+    batch, needs_table = workloads.registry()["output_converter_fetchmany1000"]
+    assert needs_table and batch.func is workloads.output_converter_fetch
+    assert batch.keywords == {"batched": True}
     assert [name for name in reporting.CASES if name.startswith("lob_")] == [
         "lob_varchar_256k_fetchall",
     ]
+
+
+@pytest.mark.parametrize("batched", (False, True), ids=("fetchall", "fetchmany1000"))
+def test_output_converter_workload_boundaries_and_report(monkeypatch, report, batched):
+    from mssql_python import SQL_WVARCHAR
+
+    cursor = MagicMock()
+    cursor.messages = []
+    connection = MagicMock()
+    connection.cursor.return_value.__enter__.return_value = cursor
+    previous = (lambda raw: raw) if batched else None
+    connection.get_output_converter.return_value = previous
+    context = MagicMock()
+    counters = {"ddbc::FetchBatchData": dict(calls=1, total_us=1000, min_us=1000, max_us=1000)}
+    context.collect.return_value = (counters, {})
+    references = []
+    callback_inputs = []
+    index = 0
+
+    class RetainedRow(list):
+        def __iter__(self):
+            context.collect.assert_called_once()
+            return super().__iter__()
+
+    def fetch(size=10_000):
+        nonlocal index
+        assert clock.call_count == 1
+        context.collect.assert_not_called()
+        converter = connection.add_output_converter.call_args.args[1]
+        rows = []
+        for i in range(index, min(index + size, 10_000)):
+            raw = f"unicode_row_{i}".encode("utf-16le")
+            callback_inputs.append(raw)
+            rows.append(RetainedRow((i, converter(raw))))
+        index += len(rows)
+        references.extend(weakref.ref(row) for row in rows)
+        return rows
+
+    cursor.fetchall.side_effect = fetch
+    cursor.fetchmany.side_effect = fetch
+
+    def tick():
+        cursor.execute.assert_called_once_with(
+            "SELECT TOP (10000) int_col, nvarchar_col FROM #perf_test ORDER BY id"
+        )
+        connection.get_output_converter.assert_called_once_with(SQL_WVARCHAR)
+        assert connection.add_output_converter.call_count == 1
+        assert connection.add_output_converter.call_args.args[0] == SQL_WVARCHAR
+        connection.remove_output_converter.assert_not_called()
+        context.enable.assert_called_once()
+        context.collect.assert_not_called()
+        if clock.call_count == 1:
+            assert not references
+        else:
+            assert len(references) == 10_000 and all(ref() is not None for ref in references)
+        return 1.0 if clock.call_count == 1 else 1.1
+
+    clock = MagicMock(side_effect=tick)
+    monkeypatch.setattr(benchmark_workloads.time, "perf_counter", clock)
+    result = benchmark_workloads.output_converter_fetch(
+        connection, "#perf_test", context, batched=batched
+    )
+    assert clock.call_count == 2
+    assert result["wall_ms"] == pytest.approx(100)
+    assert result["cpp"] is counters
+    assert callback_inputs == [f"unicode_row_{i}".encode("utf-16le") for i in range(10_000)]
+    api = "fetchmany(1000)" if batched else "fetchall()"
+    assert result["detail"] == (
+        f"Rows: 10000; types: int,nvarchar; converter: UTF-16LE upper; API: {api}"
+    )
+    if batched:
+        assert [call.args for call in cursor.fetchmany.call_args_list] == [(1000,)] * 11
+        cursor.fetchall.assert_not_called()
+        connection.add_output_converter.assert_called_with(SQL_WVARCHAR, previous)
+        assert connection.add_output_converter.call_count == 2
+        connection.remove_output_converter.assert_not_called()
+    else:
+        cursor.fetchall.assert_called_once_with()
+        cursor.fetchmany.assert_not_called()
+        connection.remove_output_converter.assert_called_once_with(SQL_WVARCHAR)
+    cursor.fetchone.assert_not_called()
+    connection.clear_output_converters.assert_not_called()
+    context.collect.assert_called_once()
+    context.disable.assert_called_once()
+    connection.cursor.return_value.__exit__.assert_called_once()
+
+    clear_slowdowns(report)
+    name = "output_converter_fetchmany1000" if batched else "output_converter_fetchall"
+    for pair in report["pairs"]:
+        pair["candidate"]["scenarios"][name]["wall_ms"] = 7
+    reporting.validate(report)
+    row = next(row for row in reporting.comparisons(report) if row["name"] == name)
+    assert row["status"] == "improvement" and row["change_pct"] == pytest.approx(-30)
+    assert (
+        f"| {reporting.TASK_NAMES[name]} | 10.000 ms | 7.000 ms | -30.0% | consistent improvement |"
+        in reporting.render([report], "c" * 40, 42)
+    )
+
+
+@pytest.mark.parametrize(
+    ("batched", "problem"),
+    (
+        (False, "setup"),
+        (True, "fetch"),
+        (False, "output"),
+        (True, "output-type"),
+        (True, "missing"),
+        (False, "warning"),
+        (True, "collect"),
+    ),
+)
+def test_output_converter_workload_rejects_invalid_results_and_restores(batched, problem):
+    from mssql_python import SQL_WVARCHAR
+
+    cursor = MagicMock()
+    cursor.messages = [("01000", "unexpected")] if problem == "warning" else []
+    connection = MagicMock()
+    connection.cursor.return_value.__enter__.return_value = cursor
+    previous = lambda raw: raw
+    connection.get_output_converter.return_value = previous
+    context = MagicMock()
+    context.collect.return_value = ({}, {})
+    if problem == "setup":
+        cursor.execute.side_effect = RuntimeError("setup failed")
+    if problem == "collect":
+        context.collect.side_effect = RuntimeError("collect failed")
+    index = 0
+
+    def fetch(size=10_000):
+        nonlocal index
+        if problem == "fetch":
+            raise RuntimeError("fetch failed")
+        converter = connection.add_output_converter.call_args.args[1]
+        rows = []
+        for i in range(index, min(index + size, 10_000)):
+            raw = f"unicode_row_{i}".encode("utf-16le")
+            converted = converter(raw)
+            rows.append(
+                (
+                    float(i) if problem == "output-type" else i,
+                    "wrong" if problem == "output" else converted,
+                )
+            )
+        index += len(rows)
+        return rows[1:] if problem == "missing" else rows
+
+    cursor.fetchall.side_effect = fetch
+    cursor.fetchmany.side_effect = fetch
+    expected_error = RuntimeError if problem in ("setup", "fetch", "collect") else AssertionError
+    with pytest.raises(expected_error):
+        benchmark_workloads.output_converter_fetch(
+            connection, "#perf_test", context, batched=batched
+        )
+    context.disable.assert_called_once()
+    connection.add_output_converter.assert_called_with(SQL_WVARCHAR, previous)
+    assert connection.add_output_converter.call_count == 2
+    connection.remove_output_converter.assert_not_called()
+    connection.clear_output_converters.assert_not_called()
+    connection.cursor.return_value.__exit__.assert_called_once()
 
 
 def test_scalar_fetchval_workload_times_only_fetch_and_reaches_eof(monkeypatch, report):

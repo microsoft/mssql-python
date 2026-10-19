@@ -39,6 +39,8 @@ TASK_NAMES = {
     "cte": "Common table expression queries",
     "lob_varchar_256k_fetchall": "256 KiB VARCHAR(MAX) / fetchall()",
     "scalar_fetchval": "10,000 scalar values / fetchval() (debug disabled)",
+    "output_converter_fetchall": "10,000 output-converted rows / fetchall()",
+    "output_converter_fetchmany1000": "10,000 output-converted rows / fetchmany(1000)",
 }
 CASES = tuple(TASK_NAMES)
 MAX_BYTES = 8 * 1024 * 1024
