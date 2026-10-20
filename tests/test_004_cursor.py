@@ -1727,16 +1727,20 @@ def test_setinputsizes_rejects_excessive_column_size():
         cursor.setinputsizes([(mssql_python.SQL_VARCHAR, 1 << 40, 0)])
 
 
-def test_executemany_rejects_excessive_cumulative_parameter_buffers(cursor):
-    cursor.setinputsizes([(mssql_python.SQL_WVARCHAR, 50_000_000, 0)] * 3)
-    with pytest.raises(RuntimeError, match="Parameter buffers exceed the 256 MiB allocation limit"):
-        cursor.executemany("SELECT ?, ?, ?", [(None, None, None)])
+def test_executemany_rejects_excessive_cumulative_parameter_buffers(db_connection):
+    with db_connection.cursor() as cursor:
+        cursor.setinputsizes([(mssql_python.SQL_WVARCHAR, 50_000_000, 0)] * 3)
+        with pytest.raises(
+            RuntimeError, match="Parameter buffers exceed the 256 MiB allocation limit"
+        ):
+            cursor.executemany("SELECT ?, ?, ?", [(None, None, None)])
 
 
-def test_executemany_rejects_text_for_binary_parameter(cursor):
-    cursor.setinputsizes([(mssql_python.SQL_VARBINARY, 10, 0)])
-    with pytest.raises(RuntimeError, match="object type does not match"):
-        cursor.executemany("SELECT CAST(? AS VARBINARY(10))", [("text",)])
+def test_executemany_rejects_text_for_binary_parameter(db_connection):
+    with db_connection.cursor() as cursor:
+        cursor.setinputsizes([(mssql_python.SQL_VARBINARY, 10, 0)])
+        with pytest.raises(RuntimeError, match="object type does not match"):
+            cursor.executemany("SELECT CAST(? AS VARBINARY(10))", [("text",)])
 
 
 def test_fetchmany_rejects_excessive_native_buffer(cursor):
