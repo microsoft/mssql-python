@@ -199,6 +199,23 @@ of parameter sets times the sum of each column's native element width and length
 indicator; text buffers also include terminators, and wide text uses two-byte
 UTF-16 code units. NULL rows still reserve array slots.
 
+For Arrow fetches, `batch_size` is an upper bound, not a guaranteed batch length.
+When the next row would exceed the native budget, the driver returns completed
+rows and retains the overflow row and any unread fetched rows for the next fetch.
+A short batch does **not** indicate end of results: continue until an empty batch.
+`arrow()` and `arrow_reader()` do this automatically. Row-wise fetch methods can
+also consume these pending rows; `fetchmany()` may return a short batch while
+draining them, so continue until an empty list.
+
+If a single row cannot coexist with its Arrow output within the budget, the
+driver raises an allocation-limit error and retains the row. It can be recovered
+with a row-wise fetch if its source buffers fit. If the source buffers themselves
+exceed the budget, retries continue to fail rather than skipping the row.
+Executing another statement, moving to the next result set, cancelling, or closing
+abandons pending rows. Connection resets, transaction completion, and autocommit
+changes invalidate them with the result state. Non-resetting connection attributes
+preserve pending rows, and schema-only Arrow requests do not consume them.
+
 For allocation-limit errors, reduce `fetchmany()`/Arrow batch sizes or split
 `executemany()` inputs into smaller calls, and avoid unnecessarily large
 `setinputsizes()` hints. Non-numeric size hints must be non-negative integers no

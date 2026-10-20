@@ -21,6 +21,9 @@ import threading
 import mssql_python
 import uuid
 import re
+import subprocess
+import sys
+import textwrap
 from unittest.mock import call, patch
 from conftest import is_azure_sql_connection
 
@@ -1753,6 +1756,43 @@ def test_fetchmany_rejects_excessive_native_buffer(cursor):
 def test_fetchall_clamps_wide_result_batch_to_native_buffer_budget(cursor):
     cursor.execute("SELECT " + ", ".join("CAST(N'x' AS NVARCHAR(4000))" for _ in range(34)))
     assert [tuple(row) for row in cursor.fetchall()] == [("x",) * 34]
+
+
+@pytest.mark.parametrize("sql_type", ["NVARCHAR(4000)", "NVARCHAR(MAX)"])
+def test_connection_attribute_preserves_pending_arrow_rows(conn_str, sql_type):
+    pytest.importorskip("pyarrow")
+    script = textwrap.dedent("""
+        import os
+        import sys
+        import mssql_python
+
+        with mssql_python.connect(os.environ["DB_CONNECTION_STRING"]) as connection:
+            with connection.cursor() as cursor:
+                columns = ", ".join(
+                    f"CAST(REPLICATE(N'x', 4000) AS {sys.argv[1]}) AS value{i}"
+                    for i in range(9)
+                )
+                cursor.execute(
+                    "SELECT TOP (8192) "
+                    "ROW_NUMBER() OVER (ORDER BY a.object_id, b.object_id) AS id, "
+                    + columns
+                    + " FROM sys.all_objects AS a CROSS JOIN sys.all_objects AS b ORDER BY id"
+                )
+                batch = cursor.arrow_batch(8192)
+                assert 0 < batch.num_rows < 8192
+                next_id = batch.column(0)[-1].as_py() + 1
+                del batch
+                connection.set_attr(mssql_python.SQL_ATTR_CONNECTION_TIMEOUT, 30)
+                assert cursor.fetchone()[0] == next_id
+        """)
+    result = subprocess.run(
+        [sys.executable, "-c", script, sql_type],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def test_description(cursor):
