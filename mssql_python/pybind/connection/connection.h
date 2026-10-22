@@ -59,7 +59,7 @@ class Connection {
     bool getAutocommit() const;
     bool isAlive() const;
     bool reset();
-    void prepareForPool(bool transactionAlreadyRolledBack = false);
+    void prepareForPool();
     void updateLastUsed();
     std::chrono::steady_clock::time_point lastUsed() const;
 
@@ -108,6 +108,14 @@ class Connection {
     std::u16string _connStr;
     bool _fromPool = false;
     bool _autocommit = true;
+    // Only successful rollback + AUTOCOMMIT_ON establishes this proof. A new
+    // login or deferred SQL_ATTR_RESET_CONNECTION alone does not establish it.
+    mutable bool _poolClean = false;
+    // True only after check-in has triggered the driver reset and restored the
+    // default isolation level. This permits checkout to skip a duplicate reset.
+    mutable bool _poolSessionReset = false;
+    // Escaped raw handles and arbitrary/deferred attributes cannot be tracked.
+    mutable bool _poolProofDisabled = false;
     SqlHandlePtr _dbcHandle;
     std::chrono::steady_clock::time_point _lastUsed;
     // POSIX-epoch expiry (seconds) of the access token this connection last
@@ -152,7 +160,7 @@ class ConnectionHandle {
                      const py::object& tokenFactory = py::object());
     ~ConnectionHandle();
 
-    void close(bool transactionAlreadyRolledBack = false);
+    void close(bool rollbackBeforeDisconnect = false);
     void commit();
     void rollback();
     void setAutocommit(bool enabled);
