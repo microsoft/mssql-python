@@ -54,7 +54,7 @@ def test_bulkcopy_without_package_initializer(monkeypatch, method):
     getattr(core_cursor, method).return_value = expected
     monkeypatch.setitem(sys.modules, "mssql_py_core", package)
     monkeypatch.setitem(sys.modules, "mssql_py_core.mssql_py_core", native)
-    cursor = _make_cursor("Server=localhost;Database=testdb;Trusted_Connection=yes", None)
+    cursor = _make_cursor("Server=example.test;Database=testdb;Trusted_Connection=yes", None)
     source = [(1,)] if method == "bulkcopy" else object()
 
     assert not hasattr(package, "PyCoreConnection")
@@ -68,7 +68,7 @@ def test_bulkcopy_without_package_initializer(monkeypatch, method):
 @pytest.mark.parametrize("method", ["bulkcopy", "bulkcopy_arrow"])
 def test_bulkcopy_reports_missing_native_dependency(monkeypatch, method):
     monkeypatch.setitem(sys.modules, "mssql_py_core.mssql_py_core", None)
-    cursor = _make_cursor("Server=localhost;Database=testdb;Trusted_Connection=yes", None)
+    cursor = _make_cursor("Server=example.test;Database=testdb;Trusted_Connection=yes", None)
     source = [(1,)] if method == "bulkcopy" else object()
 
     with pytest.raises(ImportError, match="Bulk copy requires") as exc_info:
