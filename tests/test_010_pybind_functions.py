@@ -17,6 +17,10 @@ import pytest
 import platform
 import threading
 import os
+from pathlib import Path
+import subprocess
+import sys
+import textwrap
 
 # Import ddbc_bindings with error handling
 try:
@@ -35,6 +39,155 @@ from mssql_python.exceptions import (
     OperationalError,
     DataError,
 )
+
+
+@pytest.mark.skipif(not DDBC_AVAILABLE, reason="ddbc_bindings not available")
+@pytest.mark.parametrize("fetch_size", [-1, 1_000_001, True])
+def test_fetchmany_rejects_unsafe_size_before_handle_access(fetch_size):
+    with pytest.raises(RuntimeError, match="Fetch size"):
+        ddbc.DDBCSQLFetchMany(None, [], fetch_size)
+
+
+@pytest.mark.skipif(not DDBC_AVAILABLE, reason="ddbc_bindings not available")
+@pytest.mark.parametrize("batch_size", [-1, 1_000_001, True])
+def test_arrow_batch_rejects_unsafe_size_before_handle_access(batch_size):
+    with pytest.raises(RuntimeError, match="Arrow batch size"):
+        ddbc.DDBCSQLFetchArrowBatch(None, [], batch_size, 0)
+
+
+@pytest.mark.skipif(not DDBC_AVAILABLE, reason="ddbc_bindings not available")
+@pytest.mark.parametrize("param_set_size", [-1, 0, 1_000_001, True])
+def test_executemany_rejects_unsafe_size_before_handle_access(param_set_size):
+    with pytest.raises(RuntimeError, match="Parameter set size"):
+        ddbc.SQLExecuteMany(None, "", [], [], param_set_size, {})
+
+
+@pytest.mark.skipif(not DDBC_AVAILABLE, reason="ddbc_bindings not available")
+@pytest.mark.parametrize("failure_stage", ["binding", "streaming", "completion"])
+def test_native_dae_failure_preserves_error_and_allows_reuse(conn_str, failure_stage):
+    env = os.environ.copy()
+    env["DB_CONNECTION_STRING"] = str(conn_str)
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            textwrap.dedent("""
+                import gc
+                import os
+                import sys
+                import weakref
+                import mssql_python
+                from mssql_python import ddbc_bindings as ddbc
+
+                class TrackedText(str):
+                    pass
+
+                stage = sys.argv[1]
+                text_info = ddbc.ParamInfo()
+                text_info.paramCType = -8
+                text_info.paramSQLType = -10
+                text_info.inputOutputType = 1
+                text_info.columnSize = 6000
+                text_info.isDAE = True
+                int_info = ddbc.ParamInfo()
+                int_info.paramCType = 4
+                int_info.paramSQLType = 4
+                int_info.inputOutputType = 1
+                int_info.columnSize = 10
+                int_info.isDAE = False
+                infos = [text_info, int_info]
+                query = "INSERT INTO #native_dae_failure VALUES (?, ?)"
+
+                with mssql_python.connect(os.environ["DB_CONNECTION_STRING"]) as conn:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "CREATE TABLE #native_dae_failure "
+                            "(value NVARCHAR(MAX), id INT CHECK (id > 0))"
+                        )
+                        if stage == "binding":
+                            value = TrackedText("x" * 4001)
+                            columns = [[value], [object()]]
+                            error_type, message = RuntimeError, "C type"
+                        elif stage == "streaming":
+                            value = TrackedText("bad\\ud800")
+                            columns = [[value], [1]]
+                            error_type, message = UnicodeEncodeError, "surrogates"
+                        else:
+                            value = TrackedText("x" * 4001)
+                            columns = [[value], [-1]]
+                            error_type, message = mssql_python.IntegrityError, "CHECK constraint"
+                        value_ref = weakref.ref(value)
+                        del value
+                        try:
+                            ddbc.SQLExecuteMany(cur.hstmt, query, columns, infos, 1, {})
+                        except error_type as exc:
+                            assert message in str(exc), str(exc)
+                        else:
+                            raise AssertionError("Expected the native DAE call to fail")
+                        del columns
+                        gc.collect()
+                        assert value_ref() is None
+                        assert ddbc.SQLExecuteMany(
+                            cur.hstmt, query, [["safe" * 1500, None], [1, 2]], infos, 2, {}
+                        ) in (0, 1)
+                        cur.execute("SELECT value, id FROM #native_dae_failure ORDER BY id")
+                        assert [tuple(row) for row in cur.fetchall()] == [
+                            ("safe" * 1500, 1), (None, 2)
+                        ]
+            """),
+            failure_stage,
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.skipif(not DDBC_AVAILABLE, reason="ddbc_bindings not available")
+@pytest.mark.parametrize(
+    ("input_sizes", "message"),
+    [
+        ((12, -8, 1, 0), "inputSizes must be None or a list"),
+        ([None], "four-item tuple"),
+        ([(12, -8, 1)], "four-item tuple"),
+        ([(12, -8, True, 0)], "must be integers"),
+        ([(12, -8, -1, 0)], "column size must be non-negative"),
+        ([(12, -8, 2**128, 0)], "column size is out of range"),
+        ([(12, -8, 1, 2**128)], "decimal digits are out of range"),
+    ],
+)
+def test_execute_rejects_malformed_input_sizes_before_handle_access(input_sizes, message):
+    with pytest.raises((TypeError, ValueError), match=message):
+        ddbc.DDBCSQLExecute(None, "", [], input_sizes, [False], True, {})
+
+
+@pytest.mark.skipif(not DDBC_AVAILABLE, reason="ddbc_bindings not available")
+def test_lob_buffer_growth_is_geometric():
+    growth_count, data_size, allocation_size, reserved_bytes = ddbc._test_lob_buffer_growth(
+        64, 64 * 1024
+    )
+    assert data_size == 4 * 1024 * 1024
+    assert allocation_size == data_size
+    assert reserved_bytes == allocation_size
+    assert growth_count == 7
+
+
+@pytest.mark.skipif(not DDBC_AVAILABLE, reason="ddbc_bindings not available")
+@pytest.mark.parametrize(
+    ("chunk_count", "chunk_size", "message"),
+    [
+        (1_000_001, 1, "chunk count"),
+        (True, 1, "chunk count"),
+        (1, 0, "chunk size"),
+        (1, True, "chunk size"),
+    ],
+)
+def test_lob_buffer_growth_helper_rejects_unsafe_sizes(chunk_count, chunk_size, message):
+    with pytest.raises((RuntimeError, TypeError), match=message):
+        ddbc._test_lob_buffer_growth(chunk_count, chunk_size)
 
 
 @pytest.mark.skipif(not DDBC_AVAILABLE, reason="ddbc_bindings not available")
