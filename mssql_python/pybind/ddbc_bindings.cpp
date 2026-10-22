@@ -5613,9 +5613,10 @@ SQLRETURN GetDataVar(SQLHSTMT hStmt, SQLUSMALLINT colNumber, SQLSMALLINT cType,
             ThrowStdException("GetDataVar only supports SQL_C_CHAR, SQL_C_WCHAR, and SQL_C_BINARY");
     }
 
-    // Ensure initial buffer has space for at least the null terminator
-    if (dataVec.size() < sizeNullTerminator) {
-        ResizeNativeFetchBuffer(dataVec, sizeNullTerminator, reservedBytes);
+    // SQLGetData requires a non-empty buffer even when binary data has no terminator.
+    const size_t initialBufferSize = std::max(sizeNullTerminator, size_t{1});
+    if (dataVec.size() < initialBufferSize) {
+        ResizeNativeFetchBuffer(dataVec, initialBufferSize, reservedBytes);
     }
 
     while (true) {
