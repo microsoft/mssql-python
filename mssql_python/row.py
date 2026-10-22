@@ -7,9 +7,35 @@ from a cursor fetch operation.
 
 import decimal
 import uuid as _uuid
-from collections.abc import Mapping
+from collections.abc import KeysView, Mapping
 from typing import Any
+from mssql_python import ddbc_bindings
 from mssql_python.logging import logger
+
+
+class _ColumnNames(tuple):
+    """Result-shared names; validate and deduplicate only on mapping use."""
+
+    def __new__(cls, names):
+        result = super().__new__(cls, names)
+        result._unique = None
+        result._prepared = None
+        return result
+
+    def _unique_keys(self):
+        keys = self._unique
+        if keys is None:
+            if not all(type(name) is str for name in self):
+                self._unique = False
+                return False
+            keys = dict.fromkeys(self)
+            self._unique = keys
+        return keys
+
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        state["_prepared"] = None
+        return state
 
 
 class Row:
@@ -287,6 +313,12 @@ class Row:
           set, ``in`` and ``[]`` always agree. Unlike ``row[name]`` / ``row.name``,
           the view does NOT resolve case-insensitive names or catalog aliases; with
           ``lowercase=True`` the keys are the lowercased names.
+        - Cursor rows share lazily deduplicated canonical keys; values are never
+          cached in the view. Existing views continue to observe changes to the row.
+        - On GIL-enabled CPython 3.12+, ordinary mapping iteration can prepare a
+          shared index schema, invalidated by dictionary watchers. This lazily
+          materializes the row's standard attribute dictionary, but stores no
+          cache in it. Custom storage and hooks retain ordinary lookup behavior.
         - ``_mapping`` is a property, so a column literally named ``_mapping`` is
           shadowed: read it with ``row["_mapping"]`` or ``row._mapping["_mapping"]``.
         """
@@ -359,7 +391,24 @@ class Row:
         return repr(tuple(self._values))
 
 
-class RowMapping(Mapping):
+def _iter_mapping_keys(names):
+    seen = set()
+    for name in names:
+        if name not in seen:
+            seen.add(name)
+            yield name
+
+
+class _RowMappingKeys(KeysView):
+    __slots__ = ()
+
+    def __iter__(self):
+        return iter(self._mapping)
+
+
+class RowMapping(
+    ddbc_bindings._make_row_mapping_base(Row, _ColumnNames, _iter_mapping_keys), Mapping
+):
     """Read-only ``Mapping`` view over a :class:`Row` (column name -> value).
 
     Created via :attr:`Row._mapping`. Keys are the row's canonical column names,
@@ -369,27 +418,17 @@ class RowMapping(Mapping):
     reflects the row it wraps and copies no values.
     """
 
-    __slots__ = ("_row",)
+    __slots__ = ()
 
     def __init__(self, row: "Row") -> None:
         self._row = row
 
-    def __getitem__(self, key: str) -> Any:
-        # Restrict lookups to the canonical column names yielded by __iter__ so
-        # membership and lookup agree with iteration (proper Mapping semantics).
-        # Row.__getitem__ additionally accepts case-insensitive names and catalog
-        # aliases, but those are not iterated keys, so the view must not resolve
-        # them here.
-        if isinstance(key, str) and key in self._row._mapping_keys():
-            return self._row[key]
-        raise KeyError(key)
+    def __getnewargs__(self):
+        """Initialize native state before copying or restoring Python slots."""
+        return ()
 
-    def __iter__(self):
-        seen = set()
-        for name in self._row._mapping_keys():
-            if name not in seen:
-                seen.add(name)
-                yield name
+    def keys(self):
+        return _RowMappingKeys(self)
 
     def __len__(self) -> int:
         return sum(1 for _ in self)
