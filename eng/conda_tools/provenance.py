@@ -205,7 +205,7 @@ def execute() -> None:
     transport = result["rsTransportVersion"]
     print(f"##vso[task.setvariable variable=rsTransportVersion;isOutput=true]{transport}")
     if publish == "false":
-        print("Validate-only: provenance verified; package readiness is gated separately.")
+        print("Non-publishing run: provenance verified; publisher rehearsal is gated separately.")
 
 
 def cli() -> int:

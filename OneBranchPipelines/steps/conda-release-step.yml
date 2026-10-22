@@ -77,10 +77,6 @@ parameters:
   - name: rsTransportVersion
     type: string
     default: ''
-  # The audit dependency hash targets CPython 3.12 / Windows x64, like the publisher.
-  - name: pythonVersion
-    type: string
-    default: '3.12'
   # Optional display-name prefix (e.g. '[TEST] ' for the dummy pipeline).
   - name: labelPrefix
     type: string
@@ -98,12 +94,7 @@ steps:
       artifactName: '${{ parameters.condaArtifactName }}'
       targetPath: '$(Build.SourcesDirectory)/conda-artifacts'
 
-  - task: UsePythonVersion@0
-    displayName: '${{ parameters.labelPrefix }}Use Python ${{ parameters.pythonVersion }} for release validation'
-    inputs:
-      versionSpec: '${{ parameters.pythonVersion }}'
-      addToPath: true
-
+  # The caller already selected Python 3.12 before its provenance gate.
   - task: PowerShell@2
     displayName: '${{ parameters.labelPrefix }}Install hash-locked release-audit dependency'
     inputs:
@@ -157,7 +148,8 @@ steps:
     env:
       REQUIRED_SUBDIRS: '${{ parameters.requiredSubdirs }}'
       ALLOWED_SUBDIRS: '${{ parameters.allowedSubdirs }}'
-      PYTHON_VERSIONS: '${{ parameters.pythonVersions }}'
+      # Avoid the shared PYTHON_VERSIONS pipeline variable overwriting this input.
+      MSSQL_CONDA_PYTHON_VERSIONS: '${{ parameters.pythonVersions }}'
       MSSQL_PYTHON_VERSION: '${{ parameters.mssqlPythonVersion }}'
       RELEASE_VERSIONS: '${{ parameters.releaseVersions }}'
       RS_TRANSPORT_VERSION: '${{ parameters.rsTransportVersion }}'
@@ -178,7 +170,7 @@ steps:
           exit 1
         }
 
-        foreach ($policy in @('REQUIRED_SUBDIRS', 'ALLOWED_SUBDIRS', 'PYTHON_VERSIONS')) {
+        foreach ($policy in @('REQUIRED_SUBDIRS', 'ALLOWED_SUBDIRS', 'MSSQL_CONDA_PYTHON_VERSIONS')) {
           if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($policy))) {
             Write-Error "$policy is empty. Refusing to weaken the release matrix."
             exit 1
@@ -189,7 +181,7 @@ steps:
           '--root', $root,
           '--required-subdirs', $env:REQUIRED_SUBDIRS,
           '--allowed-subdirs', $env:ALLOWED_SUBDIRS,
-          '--pythons', $env:PYTHON_VERSIONS
+          '--pythons', $env:MSSQL_CONDA_PYTHON_VERSIONS
         )
         if (-not [string]::IsNullOrWhiteSpace($env:MSSQL_PYTHON_VERSION)) {
           $gateArgs += @('--mssql-python-version', $env:MSSQL_PYTHON_VERSION.Trim())

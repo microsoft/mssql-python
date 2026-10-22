@@ -20,14 +20,19 @@
 #      no separate companion to order; we still refuse to publish an incomplete or
 #      mislabeled set.
 #
-# The caller MUST:
+# For production publication, the caller MUST:
 #   - run this ONLY after the conda-release-step.yml readiness gate has passed, and
 #   - keep the entire step in a stage consuming the shared publishing variable group
 #     with its administrator-configured native Exclusive lock check, and
 #   - supply ANACONDA_API_TOKEN (variable group 'Anaconda Publishing') to the job.
 # This template never puts the token on the command line (anaconda-client reads it
 # from the env), so it never appears in the logs.
+# Rehearsal shares provisioning/audits but uses only a random invalid token and a
+# read-only authentication probe; the production credential group must be omitted.
 parameters:
+  - name: publishToConda
+    type: boolean
+    default: true
   # Consolidated conda artifact name (see consolidate-conda-artifacts-job.yml).
   - name: condaArtifactName
     type: string
@@ -69,10 +74,6 @@ parameters:
   - name: pythonVersions
     type: string
     default: '3.10,3.11,3.12,3.13,3.14,3.15'
-  # The publisher hash lock targets CPython 3.12 / Windows x64; other runtimes reject.
-  - name: pythonVersion
-    type: string
-    default: '3.12'
   # Optional display-name prefix (e.g. '[TEST] ' for the dummy pipeline).
   - name: labelPrefix
     type: string
@@ -90,14 +91,12 @@ steps:
       artifactName: '${{ parameters.condaArtifactName }}'
       targetPath: '$(Build.SourcesDirectory)/conda-artifacts'
 
-  - task: UsePythonVersion@0
-    displayName: '${{ parameters.labelPrefix }}Use Python ${{ parameters.pythonVersion }}'
-    inputs:
-      versionSpec: '${{ parameters.pythonVersion }}'
-      addToPath: true
-
   - task: PowerShell@2
-    displayName: '${{ parameters.labelPrefix }}Install anaconda-client'
+    name: PublisherBootstrap
+    displayName: '${{ parameters.labelPrefix }}Verify image Python and install isolated anaconda-client'
+    target:
+      container: windows_build_container
+      commands: restricted
     env:
       ANACONDA_API_TOKEN: ''
       SYSTEM_ACCESSTOKEN: ''
@@ -105,46 +104,76 @@ steps:
       targetType: 'inline'
       script: |
         $ErrorActionPreference = 'Stop'
-        python -c "import sys, sysconfig; assert sys.implementation.name == 'cpython' and sys.version_info[:2] == (3, 12) and sys.platform == 'win32' and sysconfig.get_platform() == 'win-amd64', 'Publisher lock requires CPython 3.12 Windows x64'"
-        if ($LASTEXITCODE -ne 0) { throw "Publisher runtime does not match the reviewed hash lock." }
+        $baseDirectory = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'Programs\Python\Python312'
+        $basePython = Join-Path $baseDirectory 'python.exe'
+        if (-not (Test-Path -LiteralPath $basePython -PathType Leaf)) {
+          throw "Required image Python is missing: $basePython. No installation or fallback is permitted."
+        }
+        @'
+        import json, pathlib, sys, sysconfig
+        root = pathlib.Path(sys.argv[1]).resolve()
+        print("PUBLISHER_IMAGE_PYTHON: " + json.dumps({
+            "executable": sys.executable, "version": sys.version,
+            "prefix": sys.prefix, "base_prefix": sys.base_prefix,
+            "platform": sysconfig.get_platform(),
+        }))
+        assert sys.implementation.name == "cpython" and sys.version_info[:2] == (3, 12) and sys.platform == "win32" and sysconfig.get_platform() == "win-amd64", "Publisher lock requires CPython 3.12 Windows x64"
+        assert pathlib.Path(sys.executable).resolve() == root / "python.exe" and pathlib.Path(sys.prefix).resolve() == pathlib.Path(sys.base_prefix).resolve() == root, "Image Python executable/prefix mismatch"
+        import ssl, venv, encodings, _ssl, ensurepip, xml.etree.ElementTree as et
+        misplaced = {m.__name__: str(pathlib.Path(m.__file__).resolve()) for m in (ssl, venv, encodings, _ssl, ensurepip, et) if not pathlib.Path(m.__file__).resolve().is_relative_to(root)}
+        assert not misplaced, f"Image Python standard library outside {root}: {misplaced}"
+        ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        print("PUBLISHER_BASE_STDLIB_OK:", root)
+        '@ | & $basePython -I - "$baseDirectory"
+        if ($LASTEXITCODE -ne 0) { throw "Image Python failed runtime/stdlib checks: $basePython. No installation or fallback is permitted." }
         $lock = "$(Build.SourcesDirectory)/conda/requirements-publish.txt"
         if (-not (Test-Path -LiteralPath $lock -PathType Leaf)) { throw "Publisher dependency lock is missing." }
         # A fresh venv avoids trusting already-installed packages or their startup hooks.
         # Only the later publishing task maps credentials into its environment.
-        $publisherEnvironment = Join-Path "$(Agent.TempDirectory)" ("conda-publisher-" + [guid]::NewGuid().ToString('N'))
+        $publisherWorkspace = Join-Path "$(Agent.TempDirectory)" ("conda-publisher-" + [guid]::NewGuid().ToString('N'))
+        if (Test-Path -LiteralPath $publisherWorkspace) { throw "Publisher workspace already exists." }
+        New-Item -ItemType Directory -Path $publisherWorkspace | Out-Null
+        $publisherEnvironment = Join-Path $publisherWorkspace 'venv'
         if (Test-Path -LiteralPath $publisherEnvironment) { throw "Publisher environment already exists." }
-        python -m venv "$publisherEnvironment"
+        & $basePython -I -m venv "$publisherEnvironment"
         if ($LASTEXITCODE -ne 0) { throw "Could not create the isolated publisher environment." }
         $publisherPython = Join-Path $publisherEnvironment 'Scripts\python.exe'
-        & $publisherPython -m pip --isolated install --disable-pip-version-check --require-hashes --only-binary=:all: `
+        & $publisherPython -I -c "import pathlib, sys; assert sys.prefix != sys.base_prefix and pathlib.Path(sys.base_prefix).resolve()==pathlib.Path(sys.argv[1]).parent.resolve() and pathlib.Path(sys.executable).resolve()==pathlib.Path(sys.prefix).resolve()/'Scripts'/'python.exe', 'Publisher venv does not belong to the verified image interpreter'; print('PUBLISHER_VENV_OK:', sys.executable)" "$basePython"
+        if ($LASTEXITCODE -ne 0) { throw "Publisher virtual environment has an unexpected interpreter." }
+        & $publisherPython -I -m pip --isolated install --disable-pip-version-check --require-hashes --only-binary=:all: `
           --index-url "https://packagefeedproxy.microsoft.io/pypi/simple/" `
           -r "$lock"
         if ($LASTEXITCODE -ne 0) {
           Write-Error "Failed to install the complete hash-locked publisher dependency closure."
           exit 1
         }
-        & $publisherPython -m pip --isolated check
+        & $publisherPython -I -m pip --isolated check
         if ($LASTEXITCODE -ne 0) { throw "Publisher dependency closure is inconsistent." }
-        & $publisherPython -c "import importlib.metadata as m; assert m.version('anaconda-client') == '1.14.1'; assert m.version('zstandard') == '0.23.0'; from binstar_client.utils import get_server_api; import zstandard; print('pinned publisher APIs ready')"
+        & $publisherPython -I -c "import importlib.metadata as m; assert m.version('anaconda-client') == '1.14.1'; assert m.version('zstandard') == '0.23.0'; from binstar_client.utils import get_server_api; import zstandard; print('pinned publisher APIs ready')"
         if ($LASTEXITCODE -ne 0) {
           Write-Error "Pinned anaconda-client version/API verification failed."
           exit 1
         }
         $env:ANACONDA_CLIENT_FORCE_STANDALONE = '1'
-        & $publisherPython -m binstar_client.scripts.cli upload --help | Out-Null
+        & $publisherPython -I -m binstar_client.scripts.cli upload --help | Out-Null
         if ($LASTEXITCODE -ne 0) {
           Write-Error "Pinned anaconda-client upload module is unavailable."
           exit 1
         }
-        Write-Host "##vso[task.prependpath]$(Join-Path $publisherEnvironment 'Scripts')"
+        Write-Host "##vso[task.setvariable variable=pythonExecutable;isOutput=true;isReadOnly=true]$publisherPython"
 
   - task: PowerShell@2
-    displayName: '${{ parameters.labelPrefix }}Publish conda packages to anaconda.org/${{ parameters.condaChannel }}'
+    displayName: '${{ parameters.labelPrefix }}Publish or rehearse conda packages at anaconda.org/${{ parameters.condaChannel }}'
     env:
       # The API receives this token explicitly; the CLI inherits it after the
       # competing BINSTAR_API_TOKEN is removed below. Keep it off command lines.
       # Supplied by the caller from the 'Anaconda Publishing' variable group.
-      ANACONDA_API_TOKEN: $(ANACONDA_API_TOKEN)
+      ${{ if eq(parameters.publishToConda, true) }}:
+        ANACONDA_API_TOKEN: $(ANACONDA_API_TOKEN)
+      ${{ else }}:
+        ANACONDA_API_TOKEN: ''
+      SYSTEM_ACCESSTOKEN: ''
+      MSSQL_CONDA_PUBLISHER_PYTHON: '$(PublisherBootstrap.pythonExecutable)'
       ANACONDA_CLIENT_FORCE_STANDALONE: '1'
       BINSTAR_CONFIG_DIR: '$(Agent.TempDirectory)/anaconda-client-$(Build.BuildId)'
       # Queue-time values are surfaced as env vars rather than interpolated into the script text.
@@ -156,12 +185,23 @@ steps:
       RS_TRANSPORT_VERSION: '${{ parameters.rsTransportVersion }}'
       REQUIRED_SUBDIRS: '${{ parameters.requiredSubdirs }}'
       ALLOWED_SUBDIRS: '${{ parameters.allowedSubdirs }}'
-      PYTHON_VERSIONS: '${{ parameters.pythonVersions }}'
+      # Avoid the shared PYTHON_VERSIONS pipeline variable overwriting this input.
+      MSSQL_CONDA_PYTHON_VERSIONS: '${{ parameters.pythonVersions }}'
     inputs:
       targetType: 'inline'
       workingDirectory: '$(Build.SourcesDirectory)'
       script: |
         $ErrorActionPreference = 'Stop'
+        $pythonExecutable = $env:MSSQL_CONDA_PUBLISHER_PYTHON
+        $workspacePattern = '^' + [regex]::Escape("$(Agent.TempDirectory)".TrimEnd('\')) + '\\conda-publisher-[0-9a-f]{32}\\venv\\Scripts\\python\.exe$'
+        if ([string]::IsNullOrWhiteSpace($pythonExecutable) -or
+            [IO.Path]::GetFullPath($pythonExecutable) -notmatch $workspacePattern -or
+            -not (Test-Path -LiteralPath $pythonExecutable -PathType Leaf)) {
+          throw "Publisher interpreter output is missing or outside this job's isolated workspace."
+        }
+        foreach ($variable in @('PYTHONHOME', 'PYTHONPATH')) {
+          [Environment]::SetEnvironmentVariable($variable, $null, 'Process')
+        }
 
         # Refuse to publish without an explicit target channel (protects the dummy
         # pipeline, whose default channel is empty, from ever hitting production).
@@ -188,7 +228,11 @@ steps:
           exit 1
         }
 
-        if ([string]::IsNullOrWhiteSpace($env:ANACONDA_API_TOKEN)) {
+        if ('${{ parameters.publishToConda }}' -eq 'False') {
+          # Do not trust task-env precedence over public variables in rehearsal.
+          [Environment]::SetEnvironmentVariable('ANACONDA_API_TOKEN', $null, 'Process')
+        }
+        elseif ([string]::IsNullOrWhiteSpace($env:ANACONDA_API_TOKEN)) {
           Write-Error "ANACONDA_API_TOKEN is not set. Add the 'Anaconda Publishing' variable group to the job."
           exit 1
         }
@@ -203,7 +247,7 @@ steps:
         New-Item -ItemType Directory -Force -Path $clientConfigDir | Out-Null
         @('url: https://api.anaconda.org', 'ssl_verify: true') |
           Set-Content -Path (Join-Path $clientConfigDir 'config.yaml') -Encoding ASCII
-        python -c "from binstar_client.utils import get_config; c=get_config(); assert c['url']=='https://api.anaconda.org'; assert c['ssl_verify'] is True; print('Anaconda endpoint configuration verified')"
+        & $pythonExecutable -c "from binstar_client.utils import get_config; c=get_config(); assert c['url']=='https://api.anaconda.org'; assert c['ssl_verify'] is True; print('Anaconda endpoint configuration verified')"
         if ($LASTEXITCODE -ne 0) {
           Write-Error "Failed to verify isolated Anaconda endpoint configuration."
           exit 1
@@ -217,12 +261,12 @@ steps:
           Write-Error "Conda release metadata gate not found at $metadataGate."
           exit 1
         }
-        python -m eng.conda_tools validate `
+        & $pythonExecutable -m eng.conda_tools validate `
           --release-versions `
           --root "$root" `
           --required-subdirs "$env:REQUIRED_SUBDIRS" `
           --allowed-subdirs "$env:ALLOWED_SUBDIRS" `
-          --pythons "$env:PYTHON_VERSIONS" `
+          --pythons "$env:MSSQL_CONDA_PYTHON_VERSIONS" `
           --mssql-python-version "$env:MSSQL_PYTHON_VERSION"
         if ($LASTEXITCODE -ne 0) {
           Write-Error "Credential-boundary Conda release metadata validation failed."
@@ -238,7 +282,7 @@ steps:
         $pkgs = @(Get-ChildItem -Path $root -Recurse -File -Include *.conda, *.tar.bz2 | Sort-Object FullName)
         $packagePaths = @($pkgs | ForEach-Object { $_.FullName })
         $stagingLabel = "$($env:CONDA_LABEL)_staging_$(Build.BuildId)"
-        python -m eng.conda_tools promote `
+        & $pythonExecutable -m eng.conda_tools promote `
           --owner "$env:CONDA_CHANNEL" `
           --staging-label "$stagingLabel" `
           --target-label "$env:CONDA_LABEL" `
@@ -248,6 +292,21 @@ steps:
         if ($LASTEXITCODE -ne 0) {
           Write-Error "Local Conda release input validation failed before upload."
           exit 1
+        }
+
+        # Audit this job's independent download, not only the earlier validation job's copy.
+        foreach ($audit in @('elf', 'pe', 'macho')) {
+          & $pythonExecutable -m eng.conda_tools $audit --root "$root"
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "$audit native artifact audit failed before upload."
+            exit 1
+          }
+        }
+
+        if ('${{ parameters.publishToConda }}' -eq 'False') {
+          & $pythonExecutable -c "from eng.conda_tools.publication import rehearse_auth; rehearse_auth()"
+          if ($LASTEXITCODE -eq 0) { throw "Rehearsal must reject the invalid token." }
+          exit $LASTEXITCODE
         }
 
         # Staged-then-promoted publish: upload the FULL set to a BUILD-UNIQUE staging
@@ -270,7 +329,6 @@ steps:
           AttemptedPaths = [System.Collections.Generic.List[string]]::new()
           TerminationUncertain = $false
         }
-        $pythonExecutable = (Get-Command python -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
         function Invoke-Anaconda($argsList) {
           for ($attempt = 1; $attempt -le 3; $attempt++) {
             $remainingMs = $uploadBudgetMs - $uploadState.Clock.ElapsedMilliseconds
@@ -367,7 +425,7 @@ steps:
             Invoke-Anaconda @('upload', '--user', "$env:CONDA_CHANNEL", '--label', $stagingLabel, '--skip-existing', "$($p.FullName)")
           }
 
-          python -m eng.conda_tools promote `
+          & $pythonExecutable -m eng.conda_tools promote `
             --owner "$env:CONDA_CHANNEL" `
             --staging-label "$stagingLabel" `
             --target-label "$env:CONDA_LABEL" `
@@ -386,7 +444,7 @@ steps:
           $attemptedPaths = @($uploadState.AttemptedPaths.ToArray())
           if ($attemptedPaths.Count -gt 0) {
             try {
-              python -m eng.conda_tools promote `
+              & $pythonExecutable -m eng.conda_tools promote `
                 --owner "$env:CONDA_CHANNEL" `
                 --staging-label "$stagingLabel" `
                 --target-label "$env:CONDA_LABEL" `

@@ -186,9 +186,9 @@ def build_env(
     env["MSSQL_ODBC_VERSION"] = odbc_ver
     env["MSSQL_RS_VERSION"] = rs_ver or ""
     if cross_target_subdir:
-        # conda-build AND the verify `conda create` honor CONDA_SUBDIR -> the packages are
-        # stamped for the target subdir and the import check runs the target Python where the
-        # host can execute it (natively / Rosetta 2 / QEMU binfmt).
+        # Verification must solve for the target, not the native build machine.
+        # Windows conda-build uses a separate env copy and target_platform variant;
+        # POSIX builds retain CONDA_SUBDIR for their emulated target execution.
         env["CONDA_SUBDIR"] = cross_target_subdir
         _log(f"Cross-targeting conda subdir: CONDA_SUBDIR={cross_target_subdir}")
         if cross_target_subdir.endswith("aarch64") and os.path.isdir("/usr/aarch64-linux-gnu"):

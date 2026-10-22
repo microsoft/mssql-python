@@ -15,6 +15,7 @@ and run under ``--noconftest``.
 """
 
 import importlib.machinery
+import json
 import os
 import subprocess
 import sys
@@ -1215,6 +1216,59 @@ def test_conda_build_and_verify_use_only_explicit_channels(
             "local-channel",
             *verify_channels,
         ]
+
+
+@pytest.mark.parametrize("target_subdir", ["win-64", "win-arm64", "osx-arm64", "linux-aarch64"])
+@pytest.mark.parametrize("python_version", ["3.12", "3.15"])
+def test_conda_build_target_does_not_change_verification_environment(
+    target_subdir, python_version, tmp_path, monkeypatch
+):
+    env = environment.build_env("1.16.0", "18.6.2.2", "wheels", target_subdir, "0.3.0")
+    original = env.copy()
+    calls = []
+
+    def capture(command, **kwargs):
+        calls.append((command, kwargs["env"].copy()))
+
+    monkeypatch.setattr(environment, "run", capture)
+    build.build_packages(
+        "conda",
+        "builder",
+        str(tmp_path / "recipe"),
+        [python_version],
+        str(tmp_path / "bld"),
+        target_subdir,
+        env,
+    )
+    command, build_env = calls.pop()
+    if target_subdir.startswith("win-"):
+        assert "CONDA_SUBDIR" not in build_env
+        assert json.loads(command[command.index("--variants") + 1]) == {
+            "target_platform": target_subdir
+        }
+        assert build_env == {key: value for key, value in original.items() if key != "CONDA_SUBDIR"}
+    else:
+        assert "--variants" not in command
+        assert build_env == original
+    assert env == original
+
+    monkeypatch.setattr(environment, "run_ok", lambda *_args, **_kwargs: 0)
+    monkeypatch.setattr(environment, "run_capture", lambda *_args, **_kwargs: (0, ""))
+    verify._verify_impl(
+        "conda",
+        "local-channel",
+        str(tmp_path),
+        [python_version],
+        "1.16.0",
+        target_subdir,
+        True,
+        env,
+    )
+    creates = [(cmd, call_env) for cmd, call_env in calls if cmd[1:2] == ["create"]]
+    assert len(creates) == (2 if target_subdir == "win-arm64" else 1)
+    assert all(call_env == original for _, call_env in creates)
+    if target_subdir == "win-arm64":
+        assert any("--dry-run" in cmd for cmd, _ in creates)
 
 
 @pytest.mark.parametrize(

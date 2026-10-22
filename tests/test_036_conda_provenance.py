@@ -990,7 +990,7 @@ def test_provenance_cli_executes_same_chain_in_both_modes(monkeypatch, chain, ca
     output = capsys.readouterr().out
     result = json.loads(output.splitlines()[0].split(": ", 1)[1])
     assert result["wheel"]["run"] == 173176
-    assert ("Validate-only:" in output) == (publish == "false")
+    assert ("Non-publishing run:" in output) == (publish == "false")
     directive = "##vso[task.setvariable variable=releaseVersions;isOutput=true]"
     assert (
         json.loads(
