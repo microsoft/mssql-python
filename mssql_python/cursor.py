@@ -2796,19 +2796,42 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                     ):
                         paraminfo.columnSize = max_decimal_len
 
-                    if paraminfo.paramSQLType in (
+                    text_sql_types = (
                         ddbc_sql_const.SQL_CHAR.value,
                         ddbc_sql_const.SQL_VARCHAR.value,
                         ddbc_sql_const.SQL_LONGVARCHAR.value,
                         ddbc_sql_const.SQL_WCHAR.value,
                         ddbc_sql_const.SQL_WVARCHAR.value,
                         ddbc_sql_const.SQL_WLONGVARCHAR.value,
-                    ) and any(
-                        isinstance(value, str) and _utf16_length_exceeds(value, MAX_INLINE_CHAR)
-                        for value in column
-                    ):
-                        paraminfo.isDAE = True
-                        paraminfo.columnSize = 0
+                    )
+                    if paraminfo.paramSQLType in text_sql_types:
+                        text_needs_dae = False
+                        has_non_ascii = False
+                        max_text_length = 0
+                        for value in column:
+                            if not isinstance(value, str):
+                                continue
+                            has_non_ascii = has_non_ascii or not str.isascii(value)
+                            if not text_needs_dae and _utf16_length_exceeds(value, MAX_INLINE_CHAR):
+                                text_needs_dae = True
+                            elif not text_needs_dae:
+                                max_text_length = max(
+                                    max_text_length,
+                                    len(str.encode(value, "utf-16-le")) // 2,
+                                )
+                        if has_non_ascii and paraminfo.paramSQLType in (
+                            ddbc_sql_const.SQL_CHAR.value,
+                            ddbc_sql_const.SQL_VARCHAR.value,
+                            ddbc_sql_const.SQL_LONGVARCHAR.value,
+                        ):
+                            # Keep mixed ASCII/Unicode arrays on a lossless SQL type.
+                            paraminfo.paramSQLType = ddbc_sql_const.SQL_WVARCHAR.value
+                            paraminfo.paramCType = ddbc_sql_const.SQL_C_WCHAR.value
+                        if not text_needs_dae:
+                            paraminfo.columnSize = max(paraminfo.columnSize, max_text_length)
+                        if text_needs_dae:
+                            paraminfo.isDAE = True
+                            paraminfo.columnSize = 0
 
                     # Special handling for binary data in auto-detected types
                     if paraminfo.paramSQLType in (

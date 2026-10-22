@@ -128,12 +128,15 @@ def test_arrow_native_budget_lossless_batches(conn_str, sql_type, method, column
 
 
 @pytest.mark.parametrize("sql_type", ["nvarchar(4000)", "nvarchar(max)"])
-def test_arrow_native_budget_pending_mixed_fetches(conn_str, sql_type):
+@pytest.mark.parametrize("remaining", ["mixed", "fetchall", "arrow_reader"])
+def test_arrow_native_budget_pending_mixed_fetches(conn_str, sql_type, remaining):
     """A quota boundary preserves the overflow row and the rest of its native rowset."""
     _run_arrow_budget_script(
         conn_str,
         """
         sql_type = sys.argv[1]
+        remaining = sys.argv[2]
+        row_count = 4096
         extra = '''
             , CAST('123.45' AS DECIMAL(10,2)) amount
             , CAST('2025-01-02' AS DATE) day
@@ -153,64 +156,66 @@ def test_arrow_native_budget_pending_mixed_fetches(conn_str, sql_type):
             assert row[15] is True
 
         with mssql_python.connect(os.environ["DB_CONNECTION_STRING"]) as conn:
-            for remaining in ("mixed", "fetchall", "arrow_reader"):
-                with conn.cursor() as cur:
-                    cur.execute(wide_query(sql_type, 9, identifiers=True, extra=extra))
-                    first = cur.arrow_batch(8192)
-                    n = first.num_rows
-                    assert 0 < n < 8192
-                    assert first.column(0).to_pylist() == list(range(1, n + 1))
-                    del first
-                    assert cur.arrow_batch(0).num_rows == 0
-                    from mssql_python import ddbc_bindings
-                    from mssql_python.constants import ConstantsDDBC
-                    # Updating the timeout invalidates metadata, not pending result rows.
-                    assert ddbc_bindings.DDBCSQLSetStmtAttr(
-                        cur.hstmt, ConstantsDDBC.SQL_ATTR_QUERY_TIMEOUT.value, 0
-                    ) in (0, 1)
-                    if remaining == "mixed":
-                        check_row(cur.fetchone(), n + 1)
-                        n += 1
-                        rows = cur.fetchmany(5)
-                        assert len(rows) == 5
-                        for i, row in enumerate(rows, n + 1):
-                            check_row(row, i)
-                        n += 5
-                        small = cur.arrow_batch(1)
-                        assert small.column(0).to_pylist() == [n + 1]
-                        n += 1
-                        del small, rows
-                        rows = cur.fetchmany(100)
-                        assert 0 < len(rows) <= 100
-                        for i, row in enumerate(rows, n + 1):
-                            check_row(row, i)
-                        n += len(rows)
-                        del rows
-                        rest = cur.arrow()
-                        assert rest.column(0).to_pylist() == list(range(n + 1, 8193))
-                        del rest
-                    elif remaining == "fetchall":
-                        rows = cur.fetchall()
-                        assert len(rows) == 8192 - n
-                        for i, row in enumerate(rows, n + 1):
-                            check_row(row, i)
-                        del rows
-                    else:
-                        with cur.arrow_reader() as reader:
-                            for batch in reader:
-                                count = batch.num_rows
-                                assert batch.column(0).to_pylist() == list(
-                                    range(n + 1, n + count + 1)
-                                )
-                                n += count
-                                del batch
-                        assert n == 8192
-                        continue
-                    assert cur.rownumber == 8191
+            with conn.cursor() as cur:
+                cur.execute(
+                    wide_query(sql_type, 9, count=row_count, identifiers=True, extra=extra)
+                )
+                first = cur.arrow_batch(8192)
+                n = first.num_rows
+                assert 0 < n < row_count
+                assert first.column(0).to_pylist() == list(range(1, n + 1))
+                del first
+                assert cur.arrow_batch(0).num_rows == 0
+                from mssql_python import ddbc_bindings
+                from mssql_python.constants import ConstantsDDBC
+                # Updating the timeout invalidates metadata, not pending result rows.
+                assert ddbc_bindings.DDBCSQLSetStmtAttr(
+                    cur.hstmt, ConstantsDDBC.SQL_ATTR_QUERY_TIMEOUT.value, 0
+                ) in (0, 1)
+                if remaining == "mixed":
+                    check_row(cur.fetchone(), n + 1)
+                    n += 1
+                    rows = cur.fetchmany(5)
+                    assert len(rows) == 5
+                    for i, row in enumerate(rows, n + 1):
+                        check_row(row, i)
+                    n += 5
+                    small = cur.arrow_batch(1)
+                    assert small.column(0).to_pylist() == [n + 1]
+                    n += 1
+                    del small, rows
+                    rows = cur.fetchmany(100)
+                    assert 0 < len(rows) <= 100
+                    for i, row in enumerate(rows, n + 1):
+                        check_row(row, i)
+                    n += len(rows)
+                    del rows
+                    rest = cur.arrow()
+                    assert rest.column(0).to_pylist() == list(range(n + 1, row_count + 1))
+                    del rest
+                elif remaining == "fetchall":
+                    rows = cur.fetchall()
+                    assert len(rows) == row_count - n
+                    for i, row in enumerate(rows, n + 1):
+                        check_row(row, i)
+                    del rows
+                else:
+                    with cur.arrow_reader() as reader:
+                        for batch in reader:
+                            count = batch.num_rows
+                            assert batch.column(0).to_pylist() == list(
+                                range(n + 1, n + count + 1)
+                            )
+                            n += count
+                            del batch
+                    assert n == row_count
+                if remaining != "arrow_reader":
+                    assert cur.rownumber == row_count - 1
                     assert cur.fetchone() is None
-                gc.collect()
+            gc.collect()
         """,
         sql_type,
+        remaining,
     )
 
 
@@ -283,6 +288,7 @@ def test_arrow_native_budget_pending_raw_fetches(conn_str, sql_type):
         from mssql_python import ddbc_bindings as ddbc
         from mssql_python.constants import ConstantsDDBC as C
         sql_type = sys.argv[1]
+        row_count = 4096
         unsupported = (
             (C.SQL_FETCH_RELATIVE.value, 0), (C.SQL_FETCH_RELATIVE.value, 1),
             (C.SQL_FETCH_RELATIVE.value, 67), (C.SQL_FETCH_RELATIVE.value, -1),
@@ -298,10 +304,10 @@ def test_arrow_native_budget_pending_raw_fetches(conn_str, sql_type):
             return row
         with mssql_python.connect(os.environ["DB_CONNECTION_STRING"]) as conn:
             with conn.cursor() as cur:
-                cur.execute(wide_query(sql_type, 9, identifiers=True))
+                cur.execute(wide_query(sql_type, 9, count=row_count, identifiers=True))
                 first = cur.arrow_batch(8192)
                 position = first.num_rows
-                assert 0 < position < 8192
+                assert 0 < position < row_count
                 del first
                 try:
                     get_data(cur, 1)
@@ -398,22 +404,44 @@ def test_arrow_native_budget_pending_raw_fetches(conn_str, sql_type):
                     assert ret in (0, 1)
                     position += 1
                     assert get_data(cur, 1) == [position]
-                assert position == 8192
+                assert position == row_count
                 row = []
                 assert ddbc.DDBCSQLFetchScroll(
                     cur.hstmt, C.SQL_FETCH_NEXT.value, 0, row
                 ) == C.SQL_NO_DATA.value
                 assert row == []
                 assert cur.fetchone() is None
-                cur.execute(wide_query(sql_type, 9, identifiers=True))
+        """,
+        sql_type,
+    )
+
+
+@pytest.mark.parametrize("sql_type", ["nvarchar(4000)", "nvarchar(max)"])
+def test_arrow_native_budget_pending_fetchall_after_raw_fetch(conn_str, sql_type):
+    """Fetchall resumes after a raw fetch selects a pending row."""
+    _run_arrow_budget_script(
+        conn_str,
+        """
+        from mssql_python import ddbc_bindings as ddbc
+        from mssql_python.constants import ConstantsDDBC as C
+        sql_type = sys.argv[1]
+        row_count = 4096
+        with mssql_python.connect(os.environ["DB_CONNECTION_STRING"]) as conn:
+            with conn.cursor() as cur:
+                cur.execute(wide_query(sql_type, 9, count=row_count, identifiers=True))
                 first = cur.arrow_batch(8192)
                 position = first.num_rows
+                assert 0 < position < row_count
                 del first
                 assert ddbc.DDBCSQLFetch(cur.hstmt) in (0, 1)
                 position += 1
-                assert get_data(cur, 1) == [position]
+                row = []
+                assert ddbc.DDBCSQLGetData(
+                    cur.hstmt, 1, row, "utf-16le", "utf-16le", C.SQL_WCHAR.value
+                ) in (0, 1)
+                assert row == [position]
                 rows = cur.fetchall()
-                assert [row[0] for row in rows] == list(range(position + 1, 8193))
+                assert [row[0] for row in rows] == list(range(position + 1, row_count + 1))
                 assert all(all(value == "A" * 4000 for value in row[1:]) for row in rows)
                 del rows
                 assert cur.fetchone() is None
@@ -567,39 +595,44 @@ def test_arrow_native_budget_single_row_recovery(conn_str):
 
 
 @pytest.mark.parametrize("sql_type", ["nvarchar(4000)", "nvarchar(max)"])
-def test_arrow_native_budget_pending_reset_cleanup(conn_str, sql_type):
+@pytest.mark.parametrize(
+    "operation", ["execute", "nextset", "close", "reader_close", "connection_close"]
+)
+def test_arrow_native_budget_pending_reset_cleanup(conn_str, sql_type, operation):
     _run_arrow_budget_script(
         conn_str,
         """
         sql_type = sys.argv[1]
-        for operation in ("execute", "nextset", "close", "reader_close", "connection_close"):
-            with mssql_python.connect(os.environ["DB_CONNECTION_STRING"]) as conn:
-                with conn.cursor() as cur:
-                    cur.execute(wide_query(sql_type, 9) + "; SELECT 42 AS answer")
-                    first = cur.arrow_batch(8192)
-                    assert 0 < first.num_rows < 8192
-                    del first
-                    from mssql_python import ddbc_bindings
-                    assert ddbc_bindings.DDBCSQLFetch(cur.hstmt) in (0, 1)
-                    if operation == "nextset":
-                        assert cur.nextset()
-                        assert cur.fetchone()[0] == 42
-                        assert cur.fetchone() is None
-                    elif operation == "execute":
-                        assert cur.execute("SELECT 42").fetchone()[0] == 42
-                    elif operation == "reader_close":
-                        reader = cur.arrow_reader()
-                        reader.close()
-                        assert cur.execute("SELECT 42").fetchone()[0] == 42
-                    elif operation == "close":
-                        cur.close()
-                        with conn.cursor() as fresh:
-                            assert fresh.execute("SELECT 42").fetchone()[0] == 42
-                    else:
-                        conn.close()
-            gc.collect()
+        operation = sys.argv[2]
+        row_count = 4096
+        with mssql_python.connect(os.environ["DB_CONNECTION_STRING"]) as conn:
+            with conn.cursor() as cur:
+                cur.execute(wide_query(sql_type, 9, count=row_count) + "; SELECT 42 AS answer")
+                first = cur.arrow_batch(8192)
+                assert 0 < first.num_rows < row_count
+                del first
+                from mssql_python import ddbc_bindings
+                assert ddbc_bindings.DDBCSQLFetch(cur.hstmt) in (0, 1)
+                if operation == "nextset":
+                    assert cur.nextset()
+                    assert cur.fetchone()[0] == 42
+                    assert cur.fetchone() is None
+                elif operation == "execute":
+                    assert cur.execute("SELECT 42").fetchone()[0] == 42
+                elif operation == "reader_close":
+                    reader = cur.arrow_reader()
+                    reader.close()
+                    assert cur.execute("SELECT 42").fetchone()[0] == 42
+                elif operation == "close":
+                    cur.close()
+                    with conn.cursor() as fresh:
+                        assert fresh.execute("SELECT 42").fetchone()[0] == 42
+                else:
+                    conn.close()
+        gc.collect()
         """,
         sql_type,
+        operation,
     )
 
 

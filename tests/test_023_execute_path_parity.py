@@ -380,23 +380,25 @@ def test_executemany_auto_text_uses_wide_array_binding(cursor, monkeypatch):
     from mssql_python import ddbc_bindings
 
     values = ["x" * 4000, "\u0800" * 2000]
-    expected = []
-    for value in values:
-        cursor.execute("SELECT CONVERT(NVARCHAR(MAX), CONVERT(VARCHAR(MAX), ?))", [value])
-        expected.append(cursor.fetchone()[0])
     cursor.execute("CREATE TABLE #auto_wide_array (value NVARCHAR(MAX))")
     array_calls = []
     execute_many = ddbc_bindings.SQLExecuteMany
 
     def capture_array_binding(*args):
-        array_calls.append((args[3][0].paramCType, args[3][0].columnSize))
+        array_calls.append((args[3][0].paramCType, args[3][0].paramSQLType, args[3][0].columnSize))
         return execute_many(*args)
 
     monkeypatch.setattr(ddbc_bindings, "SQLExecuteMany", capture_array_binding)
     cursor.executemany("INSERT INTO #auto_wide_array (value) VALUES (?)", [(v,) for v in values])
-    assert array_calls == [(ddbc_sql_const.SQL_C_WCHAR.value, 4000)]
+    assert array_calls == [
+        (
+            ddbc_sql_const.SQL_C_WCHAR.value,
+            ddbc_sql_const.SQL_WVARCHAR.value,
+            4000,
+        )
+    ]
     cursor.execute("SELECT value FROM #auto_wide_array ORDER BY DATALENGTH(value) DESC")
-    assert [row[0] for row in cursor.fetchall()] == expected
+    assert [row[0] for row in cursor.fetchall()] == values
 
 
 def test_executemany_ignores_str_subclass_encode_override(cursor):
