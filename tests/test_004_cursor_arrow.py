@@ -136,7 +136,7 @@ def test_arrow_native_budget_pending_mixed_fetches(conn_str, sql_type, remaining
         """
         sql_type = sys.argv[1]
         remaining = sys.argv[2]
-        row_count = 4096
+        row_count = 8192
         extra = '''
             , CAST('123.45' AS DECIMAL(10,2)) amount
             , CAST('2025-01-02' AS DATE) day
@@ -288,7 +288,7 @@ def test_arrow_native_budget_pending_raw_fetches(conn_str, sql_type):
         from mssql_python import ddbc_bindings as ddbc
         from mssql_python.constants import ConstantsDDBC as C
         sql_type = sys.argv[1]
-        row_count = 4096
+        row_count = 8192
         unsupported = (
             (C.SQL_FETCH_RELATIVE.value, 0), (C.SQL_FETCH_RELATIVE.value, 1),
             (C.SQL_FETCH_RELATIVE.value, 67), (C.SQL_FETCH_RELATIVE.value, -1),
@@ -425,7 +425,7 @@ def test_arrow_native_budget_pending_fetchall_after_raw_fetch(conn_str, sql_type
         from mssql_python import ddbc_bindings as ddbc
         from mssql_python.constants import ConstantsDDBC as C
         sql_type = sys.argv[1]
-        row_count = 4096
+        row_count = 8192
         with mssql_python.connect(os.environ["DB_CONNECTION_STRING"]) as conn:
             with conn.cursor() as cur:
                 cur.execute(wide_query(sql_type, 9, count=row_count, identifiers=True))
@@ -604,7 +604,7 @@ def test_arrow_native_budget_pending_reset_cleanup(conn_str, sql_type, operation
         """
         sql_type = sys.argv[1]
         operation = sys.argv[2]
-        row_count = 4096
+        row_count = 8192
         with mssql_python.connect(os.environ["DB_CONNECTION_STRING"]) as conn:
             with conn.cursor() as cur:
                 cur.execute(wide_query(sql_type, 9, count=row_count) + "; SELECT 42 AS answer")
