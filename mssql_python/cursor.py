@@ -1209,6 +1209,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
     @property
     def arraysize(self) -> int:
+        """Default fetchmany row count: an integer from 1 to 1,000,000, not bool."""
         return self._arraysize
 
     @arraysize.setter
@@ -1253,6 +1254,13 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         Args:
             sizes: A sequence of tuples, one for each parameter. Each tuple contains
                 (sql_type, size, decimal_digits) where size and decimal_digits are optional.
+                Non-numeric sizes must be integers from 0 to 268,435,456 in the SQL
+                type's size units; booleans and negative sizes/scales are rejected.
+                Numeric precision/scale hints retain normalization to SQL Server's
+                supported precision (up to 38), rather than being byte lengths.
+                Array-bound executemany buffers across all columns must fit within
+                256 MiB, including NULL slots and length indicators. Reduce batch
+                sizes or excessive size hints if this native allocation limit is hit.
         """
 
         # Get valid SQL types from centralized constants
@@ -2529,8 +2537,13 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         Args:
             operation: SQL query or command.
             seq_of_parameters: Sequence of sequences or mappings of parameters.
+                Native array binding supports at most 1,000,000 parameter sets and
+                256 MiB of parameter buffers per call, depending on column widths
+                and length indicators (including NULL slots). Split larger inputs
+                into smaller calls. These limits do not bound total process memory.
         Raises:
             Error: If the operation fails.
+            ValueError: If formatted DECIMAL/NUMERIC text exceeds 4000 UTF-16 code units.
         """
         logger.debug(
             "executemany: Starting - operation_length=%d, batch_count=%d",
@@ -2872,23 +2885,18 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                                 f"Failed to convert parameter to Decimal at row "
                                 f"{row_index}, column {i} (value type: {type(val).__name__})"
                             )
-                            # Split str(val) from the decimal parse so we only chain a
-                            # cause we know is value-free. decimal.DecimalException
-                            # messages (e.g. ConversionSyntax) never echo the input, so
-                            # they are safe to preserve for debugging. str(val) itself
-                            # or any other error could carry the value in its message
-                            # and surface through __cause__ / formatted tracebacks, so
-                            # those are re-raised with the chain suppressed (from None).
+                            # Raise outside the handler so conversion exceptions are
+                            # not retained as context with rejected input.
+                            conversion_failed = False
                             try:
                                 val_text = str(val)
-                            except Exception:  # pylint: disable=broad-exception-caught
-                                raise ValueError(err_msg) from None
-                            try:
                                 processed_row[i] = format(decimal.Decimal(val_text), "f")
-                            except decimal.DecimalException as e:
-                                raise ValueError(err_msg) from e
                             except Exception:  # pylint: disable=broad-exception-caught
+                                conversion_failed = True
+                            if conversion_failed:
                                 raise ValueError(err_msg) from None
+                        if _utf16_length_exceeds(processed_row[i], MAX_INLINE_CHAR):
+                            raise ValueError("numeric parameter text is too large")
                 processed_parameters.append(processed_row)
 
         # Now transpose the processed parameters
@@ -3030,7 +3038,15 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         Fetch the next set of rows of a query result.
 
         Args:
-            size: Number of rows to fetch at a time.
+            size: Integer from 0 to 1,000,000, not bool. None uses arraysize.
+                Zero returns an empty list without fetching. Native fetch buffers
+                must also fit within 256 MiB; reduce size for wide columns.
+                When recovering pending Arrow rows, a call may return fewer than
+                size rows before the result is exhausted. Continue until empty.
+
+        Raises:
+            TypeError: If size is a boolean or another non-integer.
+            ValueError: If size is negative or exceeds 1,000,000.
 
         Returns:
             List of Row objects.
@@ -3187,11 +3203,17 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
     def arrow_batch(self, batch_size: int = 8192) -> "pyarrow.RecordBatch":
         """
-        Fetch a single pyarrow Record Batch of the specified size from the
+        Fetch a single pyarrow Record Batch of up to the specified size from the
         query result set.
 
         Args:
-            batch_size: Maximum number of rows to fetch in the Record Batch.
+            batch_size: Maximum rows, an integer from 0 to 1,000,000, not bool.
+                Zero returns schema only, without advancing the result set.
+                Native fetch buffers must fit within 256 MiB. A batch may be
+                shorter to stay within this budget; subsequent fetches resume
+                without losing rows. This does not bound total process memory.
+                If one row cannot fit, an error leaves it pending for recovery
+                by a row-wise fetch when its source buffers fit the budget.
 
         Returns:
             A pyarrow RecordBatch object containing up to batch_size rows.
@@ -3232,7 +3254,10 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         Fetch the entire result as a pyarrow Table.
 
         Args:
-            batch_size: Size of the Record Batches which make up the Table.
+            batch_size: Maximum rows per Record Batch, from 0 to 1,000,000, not bool.
+                Zero returns schema only. Each batch is subject to the native
+                fetch buffer budget described by arrow_batch; the complete
+                Table's memory consumption is not bounded by that budget.
 
         Returns:
             A pyarrow Table containing all remaining rows from the result set.
@@ -3243,7 +3268,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         batches: list["pyarrow.RecordBatch"] = []
         while True:
             batch = self.arrow_batch(batch_size)
-            if batch.num_rows < batch_size or batch_size <= 0:
+            if batch.num_rows == 0 or batch_size <= 0:
                 if not batches or batch.num_rows > 0:
                     batches.append(batch)
                 break
@@ -3253,7 +3278,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
     def arrow_reader(self, batch_size: int = 8192) -> "_ArrowReader":
         """
         Fetch the result as a pyarrow-compatible RecordBatchReader, which
-        yields Record Batches of the specified size until the current result
+        yields Record Batches of up to the specified size until the current result
         set is exhausted.
 
         The returned object is an ``_ArrowReader`` wrapper that behaves like
@@ -3271,7 +3296,10 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         is **not** closed and can be re-executed.  ``close()`` is idempotent.
 
         Args:
-            batch_size: Size of the Record Batches produced by the reader.
+            batch_size: Maximum rows per Record Batch, from 0 to 1,000,000, not bool.
+                Zero yields no data batches. Validation occurs when reading.
+                Each batch uses the native fetch budget described by arrow_batch;
+                retaining batches can still grow total process memory.
 
         Returns:
             A pyarrow-compatible RecordBatchReader for the result set.
@@ -3661,7 +3689,9 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 - The number of values in each row must match the number of columns
                   in the target table
 
-            batch_size: Number of rows to send per batch. Default 0 uses server optimal.
+            batch_size: Rows per batch/commit, an integer from 0 to 1,000,000,
+                not bool. Default 0 uses native core defaults. This does not
+                limit the total number of input rows or total process memory.
 
             timeout: Operation timeout in seconds. Default is 30. 0 disables the
                 bulk copy operation timeout.
@@ -3850,7 +3880,9 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         Args:
             table_name: Target table name (may include schema, e.g. 'dbo.MyTable').
             source: Arrow source (see above).
-            batch_size: Rows per TDS commit. Default 0 uses server optimal.
+            batch_size: Rows per TDS commit, an integer from 0 to 1,000,000,
+                not bool. Default 0 uses native core defaults. This does not
+                limit the total source rows or total process memory.
             timeout: Operation timeout in seconds. Default 30. 0 disables the
                 bulk copy operation timeout.
             column_mappings: Same two formats as :meth:`bulkcopy`. When omitted,
@@ -4084,7 +4116,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         self, value: int, mode: str = "relative"
     ) -> None:  # pylint: disable=too-many-branches
         """
-        Scroll using SQLFetchScroll only, matching test semantics:
+        Advance a forward-only cursor without materializing skipped rows:
           - relative(N>0): consume N rows; rownumber = previous + N;
             next fetch returns the following row.
           - absolute(-1): before first (rownumber = -1), no data consumed.
@@ -4131,8 +4163,6 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 f"Cannot move backward by {value} rows on a forward-only cursor",
             )
 
-        row_data: list = []
-
         # Absolute positioning not supported with forward-only cursors
         if mode == "absolute":
             raise NotSupportedError(
@@ -4145,12 +4175,10 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 if value == 0:
                     return
 
-                # For forward-only cursors, use multiple SQL_FETCH_NEXT calls
-                # This matches pyodbc's approach for skip operations
+                # Native fetch also consumes rows cached by a quota-limited Arrow batch.
                 for i in range(value):
-                    ret = ddbc_bindings.DDBCSQLFetchScroll(
-                        self.hstmt, ddbc_sql_const.SQL_FETCH_NEXT.value, 0, row_data
-                    )
+                    ret = ddbc_bindings.DDBCSQLFetch(self.hstmt)
+                    check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
                     if ret == ddbc_sql_const.SQL_NO_DATA.value:
                         raise IndexError(
                             "Cannot scroll to specified position: end of result set reached"

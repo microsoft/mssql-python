@@ -1,6 +1,6 @@
 # Linux Single Configuration Stage Template
 # Builds Python wheels for a specific Linux distribution and architecture
-# Builds for Python 3.10, 3.11, 3.12, 3.13, 3.14 within single job
+# Builds for Python 3.10, 3.11, 3.12, 3.13, 3.14, 3.15 within single job
 # Tests each wheel after building with isolated pytest execution
 parameters:
   # Stage identifier (e.g., 'Linux_manylinux_2_28_x86_64')
@@ -48,8 +48,8 @@ stages:
           name: Python-1ES-pool
           demands:
           - imageOverride -equals PYTHON-1ES-UB2404
-        # Extended timeout for multi-version builds + testing (5 Python versions × build + test time)
-        timeoutInMinutes: 120
+        # Six serial build/test cycles exceed two hours under QEMU-based ARM64 emulation.
+        timeoutInMinutes: 180
         
         variables:
           # Disable BinSkim for Linux - requires ICU libraries not available in manylinux/musllinux containers
@@ -256,14 +256,14 @@ stages:
                 ls -1 "$(Build.SourcesDirectory)/odbc_wheels"/*.whl
               displayName: 'Flatten ODBC wheels for pip find-links'
           
-          # Build wheels for all Python versions (3.10-3.14) and test each one
+          # Build wheels for all Python versions (3.10-3.15) and test each one
           - script: |
               set -euo pipefail
               if [[ "$(LINUX_TAG)" == "manylinux_2_28" ]]; then SHELL_EXE=bash; else SHELL_EXE=sh; fi
               docker exec build-$(LINUX_TAG)-$(ARCH) $SHELL_EXE -lc 'mkdir -p /workspace/dist'
               
               # Loop through all Python versions: build wheel -> test wheel -> repeat
-              for PYBIN in cp310 cp311 cp312 cp313 cp314; do
+              for PYBIN in cp310 cp311 cp312 cp313 cp314 cp315; do
                 echo ""
                 echo "====================================================="
                 echo "Building and testing $PYBIN on $(LINUX_TAG)/$(ARCH)"
@@ -433,6 +433,8 @@ stages:
                   '
                 fi
                 
+                # Avoid accumulating six copies of the test tree on emulated ARM64 jobs.
+                docker exec build-$(LINUX_TAG)-$(ARCH) $SHELL_EXE -lc "rm -rf /test_isolated_${PYBIN}"
                 echo "✓ Build and test complete for $PYBIN"
               done
               
@@ -440,7 +442,7 @@ stages:
               echo "====================================================="
               echo "✓ All Python versions built and tested successfully!"
               echo "====================================================="
-            displayName: 'Build and test wheels for Python 3.10-3.14'
+            displayName: 'Build and test wheels for Python 3.10-3.15'
             env:
               DB_PASSWORD: $(DB_PASSWORD)
           
@@ -448,7 +450,7 @@ stages:
           - script: |
               set -euo pipefail
               
-              # Copy all wheels (5 Python versions) to output directory
+              # Copy all wheels (6 Python versions) to output directory
               echo "Copying wheels to host..."
               docker cp build-$(LINUX_TAG)-$(ARCH):/workspace/dist/. "$(ob_outputDirectory)/wheels/" || echo "No wheels found"
               

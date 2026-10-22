@@ -375,6 +375,30 @@ def test_executemany_auto_detection_scans_utf16_lengths_for_dae(cursor):
     assert [tuple(row) for row in cursor.fetchall()] == [(astral_value,), (bmp_value,)]
 
 
+def test_executemany_auto_text_uses_wide_array_binding(cursor, monkeypatch):
+    """UTF-8 byte length does not govern automatically detected wide parameters."""
+    from mssql_python import ddbc_bindings
+
+    values = ["x" * 4000, "\u0800" * 2000]
+    expected = []
+    for value in values:
+        cursor.execute("SELECT CONVERT(NVARCHAR(MAX), CONVERT(VARCHAR(MAX), ?))", [value])
+        expected.append(cursor.fetchone()[0])
+    cursor.execute("CREATE TABLE #auto_wide_array (value NVARCHAR(MAX))")
+    array_calls = []
+    execute_many = ddbc_bindings.SQLExecuteMany
+
+    def capture_array_binding(*args):
+        array_calls.append((args[3][0].paramCType, args[3][0].columnSize))
+        return execute_many(*args)
+
+    monkeypatch.setattr(ddbc_bindings, "SQLExecuteMany", capture_array_binding)
+    cursor.executemany("INSERT INTO #auto_wide_array (value) VALUES (?)", [(v,) for v in values])
+    assert array_calls == [(ddbc_sql_const.SQL_C_WCHAR.value, 4000)]
+    cursor.execute("SELECT value FROM #auto_wide_array ORDER BY DATALENGTH(value) DESC")
+    assert [row[0] for row in cursor.fetchall()] == expected
+
+
 def test_executemany_ignores_str_subclass_encode_override(cursor):
     class HostileStr(str):
         def __len__(self):
@@ -445,6 +469,71 @@ def test_setinputsizes_rejects_oversized_numeric_text(cursor):
     try:
         with pytest.raises(ValueError, match="numeric parameter text is too large"):
             cursor.execute("SELECT ?", [decimal.Decimal("1e100000")])
+    finally:
+        cursor.setinputsizes(None)
+
+
+@pytest.mark.parametrize(
+    "sql_type", [ddbc_sql_const.SQL_DECIMAL.value, ddbc_sql_const.SQL_NUMERIC.value]
+)
+@pytest.mark.parametrize(
+    "value",
+    [
+        decimal.Decimal("1e100000"),
+        decimal.Decimal("1e-100000"),
+        "1e100000",
+        "1e-100000",
+        "9" * 4001,
+        decimal.Decimal("0." + "0" * 3998 + "1"),
+    ],
+    ids=[
+        "decimal-positive-exponent",
+        "decimal-negative-exponent",
+        "text-positive-exponent",
+        "text-negative-exponent",
+        "long-text",
+        "exactly-4001-units",
+    ],
+)
+def test_executemany_setinputsizes_rejects_oversized_numeric_text(
+    cursor, monkeypatch, sql_type, value
+):
+    """Reject formatted numeric text before the native array binder encodes it."""
+    from mssql_python import ddbc_bindings
+
+    def unexpected_array_binding(*args):
+        pytest.fail("Oversized numeric text reached the native array binder")
+
+    monkeypatch.setattr(ddbc_bindings, "SQLExecuteMany", unexpected_array_binding)
+    cursor.setinputsizes([(sql_type, 18, 0)])
+    try:
+        with pytest.raises(ValueError, match="numeric parameter text is too large"):
+            cursor.executemany("SELECT ?", [(decimal.Decimal("1"),), (value,)])
+    finally:
+        cursor.setinputsizes(None)
+
+
+@pytest.mark.parametrize("length", [3999, 4000])
+def test_executemany_numeric_text_at_limit_reaches_array_binding(cursor, monkeypatch, length):
+    from mssql_python import ddbc_bindings
+
+    value = decimal.Decimal("0." + "0" * (length - 3) + "1")
+    array_calls = []
+
+    class ReachedArrayBinding(Exception):
+        pass
+
+    def capture_array_binding(*args):
+        array_calls.append(args[2])
+        raise ReachedArrayBinding
+
+    monkeypatch.setattr(ddbc_bindings, "SQLExecuteMany", capture_array_binding)
+    cursor.setinputsizes([(ddbc_sql_const.SQL_DECIMAL.value, 18, 0)])
+    try:
+        with pytest.raises(ReachedArrayBinding):
+            cursor.executemany("SELECT ?", [(value,)])
+        assert array_calls == [[[format(value, "f")]]]
+        assert len(array_calls[0][0][0]) == length
     finally:
         cursor.setinputsizes(None)
 

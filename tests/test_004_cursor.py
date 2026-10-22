@@ -21,6 +21,9 @@ import threading
 import mssql_python
 import uuid
 import re
+import subprocess
+import sys
+import textwrap
 from unittest.mock import call, patch
 from conftest import is_azure_sql_connection
 
@@ -1727,16 +1730,20 @@ def test_setinputsizes_rejects_excessive_column_size():
         cursor.setinputsizes([(mssql_python.SQL_VARCHAR, 1 << 40, 0)])
 
 
-def test_executemany_rejects_excessive_cumulative_parameter_buffers(cursor):
-    cursor.setinputsizes([(mssql_python.SQL_WVARCHAR, 50_000_000, 0)] * 3)
-    with pytest.raises(RuntimeError, match="Parameter buffers exceed the 256 MiB allocation limit"):
-        cursor.executemany("SELECT ?, ?, ?", [(None, None, None)])
+def test_executemany_rejects_excessive_cumulative_parameter_buffers(db_connection):
+    with db_connection.cursor() as cursor:
+        cursor.setinputsizes([(mssql_python.SQL_WVARCHAR, 50_000_000, 0)] * 3)
+        with pytest.raises(
+            RuntimeError, match="Parameter buffers exceed the 256 MiB allocation limit"
+        ):
+            cursor.executemany("SELECT ?, ?, ?", [(None, None, None)])
 
 
-def test_executemany_rejects_text_for_binary_parameter(cursor):
-    cursor.setinputsizes([(mssql_python.SQL_VARBINARY, 10, 0)])
-    with pytest.raises(RuntimeError, match="object type does not match"):
-        cursor.executemany("SELECT CAST(? AS VARBINARY(10))", [("text",)])
+def test_executemany_rejects_text_for_binary_parameter(db_connection):
+    with db_connection.cursor() as cursor:
+        cursor.setinputsizes([(mssql_python.SQL_VARBINARY, 10, 0)])
+        with pytest.raises(RuntimeError, match="object type does not match"):
+            cursor.executemany("SELECT CAST(? AS VARBINARY(10))", [("text",)])
 
 
 def test_fetchmany_rejects_excessive_native_buffer(cursor):
@@ -1749,6 +1756,43 @@ def test_fetchmany_rejects_excessive_native_buffer(cursor):
 def test_fetchall_clamps_wide_result_batch_to_native_buffer_budget(cursor):
     cursor.execute("SELECT " + ", ".join("CAST(N'x' AS NVARCHAR(4000))" for _ in range(34)))
     assert [tuple(row) for row in cursor.fetchall()] == [("x",) * 34]
+
+
+@pytest.mark.parametrize("sql_type", ["NVARCHAR(4000)", "NVARCHAR(MAX)"])
+def test_connection_attribute_preserves_pending_arrow_rows(conn_str, sql_type):
+    pytest.importorskip("pyarrow")
+    script = textwrap.dedent("""
+        import os
+        import sys
+        import mssql_python
+
+        with mssql_python.connect(os.environ["DB_CONNECTION_STRING"]) as connection:
+            with connection.cursor() as cursor:
+                columns = ", ".join(
+                    f"CAST(REPLICATE(N'x', 4000) AS {sys.argv[1]}) AS value{i}"
+                    for i in range(9)
+                )
+                cursor.execute(
+                    "SELECT TOP (8192) "
+                    "ROW_NUMBER() OVER (ORDER BY a.object_id, b.object_id) AS id, "
+                    + columns
+                    + " FROM sys.all_objects AS a CROSS JOIN sys.all_objects AS b ORDER BY id"
+                )
+                batch = cursor.arrow_batch(8192)
+                assert 0 < batch.num_rows < 8192
+                next_id = batch.column(0)[-1].as_py() + 1
+                del batch
+                connection.set_attr(mssql_python.SQL_ATTR_CONNECTION_TIMEOUT, 30)
+                assert cursor.fetchone()[0] == next_id
+        """)
+    result = subprocess.run(
+        [sys.executable, "-c", script, sql_type],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def test_description(cursor):
@@ -10470,6 +10514,8 @@ def test_setinputsizes_sql_decimal_unconvertible_value(db_connection):
         # ...and the sensitive value / raw row is NOT leaked into the message.
         assert sensitive_value not in message
         assert repr((sensitive_value,)) not in message  # no repr of the parameter tuple
+        assert exc_info.value.__cause__ is None
+        assert exc_info.value.__context__ is None
         # ...nor into the chained cause or the fully formatted traceback, which
         # is what tracebacks and APM/log shippers actually capture.
         formatted = "".join(
@@ -10515,6 +10561,7 @@ def test_setinputsizes_sql_decimal_str_raises_no_leak(db_connection):
         # exposes it.
         assert secret not in str(exc_info.value)
         assert exc_info.value.__cause__ is None
+        assert exc_info.value.__context__ is None
         formatted = "".join(
             traceback.format_exception(
                 type(exc_info.value), exc_info.value, exc_info.value.__traceback__
@@ -10559,6 +10606,7 @@ def test_setinputsizes_sql_decimal_non_decimal_exception_no_leak(db_connection):
         assert "column 0" in message
         # ...no chained cause (the non-DecimalException branch suppresses it)...
         assert exc_info.value.__cause__ is None
+        assert exc_info.value.__context__ is None
         # ...and the input is absent from the message and formatted traceback.
         assert sensitive_value not in message
         formatted = "".join(

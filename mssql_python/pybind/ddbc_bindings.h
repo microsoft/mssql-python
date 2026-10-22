@@ -3,16 +3,19 @@
 
 #pragma once
 
-// pybind11.h must be the first include
-#include <cstring>
-#include <exception>
-#include <memory>
+// Python.h must precede standard-library headers so its feature-test macros
+// are established before libc headers consume them.
+#include <Python.h>
 #include <pybind11/chrono.h>
 #include <pybind11/complex.h>
 #include <pybind11/functional.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/pytypes.h>  // Add this line for datetime support
 #include <pybind11/stl.h>
+
+#include <cstring>
+#include <exception>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -290,6 +293,8 @@ struct ConnectionCleanupState {
     bool disconnected = false;  // Protected by mutex, shared with every child.
 };
 
+struct PendingArrowRows;
+
 class SqlHandle {
   public:
     SqlHandle(SQLSMALLINT type, SQLHANDLE rawHandle,
@@ -331,8 +336,37 @@ class SqlHandle {
     std::unordered_map<int, DescribedParamInfo> describeCache;
     void clearDescribeCache() { describeCache.clear(); }
     ResultMetadataCache resultMetadata;
+    std::shared_ptr<PendingArrowRows> pendingArrowRows() const {
+        std::lock_guard<std::mutex> lock(_pendingRowsMutex);
+        return _pendingArrowRows;
+    }
+    std::pair<uint64_t, std::shared_ptr<PendingArrowRows>> pendingArrowSnapshot() const {
+        std::lock_guard<std::mutex> lock(_pendingRowsMutex);
+        return {_pendingRowsGeneration, _pendingArrowRows};
+    }
+    bool publishPendingArrowRows(uint64_t generation, std::shared_ptr<PendingArrowRows> rows) {
+        std::lock_guard<std::mutex> lock(_pendingRowsMutex);
+        if (generation != _pendingRowsGeneration) {
+            return false;
+        }
+        _pendingArrowRows = std::move(rows);
+        return true;
+    }
+    void setPendingArrowRows(std::shared_ptr<PendingArrowRows> rows) {
+        std::lock_guard<std::mutex> lock(_pendingRowsMutex);
+        _pendingArrowRows = std::move(rows);
+    }
+    void clearResult() {
+        resultMetadata.clear();
+        std::lock_guard<std::mutex> lock(_pendingRowsMutex);
+        ++_pendingRowsGeneration;
+        _pendingArrowRows.reset();
+    }
 
   private:
+    mutable std::mutex _pendingRowsMutex;
+    uint64_t _pendingRowsGeneration = 0;
+    std::shared_ptr<PendingArrowRows> _pendingArrowRows;
     // The caller must release the GIL before waiting for native cleanup.
     std::unique_lock<std::mutex> lockForCleanup() const;
     SQLSMALLINT _type;
@@ -444,6 +478,26 @@ struct ColumnBuffers {
           timestampBuffers(numCols), bigIntBuffers(numCols), dateBuffers(numCols),
           timeBuffers(numCols), guidBuffers(numCols), datetimeoffsetBuffers(numCols),
           indicators(numCols, std::vector<SQLLEN>(fetchSize)) {}
+};
+
+// No Python objects: cancellation and connection cleanup can release this without the GIL.
+struct PendingArrowRows {
+    ColumnBuffers buffers;
+    int fetchSize;
+    int charCtype;
+    bool hasLobs;
+    SQLULEN count = 0;
+    SQLULEN next = 0;
+    SQLULEN selectedRow = 0;
+    bool hasSelectedRow = false;
+    size_t reservedBytes = 0;
+    SQLUSMALLINT lobColumn = 0;
+    size_t lobStart = 0;
+    size_t lobRequired = 0;
+
+    PendingArrowRows(SQLSMALLINT columns, int fetchSize, int charCtype, bool hasLobs)
+        : buffers(columns, fetchSize), fetchSize(fetchSize), charCtype(charCtype),
+          hasLobs(hasLobs) {}
 };
 
 // Performance: Column processor function type for fast type conversion

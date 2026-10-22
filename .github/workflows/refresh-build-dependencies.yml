@@ -130,18 +130,30 @@ jobs:
           - name: Linux build
             artifact: linux
             lock: requirements-build-linux.txt
-            versions: "3.10 3.11 3.12 3.13 3.14"
+            versions: "3.10 3.11 3.12 3.13 3.14 3.15"
             platforms: "x86_64-manylinux_2_28 aarch64-manylinux_2_28 x86_64-unknown-linux-musl aarch64-unknown-linux-musl"
           - name: Linux test
             artifact: linux
             lock: requirements-test-linux.txt
             versions: "3.10 3.11 3.12 3.13 3.14"
             platforms: "x86_64-manylinux_2_28 aarch64-manylinux_2_28 x86_64-unknown-linux-musl aarch64-unknown-linux-musl"
+          - name: Linux test Python 3.15
+            artifact: linux
+            lock: requirements-test-linux.txt
+            versions: "3.15"
+            platforms: "x86_64-manylinux_2_28 aarch64-manylinux_2_28 x86_64-unknown-linux-musl aarch64-unknown-linux-musl"
+            allowSourceBuilds: true
           - name: macOS
             artifact: macos
             lock: requirements-build-macos.txt
             versions: "3.10 3.11 3.12 3.13 3.14"
             platforms: "x86_64-apple-darwin aarch64-apple-darwin"
+          - name: macOS Python 3.15
+            artifact: macos
+            lock: requirements-build-macos.txt
+            versions: "3.15"
+            platforms: "x86_64-apple-darwin aarch64-apple-darwin"
+            allowSourceBuilds: true
           # Windows ARM64 stages install build tools into the x64 host
           # interpreter before cross-compiling the target extension.
           - name: Windows build host
@@ -149,6 +161,12 @@ jobs:
             lock: requirements-build-windows.txt
             versions: "3.10 3.11 3.12 3.13 3.14"
             platforms: "x86_64-pc-windows-msvc"
+          - name: Windows build host Python 3.15
+            artifact: windows
+            lock: requirements-build-windows.txt
+            versions: "3.15"
+            platforms: "x86_64-pc-windows-msvc"
+            allowSourceBuilds: true
           - name: ODBC
             artifact: odbc
             lock: requirements-build-odbc.txt
@@ -168,8 +186,11 @@ jobs:
           LOCK_FILE: generated-lock/${{ matrix.lock }}
           PLATFORMS: ${{ matrix.platforms }}
           PYTHON_VERSIONS: ${{ matrix.versions }}
+          ALLOW_SOURCE_BUILDS: ${{ matrix.allowSourceBuilds || false }}
         run: |
           set -euo pipefail
+          binary_args=(--only-binary :all:)
+          if [ "$ALLOW_SOURCE_BUILDS" = true ]; then binary_args=(); fi
           for platform in $PLATFORMS; do
             for version in $PYTHON_VERSIONS; do
               echo "Validating $LOCK_FILE for Python $version on $platform"
@@ -179,7 +200,7 @@ jobs:
                 --target "$RUNNER_TEMP/lock-validation" \
                 --python-version "$version" \
                 --python-platform "$platform" \
-                --only-binary :all: \
+                "${binary_args[@]}" \
                 --require-hashes \
                 --default-index https://pypi.org/simple \
                 -r "$LOCK_FILE"

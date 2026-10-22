@@ -19,7 +19,7 @@ NO separate companion package:
   Regex, parentheses, epochs, local/dev/post versions and other syntax fail closed.
 * the (required-subdir x Python) matrix is complete -- every required platform
   ships a package for every expected Python, honoring any per-subdir Python
-  override (e.g. win-arm64 ships only 3.12-3.14).
+  override (e.g. win-arm64 ships only 3.12-3.15).
 
 Exit code 0 = release-ready; non-zero = a violation was found (blocks publish).
 """
@@ -54,10 +54,8 @@ _COMPARISONS = {
     ">=": operator.ge,
 }
 
-# Some subdirs legitimately ship a REDUCED Python matrix. win-arm64's conda
-# dependencies (cryptography, pyodbc) are published on Anaconda `defaults` only
-# for Python 3.12+, so 3.10/3.11 cannot be built there -- expect 3.12-3.14 only.
-_DEFAULT_SUBDIR_PYTHONS = "win-arm64=3.12,3.13,3.14"
+# win-arm64 retains its reduced matrix; its supported interpreters start at 3.12.
+_DEFAULT_SUBDIR_PYTHONS = "win-arm64=3.12,3.13,3.14,3.15"
 
 
 @dataclass(frozen=True)
@@ -197,7 +195,7 @@ def validate(
     ``python`` (``X.Y`` or ``''``).
 
     ``subdir_pythons`` maps a subdir to the Python versions expected FOR THAT
-    subdir, overriding ``expected_pythons`` (e.g. win-arm64 ships only 3.12-3.14).
+    subdir, overriding ``expected_pythons`` (e.g. win-arm64 ships only 3.12-3.15).
     """
     errors: list[str] = []
     expected_versions = expected_versions or {}
@@ -388,11 +386,11 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         "--allowed-subdirs",
         default="win-64,win-arm64,osx-64,osx-arm64,linux-64,linux-aarch64",
     )
-    parser.add_argument("--pythons", default="3.10,3.11,3.12,3.13,3.14")
+    parser.add_argument("--pythons", default="3.10,3.11,3.12,3.13,3.14,3.15")
     parser.add_argument(
         "--subdir-pythons",
         default=_DEFAULT_SUBDIR_PYTHONS,
-        help="Per-subdir Python overrides, e.g. 'win-arm64=3.12,3.13,3.14'.",
+        help="Per-subdir Python overrides, e.g. 'win-arm64=3.12,3.13,3.14,3.15'.",
     )
     parser.add_argument("--mssql-python-version", default=None)
     parser.add_argument(
