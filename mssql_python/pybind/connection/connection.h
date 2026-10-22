@@ -158,6 +158,7 @@ class ConnectionHandle {
     void setAutocommit(bool enabled);
     bool getAutocommit() const;
     SqlHandlePtr allocStatementHandle();
+    SQLULEN getConnectionTimeout() const;
     void setAttr(int attribute, py::object value);
 
     // Get information about the driver and data source

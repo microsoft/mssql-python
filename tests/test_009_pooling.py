@@ -1027,8 +1027,9 @@ def test_pool_checkout_validation_timeout(conn_str, autocommit, pool_size, optio
     )
 
 
-def test_pool_checkout_restores_connection_timeout(conn_str):
-    """Temporary checkout timeout must not become the next lease's query timeout."""
+@pytest.mark.parametrize("original_timeout", [0, 7])
+def test_pool_checkout_restores_connection_timeout(conn_str, original_timeout):
+    """Checkout must restore the native timeout, not just the Python query field."""
     _run_in_subprocess(
         """
         import os
@@ -1037,17 +1038,21 @@ def test_pool_checkout_restores_connection_timeout(conn_str):
         ms.pooling(max_size=1)
         conn_str = os.environ["DB_CONNECTION_STRING"]
         first = ms.connect(conn_str, autocommit=True, timeout=1)
+        original_timeout = ORIGINAL_TIMEOUT
+        first.set_attr(ms.SQL_ATTR_CONNECTION_TIMEOUT, original_timeout)
+        assert first._conn._get_connection_timeout() == original_timeout
         with first.cursor() as cur:
             cur.execute("SELECT @@SPID")
             identity = cur.fetchone()[0]
         first.close()
         with ms.connect(conn_str, autocommit=True, timeout=1) as reused:
+            assert reused._conn._get_connection_timeout() == original_timeout
             assert reused.timeout == 0
             with reused.cursor() as cur:
                 cur.execute("WAITFOR DELAY '00:00:02'; SELECT @@SPID")
                 assert cur.fetchone()[0] == identity
         ms.pooling(enabled=False)
-        """,
+        """.replace("ORIGINAL_TIMEOUT", str(original_timeout)),
         conn_str,
     )
 

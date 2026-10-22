@@ -934,6 +934,21 @@ py::object Connection::getInfo(SQLUSMALLINT infoType) const {
     return result;
 }
 
+SQLULEN ConnectionHandle::getConnectionTimeout() const {
+    if (!_conn) {
+        ThrowStdException("Connection object is not initialized");
+    }
+    SQLULEN timeout = 0;
+    const auto& handle = _conn->getDbcHandle();
+    SQLRETURN ret = SQLGetConnectAttr_ptr(handle->get(), SQL_ATTR_CONNECTION_TIMEOUT,
+                                         &timeout, 0, nullptr);
+    if (!SQL_SUCCEEDED(ret)) {
+        ErrorInfo error = SQLCheckError_Wrap(SQL_HANDLE_DBC, handle, ret);
+        ThrowStdException("Failed to read connection timeout: " + error.ddbcErrorMsg);
+    }
+    return timeout;
+}
+
 py::object ConnectionHandle::getInfo(SQLUSMALLINT infoType) const {
     PERF_TIMER("ConnectionHandle::getInfo");
     if (!_conn) {
