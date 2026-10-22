@@ -5,7 +5,7 @@ This module contains custom exception classes for the mssql_python package.
 These classes are used to raise exceptions when an error occurs while executing a query.
 """
 
-from typing import Optional
+from typing import Callable, Optional
 from mssql_python.logging import logger
 import builtins
 
@@ -19,7 +19,7 @@ class ConnectionStringParseError(builtins.Exception):
     failures. It collects all errors and reports them together.
     """
 
-    def __init__(self, errors: list) -> None:
+    def __init__(self, errors: list[str]) -> None:
         """
         Initialize the error with a list of validation errors.
 
@@ -30,7 +30,7 @@ class ConnectionStringParseError(builtins.Exception):
         message = "Connection string parsing failed:\n  " + "\n  ".join(errors)
         super().__init__(message)
 
-    def __reduce__(self):
+    def __reduce__(self) -> tuple[type["ConnectionStringParseError"], tuple[list[str]]]:
         return (self.__class__, (self.errors,))
 
 
@@ -50,7 +50,12 @@ class Exception(builtins.Exception):
             self.message = f"Driver Error: {self.driver_error}"
         super().__init__(self.message)
 
-    def __reduce__(self):
+    def __reduce__(
+        self,
+    ) -> tuple[
+        Callable[[type["Exception"], str, str, str], "Exception"],
+        tuple[type["Exception"], str, str, str],
+    ]:
         # Reconstruct without re-running __init__/truncate_error_message() to avoid
         # emitting warnings for already-truncated "[Microsoft]..." messages.
         return (
@@ -59,7 +64,9 @@ class Exception(builtins.Exception):
         )
 
     @staticmethod
-    def _unpickle(cls, driver_error: str, ddbc_error: str, message: str):
+    def _unpickle(
+        cls: type["Exception"], driver_error: str, ddbc_error: str, message: str
+    ) -> "Exception":
         obj = cls.__new__(cls)
         obj.driver_error = driver_error
         obj.ddbc_error = ddbc_error

@@ -45,6 +45,18 @@ jobs:
       ./build.sh
     displayName: 'Build C++ extension for CodeQL analysis'
 
+  - script: |
+      python -m pytest tests/test_typing.py -m typing -v --junitxml=typing-test-results.xml
+    displayName: 'Gate mssql_python source and stub typing'
+
+  - task: PublishTestResults@2
+    condition: succeededOrFailed()
+    inputs:
+      testResultsFiles: 'typing-test-results.xml'
+      testRunTitle: 'mssql_python source and stub typing (Linux x64)'
+      failTaskOnFailedTests: true
+    displayName: 'Publish typing regression results'
+
   - task: CodeQL3000Finalize@0
     condition: always()
     displayName: 'Finalize CodeQL'

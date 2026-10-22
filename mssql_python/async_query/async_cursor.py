@@ -9,7 +9,7 @@ Warning:
 import asyncio
 from collections.abc import Mapping, Sequence
 from contextlib import asynccontextmanager
-from typing import Any, Optional
+from typing import Any, Optional, TYPE_CHECKING, AsyncIterator
 import uuid
 
 from ..exceptions import OperationalError
@@ -18,6 +18,10 @@ from ..logging import logger
 from ..row import Row
 from . import async_execute, async_fetch
 from .exception_translator import translate_py_core_exceptions
+
+if TYPE_CHECKING:
+    from .._pycore_types import AsyncCoreCursor
+    from .async_connection import _AsyncConnection
 
 
 class _AsyncCursor:
@@ -28,7 +32,9 @@ class _AsyncCursor:
         Its signatures, behavior, error handling, and compatibility may change without notice.
     """
 
-    def __init__(self, py_core_async_cursor: Any, connection: Any = None) -> None:
+    def __init__(
+        self, py_core_async_cursor: "AsyncCoreCursor", connection: "_AsyncConnection | None" = None
+    ) -> None:
         self._py_core_async_cursor = py_core_async_cursor
         self._connection = connection
         self._closed = False
@@ -82,7 +88,7 @@ class _AsyncCursor:
         self._fetch_rowcount = None
 
     @asynccontextmanager
-    async def _result_transition(self):
+    async def _result_transition(self) -> AsyncIterator[None]:
         async with self._result_transition_lock:
             self._result_ready.clear()
             try:
@@ -199,7 +205,7 @@ class _AsyncCursor:
                     self._clear_result_metadata()
         logger.debug("AsyncCursor.close: completed")
 
-    def setinputsizes(self, sizes: Any) -> None:
+    def setinputsizes(self, sizes: Sequence[int | tuple[int, ...]]) -> None:
         with translate_py_core_exceptions():
             self._py_core_async_cursor.setinputsizes(sizes)
 
@@ -209,7 +215,7 @@ class _AsyncCursor:
             return self._py_core_async_cursor.timeout
 
     @property
-    def description(self) -> Any:
+    def description(self) -> list[tuple[Any, ...]] | None:
         return self._description
 
     @property
