@@ -4,7 +4,7 @@
 #pragma once
 
 #include <atomic>
-#include <cstring>
+#include <cstddef>
 #include <limits>
 #include <new>
 
@@ -262,8 +262,9 @@ inline py::dict instance_dict(PyObject* object) {
     return py::reinterpret_steal<py::dict>(PyObject_GenericGetDict(object, nullptr));
 }
 
-inline PyObject* exact_item(PyObject* dict, const char* name) {
-    const auto length = static_cast<Py_ssize_t>(std::strlen(name));
+template <std::size_t N>
+inline PyObject* exact_item(PyObject* dict, const char (&name)[N]) {
+    constexpr auto length = static_cast<Py_ssize_t>(N - 1);
     PyObject* key;
     PyObject* value;
     Py_ssize_t position = 0;
@@ -644,8 +645,16 @@ inline bool single_size(const Plan& plan, PyObject* const* args, Py_ssize_t narg
     const Py_ssize_t count = keywords ? PyTuple_GET_SIZE(keywords) : 0;
     if (nargs + count > 1)
         return false;
-    if (count && PyUnicode_CompareWithASCIIString(PyTuple_GET_ITEM(keywords, 0), "size") != 0)
-        return false;
+    if (count) {
+        PyObject* key = PyTuple_GET_ITEM(keywords, 0);
+        if (!PyUnicode_CheckExact(key))
+            return false;
+        const int comparison = PyUnicode_CompareWithASCIIString(key, "size");
+        if (PyErr_Occurred())
+            throw py::error_already_set();
+        if (comparison != 0)
+            return false;
+    }
     PyObject* size = nargs + count ? args[0] : Py_None;
     if (size == Py_None)
         size = plan.at(ArraySize).ptr();

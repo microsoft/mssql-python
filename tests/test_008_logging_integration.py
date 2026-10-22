@@ -30,6 +30,8 @@ def cleanup_logger():
     """Reset logger state and cleanup log files"""
     # Disable and clear
     logger._logger.setLevel(logging.CRITICAL)
+    logger._cached_level = logging.CRITICAL
+    logger._is_debug_enabled = False
     for handler in logger._logger.handlers[:]:
         handler.close()
         logger._logger.removeHandler(handler)
@@ -44,6 +46,8 @@ def cleanup_logger():
 
     # Cleanup after
     logger._logger.setLevel(logging.CRITICAL)
+    logger._cached_level = logging.CRITICAL
+    logger._is_debug_enabled = False
     for handler in logger._logger.handlers[:]:
         handler.close()
         logger._logger.removeHandler(handler)

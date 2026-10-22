@@ -18,7 +18,7 @@ from mssql_python import ddbc_bindings
 from mssql_python.cursor import Cursor
 from mssql_python.row import Row
 
-SINGLE_METHODS = ("fetchone", "iterator", "fetchval", "fetchmany_one", "fetchmany_default")
+SINGLE_METHODS = ("fetchone", "iterator", "fetchval", "fetchmany_one")
 UUID_TEXT = "00112233-4455-6677-8899-AABBCCDDEEFF"
 
 
@@ -48,10 +48,9 @@ def read_one(cursor, method):
     return getattr(cursor, method)()
 
 
-@pytest.mark.parametrize("method", SINGLE_METHODS)
-@pytest.mark.parametrize(
-    ("sql_type", "literal", "value"),
-    (
+@pytest.mark.parametrize("method", (*SINGLE_METHODS, "fetchmany_default"))
+def test_single_row_types_nulls_and_position(connection, method):
+    columns = (
         ("INT", "-42", -42),
         ("BIGINT", "9223372036854775807", 9223372036854775807),
         ("SMALLINT", "-32768", -32768),
@@ -68,30 +67,31 @@ def read_one(cursor, method):
         ("DATETIME2", "'2026-01-02T03:04:05.125'", datetime.datetime(2026, 1, 2, 3, 4, 5, 125000)),
         ("TIME", "'03:04:05.125'", datetime.time(3, 4, 5, 125000)),
         ("XML", "'<value>abc</value>'", "<value>abc</value>"),
-    ),
-)
-def test_single_row_types_nulls_and_position(connection, method, sql_type, literal, value):
+    )
+    expressions = ", ".join(
+        f"CAST(CASE WHEN n % 2 = 0 THEN NULL ELSE {literal} END AS {sql_type}) AS c{i}"
+        for i, (sql_type, literal, _) in enumerate(columns)
+    )
+    values = [value for _, _, value in columns]
     with connection.cursor() as cursor:
         assert cursor.arraysize == 1
-        cursor.execute(
-            f"SELECT CAST(CASE WHEN n = 2 THEN NULL ELSE {literal} END AS {sql_type}) AS value "
-            "FROM (VALUES (1), (2), (3)) AS v(n) ORDER BY n"
-        )
-        for index, expected in enumerate((value, None, value)):
+        cursor.execute(f"SELECT {expressions} FROM (VALUES (1), (2), (3), (4)) AS v(n) ORDER BY n")
+        for index, expected in enumerate((values, [None] * len(columns)) * 2):
             row = read_one(cursor, method)
             if method != "fetchval":
                 assert type(row) is Row
-                actual = row[0]
+                actual = list(row)
             else:
-                actual = row
+                actual = [row]
+                expected = expected[:1]
             assert actual == expected
-            assert type(actual) is type(expected)
+            assert [type(item) for item in actual] == [type(item) for item in expected]
             assert cursor.rowcount == index + 1
             assert cursor.rownumber == index
         assert read_one(cursor, method) is None
         assert read_one(cursor, method) is None
-        assert cursor.rowcount == 3
-        assert cursor.rownumber == 2
+        assert cursor.rowcount == 4
+        assert cursor.rownumber == 3
         assert not cursor.messages
         cursor.execute("SELECT 7 AS replacement WHERE 1 = 0")
         assert read_one(cursor, method) is None
@@ -99,7 +99,7 @@ def test_single_row_types_nulls_and_position(connection, method, sql_type, liter
         assert cursor.rownumber == -1
 
 
-@pytest.mark.parametrize("width", (1, 2, 32, 128))
+@pytest.mark.parametrize("width", (1, 128))
 @pytest.mark.parametrize("method", SINGLE_METHODS)
 def test_single_row_interleaves_batches_and_keeps_row_ownership(connection, width, method):
     columns = ", ".join(

@@ -157,14 +157,14 @@ def test_repeated_negative_fetchone_skips_prepare(connection):
 def test_warm_native_dispatch_removes_python_control_calls(connection, method):
     if ddbc_bindings._fetch_observer is None:
         pytest.skip("Direct native dispatch requires GIL-enabled CPython 3.12+ watchers")
-    with connection.cursor() as cursor:
+    with _native_fetch_counters() as profiling, connection.cursor() as cursor:
+        cursor._get_sql_to_c_type_map()
+        cursor.setinputsizes([(mssql_python.SQL_INTEGER, 0, 0)])
+        with pytest.warns(Warning, match="Number of input sizes"):
+            cursor.execute("SELECT ?, ?", 1, 2)
         warm(cursor, method)
-        profile = cProfile.Profile()
-        profile.enable()
-        try:
+        with _fetchone_window(profiling) as observation:
             rows = [read(cursor, method) for _ in range(4)]
-        finally:
-            profile.disable()
         assert [value(row, method) for row in rows] == [3, 4, 5, None]
         assert cursor.rowcount == 5
         assert cursor.rownumber == 4
@@ -177,41 +177,23 @@ def test_warm_native_dispatch_removes_python_control_calls(connection, method):
         from mssql_python.cursor import _NATIVE_FETCH_RUNTIME
 
         forbidden.update(function.__code__ for function in _NATIVE_FETCH_RUNTIME[3])
-        entries = profile.getstats()
-        assert not [(entry.code, entry.callcount) for entry in entries if entry.code in forbidden]
-        calls = {
-            entry.code: entry.callcount for entry in entries if not isinstance(entry.code, str)
-        }
+        calls = observation["python"]
+        assert not forbidden.intersection(calls)
         assert calls.get(Row._fast_create.__code__, 0) == (3 if method == "iterator" else 0)
-
-
-@pytest.mark.parametrize("method", METHODS)
-def test_native_mechanism_counts(connection, method):
-    profiling = getattr(ddbc_bindings, "profiling", None)
-    if profiling is None or ddbc_bindings._fetch_observer is None:
-        pytest.skip("Requires a separate ON build and supported CPython watchers")
-    with connection.cursor() as cursor:
-        warm(cursor, method)
-        profiling.reset()
-        profiling.enable()
-        try:
-            for expected in (3, 4, 5, None):
-                assert value(read(cursor, method), method) == expected
-        finally:
-            profiling.disable()
-        counts = {name: stats["calls"] for name, stats in profiling.get_stats().items()}
-        assert counts["ddbc::NativeCursor::fetch"] == 4
-        assert counts["ddbc::FetchSingleRow"] == 4
-        for name in (
-            "NativeCursor::prepare",
-            "NativeCursor::fallback",
-            "NativeCursor::completion_fallback",
-            "FetchOne_wrap",
-            "FetchMany_wrap",
-            "FetchBatchData",
-            "SQLBindColums",
-        ):
-            assert counts.get("ddbc::" + name, 0) == 0
+        if observation["native"] is not None:
+            counts = observation["native"]
+            assert counts["ddbc::NativeCursor::fetch"] == 4
+            assert counts["ddbc::FetchSingleRow"] == 4
+            for name in (
+                "NativeCursor::prepare",
+                "NativeCursor::fallback",
+                "NativeCursor::completion_fallback",
+                "FetchOne_wrap",
+                "FetchMany_wrap",
+                "FetchBatchData",
+                "SQLBindColums",
+            ):
+                assert counts.get("ddbc::" + name, 0) == 0
 
 
 @pytest.mark.parametrize("method", METHODS)
@@ -310,6 +292,27 @@ def test_warm_dictionary_replacement_and_direct_counter_mutation(connection, met
                 assert cursor.rownumber == 2
         finally:
             connection.remove_output_converter(mssql_python.SQL_INTEGER)
+
+
+@pytest.mark.parametrize("method", METHODS)
+@pytest.mark.parametrize("target", ("cursor", "connection"))
+def test_warm_dictionary_subclass_uses_python_fallback(connection, method, target):
+    class CustomDict(dict):
+        pass
+
+    with connection.cursor() as cursor:
+        warm(cursor, method)
+        owner = cursor if target == "cursor" else connection
+        owner.__dict__ = CustomDict(owner.__dict__)
+        assert value(read(cursor, method), method) == 3
+        assert cursor.rowcount == 3
+        assert cursor.rownumber == 2
+        assert value(read(cursor, method), method) == 4
+        owner.__dict__ = dict(owner.__dict__)
+        assert value(read(cursor, method), method) == 5
+        assert cursor.rowcount == 5
+        assert cursor.rownumber == 4
+        assert read(cursor, method) is None
 
 
 def test_negative_fetchone_uncertain_dictionary_uses_full_policy(connection):
@@ -614,6 +617,32 @@ def test_native_fetchmany_argument_contract(connection):
         ):
             with pytest.raises(TypeError):
                 call()
+
+
+def test_native_fetchmany_keyword_subclass_preserves_binding_error(connection):
+    calls = []
+
+    class Keyword(str):
+        __hash__ = str.__hash__
+
+        def __eq__(self, other):
+            calls.append(other)
+            raise RuntimeError("keyword equality sentinel")
+
+    keywords = {Keyword("size"): 1}
+    with _native_fetch_counters() as profiling, connection.cursor() as cursor:
+        warm(cursor, "fetchmany")
+        before = profiling.get_stats() if profiling is not None else {}
+        with pytest.raises(RuntimeError, match="keyword equality sentinel"):
+            cursor.fetchmany(**keywords)
+        assert calls
+        assert cursor.rowcount == 2
+        assert cursor.rownumber == 1
+        if profiling is not None:
+            after = profiling.get_stats()
+            for name in ("ddbc::NativeCursor::fetch", "ddbc::FetchSingleRow"):
+                assert after.get(name, {}).get("calls", 0) == before.get(name, {}).get("calls", 0)
+        assert cursor.fetchmany(size=1)[0][0] == 3
 
 
 def test_native_fetchmany_oversized_int_preserves_closed_cursor_error():

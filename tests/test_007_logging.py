@@ -649,13 +649,13 @@ class TestDriverLogger:
 class TestThreadSafety:
     """Tests for thread safety and race condition fixes"""
 
-    def test_concurrent_initialization_no_double_init(self, cleanup_logger):
+    def test_concurrent_initialization_no_double_init(self, cleanup_logger, monkeypatch):
         """Test that concurrent __init__ calls don't cause double initialization"""
         import threading
         from mssql_python.logging import MSSQLLogger
 
         # Force re-creation by deleting singleton
-        MSSQLLogger._instance = None
+        monkeypatch.setattr(MSSQLLogger, "_instance", None)
 
         init_counts = []
         errors = []

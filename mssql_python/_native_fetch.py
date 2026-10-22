@@ -25,6 +25,9 @@ class _Policy:
         self.observer = ddbc_bindings._fetch_observer
         self._conversion_ineligible = ddbc_bindings._fetch_conversion_ineligible
         self.logger = namespace["logger"]
+        # Normal binding and warning initialization must not invalidate this snapshot.
+        cursor_type._get_sql_to_c_type_map()
+        namespace.setdefault("__warningregistry__", {})
         self.classes = tuple(
             dict.fromkeys((*cursor_type.__mro__, *row_type.__mro__, *type(self.logger).__mro__))
         )
@@ -98,7 +101,9 @@ class _Policy:
         if (
             Connection.__getattribute__ is not object.__getattribute__
             or type(descriptor) is not GetSetDescriptorType
-            or descriptor.__objclass__ is not Connection
+            # CPython 3.15 shares the ordinary instance-dict descriptor on object.
+            or descriptor.__objclass__ not in (Connection, object)
+            or descriptor.__name__ != "__dict__"
         ):
             return None
         connection_data = object.__getattribute__(connection, "__dict__")
@@ -187,7 +192,9 @@ class _Policy:
             (),
         )
         if (
-            type(description) is not list
+            type(data) is not dict
+            or type(connection_data) is not dict
+            or type(description) is not list
             or not description
             or data.get("_result_columns_src") is not description
             or type(column_map) is not dict
