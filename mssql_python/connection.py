@@ -417,7 +417,11 @@ class Connection:
                 query timeout. An explicit ``attrs_before[SQL_ATTR_LOGIN_TIMEOUT]``
                 takes precedence over this value. (pyodbc migration note: pyodbc
                 lets a positive ``timeout=`` override ``attrs_before``; here the
-                explicit ``attrs_before`` entry wins.)
+                explicit ``attrs_before`` entry wins.) Pooled candidate reset
+                also uses this positive timeout, or 15 seconds when zero/default,
+                temporarily as SQL_ATTR_CONNECTION_TIMEOUT. Driver cancellation
+                and a replacement login can add time; this is not an overall
+                connect deadline.
             native_uuid (bool, optional): Controls whether UNIQUEIDENTIFIER columns return
                 uuid.UUID objects (True) or str (False) for cursors created from this connection.
                 None (default) defers to the module-level ``mssql_python.native_uuid`` setting (True).
@@ -858,17 +862,22 @@ class Connection:
         _provider = ProviderManager.ensure_available()
         ddbc_bindings._set_odbc_provider(_provider)
 
+        # Configure a reused connection's mode inside native checkout, while
+        # its temporary connection timeout still bounds attribute-setting I/O.
+        native_attrs = self._attrs_before.copy()
+        native_attrs[ConstantsDDBC.SQL_ATTR_AUTOCOMMIT.value] = int(bool(autocommit))
         try:
             self._conn = ddbc_bindings.Connection(
                 self.connection_str,
                 self._pooling,
-                self._attrs_before,
+                native_attrs,
                 self._pool_key,
                 self._token_factory,
             )
+            if self._conn.get_autocommit() != autocommit:
+                self.setautocommit(autocommit)
         except RuntimeError as e:
             _raise_connection_error(e)
-        self.setautocommit(autocommit)
 
         # Register this connection for cleanup before Python shutdown
         # This ensures ODBC handles are freed in correct order, preventing leaks

@@ -58,7 +58,7 @@ class Connection {
     //  Check whether autocommit is enabled.
     bool getAutocommit() const;
     bool isAlive() const;
-    bool reset();
+    bool reset(unsigned int timeoutSeconds, bool autocommit = true);
     void prepareForPool(bool transactionAlreadyRolledBack = false);
     void updateLastUsed();
     std::chrono::steady_clock::time_point lastUsed() const;

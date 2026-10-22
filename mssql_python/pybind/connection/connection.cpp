@@ -600,11 +600,31 @@ bool Connection::isAlive() const {
     return SQL_SUCCEEDED(ret) && status == SQL_CD_FALSE;
 }
 
-bool Connection::reset() {
+bool Connection::reset(unsigned int timeoutSeconds, bool autocommit) {
     if (!_dbcHandle) {
         ThrowStdException("Connection handle not allocated");
     }
     clearResultMetadata();
+    // Login and statement timeouts do not bound connection-attribute calls.
+    // Keep a finite connection timeout through reset and lease configuration;
+    // retain it on failure so discarding the candidate is bounded too (#854).
+    SQLULEN originalTimeout = 0;
+    SQLRETURN ret = SQLGetConnectAttr_ptr(_dbcHandle->get(), SQL_ATTR_CONNECTION_TIMEOUT,
+                                         &originalTimeout, 0, nullptr);
+    if (!SQL_SUCCEEDED(ret)) {
+        LOG("Failed to read pooled connection timeout (ret=%d). Marking as dead.", ret);
+        return false;
+    }
+    {
+        py::gil_scoped_release release;
+        ret = SQLSetConnectAttr_ptr(
+            _dbcHandle->get(), SQL_ATTR_CONNECTION_TIMEOUT,
+            reinterpret_cast<SQLPOINTER>(static_cast<SQLULEN>(timeoutSeconds)), SQL_IS_UINTEGER);
+    }
+    if (!SQL_SUCCEEDED(ret)) {
+        LOG("Failed to set pooled connection timeout (ret=%d). Marking as dead.", ret);
+        return false;
+    }
     LOG("Resetting connection via SQL_ATTR_RESET_CONNECTION");
     // NOTE: SQL_ATTR_RESET_CONNECTION is a pool-checkin reset: it asks the
     // driver to wipe per-session state (temp tables, open cursors, SET
@@ -618,7 +638,6 @@ bool Connection::reset() {
     // Connection (_attrStringBuffers / _attrBytesBuffers) are intentionally
     // retained here. Clearing them would reintroduce issue #594 in a new
     // form (UAF during silent reconnect).
-    SQLRETURN ret;
     {
         // Release the GIL around the ODBC call for consistency with the
         // other connection-attribute paths; some attributes can block.
@@ -631,9 +650,7 @@ bool Connection::reset() {
         return false;
     }
 
-    // SQL_ATTR_RESET_CONNECTION does NOT reset the transaction isolation level.
-    // Explicitly reset it to the default (SQL_TXN_READ_COMMITTED) to prevent
-    // isolation level settings from leaking between pooled connection usages.
+    // SQL_ATTR_RESET_CONNECTION does not reset transaction isolation.
     LOG("Resetting transaction isolation level to READ COMMITTED");
     {
         py::gil_scoped_release release;
@@ -641,7 +658,19 @@ bool Connection::reset() {
                                     (SQLPOINTER)SQL_TXN_READ_COMMITTED, SQL_IS_INTEGER);
     }
     if (!SQL_SUCCEEDED(ret)) {
-        LOG("Failed to reset transaction isolation level (ret=%d). Marking as dead.", ret);
+        ErrorInfo error = SQLReadError(SQL_HANDLE_DBC, _dbcHandle->get(), ret);
+        LOG("Pooled connection validation failed: %s", error.ddbcErrorMsg.c_str());
+        return false;
+    }
+    setAutocommit(autocommit);
+    {
+        py::gil_scoped_release release;
+        ret = SQLSetConnectAttr_ptr(
+            _dbcHandle->get(), SQL_ATTR_CONNECTION_TIMEOUT,
+            reinterpret_cast<SQLPOINTER>(originalTimeout), SQL_IS_UINTEGER);
+    }
+    if (!SQL_SUCCEEDED(ret)) {
+        LOG("Failed to restore pooled connection timeout (ret=%d). Marking as dead.", ret);
         return false;
     }
 
