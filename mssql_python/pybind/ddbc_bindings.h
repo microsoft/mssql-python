@@ -335,6 +335,9 @@ class SqlHandle {
     // thread-safe by spec (same assumption as the rest of the driver).
     std::unordered_map<int, DescribedParamInfo> describeCache;
     void clearDescribeCache() { describeCache.clear(); }
+    // A failed DAE reset retains native binding storage until unbind or handle release.
+    // The row guard removes Python references before leaving it here.
+    std::shared_ptr<void> retainedDaeBindings;
     ResultMetadataCache resultMetadata;
     std::shared_ptr<PendingArrowRows> pendingArrowRows() const {
         std::lock_guard<std::mutex> lock(_pendingRowsMutex);

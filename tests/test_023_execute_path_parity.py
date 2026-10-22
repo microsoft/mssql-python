@@ -401,6 +401,31 @@ def test_executemany_auto_text_uses_wide_array_binding(cursor, monkeypatch):
     assert [row[0] for row in cursor.fetchall()] == values
 
 
+@pytest.mark.parametrize("binary_type", [bytes, bytearray], ids=["bytes", "bytearray"])
+@pytest.mark.parametrize("unicode_first", [False, True], ids=["ascii-sample", "unicode-sample"])
+def test_executemany_auto_mixed_text_bytes_uses_scalar_binding(
+    db_connection, monkeypatch, binary_type, unicode_first
+):
+    from mssql_python import ddbc_bindings
+
+    def unexpected_array_binding(*args):
+        pytest.fail("Mixed text and bytes reached the native array binder")
+
+    monkeypatch.setattr(ddbc_bindings, "SQLExecuteMany", unexpected_array_binding)
+    values = ["ascii", binary_type(b"x"), "\u00e9"]
+    if unicode_first:
+        values.reverse()
+    table = f"#auto_mixed_text_bytes_{uuid.uuid4().hex}"
+    with db_connection.cursor() as cur:
+        cur.execute(f"CREATE TABLE {table} (id INT, value NVARCHAR(MAX))")
+        cur.executemany(f"INSERT INTO {table} VALUES (?, ?)", list(enumerate(values)))
+        cur.execute(f"SELECT value FROM {table} ORDER BY id")
+        expected = ["ascii", "x", "\u00e9"]
+        if unicode_first:
+            expected.reverse()
+        assert [row[0] for row in cur.fetchall()] == expected
+
+
 def test_executemany_ignores_str_subclass_encode_override(cursor):
     class HostileStr(str):
         def __len__(self):

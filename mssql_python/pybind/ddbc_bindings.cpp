@@ -1954,6 +1954,7 @@ void SqlHandle::markImplicitlyFreed() {
     }
     clearResult();
     _implicitly_freed = true;
+    retainedDaeBindings.reset();
 }
 
 /*
@@ -1992,11 +1993,13 @@ SQLRETURN SqlHandle::freeHandle() {
         describeCache.clear();
         if (_implicitly_freed || (_cleanupState && _cleanupState->disconnected)) {
             _handle = nullptr;
+            retainedDaeBindings.reset();
             return SQL_SUCCESS;
         }
         SQLRETURN ret = SQLFreeHandle_ptr(_type, _handle);
         if (SQL_SUCCEEDED(ret)) {
             _handle = nullptr;
+            retainedDaeBindings.reset();
         }
         return ret;
     };
@@ -3268,6 +3271,63 @@ SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list&
     return SQL_SUCCESS;
 }
 
+struct DaeRowBindings {
+    std::vector<ParamInfo> infos;
+    std::vector<std::shared_ptr<void>> buffers;
+};
+
+class DaeRowBindingGuard {
+  public:
+    DaeRowBindingGuard(const SqlHandlePtr& handle, const std::vector<ParamInfo>& infos)
+        : bindings(std::make_shared<DaeRowBindings>()), handle(handle) {
+        if (handle->retainedDaeBindings) {
+            const SQLRETURN rc = SQLFreeStmt_ptr(handle->get(), SQL_RESET_PARAMS);
+            CheckFetchError(handle, rc);
+            handle->retainedDaeBindings.reset();
+        }
+        bindings->infos = infos;
+        handle->retainedDaeBindings = bindings;
+    }
+
+    ~DaeRowBindingGuard() noexcept {
+        if (!finished) {
+            SQLRETURN cancelRc;
+            SQLRETURN resetRc;
+            {
+                py::gil_scoped_release release;
+                cancelRc = SQLCancel_ptr(handle->get());
+                resetRc = SQLFreeStmt_ptr(handle->get(), SQL_RESET_PARAMS);
+            }
+            if (!SQL_SUCCEEDED(cancelRc)) {
+                std::fputs("mssql-python: failed to cancel abandoned DAE execution\n", stderr);
+            }
+            if (SQL_SUCCEEDED(resetRc)) {
+                handle->retainedDaeBindings.reset();
+            } else {
+                std::fputs("mssql-python: failed to reset DAE parameters; retaining binding storage\n",
+                           stderr);
+            }
+        }
+        // Retained storage may be released by GIL-less connection cleanup.
+        for (auto& info : bindings->infos) {
+            info.dataPtr = py::object();
+        }
+    }
+
+    void finish() {
+        const SQLRETURN rc = SQLFreeStmt_ptr(handle->get(), SQL_RESET_PARAMS);
+        CheckFetchError(handle, rc);
+        finished = true;
+        handle->retainedDaeBindings.reset();
+    }
+
+    std::shared_ptr<DaeRowBindings> bindings;
+
+  private:
+    SqlHandlePtr handle;
+    bool finished = false;
+};
+
 SQLRETURN SQLExecuteMany_wrap(const SqlHandlePtr statementHandle, const std::u16string& query,
                               const py::list& columnwise_params,
                               std::vector<ParamInfo>& paramInfos, py::handle paramSetSizeArg,
@@ -3363,7 +3423,8 @@ SQLRETURN SQLExecuteMany_wrap(const SqlHandlePtr statementHandle, const std::u16
                 rowParams.append(values[rowIndex]);
             }
 
-            std::vector<ParamInfo> rowParamInfos = paramInfos;
+            DaeRowBindingGuard rowBindings(statementHandle, paramInfos);
+            auto& rowParamInfos = rowBindings.bindings->infos;
             for (size_t paramIndex = 0; paramIndex < rowParamInfos.size(); ++paramIndex) {
                 if (rowParams[paramIndex].is_none()) {
                     rowParamInfos[paramIndex].paramCType = SQL_C_DEFAULT;
@@ -3371,11 +3432,11 @@ SQLRETURN SQLExecuteMany_wrap(const SqlHandlePtr statementHandle, const std::u16
                     rowParamInfos[paramIndex].dataPtr = py::none();
                 }
             }
-            std::vector<std::shared_ptr<void>> paramBuffers;
             rc = BindParameters(*statementHandle, hStmt, rowParams, rowParamInfos,
-                                paramBuffers, charEncoding);
+                                rowBindings.bindings->buffers, charEncoding);
             if (!SQL_SUCCEEDED(rc)) {
                 LOG("SQLExecuteMany: BindParameters failed for row %zu - rc=%d", rowIndex, rc);
+                CheckFetchError(statementHandle, rc);
                 return rc;
             }
             LOG("SQLExecuteMany: Parameters bound for row %zu", rowIndex);
@@ -3401,20 +3462,24 @@ SQLRETURN SQLExecuteMany_wrap(const SqlHandlePtr statementHandle, const std::u16
                     LOG("SQLExecuteMany: SQLParamData failed - chunk=%zu, "
                         "rc=%d",
                         dae_chunk_count, rc);
+                    CheckFetchError(statementHandle, rc);
                     return rc;
                 }
                 if (rc != SQL_NEED_DATA) break;
 
-                const ParamInfo* matchedInfo = reinterpret_cast<const ParamInfo*>(token);
-                const ParamInfo* first = rowParamInfos.data();
-                const ParamInfo* last = first + rowParamInfos.size();
-                if (matchedInfo < first || matchedInfo >= last) {
+                auto matchedInfo = std::find_if(
+                    rowParamInfos.begin(), rowParamInfos.end(),
+                    [token](const ParamInfo& info) { return token == &info; });
+                if (matchedInfo == rowParamInfos.end()) {
                     ThrowStdException(
                         "SQLExecuteMany: unrecognized paramToken from SQLParamData");
                 }
                 const SQLRETURN streamRc =
                     StreamDAEParameter(hStmt, *matchedInfo, charEncoding);
-                if (!SQL_SUCCEEDED(streamRc)) return streamRc;
+                if (!SQL_SUCCEEDED(streamRc)) {
+                    CheckFetchError(statementHandle, streamRc);
+                    return streamRc;
+                }
                 dae_chunk_count++;
             }
             LOG("SQLExecuteMany: DAE completed for row %zu - total_chunks=%zu, "
@@ -3423,18 +3488,11 @@ SQLRETURN SQLExecuteMany_wrap(const SqlHandlePtr statementHandle, const std::u16
 
             if (!SQL_SUCCEEDED(rc)) {
                 LOG("SQLExecuteMany: DAE row %zu failed - rc=%d", rowIndex, rc);
+                CheckFetchError(statementHandle, rc);
                 return rc;
             }
 
-            const SQLRETURN rowRc = rc;
-            rc = SQLFreeStmt_ptr(hStmt, SQL_RESET_PARAMS);
-            if (!SQL_SUCCEEDED(rc)) {
-                LOG("SQLExecuteMany: SQL_RESET_PARAMS failed for row %zu - "
-                    "rc=%d",
-                    rowIndex, rc);
-                return rc;
-            }
-            rc = rowRc;
+            rowBindings.finish();
         }
         LOG("SQLExecuteMany: All DAE rows processed successfully - "
             "total_rows=%zu",

@@ -2805,6 +2805,9 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                         ddbc_sql_const.SQL_WLONGVARCHAR.value,
                     )
                     if paraminfo.paramSQLType in text_sql_types:
+                        requires_row_fallback = any(
+                            isinstance(value, str) for value in column
+                        ) and any(isinstance(value, (bytes, bytearray)) for value in column)
                         text_needs_dae = False
                         has_non_ascii = False
                         max_text_length = 0
