@@ -308,7 +308,8 @@ def test_autocommit_explicit_transaction_is_rolled_back_on_pool_checkin(conn_str
     )
 
 
-def test_connection_pooling_isolation_level_reset(conn_str):
+@pytest.mark.parametrize("use_sql", [False, True], ids=["attribute", "sql"])
+def test_connection_pooling_isolation_level_reset(conn_str, use_sql):
     """Test that pooling correctly resets session state for isolation level.
 
     This test verifies that when a connection is returned to the pool and then
@@ -325,7 +326,11 @@ def test_connection_pooling_isolation_level_reset(conn_str):
     conn1 = connect(conn_str)
 
     # Set isolation level to SERIALIZABLE (non-default)
-    conn1.set_attr(mssql_python.SQL_ATTR_TXN_ISOLATION, mssql_python.SQL_TXN_SERIALIZABLE)
+    if use_sql:
+        with conn1.cursor() as cur:
+            cur.execute("SET TRANSACTION ISOLATION LEVEL SERIALIZABLE")
+    else:
+        conn1.set_attr(mssql_python.SQL_ATTR_TXN_ISOLATION, mssql_python.SQL_TXN_SERIALIZABLE)
 
     # Verify the isolation level was set
     cursor1 = conn1.cursor()
@@ -849,6 +854,207 @@ def test_checked_out_pool_is_not_evicted(conn_str):
 # =============================================================================
 # Error Handling and Recovery Tests
 # =============================================================================
+
+
+@pytest.mark.parametrize(
+    "pool_size,autocommit,options",
+    [
+        pytest.param(pool_size, autocommit, options, id=f"{name}-{pool_size}-{autocommit}")
+        for name, options in (
+            ("constructor", {"timeout": 1}),
+            (
+                "attrs_before",
+                {"timeout": 30, "attrs_before": {mssql_python.SQL_ATTR_LOGIN_TIMEOUT: 1}},
+            ),
+        )
+        for pool_size in (1, 3)
+        for autocommit in (False, True)
+    ]
+    + [pytest.param(3, False, {"timeout": 0}, id="finite-default")],
+)
+def test_pool_checkout_validation_timeout(conn_str, autocommit, pool_size, options):
+    """GH #854: stalled checkout validation must time out and open a fresh socket."""
+    _run_in_subprocess(
+        """
+        import os
+        import socket
+        import sys
+        import threading
+        import time
+        from mssql_python import connect, pooling
+        from mssql_python.connection_string_parser import _ConnectionStringParser
+        from mssql_python.connection_string_builder import _ConnectionStringBuilder
+
+        params = _ConnectionStringParser._normalize_params(
+            _ConnectionStringParser()._parse(os.environ["DB_CONNECTION_STRING"])
+        )
+        server = params["Server"]
+        if server.lower().startswith("tcp:"):
+            server = server[4:]
+        host, _, port = server.partition(",")
+        if "\\\\" in host:
+            print("Socket proxy requires an explicit TCP endpoint", file=sys.stderr)
+            sys.exit(77)
+        port = int(port) if port else 1433
+        pool_size = POOL_SIZE
+        autocommit = AUTOCOMMIT
+        options = TIMEOUT_OPTIONS
+        use_default = options.get("timeout") == 0
+        gate = threading.Event()
+        gate.set()
+        probed = set()
+        stopping = threading.Event()
+        sockets = []
+        threads = []
+        errors = []
+        listener = socket.socket()
+        loopback = "127.0.0.1"  # DevSkim: ignore DS162092
+        listener.bind((loopback, 0))
+        listener.listen()
+        listener.settimeout(0.2)
+
+        def relay(source, destination, allowed, index):
+            try:
+                while not stopping.is_set():
+                    data = source.recv(65536)
+                    if not data:
+                        return
+                    if not allowed.is_set():
+                        probed.add(index)
+                    allowed.wait()
+                    if not stopping.is_set():
+                        destination.sendall(data)
+            except (ConnectionResetError, BrokenPipeError):
+                return
+            except OSError as exc:
+                if not stopping.is_set():
+                    errors.append(str(exc))
+
+        def accept():
+            try:
+                while not stopping.is_set():
+                    try:
+                        client, _ = listener.accept()
+                    except socket.timeout:
+                        continue
+                    sockets.append(client)
+                    upstream = socket.create_connection((host, port), timeout=10)
+                    upstream.settimeout(None)
+                    sockets.append(upstream)
+                    index = len(sockets) // 2
+                    allowed = gate if index <= pool_size else threading.Event()
+                    if allowed is not gate:
+                        allowed.set()
+                    for source, destination in ((client, upstream), (upstream, client)):
+                        thread = threading.Thread(
+                            target=relay, args=(source, destination, allowed, index), daemon=True
+                        )
+                        threads.append(thread)
+                        thread.start()
+            except OSError as exc:
+                if not stopping.is_set():
+                    errors.append(str(exc))
+
+        accept_thread = threading.Thread(target=accept, daemon=True)
+        accept_thread.start()
+        params["Server"] = f"{loopback},{listener.getsockname()[1]}"
+        params.setdefault("HostNameInCertificate", host)
+        params["ConnectRetryCount"] = "0"
+        proxied = _ConnectionStringBuilder(params).build()
+        leases = []
+        resume = None
+        try:
+            pooling(max_size=pool_size, idle_timeout=600)
+            identities = set()
+            for _ in range(pool_size):
+                conn = connect(proxied, autocommit=autocommit, **options)
+                leases.append(conn)
+                with conn.cursor() as cur:
+                    cur.execute("SELECT @@SPID")
+                    identities.add(cur.fetchone()[0])
+            assert len(identities) == pool_size
+            for conn in leases:
+                conn.close()
+            leases.clear()
+
+            # Keep both TCP peers open but withhold all TDS responses. The
+            # timer bounds the old implementation's hang without killing it.
+            gate.clear()
+            resume = threading.Timer(60 if use_default else 20, gate.set)
+            resume.start()
+            start = time.monotonic()
+            leases.append(connect(proxied, autocommit=autocommit, **options))
+            elapsed = time.monotonic() - start
+            assert len(probed) == 1, f"Checkout probed {len(probed)} unresponsive sockets"
+            lower, upper = (10, 55) if use_default else (0.5, 12)
+            assert lower <= elapsed < upper, f"Validation timeout not honored: {elapsed:.2f}s"
+            assert not gate.is_set(), "Safety timer fired before checkout finished"
+            for conn in leases:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT @@SPID, @@TRANCOUNT")
+                    spid, transaction_count = cur.fetchone()
+                    assert spid not in identities, "Unresponsive session was reused"
+                    assert transaction_count == (0 if autocommit else 1)
+            assert len(sockets) // 2 == pool_size + 1
+            assert not errors, errors
+        finally:
+            gate.set()
+            if resume is not None:
+                resume.cancel()
+                resume.join()
+            try:
+                for conn in leases:
+                    conn.close()
+                pooling(enabled=False)
+            finally:
+                stopping.set()
+                for sock in sockets:
+                    try:
+                        sock.shutdown(socket.SHUT_RDWR)
+                    except OSError:
+                        pass
+                    sock.close()
+                accept_thread.join(timeout=12)
+                listener.close()
+                for thread in threads:
+                    thread.join(timeout=2)
+                assert not accept_thread.is_alive()
+                assert all(not thread.is_alive() for thread in threads)
+        """.replace("POOL_SIZE", str(pool_size))
+        .replace("AUTOCOMMIT", repr(autocommit))
+        .replace("TIMEOUT_OPTIONS", repr(options)),
+        conn_str,
+    )
+
+
+@pytest.mark.parametrize("original_timeout", [0, 7])
+def test_pool_checkout_restores_connection_timeout(conn_str, original_timeout):
+    """Checkout must restore the native timeout, not just the Python query field."""
+    _run_in_subprocess(
+        """
+        import os
+        import mssql_python as ms
+
+        ms.pooling(max_size=1)
+        conn_str = os.environ["DB_CONNECTION_STRING"]
+        first = ms.connect(conn_str, autocommit=True, timeout=1)
+        original_timeout = ORIGINAL_TIMEOUT
+        first.set_attr(ms.SQL_ATTR_CONNECTION_TIMEOUT, original_timeout)
+        assert first._conn._get_connection_timeout() == original_timeout
+        with first.cursor() as cur:
+            cur.execute("SELECT @@SPID")
+            identity = cur.fetchone()[0]
+        first.close()
+        with ms.connect(conn_str, autocommit=True, timeout=1) as reused:
+            assert reused._conn._get_connection_timeout() == original_timeout
+            assert reused.timeout == 0
+            with reused.cursor() as cur:
+                cur.execute("WAITFOR DELAY '00:00:02'; SELECT @@SPID")
+                assert cur.fetchone()[0] == identity
+        ms.pooling(enabled=False)
+        """.replace("ORIGINAL_TIMEOUT", str(original_timeout)),
+        conn_str,
+    )
 
 
 def test_pool_removes_invalid_connections(conn_str):

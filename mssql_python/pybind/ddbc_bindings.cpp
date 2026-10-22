@@ -6476,6 +6476,8 @@ PYBIND11_MODULE(ddbc_bindings, m) {
         .def("rollback", &ConnectionHandle::rollback, "Rollback the current transaction")
         .def("set_autocommit", &ConnectionHandle::setAutocommit)
         .def("get_autocommit", &ConnectionHandle::getAutocommit)
+        .def("_get_connection_timeout", &ConnectionHandle::getConnectionTimeout,
+             "Internal: read the native SQL_ATTR_CONNECTION_TIMEOUT value")
         .def("set_attr", &ConnectionHandle::setAttr, py::arg("attribute"), py::arg("value"),
              "Set connection attribute")
         .def("alloc_statement_handle", &ConnectionHandle::allocStatementHandle)

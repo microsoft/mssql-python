@@ -58,7 +58,7 @@ class Connection {
     //  Check whether autocommit is enabled.
     bool getAutocommit() const;
     bool isAlive() const;
-    bool reset();
+    bool reset(unsigned int timeoutSeconds, bool autocommit = true);
     void prepareForPool(bool transactionAlreadyRolledBack = false);
     void updateLastUsed();
     std::chrono::steady_clock::time_point lastUsed() const;
@@ -158,6 +158,7 @@ class ConnectionHandle {
     void setAutocommit(bool enabled);
     bool getAutocommit() const;
     SqlHandlePtr allocStatementHandle();
+    SQLULEN getConnectionTimeout() const;
     void setAttr(int attribute, py::object value);
 
     // Get information about the driver and data source
