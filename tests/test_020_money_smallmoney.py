@@ -8,8 +8,9 @@ Key implementation detail: on the execute() path every finite Decimal binds as
 SQL_NUMERIC using its own precision and scale, regardless of value. Binding no longer
 depends on whether the value falls in the MONEY/SMALLMONEY range, so an in-range value
 compared against a smaller numeric column returns no match instead of a varchar->numeric
-overflow (GH-740). executemany still string-binds Decimals (SQL_VARCHAR) to preserve
-scale-38 precision (GH-503), so that path is unchanged here.
+overflow (GH-740). executemany auto-detect likewise binds Decimals as SQL_NUMERIC with
+a batch-wide precision/scale and SQL_C_CHAR string values (GH-745); setinputsizes
+DECIMAL/NUMERIC still string-binds for fixed precision (GH-503).
 """
 
 import pytest
@@ -812,3 +813,125 @@ def test_gh740_signed_zero_normalizes(cursor, db_connection):
     finally:
         drop_table_if_exists(cursor, table_name)
         db_connection.commit()
+
+
+# =============================================================================
+# GH-745: executemany money-range Decimal must bind as SQL_NUMERIC, not VARCHAR
+# =============================================================================
+
+
+def test_gh745_executemany_in_range_decimal_numeric_comparison_no_overflow(cursor, db_connection):
+    """executemany must not overflow money-range Decimals against a smaller numeric.
+
+    Before the fix, executemany still used the MONEY-range VARCHAR shortcut, so
+    SQL Server did a varchar->numeric conversion that overflowed instead of simply
+    not matching (the execute() path was fixed in GH-740 / #742).
+    """
+    table_name = "#pytest_gh745_cmp"
+    try:
+        drop_table_if_exists(cursor, table_name)
+        cursor.execute(f"CREATE TABLE {table_name} (v numeric(5,2))")  # max 999.99
+        cursor.execute(f"INSERT INTO {table_name} VALUES (?)", [Decimal("12.34")])
+        db_connection.commit()
+
+        # Comparison via executemany is an unnatural shape, but it is the path that
+        # still carried the VARCHAR shortcut. UPDATE ... WHERE keeps the binding.
+        cursor.executemany(
+            f"UPDATE {table_name} SET v = v WHERE v = ?",
+            [(Decimal("12345.6789"),), (Decimal("300000.00"),)],
+        )
+        cursor.execute(f"SELECT COUNT(*) FROM {table_name}")
+        assert cursor.fetchone()[0] == 1
+
+        cursor.executemany(
+            f"UPDATE {table_name} SET v = v WHERE v = ?",
+            [(Decimal("12.34"),)],
+        )
+        cursor.execute(f"SELECT COUNT(*) FROM {table_name} WHERE v = ?", [Decimal("12.34")])
+        assert cursor.fetchone()[0] == 1
+    finally:
+        drop_table_if_exists(cursor, table_name)
+        db_connection.commit()
+
+
+def test_gh745_executemany_mixed_sign_money_range_batch(cursor, db_connection):
+    """Mixed-sign money-range Decimals still insert through executemany (GH-557)."""
+    table_name = "#pytest_gh745_sign"
+    try:
+        drop_table_if_exists(cursor, table_name)
+        cursor.execute(f"CREATE TABLE {table_name} (v DECIMAL(28, 14))")
+        data = [
+            (Decimal("1.0"),),
+            (Decimal("-0.1"),),
+            (Decimal("100.5"),),
+            (Decimal("-999.99"),),
+        ]
+        cursor.executemany(f"INSERT INTO {table_name} VALUES (?)", data)
+        db_connection.commit()
+        cursor.execute(f"SELECT COUNT(*) FROM {table_name}")
+        assert cursor.fetchone()[0] == 4
+    finally:
+        drop_table_if_exists(cursor, table_name)
+        db_connection.commit()
+
+
+def test_gh745_executemany_tiny_scale38_roundtrip(cursor, db_connection):
+    """executemany must accept Decimal("1E-38") into numeric(38,38).
+
+    SQL precision stays 38; the SQL_C_CHAR array buffer must be wider than
+    precision because format(Decimal("1E-38"), "f") is 40 characters.
+    """
+    table_name = "#pytest_gh745_tiny"
+    value = Decimal("1E-38")
+    try:
+        drop_table_if_exists(cursor, table_name)
+        cursor.execute(f"CREATE TABLE {table_name} (v numeric(38,38))")
+        cursor.executemany(f"INSERT INTO {table_name} VALUES (?)", [(value,), (Decimal("-1E-38"),)])
+        db_connection.commit()
+
+        cursor.execute(f"SELECT v FROM {table_name} ORDER BY v")
+        rows = [r[0] for r in cursor.fetchall()]
+        assert rows[0].as_tuple() == Decimal("-1E-38").as_tuple()
+        assert rows[1].as_tuple() == value.as_tuple()
+    finally:
+        drop_table_if_exists(cursor, table_name)
+        db_connection.commit()
+
+
+def test_gh745_executemany_mixed_decimal_string_precision(cursor, db_connection):
+    """Decimal + numeric-string batch must fit DECIMAL(38,14) (bewithgaurav).
+
+    Auto-detect used to derive NUMERIC(18,2) from the Decimal alone, then fail
+    the 17-digit string with DataError even though the destination fits both.
+    """
+    table_name = "#pytest_gh745_mixed_prec"
+    try:
+        drop_table_if_exists(cursor, table_name)
+        cursor.execute(f"CREATE TABLE {table_name} (v DECIMAL(38, 14))")
+        data = [
+            (Decimal("1000000000000000.00"),),
+            ("20000000000000000",),
+        ]
+        cursor.executemany(f"INSERT INTO {table_name} VALUES (?)", data)
+        db_connection.commit()
+        cursor.execute(f"SELECT v FROM {table_name} ORDER BY v")
+        rows = [r[0] for r in cursor.fetchall()]
+        assert rows[0] == Decimal("1000000000000000.00")
+        assert rows[1] == Decimal("20000000000000000")
+    finally:
+        drop_table_if_exists(cursor, table_name)
+        db_connection.commit()
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        [(Decimal("1.0"),), (Decimal("NaN"),)],
+        [(Decimal("NaN"),), (Decimal("1.0"),)],
+    ],
+    ids=["finite-then-nan", "nan-then-finite"],
+)
+def test_gh745_executemany_rejects_nan_both_orders(cursor, data):
+    """executemany raises ValueError for NaN in either row order (sumitmsft)."""
+    with pytest.raises(ValueError, match="non-finite"):
+        cursor.executemany("INSERT INTO #unused_nan_table VALUES (?)", data)
