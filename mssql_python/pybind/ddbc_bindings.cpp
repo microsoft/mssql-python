@@ -3437,7 +3437,8 @@ static inline bool IsLobOrVariantColumn(SQLSMALLINT dataType, SQLULEN columnSize
 SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, py::list& row,
                           const std::string& charEncoding = "utf-16le",
                           const std::string& wcharEncoding = "utf-16le",
-                          int charCtype = SQL_C_WCHAR, py::handle messages = {}) {
+                          int charCtype = SQL_C_WCHAR, py::handle messages = {},
+                          py::handle converters = {}) {
     PERF_TIMER("SQLGetData_wrap");
     // Note: wcharEncoding parameter is reserved for future use
     // Currently WCHAR data always uses UTF-16LE for Windows compatibility
@@ -3613,9 +3614,15 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                                 // null termination. This preserves embedded NULs and avoids
                                 // any risk of reading past the valid range if the driver
                                 // omits the terminator.
-                                row.append(FetchText::from_utf16_native(
-                                    reinterpret_cast<const char*>(dataBuffer.data()),
-                                    static_cast<Py_ssize_t>(numCharsInData * sizeof(SQLWCHAR))));
+                                const char* textData =
+                                    reinterpret_cast<const char*>(dataBuffer.data());
+                                Py_ssize_t textSize =
+                                    static_cast<Py_ssize_t>(numCharsInData * sizeof(SQLWCHAR));
+                                py::object text;
+                                if (OutputConverters::enabled(converters, i - 1))
+                                    text = OutputConverters::text(textData, textSize);
+                                row.append(text ? text
+                                                : FetchText::from_utf16_native(textData, textSize));
                                 LOG("SQLGetData: CHAR column %d fetched as WCHAR, "
                                     "length=%lu",
                                     i, (unsigned long)numCharsInData);
@@ -3792,9 +3799,16 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                                 // null termination. This preserves embedded NULs and avoids
                                 // any risk of reading past the valid range if the driver
                                 // omits the terminator.
-                                row.append(FetchText::from_utf16_native(
-                                    reinterpret_cast<const char*>(dataBuffer.data()),
-                                    static_cast<Py_ssize_t>(numCharsInData * sizeof(SQLWCHAR))));
+                                const char* textData =
+                                    reinterpret_cast<const char*>(dataBuffer.data());
+                                Py_ssize_t textSize =
+                                    static_cast<Py_ssize_t>(numCharsInData * sizeof(SQLWCHAR));
+                                py::object text;
+                                if (dataType != SQL_SS_VARIANT &&
+                                    OutputConverters::enabled(converters, i - 1))
+                                    text = OutputConverters::text(textData, textSize);
+                                row.append(text ? text
+                                                : FetchText::from_utf16_native(textData, textSize));
                                 LOG("SQLGetData: Appended NVARCHAR string "
                                     "length=%lu for column %d",
                                     (unsigned long)numCharsInData, i);
@@ -4447,7 +4461,7 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, const Metadata&
                          py::list& rows, SQLUSMALLINT numCols, SQLULEN& numRowsFetched,
                          const std::vector<SQLUSMALLINT>& lobColumns,
                          const std::string& charEncoding = "utf-16le", int charCtype = SQL_C_WCHAR,
-                         py::handle messages = {}) {
+                         py::handle messages = {}, py::handle converters = {}) {
     PERF_TIMER("FetchBatchData");
     LOG("FetchBatchData: Fetching data in batches");
     SQLRETURN ret;
@@ -4536,6 +4550,7 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, const Metadata&
             columnInfosExt[col].isLob = columnInfos[col].isLob;
             columnInfosExt[col].charEncoding = effectiveCharEnc;
             columnInfosExt[col].messages = messages.ptr();
+            columnInfosExt[col].converterText = OutputConverters::enabled(converters, col);
             columnInfosExt[col].isUtf8 = (effectiveCharEnc == "utf-8");
             // Set useWideChar for SQL_CHAR/VARCHAR columns when charCtype is SQL_C_WCHAR
             SQLSMALLINT dt = columnInfos[col].dataType;
@@ -4968,7 +4983,7 @@ struct FetchStateGuard {
 SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetchSize,
                          const std::string& charEncoding = "utf-16le",
                          const std::string& wcharEncoding = "utf-16le", int charCtype = SQL_C_WCHAR,
-                         py::handle messages = {}) {
+                         py::handle messages = {}, py::handle converters = {}) {
     PERF_TIMER("FetchMany_wrap");
     // Issue #531: upgrade SQL_C_CHAR + utf-8 to SQL_C_WCHAR on Windows so the
     // driver does lossless UTF-16 conversion instead of returning ACP bytes.
@@ -5046,7 +5061,7 @@ SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetch
 
             py::list row;
             ret = SQLGetData_wrap(StatementHandle, numCols, row, charEncoding, wcharEncoding,
-                                  charCtype, messages);
+                                  charCtype, messages, converters);
             CheckFetchError(StatementHandle, ret);
             rows.append(row);
             numRowsFetched++;
@@ -5068,7 +5083,7 @@ SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetch
     fetchStateGuard.configure(&numRowsFetched, fetchSize);
 
     ret = FetchBatchData(hStmt, buffers, columnNames, rows, numCols, numRowsFetched, lobColumns,
-                         charEncoding, charCtype, messages);
+                         charEncoding, charCtype, messages, converters);
     CheckFetchError(StatementHandle, ret);
     if (!SQL_SUCCEEDED(ret) && ret != SQL_NO_DATA) {
         LOG("FetchMany_wrap: Error when fetching data - SQLRETURN=%d", ret);
@@ -6116,7 +6131,7 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules,
 SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows,
                         const std::string& charEncoding = "utf-16le",
                         const std::string& wcharEncoding = "utf-16le", int charCtype = SQL_C_WCHAR,
-                        py::handle messages = {}) {
+                        py::handle messages = {}, py::handle converters = {}) {
     PERF_TIMER("FetchAll_wrap");
     // Issue #531: upgrade SQL_C_CHAR + utf-8 to SQL_C_WCHAR on Windows so the
     // driver does lossless UTF-16 conversion instead of returning ACP bytes.
@@ -6185,7 +6200,7 @@ SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows,
 
             py::list row;
             ret = SQLGetData_wrap(StatementHandle, numCols, row, charEncoding, wcharEncoding,
-                                  charCtype, messages);
+                                  charCtype, messages, converters);
             CheckFetchError(StatementHandle, ret);
             rows.append(row);
         }
@@ -6248,7 +6263,7 @@ SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows,
 
     while (ret != SQL_NO_DATA) {
         ret = FetchBatchData(hStmt, buffers, columnNames, rows, numCols, numRowsFetched, lobColumns,
-                             charEncoding, charCtype, messages);
+                             charEncoding, charCtype, messages, converters);
         CheckFetchError(StatementHandle, ret);
         if (!SQL_SUCCEEDED(ret) && ret != SQL_NO_DATA) {
             LOG("FetchAll_wrap: Error when fetching data - SQLRETURN=%d", ret);
@@ -6280,7 +6295,7 @@ SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows,
 SQLRETURN FetchOne_wrap(SqlHandlePtr StatementHandle, py::list& row,
                         const std::string& charEncoding = "utf-16le",
                         const std::string& wcharEncoding = "utf-16le", int charCtype = SQL_C_WCHAR,
-                        py::handle messages = {}) {
+                        py::handle messages = {}, py::handle converters = {}) {
     PERF_TIMER("FetchOne_wrap");
     // Issue #531: upgrade SQL_C_CHAR + utf-8 to SQL_C_WCHAR on Windows so the
     // driver does lossless UTF-16 conversion instead of returning ACP bytes.
@@ -6308,7 +6323,7 @@ SQLRETURN FetchOne_wrap(SqlHandlePtr StatementHandle, py::list& row,
         // Retrieve column count
         SQLSMALLINT colCount = SQLNumResultCols_wrap(StatementHandle, messages);
         ret = SQLGetData_wrap(StatementHandle, colCount, row, charEncoding, wcharEncoding,
-                              charCtype, messages);
+                              charCtype, messages, converters);
         if (!SQL_SUCCEEDED(ret)) {
             LOG("FetchOne_wrap: Error retrieving data with SQLGetData - SQLRETURN=%d", ret);
             return ret;
@@ -6512,20 +6527,22 @@ PYBIND11_MODULE(ddbc_bindings, m) {
           py::arg("ColumnMetadata"), py::arg("messages") = py::none());
     m.def("DDBCSQLGetData", &SQLGetData_wrap, "Retrieve data from the result set",
           py::arg("StatementHandle"), py::arg("colCount"), py::arg("row"), py::arg("charEncoding"),
-          py::arg("wcharEncoding"), py::arg("charCtype"), py::arg("messages") = py::none());
+          py::arg("wcharEncoding"), py::arg("charCtype"), py::arg("messages") = py::none(),
+          py::arg("converters") = py::none());
     m.def("DDBCSQLMoreResults", &SQLMoreResults_wrap, "Check for more results in the result set");
     m.def("DDBCSQLFetchOne", &FetchOne_wrap, "Fetch one row from the result set",
           py::arg("StatementHandle"), py::arg("row"), py::arg("charEncoding") = "utf-16le",
           py::arg("wcharEncoding") = "utf-16le", py::arg("charCtype") = SQL_C_WCHAR,
-          py::arg("messages") = py::none());
+          py::arg("messages") = py::none(), py::arg("converters") = py::none());
     m.def("DDBCSQLFetchMany", &FetchMany_wrap, py::arg("StatementHandle"), py::arg("rows"),
           py::arg("fetchSize"), py::arg("charEncoding") = "utf-16le",
           py::arg("wcharEncoding") = "utf-16le", py::arg("charCtype") = SQL_C_WCHAR,
-          py::arg("messages") = py::none(), "Fetch many rows from the result set");
+          py::arg("messages") = py::none(), py::arg("converters") = py::none(),
+          "Fetch many rows from the result set");
     m.def("DDBCSQLFetchAll", &FetchAll_wrap, "Fetch all rows from the result set",
           py::arg("StatementHandle"), py::arg("rows"), py::arg("charEncoding") = "utf-16le",
           py::arg("wcharEncoding") = "utf-16le", py::arg("charCtype") = SQL_C_WCHAR,
-          py::arg("messages") = py::none());
+          py::arg("messages") = py::none(), py::arg("converters") = py::none());
     m.def("DDBCSQLFetchArrowBatch", &FetchArrowBatch_wrap,
           "Fetch an arrow batch of given length from the result set", py::arg("StatementHandle"),
           py::arg("capsules"), py::arg("arrowBatchSize"), py::arg("charCtype"),
@@ -6632,6 +6649,15 @@ PYBIND11_MODULE(ddbc_bindings, m) {
           py::arg("column_map"), py::arg("cursor"),
           py::arg("column_map_lower") = py::none(),
           py::arg("column_names") = py::none());
+    m.def("apply_output_converters", &OutputConverters::apply,
+          "Apply a cached converter map, preserving owned text bytes and exception fallback");
+    m.def("restore_output_converter_text", &OutputConverters::restore,
+          "Restore deferred text before using custom Row hooks or a changed converter map");
+    py::class_<OutputConverters::RowBuilder>(m, "_ConverterRowBuilder")
+        .def(py::init<py::object, py::object>())
+        .def("matches", &OutputConverters::RowBuilder::matches)
+        .def("one", &OutputConverters::RowBuilder::one)
+        .def("many", &OutputConverters::RowBuilder::many);
 
     // Expose logger bridge function to Python
     m.def("update_log_level", &mssql_python::logging::LoggerBridge::updateLevel,
