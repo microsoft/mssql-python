@@ -5,6 +5,17 @@ import time
 
 from profiler import scenarios
 
+# Fixed counts keep both revisions comparable and extend short steady-state tasks
+# to roughly 100 ms on the hosted Unix controls. Connection opening stays cold.
+MEASUREMENT_REPEATS = {
+    "select": 100,
+    "fetchone": 10,
+    "prepared_qmark": 3,
+    "prepared_named": 3,
+    "cte": 20,
+    "lob_varchar_256k_fetchall": 100,
+}
+
 # Preserve the AdventureWorks workloads from the previous CI benchmark.
 QUERIES = {
     "join_aggregation": """
