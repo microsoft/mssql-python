@@ -394,8 +394,11 @@ void ValidateArrowTextPayloadLength(size_t stride, size_t dataBytes) {
     }
 }
 
-void ValidateDecimalDataLength(uint64_t dataLength) {
-    if (dataLength >= MAX_DIGITS_IN_NUMERIC) {
+void ValidateDecimalDataLength(SQLLEN dataLength) {
+    if (dataLength < 0) {
+        ThrowStdException("Unexpected negative data length");
+    }
+    if (dataLength == 0 || static_cast<uint64_t>(dataLength) >= MAX_DIGITS_IN_NUMERIC) {
         ThrowStdException("Decimal data exceeds the allocated fetch buffer");
     }
 }
@@ -4392,7 +4395,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
             case SQL_DECIMAL:
             case SQL_NUMERIC: {
                 SQLCHAR numericStr[MAX_DIGITS_IN_NUMERIC] = {0};
-                SQLLEN indicator = 0;
+                SQLLEN indicator = INVALID_FETCH_INDICATOR;
 
                 ret = SQLGetData_ptr(hStmt, i, SQL_C_CHAR, numericStr, sizeof(numericStr),
                                      &indicator);
@@ -4403,10 +4406,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                         row.append(py::none());
                         break;
                     }
-                    if (indicator < 0) {
-                        ThrowStdException("Unexpected negative data length");
-                    }
-                    ValidateDecimalDataLength(static_cast<uint64_t>(indicator));
+                    ValidateDecimalDataLength(indicator);
                     try {
                         // Validate 'indicator' to avoid buffer overflow and
                         // fallback to a safe null-terminated read when length
@@ -5270,7 +5270,7 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, const Metadata&
                 case SQL_NUMERIC: {
                     try {
                         SQLLEN decimalDataLen = buffers.indicators[col - 1][i];
-                        ValidateDecimalDataLength(static_cast<uint64_t>(decimalDataLen));
+                        ValidateDecimalDataLength(decimalDataLen);
                         const char* rawData = reinterpret_cast<const char*>(
                             &buffers.charBuffers[col - 1][i * MAX_DIGITS_IN_NUMERIC]);
 
@@ -5958,6 +5958,14 @@ py::object RunFetchValidationTest(const std::string& scenario) {
                                       sizeof(SQL_TIMESTAMP_STRUCT) - 1);
     } else if (scenario == "oversized_direct_decimal_indicator") {
         ValidateDecimalDataLength(MAX_DIGITS_IN_NUMERIC);
+    } else if (scenario == "zero_decimal_indicator") {
+        ValidateDecimalDataLength(0);
+    } else if (scenario == "decimal_missing_indicator") {
+        SQLCHAR numericStr[MAX_DIGITS_IN_NUMERIC] = {};
+        SQLLEN indicator = INVALID_FETCH_INDICATOR;
+        TestSQLGetDataWithoutIndicator(nullptr, 1, SQL_C_CHAR, numericStr,
+                                       sizeof(numericStr), &indicator);
+        ValidateDecimalDataLength(indicator);
     } else if (scenario == "zero_arrow_rows") {
         ValidateArrowFetchedRowCount(0, 1, 1);
     } else if (scenario == "oversized_arrow_fetch") {
