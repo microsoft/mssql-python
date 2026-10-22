@@ -3433,11 +3433,11 @@ static inline bool IsLobOrVariantColumn(SQLSMALLINT dataType, SQLULEN columnSize
             (columnSize == 0 || columnSize == SQL_NO_TOTAL || columnSize > SQL_MAX_LOB_SIZE));
 }
 
-// Helper function to retrieve column data
-SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, py::list& row,
-                          const std::string& charEncoding = "utf-16le",
-                          const std::string& wcharEncoding = "utf-16le",
-                          int charCtype = SQL_C_WCHAR, py::handle messages = {}) {
+static SQLRETURN GetRowData(const SqlHandlePtr& StatementHandle, SQLUSMALLINT colCount,
+                            py::list& row, const std::string& charEncoding,
+                            const std::string& wcharEncoding, int charCtype,
+                            py::handle messages, const ResultMetadataCache::Snapshot& snapshot,
+                            bool completeResult = false) {
     PERF_TIMER("SQLGetData_wrap");
     // Note: wcharEncoding parameter is reserved for future use
     // Currently WCHAR data always uses UTF-16LE for Windows compatibility
@@ -3454,7 +3454,6 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
     SQLHSTMT hStmt = StatementHandle->get();
 
     ResultMetadataFailureGuard metadataFailure(StatementHandle->resultMetadata, ret);
-    const auto snapshot = StatementHandle->resultMetadata.snapshot();
     // The separately exposed GetData entry point may request only a prefix.
     const auto metadata = snapshot.metadata && snapshot.metadata->columns.size() >= colCount
                               ? snapshot.metadata
@@ -4232,7 +4231,56 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
     if (!complete) {
         StatementHandle->resultMetadata.clear();
     } else if (pending && pending->columns.size() == colCount) {
+        pending->completeResult = completeResult;
         StatementHandle->resultMetadata.publish(snapshot.generation, std::move(pending));
+    } else if (completeResult && metadata && !metadata->completeResult) {
+        auto completeMetadata = std::make_shared<ResultMetadata>(*metadata);
+        completeMetadata->completeResult = true;
+        StatementHandle->resultMetadata.publish(snapshot.generation, std::move(completeMetadata));
+    }
+    return ret;
+}
+
+SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, py::list& row,
+                          const std::string& charEncoding = "utf-16le",
+                          const std::string& wcharEncoding = "utf-16le",
+                          int charCtype = SQL_C_WCHAR, py::handle messages = {}) {
+    return GetRowData(StatementHandle, colCount, row, charEncoding, wcharEncoding, charCtype,
+                      messages, StatementHandle->resultMetadata.snapshot());
+}
+
+// An unbound, exactly-one-row fetch shared by fetchone and fetchmany(1).
+// No buffers or ODBC pointers survive the call.
+static SQLRETURN FetchSingleRow(const SqlHandlePtr& handle, py::list& row,
+                                const std::string& charEncoding,
+                                const std::string& wcharEncoding, int charCtype,
+                                py::handle messages) {
+    PERF_TIMER("FetchSingleRow");
+    SQLRETURN ret = SQL_ERROR;
+    ResultMetadataFailureGuard metadataFailure(handle->resultMetadata, ret);
+    SQLHSTMT hStmt = handle->get();
+    if (!handle->fetchColumnsUnbound) {
+        {
+            PERF_TIMER("FetchSingleRow::SQL_UNBIND");
+            ret = SQLFreeStmt_ptr(hStmt, SQL_UNBIND);
+        }
+        CaptureFetchDiagnostics(hStmt, ret, messages);
+        if (!SQL_SUCCEEDED(ret))
+            return ret;
+        handle->fetchColumnsUnbound = true;
+    }
+    {
+        py::gil_scoped_release release;
+        ret = SQLFetch_ptr(hStmt);
+    }
+    CaptureFetchDiagnostics(hStmt, ret, messages);
+    if (SQL_SUCCEEDED(ret)) {
+        const auto snapshot = handle->resultMetadata.snapshot();
+        const auto colCount = snapshot.metadata && snapshot.metadata->completeResult
+                                  ? static_cast<SQLSMALLINT>(snapshot.metadata->columns.size())
+                                  : SQLNumResultCols_wrap(handle, messages);
+        ret = GetRowData(handle, colCount, row, charEncoding, wcharEncoding, charCtype, messages,
+                          snapshot, true);
     }
     return ret;
 }
@@ -4898,7 +4946,9 @@ struct FetchStateGuard {
     int cleanupStep = 0;
 
     FetchStateGuard(SqlHandlePtr handle, py::handle messages)
-        : handle(std::move(handle)), messages(messages.ptr()) {}
+        : handle(std::move(handle)), messages(messages.ptr()) {
+        this->handle->fetchColumnsUnbound = false;
+    }
 
     void observe(SQLRETURN ret) const {
         CaptureFetchDiagnostics(handle->get(), ret, py::handle(messages));
@@ -4928,6 +4978,7 @@ struct FetchStateGuard {
                     break;
                 default:
                     ret = SQLFreeStmt_ptr(handle->get(), SQL_UNBIND);
+                    handle->fetchColumnsUnbound = SQL_SUCCEEDED(ret);
                     break;
             }
             observe(ret);
@@ -4976,12 +5027,11 @@ SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetch
     SQLRETURN ret = SQL_ERROR;
     ResultMetadataFailureGuard metadataFailure(StatementHandle->resultMetadata, ret);
     SQLHSTMT hStmt = StatementHandle->get();
-    // Retrieve column count
-    SQLSMALLINT numCols = SQLNumResultCols_wrap(StatementHandle, messages);
-
-    // Retrieve column metadata
     auto snapshot = StatementHandle->resultMetadata.snapshot();
     auto metadata = std::move(snapshot.metadata);
+    SQLSMALLINT numCols = metadata && metadata->completeResult
+                             ? static_cast<SQLSMALLINT>(metadata->columns.size())
+                             : SQLNumResultCols_wrap(StatementHandle, messages);
     const bool matches = metadata && numCols >= 0 &&
                          metadata->columns.size() == static_cast<size_t>(numCols);
     if (!matches || !metadata->namesValidated) {
@@ -5007,6 +5057,7 @@ SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetch
             }
         }
         pending->namesValidated = true;
+        pending->completeResult = true;
         StatementHandle->resultMetadata.publish(snapshot.generation, pending);
         metadata = std::move(pending);
     }
@@ -5023,6 +5074,14 @@ SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetch
         if (IsLobOrVariantColumn(column.dataType, column.columnSize)) {
             lobColumns.push_back(i + 1);  // 1-based
         }
+    }
+
+    if (fetchSize == 1 && lobColumns.empty()) {
+        py::list row;
+        ret = FetchSingleRow(StatementHandle, row, charEncoding, wcharEncoding, charCtype, messages);
+        if (SQL_SUCCEEDED(ret))
+            rows.append(row);
+        return ret;
     }
 
     // Initialized to 0 for LOB path counter; overwritten by ODBC in non-LOB path;
@@ -6162,6 +6221,7 @@ SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows,
         // names/declared fields instead of describing stable columns on every row.
         auto metadata = std::make_shared<ResultMetadata>();
         metadata->namesValidated = true;
+        metadata->completeResult = true;
         metadata->columns.reserve(numCols);
         for (SQLSMALLINT i = 0; i < numCols; ++i) {
             const auto column = columnNames[i].cast<py::dict>();
@@ -6285,35 +6345,9 @@ SQLRETURN FetchOne_wrap(SqlHandlePtr StatementHandle, py::list& row,
     // Issue #531: upgrade SQL_C_CHAR + utf-8 to SQL_C_WCHAR on Windows so the
     // driver does lossless UTF-16 conversion instead of returning ACP bytes.
     charCtype = EffectiveCharCtypeForFetch(charCtype, charEncoding);
-    SQLRETURN ret = SQL_ERROR;
-    ResultMetadataFailureGuard metadataFailure(StatementHandle->resultMetadata, ret);
-    SQLHSTMT hStmt = StatementHandle->get();
-
-    // Unbind any columns from previous fetch operations (e.g., fetchmany)
-    // to avoid conflicts with SQLGetData. SQLGetData cannot be used on
-    // columns that are already bound.
-    ret = SQLFreeStmt_ptr(hStmt, SQL_UNBIND);
-    CaptureFetchDiagnostics(hStmt, ret, messages);
-    if (!SQL_SUCCEEDED(ret))
-        return ret;
-
-    // Assume hStmt is already allocated and a query has been executed
-    {
-        // Release the GIL during the blocking ODBC fetch
-        py::gil_scoped_release release;
-        ret = SQLFetch_ptr(hStmt);
-    }
-    CaptureFetchDiagnostics(hStmt, ret, messages);
-    if (SQL_SUCCEEDED(ret)) {
-        // Retrieve column count
-        SQLSMALLINT colCount = SQLNumResultCols_wrap(StatementHandle, messages);
-        ret = SQLGetData_wrap(StatementHandle, colCount, row, charEncoding, wcharEncoding,
-                              charCtype, messages);
-        if (!SQL_SUCCEEDED(ret)) {
-            LOG("FetchOne_wrap: Error retrieving data with SQLGetData - SQLRETURN=%d", ret);
-            return ret;
-        }
-    } else if (ret != SQL_NO_DATA) {
+    SQLRETURN ret = FetchSingleRow(StatementHandle, row, charEncoding, wcharEncoding, charCtype,
+                                   messages);
+    if (!SQL_SUCCEEDED(ret) && ret != SQL_NO_DATA) {
         LOG("FetchOne_wrap: Error when fetching data - SQLRETURN=%d", ret);
     }
     return ret;
@@ -6402,10 +6436,13 @@ void DDBCSetDecimalSeparator(const std::string& separator) {
 #endif
 
 // Functions/data to be exposed to Python as a part of ddbc_bindings module
+#include "native_fetch.hpp"
+
 PYBIND11_MODULE(ddbc_bindings, m) {
     m.doc() = "msodbcsql driver api bindings for Python";
 
     PyTypeCache::initialize();
+    NativeFetch::bind(m);
 
     // Add architecture information as module attribute
     m.attr("__architecture__") = ARCHITECTURE;
@@ -6626,7 +6663,15 @@ PYBIND11_MODULE(ddbc_bindings, m) {
     m.attr("__version__") = "1.0.0";
 
     // Fast Row construction in C++ — replaces Python list comprehension
-    m.def("construct_rows", &RowFactory::construct_rows,
+    m.def("construct_rows",
+          [attributeNames = py::make_tuple("_values", "_column_map", "_cursor",
+                                           "_column_map_lower", "_column_names")](
+              const py::list& rowsData, const py::object& rowClass,
+              const py::object& columnMap, const py::object& cursor,
+              const py::object& columnMapLower, const py::object& columnNames) {
+              return RowFactory::construct_rows(rowsData, rowClass, columnMap, cursor,
+                                                 columnMapLower, columnNames, attributeNames);
+          },
           "Build Row objects in C++ for fetchall/fetchmany fast path",
           py::arg("rows_data"), py::arg("row_class"),
           py::arg("column_map"), py::arg("cursor"),
