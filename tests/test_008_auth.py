@@ -877,7 +877,7 @@ class TestManagedIdentity:
         mock_pycore_module.PyCoreConnection = lambda ctx, **kwargs: mock_pycore_conn
 
         with (
-            patch.dict("sys.modules", {"mssql_py_core": mock_pycore_module}),
+            patch.dict("sys.modules", {"mssql_py_core.mssql_py_core": mock_pycore_module}),
             patch("mssql_python.auth.AADAuth.get_raw_token", side_effect=fake_get_raw_token),
         ):
             cursor.bulkcopy("dbo.test_table", [(1, "row")], timeout=10)

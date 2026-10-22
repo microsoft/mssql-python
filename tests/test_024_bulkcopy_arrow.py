@@ -25,7 +25,7 @@ import pytest
 # containers without the extension, or pyarrow absent). exc_type=ImportError
 # so a module that imports but fails its native extension is skipped, not
 # collected as an error (pytest >= 9.1 default only skips ModuleNotFoundError).
-mssql_py_core = pytest.importorskip("mssql_py_core", exc_type=ImportError)
+mssql_py_core = pytest.importorskip("mssql_py_core.mssql_py_core", exc_type=ImportError)
 pa = pytest.importorskip("pyarrow")
 
 LIVE_DB = pytest.mark.skipif(
@@ -219,7 +219,7 @@ class TestBulkcopyArrowValidation:
 
     def test_missing_pycore_raises_importerror(self):
         cur = _bare_cursor()
-        with patch.dict("sys.modules", {"mssql_py_core": None}):
+        with patch.dict("sys.modules", {"mssql_py_core.mssql_py_core": None}):
             with pytest.raises(ImportError, match="mssql_py_core"):
                 cur.bulkcopy_arrow("t", pa.table({"a": [1]}))
 
@@ -372,7 +372,7 @@ class TestBulkcopyArrowDispatch:
         module, pyc_cursor, _, _ = _mock_pycore()
         src = pa.table({"a": [1, 2]})
 
-        with patch.dict("sys.modules", {"mssql_py_core": module}):
+        with patch.dict("sys.modules", {"mssql_py_core.mssql_py_core": module}):
             result = cur.bulkcopy_arrow(
                 "dbo.t", src, batch_size=7, timeout=15, column_mappings=["a"]
             )
@@ -394,7 +394,7 @@ class TestBulkcopyArrowDispatch:
         module, pyc_cursor, _, _ = _mock_pycore()
         src = pa.table({"a": [1, 2]})
 
-        with patch.dict("sys.modules", {"mssql_py_core": module}):
+        with patch.dict("sys.modules", {"mssql_py_core.mssql_py_core": module}):
             cur.bulkcopy_arrow("dbo.t", src, 7, 15)
 
         _, kwargs = pyc_cursor.bulkcopy_arrow.call_args
@@ -407,7 +407,7 @@ class TestBulkcopyArrowDispatch:
         cur = _cursor_with_conn("Server=localhost;Database=d;UID=sa;PWD=secret")
         module, _, _, captured = _mock_pycore()
 
-        with patch.dict("sys.modules", {"mssql_py_core": module}):
+        with patch.dict("sys.modules", {"mssql_py_core.mssql_py_core": module}):
             cur.bulkcopy_arrow("t", pa.table({"a": [1]}))
 
         ctx = captured["ctx"]
@@ -420,7 +420,7 @@ class TestBulkcopyArrowDispatch:
         cur = _cursor_with_conn("Server=localhost;Database=d;UID=sa;PWD=p")
         module, pyc_cursor, pyc_conn, _ = _mock_pycore()
 
-        with patch.dict("sys.modules", {"mssql_py_core": module}):
+        with patch.dict("sys.modules", {"mssql_py_core.mssql_py_core": module}):
             cur.bulkcopy_arrow("t", pa.table({"a": [1]}))
 
         pyc_cursor.close.assert_called_once()
@@ -432,7 +432,7 @@ class TestBulkcopyArrowDispatch:
         cur = _cursor_with_conn("Server=localhost;Database=d;UID=sa;PWD=p")
         module, pyc_cursor, pyc_conn, captured = _mock_pycore(raise_exc=ValueError("boom"))
 
-        with patch.dict("sys.modules", {"mssql_py_core": module}):
+        with patch.dict("sys.modules", {"mssql_py_core.mssql_py_core": module}):
             with pytest.raises(ValueError, match="boom"):
                 cur.bulkcopy_arrow("t", pa.table({"a": [1]}))
 
@@ -449,7 +449,7 @@ class TestBulkcopyArrowDispatch:
         module, pyc_cursor, pyc_conn, _ = _mock_pycore()
         pyc_cursor.close.side_effect = RuntimeError("close failed")
 
-        with patch.dict("sys.modules", {"mssql_py_core": module}):
+        with patch.dict("sys.modules", {"mssql_py_core.mssql_py_core": module}):
             result = cur.bulkcopy_arrow("t", pa.table({"a": [1]}))
 
         # result is still returned; the close error was swallowed and logged
