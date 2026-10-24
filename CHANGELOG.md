@@ -104,6 +104,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
   before; users should call `cursor.setinputsizes()` to work around this.
 
 ### Fixed
+- **GH-863:** `Cursor.nextset()` now refreshes `Cursor.rowcount` for
+  the result it moves to, as `execute()` does: the affected-row count for an
+  INSERT/UPDATE/DELETE/MERGE result and -1 for a result set. Previously
+  `rowcount` kept the value of the first statement of a multi-statement batch,
+  so the rows affected by later statements (for example each INSERT of a
+  T-SQL `WHILE` loop) could not be read. This matches pyodbc.
 - **GH-754:** Pooled connections are now rolled back and restored to autocommit
   mode before being parked. This prevents an empty transaction from remaining
   visible on an idle SQL Server session after `Connection.close()`. Abandoned
