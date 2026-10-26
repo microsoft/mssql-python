@@ -17,6 +17,7 @@ import uuid
 import codecs
 import datetime
 import warnings
+from importlib import import_module
 from typing import List, Mapping, Union, Any, Optional, Tuple, Sequence, TYPE_CHECKING, Iterable
 from mssql_python.constants import ConstantsDDBC as ddbc_sql_const, SQLTypes
 from mssql_python.helpers import check_error, connstr_to_pycore_params
@@ -3634,9 +3635,10 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
     @staticmethod
     def _bulkcopy_core_and_validate(table_name, batch_size, timeout):
         """Import the native core and validate the args shared by ``bulkcopy``
-        and ``bulkcopy_arrow``. Returns the imported ``mssql_py_core`` module."""
+        and ``bulkcopy_arrow``. Returns the native ``mssql_py_core`` extension."""
         try:
-            import mssql_py_core
+            # Upgrading from a bundled core can remove the package's __init__.py.
+            mssql_py_core = import_module("mssql_py_core.mssql_py_core")
         except ImportError as exc:
             logger.error("bulkcopy: Failed to import mssql_py_core module")
             raise ImportError(
