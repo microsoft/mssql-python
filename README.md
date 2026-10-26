@@ -170,6 +170,69 @@ example, requesting ASCII with `SQL_CHAR` does not cause non-ASCII parameters to
 raise encoding errors. Use `setencoding()` with no arguments to restore the
 supported defaults. `setdecoding()` independently controls how result data is read.
 
+### Cursor size and native buffer limits
+
+Row counts must be integers, not booleans. The following limits are inclusive:
+
+| API setting | Accepted row count | Meaning of zero |
+| --- | --- | --- |
+| `Cursor.arraysize` | 1 to 1,000,000 | Not accepted |
+| `Cursor.fetchmany(size)` | 0 to 1,000,000; `None` uses `arraysize` | Returns an empty list without fetching |
+| `Cursor.arrow_batch(batch_size)`, `arrow(batch_size)`, `arrow_reader(batch_size)` | 0 to 1,000,000 | Schema only; no data rows |
+| `Cursor.bulkcopy(batch_size)`, `bulkcopy_arrow(batch_size)` | 0 to 1,000,000 | Uses the native core's default batch/commit behavior |
+
+Native array-bound `executemany()` calls also accept at most 1,000,000 parameter
+sets per call; an empty input remains a no-op. These are per-batch limits, not
+limits on the total number of rows in a result or table. Bulk-copy `batch_size`
+controls rows per batch/commit, not the total source size.
+
+Negative row counts now raise `ValueError`, rather than acting like empty or
+unbounded requests. Boolean and other non-integer row counts raise `TypeError`.
+In particular, negative Arrow sizes no longer produce an empty result.
+
+Native fetch buffers have a cumulative **256 MiB** allocation budget, including
+Arrow data buffers and native rowset storage. Native parameter-array buffers have
+a separate cumulative **256 MiB** budget across all columns in one array-bound
+`executemany()` call. A row count within the allowed range can still exceed its
+byte budget when columns are wide. Parameter-array storage grows with the number
+of parameter sets times the sum of each column's native element width and length
+indicator; text buffers also include terminators, and wide text uses two-byte
+UTF-16 code units. NULL rows still reserve array slots.
+
+For Arrow fetches, `batch_size` is an upper bound, not a guaranteed batch length.
+When the next row would exceed the native budget, the driver returns completed
+rows and retains the overflow row and any unread fetched rows for the next fetch.
+A short batch does **not** indicate end of results: continue until an empty batch.
+`arrow()` and `arrow_reader()` do this automatically. Row-wise fetch methods can
+also consume these pending rows; `fetchmany()` may return a short batch while
+draining them, so continue until an empty list.
+
+If a single row cannot coexist with its Arrow output within the budget, the
+driver raises an allocation-limit error and retains the row. It can be recovered
+with a row-wise fetch if its source buffers fit. If the source buffers themselves
+exceed the budget, retries continue to fail rather than skipping the row.
+Executing another statement, moving to the next result set, cancelling, or closing
+abandons pending rows. Connection resets, transaction completion, and autocommit
+changes invalidate them with the result state. Non-resetting connection attributes
+preserve pending rows, and schema-only Arrow requests do not consume them.
+
+For allocation-limit errors, reduce `fetchmany()`/Arrow batch sizes or split
+`executemany()` inputs into smaller calls, and avoid unnecessarily large
+`setinputsizes()` hints. Non-numeric size hints must be non-negative integers no
+greater than 268,435,456 in the SQL type's size units; this does not guarantee that
+the corresponding byte allocation fits. Numeric hints describe precision/scale
+instead of buffer length and retain their normalization to supported SQL Server
+precision (up to 38). Boolean or negative size/scale hints raise `ValueError`.
+Formatted DECIMAL/NUMERIC parameter text exceeding 4000 UTF-16 code units is
+rejected before native binding.
+
+These budgets bound the native buffers checked by the driver, **not total process
+memory or total result memory**. Python objects, driver/core allocations, input
+collections, and retained result batches consume additional memory. `fetchall()`
+and `arrow()` still materialize all remaining rows; process bounded
+`fetchmany()` batches or iterate `arrow_reader()` without retaining every batch
+when the complete result may not fit in memory.
+
 ## Getting Started Examples
 Connect to SQL Server and execute a simple query:
  
