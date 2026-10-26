@@ -943,8 +943,8 @@ def _check_native_mixed_fetch_diagnostics(mode, expected_native):
     ]
     all_records = [(f"[{state}] ({number})", message) for state, number, message in records]
     wanted = [all_records[index] for index in (0, 2, 4)]
-    rec_calls, field_calls, callback_errors = [], [], []
-    observed_handles, delegated_records = [], []
+    rec_calls, field_calls, header_calls, callback_errors = [], [], [], []
+    observed_handles, delegated_records, delegated_headers = [], [], []
     phase, target_handle = "observe", None
 
     def guarded(callback_type):
@@ -994,13 +994,31 @@ def _check_native_mixed_fetch_diagnostics(mode, expected_native):
         return success
 
     @guarded(field_type)
-    def read_state(handle_type, handle, number, identifier, output, capacity, length):
+    def read_field(handle_type, handle, number, identifier, output, capacity, length):
         if phase != "inject" or (handle_type, handle) != target_handle:
-            if original_read_state is None:
+            if original_read_field is None:
                 return error
-            return original_read_state(
+            result = original_read_field(
                 handle_type, handle, number, identifier, output, capacity, length
             )
+            if identifier == 2 and output:  # SQL_DIAG_NUMBER is a SQLINTEGER header field.
+                count = ctypes.cast(output, ctypes.POINTER(ctypes.c_int32))[0]
+                delegated_headers.append((handle_type, handle, number, result, count))
+            return result
+        if identifier == 2:
+            header_calls.append(number)
+            if (
+                not handle
+                or handle_type != ConstantsDDBC.SQL_HANDLE_STMT.value
+                or number != 0
+                or not output
+                or capacity != 0
+                or length
+            ):
+                callback_errors.append("invalid diagnostic-count header lookup")
+                return error
+            ctypes.cast(output, ctypes.POINTER(ctypes.c_int32))[0] = len(records)
+            return success
         field_calls.append(number)
         # SQL_DIAG_SQLSTATE uses bytes, including the sixth SQLWCHAR terminator.
         if (
@@ -1036,7 +1054,7 @@ def _check_native_mixed_fetch_diagnostics(mode, expected_native):
         original_rec, original_field = rec_pointer.value, field_pointer.value
         assert original_rec, "Driver diagnostic records must be available"
         original_read_record = rec_type(original_rec)
-        original_read_state = field_type(original_field) if original_field else None
+        original_read_field = field_type(original_field) if original_field else None
         try:
             rec_pointer.value = ctypes.cast(read_record, ctypes.c_void_p).value
             # Learn this cursor's raw handle while forwarding the diagnostic call unchanged.
@@ -1047,7 +1065,7 @@ def _check_native_mixed_fetch_diagnostics(mode, expected_native):
             assert target_handle[0] == ConstantsDDBC.SQL_HANDLE_STMT.value and target_handle[1]
             phase = "inject"
             field_pointer.value = (
-                None if mode == "missing" else ctypes.cast(read_state, ctypes.c_void_p).value
+                None if mode == "missing" else ctypes.cast(read_field, ctypes.c_void_p).value
             )
             delegated_records.clear()
             assert mssql_python.ddbc_bindings.DDBCSQLGetAllDiagRecords(other_cursor.hstmt) == []
@@ -1057,6 +1075,7 @@ def _check_native_mixed_fetch_diagnostics(mode, expected_native):
             assert tuple(cursor.fetchone()) == (b"x" * 8193,)
             assert not callback_errors, callback_errors
             assert cursor.messages == wanted
+            assert header_calls == ([] if mode == "missing" else [0])
             assert field_calls == ([] if mode == "missing" else [1, 2, 3, 4, 5, 6])
             if mode == "available":
                 assert rec_calls == [1, 3, 5]
@@ -1065,15 +1084,28 @@ def _check_native_mixed_fetch_diagnostics(mode, expected_native):
 
             rec_calls.clear()
             field_calls.clear()
+            header_calls.clear()
             assert mssql_python.ddbc_bindings.DDBCSQLGetAllDiagRecords(cursor.hstmt) == all_records
             assert not callback_errors, callback_errors
             assert rec_calls == [1, 2, 3, 4, 5, 6]
             assert field_calls == []
+            assert header_calls == []
             delegated_records.clear()
+            delegated_headers.clear()
             phase = "delegate"
             assert cursor.fetchone() is None
             assert not callback_errors, callback_errors
-            assert delegated_records == [(*target_handle, 1)]
+            if mode == "missing":
+                assert delegated_headers == []
+                assert delegated_records == [(*target_handle, 1)]
+            else:
+                assert len(delegated_headers) == 1
+                handle_type, handle, number, result, count = delegated_headers[0]
+                assert (handle_type, handle, number) == (*target_handle, 0)
+                if result == success and count == 0:
+                    assert delegated_records == []
+                else:
+                    assert delegated_records == [(*target_handle, 1)]
             assert cursor.messages == wanted
         finally:
             rec_pointer.value, field_pointer.value = original_rec, original_field

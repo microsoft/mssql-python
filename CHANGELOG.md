@@ -57,6 +57,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
   does not change the default provider or ship any Rust driver binaries.
 
 ### Changed
+- Pooled check-in skips transaction sanitation only after a prior successful
+  native rollback/autocommit restore and no subsequent statement allocation or
+  uncertain operation. Used connections still roll back explicit transactions
+  before parking; sanitation uses one native attribute probe and one GIL release.
+  Raw-handle exposure and arbitrary connection attributes disable the fast path;
+  successfully applied scalar login timeouts (including `connect(timeout=30)`)
+  do not permanently disable it.
 - Fetches reuse owned native metadata for stable columns within a result set;
   `fetchmany()` avoids the Python metadata-dictionary roundtrip. Re-execution,
   result transitions and statement/connection cleanup invalidate this metadata.
