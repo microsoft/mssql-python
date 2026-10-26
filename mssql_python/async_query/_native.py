@@ -7,7 +7,8 @@ from types import ModuleType
 def load_py_core() -> ModuleType:
     """Load the PyO3 extension that owns asynchronous TDS operations."""
     try:
-        py_core = import_module("mssql_py_core")
+        # Upgrading from a bundled core can remove the package's __init__.py.
+        py_core = import_module("mssql_py_core.mssql_py_core")
     except ImportError as exc:
         raise ImportError(
             "Async query support requires the mssql-python-rs dependency "
