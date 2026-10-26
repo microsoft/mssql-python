@@ -1,9 +1,12 @@
+import datetime
+from decimal import Decimal
 from types import ModuleType
 
 import pytest
 
 import mssql_python.async_query as async_query
 import mssql_python.async_query._native as native
+from mssql_python.constants import ConstantsDDBC
 
 
 def test_async_entry_points_are_internal():
@@ -72,6 +75,42 @@ def test_async_tvp_is_internal_native_constructor():
     assert _TableValuedParameter("dbo.TestType").is_null is True
     with pytest.raises(ValueError, match="requires column definitions"):
         _TableValuedParameter("dbo.TestType", rows=[(1,)])
+
+
+def test_async_tvp_accepts_numeric_and_temporal_column_metadata():
+    from mssql_python.async_query import _TableValuedParameter
+
+    columns = [
+        (ConstantsDDBC.SQL_DECIMAL.value, 12, 2),
+        (ConstantsDDBC.SQL_NUMERIC.value, 38, 10),
+        (ConstantsDDBC.SQL_TYPE_TIME.value, 0, 3),
+        (ConstantsDDBC.SQL_TYPE_TIMESTAMP.value, 0, 3),
+        (ConstantsDDBC.SQL_DATETIMEOFFSET.value, 0, 3),
+    ]
+    populated_row = (
+        Decimal("123.45"),
+        Decimal("123.4500000000"),
+        datetime.time(12, 34, 56, 123000),
+        datetime.datetime(2024, 1, 2, 12, 34, 56, 123000),
+        datetime.datetime(
+            2024,
+            1,
+            2,
+            12,
+            34,
+            56,
+            123000,
+            tzinfo=datetime.timezone(datetime.timedelta(hours=-5, minutes=-30)),
+        ),
+    )
+
+    populated = _TableValuedParameter("dbo.MetadataType", columns, [populated_row])
+    null_cells = _TableValuedParameter("dbo.MetadataType", columns, [(None,) * len(columns)])
+    empty = _TableValuedParameter("dbo.MetadataType", columns, [])
+
+    assert (populated.column_count, populated.row_count) == (len(columns), 1)
+    assert (null_cells.column_count, null_cells.row_count) == (len(columns), 1)
+    assert (empty.column_count, empty.row_count) == (len(columns), 0)
 
 
 def test_async_native_exports_load_only_when_requested(monkeypatch):

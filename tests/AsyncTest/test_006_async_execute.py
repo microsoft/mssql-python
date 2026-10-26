@@ -1,5 +1,5 @@
 import asyncio
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 import pytest
 from uuid import UUID, uuid4
@@ -902,6 +902,65 @@ async def test_async_tvp_execute_and_executemany(
             assert await async_cursor.nextset() is True
             assert [tuple(row) for row in await async_cursor.fetchall()] == (rows or [])
         assert await async_cursor.nextset() is False
+    finally:
+        await async_cursor.execute(f"DROP TYPE IF EXISTS {type_name}")
+        await async_connection.commit()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("use_prepare", (False, True))
+@pytest.mark.parametrize("batch", (False, True))
+@pytest.mark.parametrize("row_kind", ("populated", "null_cells", "empty"))
+async def test_async_tvp_preserves_numeric_and_temporal_metadata(
+    async_cursor, async_connection, use_prepare, batch, row_kind
+):
+    columns = [(3, 12, 2), (2, 38, 10), (92, 0, 3), (93, 0, 3), (-155, 0, 3)]
+    offset = timedelta(hours=-5, minutes=-30)
+    populated_row = (
+        Decimal("123.45"),
+        Decimal("1234567890123456789012345678.1234567890"),
+        time(12, 34, 56, 123000),
+        datetime(2024, 1, 2, 12, 34, 56, 123000),
+        datetime(2024, 1, 2, 12, 34, 56, 123000, tzinfo=timezone(offset)),
+    )
+    rows = {"populated": [populated_row], "null_cells": [(None,) * 5], "empty": []}[row_kind]
+    type_name = f"dbo.AsyncTvpMetadata_{uuid4().hex}"
+    await async_cursor.execute(
+        f"CREATE TYPE {type_name} AS TABLE ("
+        "decimal_value DECIMAL(12, 2), numeric_value NUMERIC(38, 10), "
+        "time_value TIME(3), datetime_value DATETIME2(3), offset_value DATETIMEOFFSET(3))"
+    )
+    try:
+        await async_connection.commit()
+        value = async_query._TableValuedParameter(type_name, columns, rows)
+        assert value.column_count == len(columns)
+        assert value.row_count == len(rows)
+        assert value.is_null is False
+        if batch:
+            assert (
+                await async_cursor.executemany(
+                    "SELECT * FROM ?", [(value,), (value,)], use_prepare=use_prepare
+                )
+                is None
+            )
+        else:
+            assert (
+                await async_cursor.execute("SELECT * FROM ?", value, use_prepare=use_prepare)
+                is async_cursor
+            )
+
+        for result_index in range(2 if batch else 1):
+            description = async_cursor.description
+            assert description is not None
+            assert [column[5] for column in description] == [2, 10, 3, 3, 3]
+            assert [column[4] for column in description[:2]] == [12, 38]
+            fetched = await async_cursor.fetchall()
+            assert [tuple(row) for row in fetched] == rows
+            if row_kind == "populated":
+                assert fetched[0][0].as_tuple().exponent == -2
+                assert fetched[0][1].as_tuple().exponent == -10
+                assert fetched[0][4].utcoffset() == offset
+            assert await async_cursor.nextset() is (batch and result_index == 0)
     finally:
         await async_cursor.execute(f"DROP TYPE IF EXISTS {type_name}")
         await async_connection.commit()
