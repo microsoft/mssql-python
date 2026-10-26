@@ -176,6 +176,20 @@ def test_lob_buffer_growth_is_geometric():
 
 
 @pytest.mark.skipif(not DDBC_AVAILABLE, reason="ddbc_bindings not available")
+def test_lob_buffer_growth_budget_includes_old_and_new_allocations():
+    chunk_size = 64 * 1024 * 1024
+    assert ddbc._test_lob_buffer_growth(2, chunk_size) == (
+        2,
+        2 * chunk_size,
+        2 * chunk_size,
+        2 * chunk_size,
+    )
+    # A 128 -> 256 MiB resize needs 384 MiB while copying, not just 256 MiB.
+    with pytest.raises(RuntimeError, match="256 MiB allocation limit"):
+        ddbc._test_lob_buffer_growth(3, chunk_size)
+
+
+@pytest.mark.skipif(not DDBC_AVAILABLE, reason="ddbc_bindings not available")
 @pytest.mark.parametrize(
     ("chunk_count", "chunk_size", "message"),
     [

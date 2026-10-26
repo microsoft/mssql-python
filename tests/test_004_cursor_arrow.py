@@ -636,6 +636,46 @@ def test_arrow_native_budget_pending_reset_cleanup(conn_str, sql_type, operation
     )
 
 
+@pytest.mark.parametrize("sql_type", ["nvarchar(4000)", "nvarchar(max)"])
+@pytest.mark.parametrize("autocommit", [0, 1])
+def test_arrow_native_budget_pending_set_attr_autocommit(conn_str, sql_type, autocommit):
+    """Generic autocommit changes discard pending rows like the dedicated setter."""
+    _run_arrow_budget_script(
+        conn_str,
+        """
+        from mssql_python.constants import ConstantsDDBC
+
+        sql_type, autocommit = sys.argv[1], int(sys.argv[2])
+        def fetch_after_change(generic):
+            with mssql_python.connect(os.environ["DB_CONNECTION_STRING"]) as conn:
+                with conn.cursor() as cur:
+                    cur.execute(wide_query(sql_type, 9, identifiers=True))
+                    first = cur.arrow_batch(8192)
+                    assert 0 < first.num_rows < 8192
+                    del first
+                    if generic:
+                        conn._conn.set_attr(
+                            ConstantsDDBC.SQL_ATTR_AUTOCOMMIT.value, autocommit
+                        )
+                    else:
+                        conn.autocommit = bool(autocommit)
+                    try:
+                        row = cur.fetchone()
+                    except mssql_python.ProgrammingError as exc:
+                        result = ("error", str(exc))
+                    else:
+                        result = ("row", None if row is None else row[0])
+                    assert cur.execute("SELECT 42").fetchone()[0] == 42
+                    return result
+
+        expected = fetch_after_change(False)
+        assert fetch_after_change(True) == expected
+        """,
+        sql_type,
+        str(autocommit),
+    )
+
+
 def get_arrow_test_data(include_lobs: bool, batch_length: int):
     arrow_test_data = [
         (pa.uint8(), "tinyint", [1, 2, None, 4, 5, 0, 2**8 - 1]),

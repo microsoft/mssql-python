@@ -421,7 +421,8 @@ SqlHandlePtr Connection::allocStatementHandle() {
 }
 
 SQLRETURN Connection::setAttribute(SQLINTEGER attribute, py::object value) {
-    clearResultMetadata(attribute == SQL_ATTR_RESET_CONNECTION);
+    clearResultMetadata(attribute == SQL_ATTR_RESET_CONNECTION ||
+                        attribute == SQL_ATTR_AUTOCOMMIT);
     LOG("Setting SQL attribute=%d", attribute);
     // SQLPOINTER ptr = nullptr;
     // SQLINTEGER length = 0;
