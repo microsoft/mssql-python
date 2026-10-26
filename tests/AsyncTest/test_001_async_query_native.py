@@ -63,6 +63,7 @@ def test_async_type_hints_match_native_exports(name):
 
 
 def test_async_tvp_is_internal_native_constructor():
+    pytest.importorskip("mssql_py_core", exc_type=ImportError)
     from mssql_python.async_query import _TableValuedParameter
 
     assert _TableValuedParameter is native.load_py_core().TableValuedParameter
