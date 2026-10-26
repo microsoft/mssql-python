@@ -111,6 +111,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
   before; users should call `cursor.setinputsizes()` to work around this.
 
 ### Fixed
+- **GH-855:** Bulk copy and internal async queries load the Rust extension directly
+  when upgrading from 1.15.0 removes `mssql_py_core/__init__.py`. Existing affected
+  installations can restore the initializer with
+  `python -m pip install --force-reinstall --no-deps mssql-python-rs==0.3.0`,
+  followed by restarting Python.
 - **GH-754:** Pooled connections are now rolled back and restored to autocommit
   mode before being parked. This prevents an empty transaction from remaining
   visible on an idle SQL Server session after `Connection.close()`. Abandoned
