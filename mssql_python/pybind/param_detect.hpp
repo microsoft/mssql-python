@@ -343,6 +343,9 @@ inline void ValidateInputSizes(PyObject* inputSizes) {
             if (requestedSize > std::numeric_limits<SQLULEN>::max()) {
                 throw py::value_error("column size is out of range");
             }
+            if (requestedSize > 256ULL * 1024 * 1024) {
+                throw py::value_error("column size exceeds the 256 MiB size-unit limit");
+            }
             const unsigned long long requestedDigits =
                 PyLong_AsUnsignedLongLong(decimalDigits);
             if (requestedDigits == static_cast<unsigned long long>(-1) && PyErr_Occurred()) {

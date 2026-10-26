@@ -156,12 +156,33 @@ def test_native_dae_failure_preserves_error_and_allows_reuse(conn_str, failure_s
         ([(12, -8, True, 0)], "must be integers"),
         ([(12, -8, -1, 0)], "column size must be non-negative"),
         ([(12, -8, 2**128, 0)], "column size is out of range"),
+        ([(12, -8, 256 * 1024 * 1024 + 1, 0)], "256 MiB size-unit limit"),
+        ([(12, -8, 2**40, 0)], "256 MiB size-unit limit"),
         ([(12, -8, 1, 2**128)], "decimal digits are out of range"),
     ],
 )
 def test_execute_rejects_malformed_input_sizes_before_handle_access(input_sizes, message):
     with pytest.raises((TypeError, ValueError), match=message):
         ddbc.DDBCSQLExecute(None, "", [], input_sizes, [False], True, {})
+
+
+@pytest.mark.skipif(not DDBC_AVAILABLE, reason="ddbc_bindings not available")
+@pytest.mark.parametrize(
+    "input_size",
+    [(12, -8, 256 * 1024 * 1024, 0), (3, 1, 10**100, 10**100), (2, 1, 10**100, 10**100)],
+)
+def test_native_input_sizes_allow_limit_and_numeric_normalization(input_size):
+    assert ddbc.DDBCSQLExecute(None, "", [], [input_size], [False], True, {}) == -2
+
+
+@pytest.mark.skipif(not DDBC_AVAILABLE, reason="ddbc_bindings not available")
+def test_native_input_sizes_reject_oversized_metadata_and_allow_reuse(db_connection):
+    with db_connection.cursor() as cur:
+        with pytest.raises(ValueError, match="256 MiB size-unit limit"):
+            ddbc.DDBCSQLExecute(
+                cur.hstmt, "SELECT ?", ["safe"], [(12, -8, 2**40, 0)], [False], True, {}
+            )
+        assert cur.execute("SELECT 42").fetchone()[0] == 42
 
 
 @pytest.mark.skipif(not DDBC_AVAILABLE, reason="ddbc_bindings not available")
