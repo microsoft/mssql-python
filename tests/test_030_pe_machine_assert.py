@@ -118,7 +118,8 @@ def test_zstd_backend_is_available_for_conda_audit_tests():
     )
 
 
-def test_binding_wheel_excludes_core_and_requires_source_rs_version(tmp_path):
+def test_binding_wheel_excludes_core_and_requires_source_rs_version(tmp_path, monkeypatch):
+    monkeypatch.delenv("MSSQL_PYTHON_RS_VERSION", raising=False)
     pytest.importorskip("setuptools", reason="Wheel archive regression requires setuptools")
     pytest.importorskip("wheel", reason="Wheel archive regression requires the wheel build backend")
     shutil.copy2(_ROOT / "setup.py", tmp_path / "setup.py")

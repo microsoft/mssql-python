@@ -422,6 +422,8 @@ def execute(args: argparse.Namespace) -> int:
                 else None
             )
             inputs.validate_rs_transport(receipt, versions)
+            if isinstance(receipt, dict) and receipt.get("version_override"):
+                raise ValueError("RS version overrides are not eligible for Conda release.")
     except archive.READ_ERRORS as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1

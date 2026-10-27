@@ -9,6 +9,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+from types import SimpleNamespace
 import uuid
 import zipfile
 
@@ -90,12 +91,167 @@ def test_consolidation_stages_effective_receipt_version_not_source_pin():
 
 def test_stress_uses_selected_build_and_checks_effective_runtime_metadata():
     source = (PIPELINES / "stress-test-pipeline.yml").read_text(encoding="utf-8")
-    assert source.count("pipelineId: '$(resources.pipeline.buildPipeline.runID)'") == 2
+    assert source.count("pipelineId: '$(resources.pipeline.buildPipeline.runID)'") == 4
     assert (
         source.count("filePath: OneBranchPipelines/scripts/validate-rs-wheel-dependency.ps1") == 2
     )
     assert source.count("'--no-index', '--no-deps'") == 2
     assert source.count("'mssql-python-rs=='+resolve_runtime().version") == 2
+
+
+@pytest.fixture(params=("StressTestWindows", "StressTestLinux"))
+def stress_job(request):
+    yaml = pytest.importorskip("yaml")
+    pipeline = yaml.safe_load((PIPELINES / "stress-test-pipeline.yml").read_text(encoding="utf-8"))
+    return next(job for job in pipeline["jobs"] if job["job"] == request.param)
+
+
+def _stress_wheel(folder, name, version, requirements=()):
+    folder.mkdir(parents=True, exist_ok=True)
+    stem = f"{name.replace('-', '_')}-{version}"
+    path = folder / f"{stem}-py3-none-any.whl"
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr(
+            f"{stem}.dist-info/METADATA",
+            f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n"
+            + "".join(f"Requires-Dist: {requirement}\n" for requirement in requirements),
+        )
+        archive.writestr(
+            f"{stem}.dist-info/WHEEL",
+            "Wheel-Version: 1.0\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
+        )
+        archive.writestr(f"{stem}.dist-info/RECORD", "")
+    return path
+
+
+def _stress_install_command(stress_job, workspace, monkeypatch):
+    from eng.scripts import mssql_python_rs
+
+    calls = []
+    monkeypatch.setattr(subprocess, "check_call", calls.append)
+    monkeypatch.setattr(
+        mssql_python_rs, "resolve_runtime", lambda: SimpleNamespace(version="0.3.1.dev123")
+    )
+    step = next(
+        step
+        for step in stress_job["steps"]
+        if step.get("displayName") == "Install pre-built mssql-python wheel"
+    )
+    script = step["script"]
+    command = next(line.strip() for line in script.splitlines() if 'python -c "' in line)
+    code = command.removeprefix('python -c "').removesuffix('"')
+    source_path = (
+        str(workspace) if stress_job["job"] == "StressTestWindows" else workspace.as_posix()
+    )
+    code = code.replace("$(Build.SourcesDirectory)", source_path).replace(
+        "$(Pipeline.Workspace)", source_path
+    )
+    if os.name != "nt":
+        code = code.replace("\\", "/")
+    exec(compile(code, "<stress-install>", "exec"), {})
+    assert len(calls) == 1
+    assert script.index("python -c ") < script.index("mssql_python_rs.py --verify")
+    return calls[0]
+
+
+def test_stress_downloads_odbc_from_same_selected_build(stress_job):
+    downloads = {
+        step["inputs"]["artifactName"]: step["inputs"]
+        for step in stress_job["steps"]
+        if step.get("task") == "DownloadPipelineArtifact@2"
+    }
+    binding = downloads["drop_Consolidate_ConsolidateArtifacts"]
+    odbc = downloads["drop_ConsolidateOdbc_ConsolidateArtifacts"]
+    for key in ("buildType", "project", "definition", "buildVersionToDownload", "pipelineId"):
+        assert binding[key] == odbc[key]
+    assert odbc["buildType"] == odbc["buildVersionToDownload"] == "specific"
+    assert odbc["pipelineId"] == "$(resources.pipeline.buildPipeline.runID)"
+    assert odbc["targetPath"].replace("\\", "/") == "$(Pipeline.Workspace)/odbc-wheels"
+
+
+@pytest.mark.parametrize("odbc_available", (True, False))
+def test_stress_installs_metadata_pinned_odbc_offline(
+    stress_job, workspace, monkeypatch, odbc_available
+):
+    _stress_wheel(
+        workspace / "wheels/dist",
+        "mssql-python",
+        "9.8.7",
+        ("mssql-python-odbc==8.7.6", "mssql-python-rs==0.3.1.dev123"),
+    )
+    odbc_dir = workspace / "odbc-wheels/dist"
+    _stress_wheel(odbc_dir, "mssql-python-odbc", "99.0.0")
+    if odbc_available:
+        _stress_wheel(odbc_dir, "mssql-python-odbc", "8.7.6")
+    _stress_wheel(workspace / "mssql-python-rs-wheels", "mssql-python-rs", "0.3.1.dev123")
+    command = _stress_install_command(stress_job, workspace, monkeypatch)
+    assert "mssql-python-odbc==8.7.6" in command
+    assert "mssql-python-rs==0.3.1.dev123" in command
+    assert "--no-index" in command and "--no-deps" in command
+    links = [command[index + 1] for index, value in enumerate(command) if value == "--find-links"]
+    assert str(odbc_dir) in [str(Path(link)) for link in links]
+    result = subprocess.run(
+        [*command, "--dry-run", "--ignore-installed"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert (result.returncode == 0) == odbc_available, result.stdout + result.stderr
+    if odbc_available:
+        assert "mssql-python-odbc-8.7.6" in result.stdout
+    else:
+        assert "mssql-python-odbc==8.7.6" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "requirements",
+    (
+        (),
+        ("mssql-python-odbc>=8.7.6",),
+        ("mssql-python-odbc==8.7.*",),
+        ("mssql-python-odbc==8.7.6; sys_platform == 'win32'",),
+        ("mssql-python-odbc==8.7.6", "mssql-python-odbc==8.7.5"),
+    ),
+)
+def test_stress_rejects_missing_or_nonexact_odbc_pin(
+    stress_job, workspace, monkeypatch, requirements
+):
+    _stress_wheel(workspace / "wheels/dist", "mssql-python", "9.8.7", requirements)
+    with pytest.raises((ValueError, TypeError)):
+        _stress_install_command(stress_job, workspace, monkeypatch)
+
+
+def test_stress_rejects_inconsistent_binding_odbc_pins(stress_job, workspace, monkeypatch):
+    for version, pin in (("9.8.7", "8.7.6"), ("9.8.8", "8.7.5")):
+        _stress_wheel(
+            workspace / "wheels/dist", "mssql-python", version, (f"mssql-python-odbc=={pin}",)
+        )
+    with pytest.raises(ValueError):
+        _stress_install_command(stress_job, workspace, monkeypatch)
+
+
+def test_coverage_selects_python_before_dependencies_native_build_and_runtime():
+    yaml = pytest.importorskip("yaml")
+    pipeline = yaml.safe_load((ROOT / ENTRY_POINTS[0]).read_text(encoding="utf-8"))
+    job = next(job for job in pipeline["jobs"] if job["job"] == "CodeCoverageReport")
+    steps = job["steps"]
+    selectors = [
+        index for index, step in enumerate(steps) if step.get("task") == "UsePythonVersion@0"
+    ]
+    assert len(selectors) == 1
+    selected = selectors[0]
+    assert steps[selected]["inputs"]["versionSpec"] == "3.12"
+    assert steps[selected]["inputs"]["addToPath"] is True
+    for required in ("pip install", "./build.sh codecov", "./generate_codecov.sh"):
+        assert any(required in step.get("script", "") for step in steps), required
+    assert any(step.get("template") == "steps/install-mssql-py-core.yml" for step in steps)
+    for index, step in enumerate(steps):
+        uses_python = re.search(
+            r"\b(?:python\d*|pip\d*)\b|(?:build|generate_codecov)\.sh",
+            step.get("script", ""),
+        )
+        if uses_python or step.get("template") == "steps/install-mssql-py-core.yml":
+            assert selected < index, step
 
 
 def test_runtime_is_verified_after_dependency_setup_before_testing():

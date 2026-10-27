@@ -112,7 +112,10 @@ def test_installer_selects_index_and_preserves_cross_arch_behavior(
     tmp_path, monkeypatch, cross_arch
 ):
     monkeypatch.setenv(runtime.VERSION_ENV, "0.4.0.dev1")
-    monkeypatch.setenv("PIP_EXTRA_INDEX_URL", "https://wrong.example/simple/")
+    monkeypatch.setenv(
+        "PIP_EXTRA_INDEX_URL",  # DevSkim: ignore DS205001 - test removal from child environment
+        "https://wrong.example/simple/",
+    )
     monkeypatch.setenv("PIP_CERT", "corporate-ca.pem")
     monkeypatch.setattr(installer.platform, "machine", lambda: "AMD64")
     monkeypatch.setattr(installer.sys, "platform", "win32")
@@ -121,7 +124,7 @@ def test_installer_selects_index_and_preserves_cross_arch_behavior(
 
     def run(command, *, env, check):
         assert check is True
-        assert "PIP_EXTRA_INDEX_URL" not in env
+        assert "PIP_EXTRA_INDEX_URL" not in env  # DevSkim: ignore DS205001 - assert removal
         assert env["PIP_CERT"] == "corporate-ca.pem"
         commands.append(command)
         if "download" in command:

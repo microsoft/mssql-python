@@ -82,6 +82,17 @@ jobs:
       targetPath: '$(Build.SourcesDirectory)\wheels'
     displayName: 'Download selected build (choose matching override artifacts for dev tests)'
 
+  - task: DownloadPipelineArtifact@2
+    inputs:
+      buildType: 'specific'
+      project: '$(System.TeamProject)'
+      definition: '$(resources.pipeline.buildPipeline.pipelineID)'
+      buildVersionToDownload: 'specific'
+      pipelineId: '$(resources.pipeline.buildPipeline.runID)'
+      artifactName: 'drop_ConsolidateOdbc_ConsolidateArtifacts'
+      targetPath: '$(Pipeline.Workspace)\odbc-wheels'
+    displayName: 'Download ODBC wheels from the same selected build'
+
   - script: |
       python eng/scripts/mssql_python_rs.py --write-version-file "$(Pipeline.Workspace)\effective-runtime.version"
     displayName: 'Resolve effective stress-test runtime'
@@ -97,11 +108,11 @@ jobs:
       python eng/scripts/download_mssql_python_rs_wheels.py --output-dir "$(Pipeline.Workspace)\mssql-python-rs-wheels"
     displayName: 'Download pinned mssql-python-rs wheels'
 
-  # Install the pre-built wheel
+  # Read ODBC pins from the selected build, not the stress checkout's release versions.
   - script: |
       echo "Installing pre-built wheel..."
       dir "$(Build.SourcesDirectory)\wheels"
-      python -c "import subprocess,sys; from eng.scripts.mssql_python_rs import resolve_runtime; subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--no-index', '--no-deps', '--find-links', r'$(Build.SourcesDirectory)\wheels\dist', '--find-links', r'$(Pipeline.Workspace)\mssql-python-rs-wheels', 'mssql-python', 'mssql-python-rs=='+resolve_runtime().version, '--force-reinstall'])"
+      python -c "import subprocess,sys; from pathlib import Path; from eng.conda_tools.archive import read_wheel_metadata; from eng.conda_tools.contracts import exact_dependency_pin; from eng.scripts.mssql_python_rs import resolve_runtime; odbc_version, = {exact_dependency_pin(read_wheel_metadata(w)['requires_dist'], 'mssql-python-odbc') for w in Path(r'$(Build.SourcesDirectory)\wheels\dist').glob('mssql_python-*.whl')}; subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--no-index', '--no-deps', '--find-links', r'$(Build.SourcesDirectory)\wheels\dist', '--find-links', r'$(Pipeline.Workspace)\odbc-wheels\dist', '--find-links', r'$(Pipeline.Workspace)\mssql-python-rs-wheels', 'mssql-python', 'mssql-python-odbc=='+odbc_version, 'mssql-python-rs=='+resolve_runtime().version, '--force-reinstall'])"
       if errorlevel 1 exit /b 1
       python eng/scripts/mssql_python_rs.py --verify
     displayName: 'Install pre-built mssql-python wheel'
@@ -265,6 +276,17 @@ jobs:
       targetPath: '$(Build.SourcesDirectory)/wheels'
     displayName: 'Download selected build (choose matching override artifacts for dev tests)'
 
+  - task: DownloadPipelineArtifact@2
+    inputs:
+      buildType: 'specific'
+      project: '$(System.TeamProject)'
+      definition: '$(resources.pipeline.buildPipeline.pipelineID)'
+      buildVersionToDownload: 'specific'
+      pipelineId: '$(resources.pipeline.buildPipeline.runID)'
+      artifactName: 'drop_ConsolidateOdbc_ConsolidateArtifacts'
+      targetPath: '$(Pipeline.Workspace)/odbc-wheels'
+    displayName: 'Download ODBC wheels from the same selected build'
+
   - script: |
       python eng/scripts/mssql_python_rs.py --write-version-file "$(Pipeline.Workspace)/effective-runtime.version"
     displayName: 'Resolve effective stress-test runtime'
@@ -281,12 +303,12 @@ jobs:
       python eng/scripts/download_mssql_python_rs_wheels.py --output-dir "$(Pipeline.Workspace)/mssql-python-rs-wheels"
     displayName: 'Download pinned mssql-python-rs wheels'
 
-  # Install the pre-built wheel
+  # Read ODBC pins from the selected build, not the stress checkout's release versions.
   - script: |
       set -e
       echo "Installing pre-built wheel..."
       ls -la "$(Build.SourcesDirectory)/wheels"
-      python -c "import subprocess,sys; from eng.scripts.mssql_python_rs import resolve_runtime; subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--no-index', '--no-deps', '--find-links', '$(Build.SourcesDirectory)/wheels/dist', '--find-links', '$(Pipeline.Workspace)/mssql-python-rs-wheels', 'mssql-python', 'mssql-python-rs=='+resolve_runtime().version, '--force-reinstall'])"
+      python -c "import subprocess,sys; from pathlib import Path; from eng.conda_tools.archive import read_wheel_metadata; from eng.conda_tools.contracts import exact_dependency_pin; from eng.scripts.mssql_python_rs import resolve_runtime; odbc_version, = {exact_dependency_pin(read_wheel_metadata(w)['requires_dist'], 'mssql-python-odbc') for w in Path('$(Build.SourcesDirectory)/wheels/dist').glob('mssql_python-*.whl')}; subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--no-index', '--no-deps', '--find-links', '$(Build.SourcesDirectory)/wheels/dist', '--find-links', '$(Pipeline.Workspace)/odbc-wheels/dist', '--find-links', '$(Pipeline.Workspace)/mssql-python-rs-wheels', 'mssql-python', 'mssql-python-odbc=='+odbc_version, 'mssql-python-rs=='+resolve_runtime().version, '--force-reinstall'])"
       python eng/scripts/mssql_python_rs.py --verify
     displayName: 'Install pre-built mssql-python wheel'
 

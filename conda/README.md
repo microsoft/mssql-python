@@ -97,6 +97,8 @@ records `distribution_version`, `index_url`, `version_override` and individual
 version uses the public `mssql-rs_Public` Python index. Conda consumers validate this
 receipt and use staged producer bytes, not a fresh download using their checkout's
 pin or `MSSQL_PYTHON_RS_VERSION`. No NuGet package or transport pin is required.
+Release validation rejects any receipt with `version_override=true`, including
+an override equal to the committed stable pin. Such artifacts remain test-only.
 
 Published historical bindings that declare no RS dependency are accepted only when their
 payload and RECORD own the core initializer and native extension. They produce an explicit

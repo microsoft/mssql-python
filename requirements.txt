@@ -16,6 +16,7 @@ azure-identity
 # Build dependencies
 pybind11
 setuptools
+wheel
 
 # Code formatting and linting
 black

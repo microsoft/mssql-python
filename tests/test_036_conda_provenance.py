@@ -363,6 +363,7 @@ def test_public_wheel_controls_use_actual_metadata_ownership_and_hashes(
         "missing-private-driver",
         "missing-receipt",
         "wrong-index",
+        "stable-rs-override",
         "missing-selected-wheel",
         "wrong-selected-wheel",
         "wrong-wheel-tags",
@@ -413,6 +414,8 @@ def test_source_bound_release_components(tmp_path, monkeypatch, capsys, problem,
     }
     if problem == "wrong-index":
         receipt["index_url"] = inputs.DEV_INDEX
+    elif problem == "stable-rs-override":
+        receipt["version_override"] = True
     if with_rs:
         files[rs_prefix + "conda-wheel-source.txt"] = (selected + "\n").encode()
     if "-alias-" in problem:
@@ -533,9 +536,14 @@ def test_source_bound_release_components(tmp_path, monkeypatch, capsys, problem,
             "--release-versions",
         ]
     )
+    output = capsys.readouterr()
     assert result == (
         0 if problem in {"legacy", "rs", "rs-extra-owned", "rs-pyc-owned"} else 1
-    ), capsys.readouterr()
+    ), output
+    if problem == "stable-rs-override":
+        assert "RS version overrides are not eligible for Conda release." in output.err
+        assert "COMPONENT_INPUT_OK" not in output.out
+        assert "release-ready" not in output.out
 
 
 @pytest.mark.parametrize(

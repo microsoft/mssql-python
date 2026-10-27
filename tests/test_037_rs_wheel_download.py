@@ -154,7 +154,11 @@ def test_rejects_symlink_output_without_deleting_target(tmp_path):
 
 def test_rejects_insecure_index(tmp_path):
     with pytest.raises(ValueError, match="HTTPS"):
-        downloader.download_wheels("http://example.test/simple/", _pin(tmp_path), tmp_path / "out")
+        downloader.download_wheels(
+            "http://example.test/simple/",  # DevSkim: ignore DS137138 - HTTPS rejection fixture
+            _pin(tmp_path),
+            tmp_path / "out",
+        )
 
 
 def test_ignores_yanked_wheels(tmp_path, monkeypatch):
