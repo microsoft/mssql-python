@@ -9,6 +9,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import sys
 from types import SimpleNamespace
 import uuid
 import zipfile
@@ -17,8 +18,16 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 PIPELINES = ROOT / "OneBranchPipelines"
-if not (PIPELINES / "scripts/validate-release-versions.ps1").is_file():
+SOURCE_PREREQUISITES = (
+    "OneBranchPipelines/scripts/validate-release-versions.ps1",
+    "eng/scripts/mssql_python_rs.py",
+    "eng/conda_tools/archive.py",
+    "eng/conda_tools/contracts.py",
+)
+if not all((ROOT / relative).is_file() for relative in SOURCE_PREREQUISITES):
     pytest.skip("Pipeline contracts require a complete source checkout", allow_module_level=True)
+
+import yaml
 
 VERSION_ENV = "MSSQL_PYTHON_RS_VERSION"
 ENTRY_POINTS = (
@@ -40,7 +49,6 @@ def test_pipeline_override_is_explicit_and_defaults_to_empty(filename):
 
 
 def test_modified_pipeline_yaml_parses():
-    yaml = pytest.importorskip("yaml")
     for folder in (ROOT / "eng/pipelines", PIPELINES):
         for path in folder.rglob("*.yml"):
             assert isinstance(yaml.safe_load(path.read_text(encoding="utf-8")), dict), path
@@ -101,9 +109,121 @@ def test_stress_uses_selected_build_and_checks_effective_runtime_metadata():
 
 @pytest.fixture(params=("StressTestWindows", "StressTestLinux"))
 def stress_job(request):
-    yaml = pytest.importorskip("yaml")
     pipeline = yaml.safe_load((PIPELINES / "stress-test-pipeline.yml").read_text(encoding="utf-8"))
     return next(job for job in pipeline["jobs"] if job["job"] == request.param)
+
+
+@pytest.mark.parametrize(
+    "missing",
+    (
+        "eng/scripts/mssql_python_rs.py",
+        "eng/conda_tools/archive.py",
+        "eng/conda_tools/contracts.py",
+    ),
+)
+def test_pipeline_contracts_skip_incomplete_wheel_fixture(tmp_path, missing):
+    shutil.copytree(PIPELINES, tmp_path / "OneBranchPipelines")
+    for relative in SOURCE_PREREQUISITES[1:]:
+        if relative != missing:
+            path = tmp_path / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.touch()
+    copied_test = tmp_path / "tests" / Path(__file__).name
+    copied_test.parent.mkdir()
+    shutil.copy2(__file__, copied_test)
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "--noconftest",
+            "--collect-only",
+            "-q",
+            "-rs",
+            str(copied_test),
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 5, result.stdout + result.stderr
+    assert "complete source checkout" in result.stdout
+    assert "SKIPPED [1]" in result.stdout
+
+
+def test_pipeline_contracts_require_yaml_in_complete_checkout():
+    command = (
+        "import sys, pytest; sys.modules['yaml'] = None; "
+        "raise SystemExit(pytest.main("
+        + repr(["--noconftest", "--collect-only", "-q", str(Path(__file__).resolve())])
+        + "))"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", command],
+        cwd=ROOT,
+        env=dict(os.environ, PYTEST_DISABLE_PLUGIN_AUTOLOAD="1"),
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "ModuleNotFoundError" in result.stdout
+    assert "yaml" in result.stdout
+
+
+@pytest.mark.parametrize("shadow", (None, "mssql_python_odbc", "mssql_python"))
+def test_stress_checks_import_provenance_before_binding_load(stress_job, tmp_path, shadow):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    installed = tmp_path / "checkout-site-packages"
+    for name in ("mssql_python_odbc", "mssql_python"):
+        package = installed / name
+        package.mkdir(parents=True)
+        (package / "__init__.py").write_text(
+            "print('BINDING_IMPORTED')\n" if name == "mssql_python" else "",
+            encoding="utf-8",
+        )
+    if shadow:
+        package = checkout / shadow
+        package.mkdir()
+        (package / "__init__.py").write_text(
+            "print('BINDING_IMPORTED')\n" if shadow == "mssql_python" else "",
+            encoding="utf-8",
+        )
+    step = next(
+        step
+        for step in stress_job["steps"]
+        if step.get("displayName") == "Ensure tests use installed wheel"
+    )
+    script = step.get("script", step.get("powershell"))
+    command = next(line.strip() for line in script.splitlines() if 'python -c "' in line)
+    code = command.removeprefix('python -c "').removesuffix('"')
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=checkout,
+        env=dict(
+            os.environ,
+            PYTHONPATH=str(installed),
+            BUILD_SOURCESDIRECTORY=str(checkout),
+        ),
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    if shadow:
+        assert result.returncode != 0, result.stdout
+        assert f"{shadow} resolved inside checkout:" in result.stderr
+        if shadow == "mssql_python_odbc":
+            assert "BINDING_IMPORTED" not in result.stdout
+    else:
+        assert result.returncode == 0, result.stderr
+        assert str(installed) in result.stdout
+        assert "BINDING_IMPORTED" in result.stdout
+    renaming = script[: script.index('python -c "')]
+    assert "mssql_python_odbc" in renaming
+    assert "mssql_python" in renaming
+    assert "set -e" in script if "script" in step else "$ErrorActionPreference" in script
 
 
 def _stress_wheel(folder, name, version, requirements=()):
@@ -231,7 +351,6 @@ def test_stress_rejects_inconsistent_binding_odbc_pins(stress_job, workspace, mo
 
 
 def test_coverage_selects_python_before_dependencies_native_build_and_runtime():
-    yaml = pytest.importorskip("yaml")
     pipeline = yaml.safe_load((ROOT / ENTRY_POINTS[0]).read_text(encoding="utf-8"))
     job = next(job for job in pipeline["jobs"] if job["job"] == "CodeCoverageReport")
     steps = job["steps"]

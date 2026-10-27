@@ -2,6 +2,7 @@
 pytest
 pytest-cov
 pytest-asyncio
+PyYAML
 zstandard
 coverage
 unittest-xml-reporting

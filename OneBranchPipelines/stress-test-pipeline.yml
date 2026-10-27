@@ -117,15 +117,17 @@ jobs:
       python eng/scripts/mssql_python_rs.py --verify
     displayName: 'Install pre-built mssql-python wheel'
 
-  # Rename local source folder to avoid import conflicts with installed wheel
+  # Hide checkout packages before loading the selected build's installed wheels.
   - powershell: |
-      Write-Host "Renaming local mssql_python folder to avoid import conflicts..."
-      if (Test-Path "$(Build.SourcesDirectory)\mssql_python") {
-        Rename-Item -Path "$(Build.SourcesDirectory)\mssql_python" -NewName "mssql_python_src" -Force
-        Write-Host "Renamed mssql_python to mssql_python_src"
+      $ErrorActionPreference = 'Stop'
+      foreach ($package in @('mssql_python', 'mssql_python_odbc')) {
+        $source = Join-Path $env:BUILD_SOURCESDIRECTORY $package
+        if (Test-Path -LiteralPath $source) {
+          Rename-Item -LiteralPath $source -NewName "${package}_src" -ErrorAction Stop
+        }
       }
-      # Verify import from installed wheel
-      python -c "import mssql_python; print('Imported from:', mssql_python.__file__)"
+      python -c "import os; from pathlib import Path; import mssql_python_odbc as odbc; source=Path(os.environ['BUILD_SOURCESDIRECTORY']).resolve(); p=Path(odbc.__file__).resolve(); assert not p.is_relative_to(source), 'mssql_python_odbc resolved inside checkout: '+str(p); print('mssql_python_odbc imported from:', p); import mssql_python; p=Path(mssql_python.__file__).resolve(); assert not p.is_relative_to(source), 'mssql_python resolved inside checkout: '+str(p); print('mssql_python imported from:', p)"
+      if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     displayName: 'Ensure tests use installed wheel'
 
   # PYTHON-1ES-MMS2022 has LocalDB pre-installed (no full SQL Server instance)
@@ -312,15 +314,15 @@ jobs:
       python eng/scripts/mssql_python_rs.py --verify
     displayName: 'Install pre-built mssql-python wheel'
 
-  # Rename local source folder to avoid import conflicts with installed wheel
+  # Hide checkout packages before loading the selected build's installed wheels.
   - script: |
-      echo "Renaming local mssql_python folder to avoid import conflicts..."
-      if [ -d "$(Build.SourcesDirectory)/mssql_python" ]; then
-        mv "$(Build.SourcesDirectory)/mssql_python" "$(Build.SourcesDirectory)/mssql_python_src"
-        echo "Renamed mssql_python to mssql_python_src"
-      fi
-      # Verify import from installed wheel
-      python -c "import mssql_python; print('Imported from:', mssql_python.__file__)"
+      set -e
+      for package in mssql_python mssql_python_odbc; do
+        if [ -d "$(Build.SourcesDirectory)/$package" ]; then
+          mv "$(Build.SourcesDirectory)/$package" "$(Build.SourcesDirectory)/${package}_src"
+        fi
+      done
+      python -c "import os; from pathlib import Path; import mssql_python_odbc as odbc; source=Path(os.environ['BUILD_SOURCESDIRECTORY']).resolve(); p=Path(odbc.__file__).resolve(); assert not p.is_relative_to(source), 'mssql_python_odbc resolved inside checkout: '+str(p); print('mssql_python_odbc imported from:', p); import mssql_python; p=Path(mssql_python.__file__).resolve(); assert not p.is_relative_to(source), 'mssql_python resolved inside checkout: '+str(p); print('mssql_python imported from:', p)"
     displayName: 'Ensure tests use installed wheel'
 
   # Docker is pre-installed by linux-1es-pt-prerequisites-v2 artifact
