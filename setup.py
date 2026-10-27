@@ -7,15 +7,14 @@ from setuptools import setup, find_packages
 from setuptools.dist import Distribution
 from wheel.bdist_wheel import bdist_wheel
 
+from eng.scripts.mssql_python_rs import resolve_runtime
+
 PROJECT_ROOT = Path(__file__).resolve().parent
 
 
 def _read_mssql_python_rs_version() -> str:
     version_file = PROJECT_ROOT / "eng" / "versions" / "mssql-python-rs.version"
-    version = version_file.read_text(encoding="utf-8").strip()
-    if not version:
-        raise SystemExit(f"Version file is empty: {version_file}")
-    return version
+    return resolve_runtime(version_file).version
 
 
 def _read_odbc_version() -> str:

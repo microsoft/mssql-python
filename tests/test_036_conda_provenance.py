@@ -362,7 +362,7 @@ def test_public_wheel_controls_use_actual_metadata_ownership_and_hashes(
         "missing-core",
         "missing-private-driver",
         "missing-receipt",
-        "wrong-transport",
+        "wrong-index",
         "missing-selected-wheel",
         "wrong-selected-wheel",
         "wrong-wheel-tags",
@@ -407,12 +407,12 @@ def test_source_bound_release_components(tmp_path, monkeypatch, capsys, problem,
     selected = f"mssql_python_rs-0.2.0-{rs_tag}-win_amd64.whl"
     receipt = {
         "distribution_version": "0.2.0",
-        "transport_version": "0.2.0-dev.transport",
-        "feed_url": inputs.DEFAULT_FEED,
-        "package_id": inputs.PACKAGE_ID,
-        "package_sha256": "a" * 64,
+        "index_url": inputs.DEFAULT_INDEX,
+        "version_override": False,
         "wheel_sha256": {selected: "b" * 64},
     }
+    if problem == "wrong-index":
+        receipt["index_url"] = inputs.DEV_INDEX
     if with_rs:
         files[rs_prefix + "conda-wheel-source.txt"] = (selected + "\n").encode()
     if "-alias-" in problem:
@@ -516,14 +516,6 @@ def test_source_bound_release_components(tmp_path, monkeypatch, capsys, problem,
         (root / "rs-transport.json").write_text(json.dumps(receipt))
     monkeypatch.setenv(
         "RELEASE_VERSIONS", json.dumps(versions) if problem != "missing-version-env" else ""
-    )
-    monkeypatch.setenv(
-        "RS_TRANSPORT_VERSION",
-        (
-            "wrong"
-            if problem == "wrong-transport"
-            else "0.2.0-dev.transport" if "mssql-python-rs" in versions else ""
-        ),
     )
     result = cli.main(
         [
@@ -1162,7 +1154,24 @@ def test_rs_source_contract_reads_distribution_pin_not_transport(release_sources
     ]
 
 
-@pytest.mark.parametrize("version", ["", "0.2.0\n0.3.0", "$(version)", "../0.2.0", "0.2.0;bad"])
+def test_helper_based_setup_source_uses_release_pin_not_consumer_override(
+    release_sources, monkeypatch
+):
+    _source_dependencies(release_sources, '[f"mssql-python-rs=={_read_mssql_python_rs_version()}"]')
+    release_sources["setup.py"] = (
+        "from eng.scripts.mssql_python_rs import resolve_runtime\n"
+        "def _read_mssql_python_rs_version():\n"
+        "    return resolve_runtime(version_file).version\n" + release_sources["setup.py"]
+    )
+    release_sources["eng/versions/mssql-python-rs.version"] = "0.2.0\n"
+    monkeypatch.setenv("MSSQL_PYTHON_RS_VERSION", "0.3.0.dev123")
+    assert inputs.read_release_versions(release_sources.__getitem__)["mssql-python-rs"] == "0.2.0"
+
+
+@pytest.mark.parametrize(
+    "version",
+    ["", "0.2.0\n0.3.0", "$(version)", "../0.2.0", "0.2.0;bad", "0.2.0.dev123", "0.2.0+local"],
+)
 def test_rs_distribution_pin_must_be_present_and_unambiguous(release_sources, version):
     _source_dependencies(release_sources, '[f"mssql-python-rs=={_read_mssql_python_rs_version()}"]')
     release_sources["eng/versions/mssql-python-rs.version"] = version
@@ -1217,10 +1226,6 @@ def test_recorded_rs_source_is_read_only_at_verified_wheel_commit(release_source
         record.pop("content")
     if problem != "missing":
         chain[key] = record
-    transport_key, transport = _source_record(
-        "eng/versions/mssql-python-rs-nuget.version", "0.2.0-dev.transport"
-    )
-    chain[transport_key] = transport
     reads = []
 
     def get_json(path):
@@ -1232,39 +1237,13 @@ def test_recorded_rs_source_is_read_only_at_verified_wheel_commit(release_source
     if problem == "valid":
         result = _verify(chain, get_json=get_json)
         assert result["versions"]["mssql-python-rs"] == "0.2.0"
-        assert result["rsTransportVersion"] == "0.2.0-dev.transport"
-        assert reads[-2:] == [key, transport_key]
+        assert "rsTransportVersion" not in result
+        assert reads[-1] == key
     else:
         with pytest.raises((ValueError, KeyError, HTTPError)):
             _verify(chain, get_json=get_json)
         assert reads[-1] == key
-    assert len(reads) == (9 if problem == "valid" else 8)
-
-
-@pytest.mark.parametrize("problem", ["missing", "wrong-commit", "invalid", "forbidden"])
-def test_rs_transport_source_cannot_fall_back_to_distribution_version(
-    release_sources, chain, problem
-):
-    _source_dependencies(release_sources, '[f"mssql-python-rs=={_read_mssql_python_rs_version()}"]')
-    chain.update([_source_record("setup.py", release_sources["setup.py"])])
-    chain.update([_source_record("eng/versions/mssql-python-rs.version", "0.2.0")])
-    key, record = _source_record(
-        "eng/versions/mssql-python-rs-nuget.version", "0.2.0-dev.transport"
-    )
-    if problem == "wrong-commit":
-        record["commitId"] = "c" * 40
-    elif problem == "invalid":
-        record["content"] = "0.2.0\n0.3.0"
-    if problem != "missing":
-        chain[key] = record
-
-    def get_json(path):
-        if path == key and problem == "forbidden":
-            raise HTTPError("https://dev.azure.com", 403, "Forbidden", {}, None)
-        return chain[path]
-
-    with pytest.raises((ValueError, KeyError, HTTPError)):
-        _verify(chain, get_json=get_json)
+    assert len(reads) == 8
 
 
 @pytest.mark.parametrize(
@@ -1273,10 +1252,10 @@ def test_rs_transport_source_cannot_fall_back_to_distribution_version(
         "valid",
         "absent",
         "distribution",
-        "transport",
-        "feed",
-        "package",
-        "package-hash",
+        "index",
+        "override-absent",
+        "override-nonbool",
+        "legacy-transport",
         "empty-wheels",
         "wheel-hash",
         "wheel-version",
@@ -1286,25 +1265,29 @@ def test_rs_transport_source_cannot_fall_back_to_distribution_version(
 def test_rs_transport_receipt_is_source_bound_without_inferred_producer_id(problem):
     receipt = {
         "distribution_version": "0.2.0",
-        "transport_version": "0.2.0-dev.transport",
-        "feed_url": (
-            "https://pkgs.dev.azure.com/sqlclientdrivers/public/"
-            "_packaging/mssql-rs_Public/nuget/v3/index.json"
-        ),
-        "package_id": "mssql-python-rs-wheels",
-        "package_sha256": "a" * 64,
+        "index_url": inputs.DEFAULT_INDEX,
+        "version_override": False,
         "wheel_sha256": {"mssql_python_rs-0.2.0-cp313-cp313-win_amd64.whl": "b" * 64},
-        "nuspec_description": "InternalBuild; no independently verified numeric producer ID",
     }
     fields = {
         "distribution": "distribution_version",
-        "transport": "transport_version",
-        "feed": "feed_url",
-        "package": "package_id",
-        "package-hash": "package_sha256",
+        "index": "index_url",
     }
     if problem in fields:
         receipt[fields[problem]] = "wrong"
+    elif problem == "override-absent":
+        receipt.pop("version_override")
+    elif problem == "override-nonbool":
+        receipt["version_override"] = "false"
+    elif problem == "legacy-transport":
+        receipt.pop("index_url")
+        receipt.pop("version_override")
+        receipt.update(
+            transport_version="0.2.0-dev.transport",
+            feed_url="https://example.test/nuget/v3/index.json",
+            package_id="mssql-python-rs-wheels",
+            package_sha256="a" * 64,
+        )
     elif problem == "absent":
         receipt = None
     elif problem == "empty-wheels":
@@ -1318,7 +1301,7 @@ def test_rs_transport_receipt_is_source_bound_without_inferred_producer_id(probl
         else:
             name = "../" + name
         receipt["wheel_sha256"] = {name: digest}
-    arguments = (receipt, {"mssql-python-rs": "0.2.0"}, "0.2.0-dev.transport")
+    arguments = (receipt, {"mssql-python-rs": "0.2.0"})
     if problem == "valid":
         inputs.validate_rs_transport(*arguments)
     else:
@@ -1327,11 +1310,38 @@ def test_rs_transport_receipt_is_source_bound_without_inferred_producer_id(probl
 
 
 def test_verified_legacy_transport_absence_is_not_a_new_producer_fallback():
-    inputs.validate_rs_transport(None, {"mssql-python": "1.15.0"}, "")
+    inputs.validate_rs_transport(None, {"mssql-python": "1.15.0"})
     with pytest.raises(ValueError, match="embedded-core"):
-        inputs.validate_rs_transport({}, {"mssql-python": "1.15.0"}, "")
+        inputs.validate_rs_transport({}, {"mssql-python": "1.15.0"})
     with pytest.raises(ValueError, match="recorded"):
-        inputs.validate_rs_transport(None, {"mssql-python-rs": "0.2.0"}, "")
+        inputs.validate_rs_transport(None, {"mssql-python-rs": "0.2.0"})
+
+
+@pytest.mark.parametrize(
+    ("version", "index", "override", "valid"),
+    [
+        ("0.2.0", inputs.DEFAULT_INDEX, False, True),
+        ("0.2.0", inputs.DEFAULT_INDEX, True, True),
+        ("0.2.0", inputs.DEV_INDEX, False, False),
+        ("0.2.0.dev123", inputs.DEV_INDEX, True, True),
+        ("0.2.0.dev123", inputs.DEFAULT_INDEX, True, False),
+        ("0.2.0.dev123", inputs.DEV_INDEX, False, False),
+    ],
+)
+def test_rs_index_receipt_cannot_switch_release_and_development_sources(
+    version, index, override, valid
+):
+    receipt = {
+        "distribution_version": version,
+        "index_url": index,
+        "version_override": override,
+        "wheel_sha256": {f"mssql_python_rs-{version}-cp310-abi3-win_amd64.whl": "a" * 64},
+    }
+    if valid:
+        inputs.validate_rs_transport(receipt, {"mssql-python-rs": version})
+    else:
+        with pytest.raises(ValueError, match="distribution pin/index"):
+            inputs.validate_rs_transport(receipt, {"mssql-python-rs": version})
 
 
 @pytest.mark.parametrize(

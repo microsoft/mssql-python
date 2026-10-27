@@ -6,7 +6,14 @@ trigger:
     include:
       - main
 
+parameters:
+  - name: rsVersionOverride
+    displayName: 'Exact mssql-python-rs test version (empty uses committed PyPI release)'
+    type: string
+    default: ''
+
 variables:
+  MSSQL_PYTHON_RS_VERSION: ${{ parameters.rsVersionOverride }}
   # QEMU 10.2.3, qualified against the ARM64 GCC startup crash and shutdown tests.
   arm64QemuImage: 'tonistiigi/binfmt@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0'
 
@@ -355,7 +362,7 @@ jobs:
 
   # Run tests for LocalDB
   - script: |
-      python -m pytest -v --junitxml=test-results-localdb.xml --cov=. --cov-report=xml:coverage-localdb.xml --capture=tee-sys --cache-clear
+      python eng/scripts/mssql_python_rs.py --verify && python -m pytest -v --junitxml=test-results-localdb.xml --cov=. --cov-report=xml:coverage-localdb.xml --capture=tee-sys --cache-clear
     displayName: 'Run tests with coverage on LocalDB'
     condition: and(succeeded(), eq(variables['sqlVersion'], 'LocalDB'))
     env:
@@ -363,7 +370,7 @@ jobs:
 
   # Run tests for SQL Server 2022
   - script: |
-      python -m pytest -v --junitxml=test-results-sql2022.xml --cov=. --cov-report=xml:coverage-sql2022.xml --capture=tee-sys --cache-clear
+      python eng/scripts/mssql_python_rs.py --verify && python -m pytest -v --junitxml=test-results-sql2022.xml --cov=. --cov-report=xml:coverage-sql2022.xml --capture=tee-sys --cache-clear
     displayName: 'Run tests with coverage on SQL Server 2022'
     condition: and(succeeded(), eq(variables['sqlVersion'], 'SQL2022'))
     env:
@@ -371,7 +378,7 @@ jobs:
 
   # Run tests for SQL Server 2025
   - script: |
-      python -m pytest -v --junitxml=test-results-sql2025.xml --cov=. --cov-report=xml:coverage-sql2025.xml --capture=tee-sys --cache-clear
+      python eng/scripts/mssql_python_rs.py --verify && python -m pytest -v --junitxml=test-results-sql2025.xml --cov=. --cov-report=xml:coverage-sql2025.xml --capture=tee-sys --cache-clear
     displayName: 'Run tests with coverage on SQL Server 2025'
     condition: and(succeeded(), eq(variables['sqlVersion'], 'SQL2025'))
     env:
@@ -716,7 +723,7 @@ jobs:
 
   - script: |
       echo "Build successful, running tests now"
-      python -m pytest -v --junitxml=test-results.xml --cov=. --cov-report=xml --capture=tee-sys --cache-clear
+      python eng/scripts/mssql_python_rs.py --verify && python -m pytest -v --junitxml=test-results.xml --cov=. --cov-report=xml --capture=tee-sys --cache-clear
     displayName: 'Run pytest with coverage'
     env:
       DB_CONNECTION_STRING: 'Server=tcp:127.0.0.1,1433;Database=master;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
@@ -789,7 +796,7 @@ jobs:
 
   - script: |
       # Create a Docker container for testing
-      docker run -d --name test-container-$(distroName) \
+      docker run -e MSSQL_PYTHON_RS_VERSION -d --name test-container-$(distroName) \
         -v $(Build.SourcesDirectory):/workspace \
         -w /workspace \
         --network bridge \
@@ -951,7 +958,7 @@ jobs:
           source /opt/venv/bin/activate
           echo 'Build successful, running tests now on $(distroName) with Azure SQL'
           echo 'Using Azure SQL connection string'
-          python -m pytest -v --junitxml=test-results-$(distroName).xml --cov=. --cov-report=xml:coverage-$(distroName).xml --capture=tee-sys --cache-clear
+          python eng/scripts/mssql_python_rs.py --verify && python -m pytest -v --junitxml=test-results-$(distroName).xml --cov=. --cov-report=xml:coverage-$(distroName).xml --capture=tee-sys --cache-clear
         "
       else
         # Local SQL Server testing
@@ -966,7 +973,7 @@ jobs:
           source /opt/venv/bin/activate
           echo 'Build successful, running tests now on $(distroName)'
           echo 'Using connection string: Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=***;TrustServerCertificate=yes'
-          python -m pytest -v --junitxml=test-results-$(distroName).xml --cov=. --cov-report=xml:coverage-$(distroName).xml --capture=tee-sys --cache-clear
+          python eng/scripts/mssql_python_rs.py --verify && python -m pytest -v --junitxml=test-results-$(distroName).xml --cov=. --cov-report=xml:coverage-$(distroName).xml --capture=tee-sys --cache-clear
         "
       fi
     displayName: 'Run pytest with coverage in $(distroName) container'
@@ -1122,7 +1129,7 @@ jobs:
 
   - script: |
       # Create a Docker container for testing on ARM64
-      docker run -d --name test-container-$(distroName)-$(archName) \
+      docker run -e MSSQL_PYTHON_RS_VERSION -d --name test-container-$(distroName)-$(archName) \
         --platform linux/arm64 \
         -v $(Build.SourcesDirectory):/workspace \
         -w /workspace \
@@ -1293,7 +1300,7 @@ jobs:
         echo 'Architecture:' \$(uname -m)
         echo 'Using connection string: Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=***;TrustServerCertificate=yes'
         python main.py
-        python -m pytest -v --junitxml=test-results-$(distroName)-$(archName).xml --cov=. --cov-report=xml:coverage-$(distroName)-$(archName).xml --capture=tee-sys --cache-clear
+        python eng/scripts/mssql_python_rs.py --verify && python -m pytest -v --junitxml=test-results-$(distroName)-$(archName).xml --cov=. --cov-report=xml:coverage-$(distroName)-$(archName).xml --capture=tee-sys --cache-clear
       "
     displayName: 'Run pytest with coverage in $(distroName) ARM64 container'
     env:
@@ -1335,7 +1342,7 @@ jobs:
   steps:
   - script: |
       # Create a Docker container for testing
-      docker run -d --name test-container-rhel9 \
+      docker run -e MSSQL_PYTHON_RS_VERSION -d --name test-container-rhel9 \
         -v $(Build.SourcesDirectory):/workspace \
         -w /workspace \
         --network bridge \
@@ -1495,7 +1502,7 @@ jobs:
         echo 'Build successful, running tests now on RHEL 9'
         echo 'Using connection string: Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=***;TrustServerCertificate=yes'
         python main.py
-        python -m pytest -v --junitxml=test-results-rhel9.xml --cov=. --cov-report=xml:coverage-rhel9.xml --capture=tee-sys --cache-clear
+        python eng/scripts/mssql_python_rs.py --verify && python -m pytest -v --junitxml=test-results-rhel9.xml --cov=. --cov-report=xml:coverage-rhel9.xml --capture=tee-sys --cache-clear
       "
     displayName: 'Run pytest with coverage in RHEL 9 container'
     env:
@@ -1548,7 +1555,7 @@ jobs:
 
   - script: |
       # Create a Docker container for testing on ARM64
-      docker run -d --name test-container-rhel9-arm64 \
+      docker run -e MSSQL_PYTHON_RS_VERSION -d --name test-container-rhel9-arm64 \
         --platform linux/arm64 \
         -v $(Build.SourcesDirectory):/workspace \
         -w /workspace \
@@ -1712,7 +1719,7 @@ jobs:
         echo 'Build successful, running tests now on RHEL 9 ARM64'
         echo 'Architecture:' \$(uname -m)
         echo 'Using connection string: Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=***;TrustServerCertificate=yes'
-        python -m pytest -v --junitxml=test-results-rhel9-arm64.xml --cov=. --cov-report=xml:coverage-rhel9-arm64.xml --capture=tee-sys --cache-clear
+        python eng/scripts/mssql_python_rs.py --verify && python -m pytest -v --junitxml=test-results-rhel9-arm64.xml --cov=. --cov-report=xml:coverage-rhel9-arm64.xml --capture=tee-sys --cache-clear
       "
     displayName: 'Run pytest with coverage in RHEL 9 ARM64 container'
     env:
@@ -1761,7 +1768,7 @@ jobs:
 
   - script: |
       # Create a Docker container for testing on x86_64
-      docker run -d --name test-container-alpine \
+      docker run -e MSSQL_PYTHON_RS_VERSION -d --name test-container-alpine \
         --platform linux/amd64 \
         -v $(Build.SourcesDirectory):/workspace \
         -w /workspace \
@@ -1948,7 +1955,7 @@ jobs:
         fi
         
         # Run pytest
-        python -m pytest -v --junitxml=test-results-alpine.xml --cov=. --cov-report=xml:coverage-alpine.xml --capture=tee-sys --cache-clear
+        python eng/scripts/mssql_python_rs.py --verify && python -m pytest -v --junitxml=test-results-alpine.xml --cov=. --cov-report=xml:coverage-alpine.xml --capture=tee-sys --cache-clear
       "
     displayName: 'Run pytest with coverage in Alpine x86_64 container'
     env:
@@ -2003,7 +2010,7 @@ jobs:
       # Create a Docker container for testing on ARM64
       # TODO(AB#40901): Temporary pin to 3.22 due to msodbcsql ARM64 package arch mismatch
       # Revert to alpine:latest once ODBC team releases fixed ARM64 package
-      docker run -d --name test-container-alpine-arm64 \
+      docker run -e MSSQL_PYTHON_RS_VERSION -d --name test-container-alpine-arm64 \
         --platform linux/arm64 \
         -v $(Build.SourcesDirectory):/workspace \
         -w /workspace \
@@ -2190,7 +2197,7 @@ jobs:
         fi
         
         # Run pytest
-        python -m pytest -v --junitxml=test-results-alpine-arm64.xml --cov=. --cov-report=xml:coverage-alpine-arm64.xml --capture=tee-sys --cache-clear
+        python eng/scripts/mssql_python_rs.py --verify && python -m pytest -v --junitxml=test-results-alpine-arm64.xml --cov=. --cov-report=xml:coverage-alpine-arm64.xml --capture=tee-sys --cache-clear
       "
     displayName: 'Run pytest with coverage in Alpine ARM64 container'
     env:

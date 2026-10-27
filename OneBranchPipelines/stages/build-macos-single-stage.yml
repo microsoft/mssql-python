@@ -77,6 +77,15 @@ stages:
           # fetchDepth: 0 = full git history (needed for version tagging)
           - checkout: self
             fetchDepth: 0
+
+          - ${{ if eq(parameters.oneBranchType, 'Official') }}:
+              - task: PowerShell@2
+                displayName: 'Reject test overrides and prereleases before Official build'
+                inputs:
+                  pwsh: true
+                  targetType: filePath
+                  filePath: OneBranchPipelines/scripts/validate-release-versions.ps1
+                  arguments: '-BuildOnly'
           
           # =========================
           # PYTHON INSTALLATION
@@ -217,7 +226,7 @@ stages:
           # Tests use localhost:1433 connection (SA user with password from variable)
           # -v = verbose output (show test names and results)
           - script: |
-              python -m pytest -v
+              python eng/scripts/mssql_python_rs.py --verify && python -m pytest -v
             displayName: 'Run pytests'
             env:
               # Connection string uses localhost (SQL Server container exposed on port 1433)

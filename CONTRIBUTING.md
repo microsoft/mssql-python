@@ -15,6 +15,50 @@ or contact [opencode@microsoft.com](mailto:opencode@microsoft.com) with any addi
 
 ## Before Contributing
 
+### Selecting the Rust Runtime
+
+Normal builds and tests install the exact released `mssql-python-rs` version in
+[`eng/versions/mssql-python-rs.version`](eng/versions/mssql-python-rs.version)
+from public PyPI. The runtime is a separate dependency, not embedded in the
+`mssql-python` wheel. No NuGet transport package is needed.
+
+To test a Python feature against merged but unreleased Rust changes, select the
+exact version from a successful `mssql-rs` dev or nightly publishing run:
+
+```powershell
+# Windows, with the development environment activated
+$env:MSSQL_PYTHON_RS_VERSION = "0.4.0.dev20261028187000"  # Replace with a published build
+.\eng\scripts\install-mssql-py-core.ps1
+```
+
+```bash
+# Linux or macOS, with the development environment activated
+export MSSQL_PYTHON_RS_VERSION=0.4.0.dev20261028187000  # Replace with a published build
+bash eng/scripts/install-mssql-py-core.sh
+```
+
+Keep the environment variable set while building/installing `mssql-python` and
+running tests. Its generated dependency metadata then uses the same selected
+version. Development versions come from the anonymous Azure Artifacts PyPI
+index; clean releases come from public PyPI. A missing requested wheel fails;
+the installer never falls back to another version. Cross-architecture Windows
+builds validate the target wheel without installing it into the host Python.
+
+Azure build/test pipelines expose the same selection as `rsVersionOverride`.
+Leave it empty for the committed release pin. Record the exact dev version in
+the feature's PR so another developer can reproduce the tests. Before running
+tests after other package installations, verify the runtime has not changed:
+
+```console
+python eng/scripts/mssql_python_rs.py --verify
+```
+
+Feature-test artifacts are not eligible for public release, even if an override
+selects a stable version. Once the required Rust runtime is released on PyPI,
+update the committed pin and validate with no override before releasing Python.
+Unset `MSSQL_PYTHON_RS_VERSION` to return to the committed release pin and rerun
+the installer.
+
 ### Install Local Formatting Hooks
 
 From the repository root, with your Python 3.10+ development virtual environment

@@ -14,7 +14,7 @@ import sys
 from urllib.error import URLError
 from urllib.request import urlopen
 
-from eng.scripts.download_mssql_python_rs_wheels import DEFAULT_FEED, PACKAGE_ID, file_sha256
+from eng.scripts.download_mssql_python_rs_wheels import DEFAULT_INDEX, DEV_INDEX, file_sha256
 
 from . import archive, contracts
 
@@ -175,9 +175,7 @@ def fetch_wheels(
         violations = contracts.validate_core_layout(owned, python_tag, subdir)
     else:
         if source_versions.get("mssql-python-rs") != rs_version:
-            raise ValueError(
-                "Published binding RS requirement differs from the selected pin."
-            )
+            raise ValueError("Published binding RS requirement differs from the selected pin.")
         versions["mssql-python-rs"] = rs_version
         hashes.update(
             _download_published(
@@ -375,7 +373,7 @@ def read_release_versions(read_source: Callable[[str], str]) -> dict[str, str]:
     if _source_requires_rs(setup_source):
         path = "eng/versions/mssql-python-rs.version"
         version = read_source(path).strip()
-        if not re.fullmatch(r"[0-9][A-Za-z0-9.!+_-]*", version):
+        if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version):
             raise ValueError(f"{path} must contain one RS distribution release version.")
         result["mssql-python-rs"] = version
     return result
@@ -449,31 +447,32 @@ def parse_release_versions(raw: str) -> dict[str, str]:
     return versions
 
 
-def validate_rs_transport(
-    receipt: object, versions: dict[str, str], transport_version: str
-) -> None:
-    """Check the selected producer's receipt against its separately verified source pins."""
+def validate_rs_transport(receipt: object, versions: dict[str, str]) -> None:
+    """Check index evidence against the selected producer's verified distribution pin."""
     version = versions.get("mssql-python-rs")
     if version is None:
-        if receipt is not None or transport_version:
+        if receipt is not None:
             raise ValueError("An embedded-core producer must not supply an RS transport receipt.")
         return
     if not isinstance(receipt, dict):
         raise ValueError("The RS producer requires its recorded rs-transport.json receipt.")
     expected = {
         "distribution_version": version,
-        "transport_version": transport_version,
-        "feed_url": DEFAULT_FEED,
-        "package_id": PACKAGE_ID,
+        "index_url": DEV_INDEX if ".dev" in version else DEFAULT_INDEX,
     }
-    if not transport_version or any(receipt.get(key) != value for key, value in expected.items()):
+    override = receipt.get("version_override")
+    if (
+        any(receipt.get(key) != value for key, value in expected.items())
+        or not isinstance(override, bool)
+        or (".dev" in version and not override)
+    ):
         raise ValueError(
-            "RS transport receipt differs from the verified producer's source pins/feed."
+            "RS transport receipt differs from the verified producer's distribution pin/index."
         )
 
     wheels = receipt.get("wheel_sha256")
-    if not _is_sha256(receipt.get("package_sha256")) or not isinstance(wheels, dict) or not wheels:
-        raise ValueError("RS transport receipt requires its package and wheel SHA256 values.")
+    if not isinstance(wheels, dict) or not wheels:
+        raise ValueError("RS transport receipt requires its wheel SHA256 values.")
     for name, digest in wheels.items():
         if (
             not isinstance(name, str)

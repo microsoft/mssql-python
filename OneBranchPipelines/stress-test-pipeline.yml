@@ -27,7 +27,15 @@ resources:
       source: 'Build-Release-Package-Pipeline'  # Name of the build pipeline
       trigger: none  # Don't auto-trigger, we run on schedule or manually
 
+parameters:
+  - name: rsVersionOverride
+    displayName: 'Exact mssql-python-rs test version (empty uses committed PyPI release)'
+    type: string
+    default: ''
+
 variables:
+  - name: MSSQL_PYTHON_RS_VERSION
+    value: ${{ parameters.rsVersionOverride }}
   # Common variables
   - template: /OneBranchPipelines/variables/common-variables.yml@self
   - name: pythonVersion
@@ -62,17 +70,28 @@ jobs:
       pip install psutil pytest-timeout
     displayName: 'Install dependencies'
 
-  # Download pre-built wheel from build-whl-pipeline instead of building from source
+  # Select a matching NonOfficial build resource when testing a runtime override.
   - task: DownloadPipelineArtifact@2
     inputs:
       buildType: 'specific'
       project: '$(System.TeamProject)'
-      definition: 2162  # build-whl-pipeline definition ID
-      buildVersionToDownload: 'latest'
-      branchName: 'refs/heads/main'
-      artifactName: 'mssql-python-wheels-dist'
+      definition: '$(resources.pipeline.buildPipeline.pipelineID)'
+      buildVersionToDownload: 'specific'
+      pipelineId: '$(resources.pipeline.buildPipeline.runID)'
+      artifactName: 'drop_Consolidate_ConsolidateArtifacts'
       targetPath: '$(Build.SourcesDirectory)\wheels'
-    displayName: 'Download pre-built wheel from build-whl-pipeline'
+    displayName: 'Download selected build (choose matching override artifacts for dev tests)'
+
+  - script: |
+      python eng/scripts/mssql_python_rs.py --write-version-file "$(Pipeline.Workspace)\effective-runtime.version"
+    displayName: 'Resolve effective stress-test runtime'
+
+  - task: PowerShell@2
+    displayName: 'Require test wheel metadata and receipt to match effective runtime'
+    inputs:
+      targetType: filePath
+      filePath: OneBranchPipelines/scripts/validate-rs-wheel-dependency.ps1
+      arguments: '-WheelsDir "$(Build.SourcesDirectory)\wheels\dist" -VersionFile "$(Pipeline.Workspace)\effective-runtime.version" -ReceiptFile "$(Build.SourcesDirectory)\wheels\dist\transport.json"'
 
   - script: |
       python eng/scripts/download_mssql_python_rs_wheels.py --output-dir "$(Pipeline.Workspace)\mssql-python-rs-wheels"
@@ -82,7 +101,9 @@ jobs:
   - script: |
       echo "Installing pre-built wheel..."
       dir "$(Build.SourcesDirectory)\wheels"
-      pip install --find-links=$(Build.SourcesDirectory)\wheels --find-links=$(Pipeline.Workspace)\mssql-python-rs-wheels mssql-python --force-reinstall
+      python -c "import subprocess,sys; from eng.scripts.mssql_python_rs import resolve_runtime; subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--no-index', '--no-deps', '--find-links', r'$(Build.SourcesDirectory)\wheels\dist', '--find-links', r'$(Pipeline.Workspace)\mssql-python-rs-wheels', 'mssql-python', 'mssql-python-rs=='+resolve_runtime().version, '--force-reinstall'])"
+      if errorlevel 1 exit /b 1
+      python eng/scripts/mssql_python_rs.py --verify
     displayName: 'Install pre-built mssql-python wheel'
 
   # Rename local source folder to avoid import conflicts with installed wheel
@@ -232,17 +253,29 @@ jobs:
       pip install psutil pytest-timeout
     displayName: 'Install Python dependencies'
 
-  # Download pre-built wheel from build-whl-pipeline instead of building from source
+  # Select a matching NonOfficial build resource when testing a runtime override.
   - task: DownloadPipelineArtifact@2
     inputs:
       buildType: 'specific'
       project: '$(System.TeamProject)'
-      definition: 2162  # build-whl-pipeline definition ID
-      buildVersionToDownload: 'latest'
-      branchName: 'refs/heads/main'
-      artifactName: 'mssql-python-wheels-dist'
+      definition: '$(resources.pipeline.buildPipeline.pipelineID)'
+      buildVersionToDownload: 'specific'
+      pipelineId: '$(resources.pipeline.buildPipeline.runID)'
+      artifactName: 'drop_Consolidate_ConsolidateArtifacts'
       targetPath: '$(Build.SourcesDirectory)/wheels'
-    displayName: 'Download pre-built wheel from build-whl-pipeline'
+    displayName: 'Download selected build (choose matching override artifacts for dev tests)'
+
+  - script: |
+      python eng/scripts/mssql_python_rs.py --write-version-file "$(Pipeline.Workspace)/effective-runtime.version"
+    displayName: 'Resolve effective stress-test runtime'
+
+  - task: PowerShell@2
+    displayName: 'Require test wheel metadata and receipt to match effective runtime'
+    inputs:
+      pwsh: true
+      targetType: filePath
+      filePath: OneBranchPipelines/scripts/validate-rs-wheel-dependency.ps1
+      arguments: '-WheelsDir "$(Build.SourcesDirectory)/wheels/dist" -VersionFile "$(Pipeline.Workspace)/effective-runtime.version" -ReceiptFile "$(Build.SourcesDirectory)/wheels/dist/transport.json"'
 
   - script: |
       python eng/scripts/download_mssql_python_rs_wheels.py --output-dir "$(Pipeline.Workspace)/mssql-python-rs-wheels"
@@ -250,9 +283,11 @@ jobs:
 
   # Install the pre-built wheel
   - script: |
+      set -e
       echo "Installing pre-built wheel..."
       ls -la "$(Build.SourcesDirectory)/wheels"
-      pip install --find-links=$(Build.SourcesDirectory)/wheels --find-links=$(Pipeline.Workspace)/mssql-python-rs-wheels mssql-python --force-reinstall
+      python -c "import subprocess,sys; from eng.scripts.mssql_python_rs import resolve_runtime; subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--no-index', '--no-deps', '--find-links', '$(Build.SourcesDirectory)/wheels/dist', '--find-links', '$(Pipeline.Workspace)/mssql-python-rs-wheels', 'mssql-python', 'mssql-python-rs=='+resolve_runtime().version, '--force-reinstall'])"
+      python eng/scripts/mssql_python_rs.py --verify
     displayName: 'Install pre-built mssql-python wheel'
 
   # Rename local source folder to avoid import conflicts with installed wheel
