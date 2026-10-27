@@ -8,17 +8,41 @@ trigger:
 
 parameters:
   - name: rsVersionOverride
-    displayName: 'Exact mssql-python-rs test version (empty uses committed PyPI release)'
+    displayName: 'Exact mssql-python-rs test version (empty uses latest published nightly)'
     type: string
     default: ''
 
 variables:
-  MSSQL_PYTHON_RS_VERSION: ${{ parameters.rsVersionOverride }}
   # QEMU 10.2.3, qualified against the ARM64 GCC startup crash and shutdown tests.
   arm64QemuImage: 'tonistiigi/binfmt@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0'
 
 jobs:
+- job: SelectRsRuntime
+  displayName: 'Select one published Rust nightly for the validation run'
+  pool:
+    vmImage: 'ubuntu-latest'
+  steps:
+  - checkout: self
+  - task: UsePythonVersion@0
+    inputs:
+      versionSpec: '3.12'
+      addToPath: true
+  - script: |
+      python eng/scripts/resolve_pr_rs_runtime.py --output-dir "$(Build.ArtifactStagingDirectory)/rs-runtime"
+    name: select
+    displayName: 'Resolve nightly or exact override from the Python package index'
+    env:
+      MSSQL_PYTHON_RS_VERSION: ${{ parameters.rsVersionOverride }}
+  - task: PublishPipelineArtifact@1
+    displayName: 'Record exact runtime selection and wheel hashes'
+    inputs:
+      targetPath: '$(Build.ArtifactStagingDirectory)/rs-runtime'
+      artifact: 'rs-runtime-selection'
+
 - job: CodeQLAnalysis
+  dependsOn: SelectRsRuntime
+  variables:
+    MSSQL_PYTHON_RS_VERSION: $[ dependencies.SelectRsRuntime.outputs['select.version'] ]
   displayName: 'CodeQL Security Analysis'
   pool:
     vmImage: 'ubuntu-latest'
@@ -57,6 +81,9 @@ jobs:
     displayName: 'Finalize CodeQL'
 
 - job: pytestonwindows
+  dependsOn: SelectRsRuntime
+  variables:
+    MSSQL_PYTHON_RS_VERSION: $[ dependencies.SelectRsRuntime.outputs['select.version'] ]
   displayName: 'Windows x64'
   timeoutInMinutes: 160
   pool:
@@ -568,12 +595,14 @@ jobs:
   #   displayName: 'Publish code coverage results'
 
 - job: PytestOnMacOS
+  dependsOn: SelectRsRuntime
   displayName: 'macOS x86_64'
   timeoutInMinutes: 90
   pool:
     vmImage: 'macos-latest'
 
   variables:
+    MSSQL_PYTHON_RS_VERSION: $[ dependencies.SelectRsRuntime.outputs['select.version'] ]
     # Apply to setup, benchmark consumers and final cleanup without changing
     # the Docker client's global context.
     DOCKER_CONTEXT: colima
@@ -749,6 +778,9 @@ jobs:
       DB_PASSWORD: $(DB_PASSWORD)
 
 - job: PytestOnLinux
+  dependsOn: SelectRsRuntime
+  variables:
+    MSSQL_PYTHON_RS_VERSION: $[ dependencies.SelectRsRuntime.outputs['select.version'] ]
   displayName: 'Linux x86_64'
   timeoutInMinutes: 160
   pool:
@@ -1092,6 +1124,9 @@ jobs:
       testRunTitle: 'Publish pytest results on $(distroName)'
 
 - job: PytestOnLinux_ARM64
+  dependsOn: SelectRsRuntime
+  variables:
+    MSSQL_PYTHON_RS_VERSION: $[ dependencies.SelectRsRuntime.outputs['select.version'] ]
   displayName: 'Linux ARM64'
   pool:
     vmImage: 'ubuntu-latest'
@@ -1335,6 +1370,9 @@ jobs:
       testRunTitle: 'Publish pytest results on $(distroName) ARM64'
 
 - job: PytestOnLinux_RHEL9
+  dependsOn: SelectRsRuntime
+  variables:
+    MSSQL_PYTHON_RS_VERSION: $[ dependencies.SelectRsRuntime.outputs['select.version'] ]
   displayName: 'Linux RedHat x86_64'
   pool:
     vmImage: 'ubuntu-latest'
@@ -1537,6 +1575,9 @@ jobs:
       testRunTitle: 'Publish pytest results on RHEL 9'
 
 - job: PytestOnLinux_RHEL9_ARM64
+  dependsOn: SelectRsRuntime
+  variables:
+    MSSQL_PYTHON_RS_VERSION: $[ dependencies.SelectRsRuntime.outputs['select.version'] ]
   displayName: 'Linux RedHat ARM64'
   pool:
     vmImage: 'ubuntu-latest'
@@ -1754,6 +1795,9 @@ jobs:
       testRunTitle: 'Publish pytest results on RHEL 9 ARM64'
 
 - job: PytestOnLinux_Alpine
+  dependsOn: SelectRsRuntime
+  variables:
+    MSSQL_PYTHON_RS_VERSION: $[ dependencies.SelectRsRuntime.outputs['select.version'] ]
   displayName: 'Linux Alpine x86_64'
   pool:
     vmImage: 'ubuntu-latest'
@@ -1990,6 +2034,9 @@ jobs:
       testRunTitle: 'Publish pytest results on Alpine x86_64'
 
 - job: PytestOnLinux_Alpine_ARM64
+  dependsOn: SelectRsRuntime
+  variables:
+    MSSQL_PYTHON_RS_VERSION: $[ dependencies.SelectRsRuntime.outputs['select.version'] ]
   displayName: 'Linux Alpine ARM64'
   pool:
     vmImage: 'ubuntu-latest'
@@ -2458,6 +2505,9 @@ jobs:
 #       testRunTitle: 'Publish pytest results on Ubuntu AzureSQL'
 
 - job: CodeCoverageReport
+  dependsOn: SelectRsRuntime
+  variables:
+    MSSQL_PYTHON_RS_VERSION: $[ dependencies.SelectRsRuntime.outputs['select.version'] ]
   displayName: 'Full Code Coverage Report in Ubuntu x86_64'
   pool:
     vmImage: 'ubuntu-latest'

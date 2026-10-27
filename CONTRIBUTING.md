@@ -17,7 +17,8 @@ or contact [opencode@microsoft.com](mailto:opencode@microsoft.com) with any addi
 
 ### Selecting the Rust Runtime
 
-Normal builds and tests install the exact released `mssql-python-rs` version in
+Local builds and official/release pipelines install the exact released
+`mssql-python-rs` version in
 [`eng/versions/mssql-python-rs.version`](eng/versions/mssql-python-rs.version)
 from public PyPI. The runtime is a separate dependency, not embedded in the
 `mssql-python` wheel. No NuGet transport package is needed.
@@ -44,10 +45,29 @@ index; clean releases come from public PyPI. A missing requested wheel fails;
 the installer never falls back to another version. Cross-architecture Windows
 builds validate the target wheel without installing it into the host Python.
 
-Azure build/test pipelines expose the same selection as `rsVersionOverride`.
-Leave it empty for the committed release pin. Record the exact dev version in
-the feature's PR so another developer can reproduce the tests. Before running
-tests after other package installations, verify the runtime has not changed:
+The GitHub PR-validation checks run in Azure DevOps using
+`eng/pipelines/pr-validation-pipeline.yml`. This validation pipeline (including
+its main-branch CI runs) defaults to the latest published nightly from the Azure
+Python feed, not the stable PyPI pin. It resolves the version once before the
+matrix and passes that exact version to every build/test job. The
+`rs-runtime-selection` artifact records the version, source index and nightly
+wheel hashes.
+
+Nightlies use `X.Y.Z.devYYYYMMDD`; per-merge development builds append a build ID
+and are not selected automatically. Selection requires all nine platform wheels
+for the newest nightly, with valid SHA-256 links and no yanked files. Missing or
+incomplete publication fails validation rather than falling back to an older
+nightly or a stable release. Feed contents establish wheel publication, not
+the overall status or source commit of the producer's Azure build.
+
+Azure build/test pipelines expose the explicit selection as `rsVersionOverride`.
+For PR validation, leave it empty for the nightly, or provide an exact version
+to reproduce a run or test newer per-merge Rust changes. Official/release builds
+retain the committed stable PyPI pin and reject overrides. Other test pipelines
+retain their existing stable default unless explicitly overridden. Record the
+exact dev version in the feature's PR so another developer can reproduce the
+tests. Before running tests after other package installations, verify the runtime
+has not changed:
 
 ```console
 python eng/scripts/mssql_python_rs.py --verify

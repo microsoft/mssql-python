@@ -21,6 +21,7 @@ PIPELINES = ROOT / "OneBranchPipelines"
 SOURCE_PREREQUISITES = (
     "OneBranchPipelines/scripts/validate-release-versions.ps1",
     "eng/scripts/mssql_python_rs.py",
+    "eng/scripts/resolve_pr_rs_runtime.py",
     "eng/conda_tools/archive.py",
     "eng/conda_tools/contracts.py",
 )
@@ -46,6 +47,62 @@ def test_pipeline_override_is_explicit_and_defaults_to_empty(filename):
     assert "${{ parameters.rsVersionOverride }}" in source
     assert "$(rsVersionOverride)" not in source
     assert "$(MSSQL_PYTHON_RS_VERSION)" not in source
+
+
+def test_pr_validation_resolves_nightly_once_and_shares_it_across_all_jobs():
+    pipeline = yaml.safe_load((ROOT / ENTRY_POINTS[0]).read_text(encoding="utf-8"))
+    assert VERSION_ENV not in pipeline["variables"]
+    jobs = pipeline["jobs"]
+    selectors = [job for job in jobs if job["job"] == "SelectRsRuntime"]
+    assert len(selectors) == 1
+    selector = selectors[0]
+    selection_steps = [
+        step
+        for job in jobs
+        for step in job["steps"]
+        if "resolve_pr_rs_runtime.py" in step.get("script", "")
+    ]
+    assert len(selection_steps) == 1
+    selection = selection_steps[0]
+    assert selection in selector["steps"]
+    assert selection["name"] == "select"
+    assert selection["env"][VERSION_ENV] == "${{ parameters.rsVersionOverride }}"
+    assert "--output-dir" in selection["script"]
+    artifacts = [
+        step["inputs"]
+        for step in selector["steps"]
+        if step.get("task") == "PublishPipelineArtifact@1"
+    ]
+    assert artifacts == [
+        {
+            "targetPath": "$(Build.ArtifactStagingDirectory)/rs-runtime",
+            "artifact": "rs-runtime-selection",
+        }
+    ]
+    consumers = [job for job in jobs if job is not selector]
+    assert len(consumers) == 10
+    for job in consumers:
+        assert job["dependsOn"] == "SelectRsRuntime", job["job"]
+        assert job["variables"][VERSION_ENV] == (
+            "$[ dependencies.SelectRsRuntime.outputs['select.version'] ]"
+        ), job["job"]
+        assert "condition" not in job, "A failed selection must block all consumers"
+
+
+def test_official_entry_points_keep_stable_defaults_without_nightly_resolution():
+    for path in (
+        PIPELINES / "build-release-package-pipeline.yml",
+        PIPELINES / "official-release-pipeline.yml",
+        PIPELINES / "conda-release-pipeline.yml",
+    ):
+        source = path.read_text(encoding="utf-8")
+        assert "resolve_pr_rs_runtime.py" not in source, path
+        assert "SelectRsRuntime" not in source, path
+    pipeline = yaml.safe_load(
+        (PIPELINES / "build-release-package-pipeline.yml").read_text(encoding="utf-8")
+    )
+    override = next(p for p in pipeline["parameters"] if p["name"] == "rsVersionOverride")
+    assert override["default"] == ""
 
 
 def test_modified_pipeline_yaml_parses():
@@ -117,6 +174,7 @@ def stress_job(request):
     "missing",
     (
         "eng/scripts/mssql_python_rs.py",
+        "eng/scripts/resolve_pr_rs_runtime.py",
         "eng/conda_tools/archive.py",
         "eng/conda_tools/contracts.py",
     ),
