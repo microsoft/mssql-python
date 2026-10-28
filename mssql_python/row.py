@@ -9,6 +9,7 @@ import decimal
 import uuid as _uuid
 from collections.abc import Mapping
 from typing import Any
+from mssql_python import ddbc_bindings
 from mssql_python.logging import logger
 
 
@@ -86,6 +87,8 @@ class Row:
             cursor: Optional cursor reference (for backward compatibility and lowercase access)
             converter_map: Pre-computed converter map (shared across rows for performance).
                 An empty sequence skips converters; None enables the connection fallback.
+                Built-in cursor conversion can perform the same initialization in native
+                code; overridden Row hooks retain this Python constructor.
             uuid_str_indices: Tuple of column indices whose uuid.UUID values should be
                 converted to str. Pre-computed once per result set when native_uuid=False.
                 None means no conversion (native_uuid=True, the default).
@@ -199,12 +202,16 @@ class Row:
         Apply output converters using pre-computed converter map for optimal performance.
 
         Args:
-            values: Raw values from the database
+            values: Raw values from the database. Eligible native text cells own
+                UTF-16LE bytes until conversion; failures restore the original str.
             converter_map: Pre-computed list of converters (one per column, None if no converter)
 
         Returns:
             List of converted values
         """
+        if type(values) is list and type(converter_map) is list:
+            return ddbc_bindings.apply_output_converters(values, converter_map)
+
         converted_values = list(values)
 
         for i, (value, converter) in enumerate(zip(values, converter_map)):

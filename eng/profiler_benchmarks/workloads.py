@@ -194,6 +194,52 @@ def scalar_fetchval(conn, table, ctx):
             ctx.disable()
 
 
+def output_converter_fetch(conn, table, ctx, batched=False):
+    """Time fetching with a UTF-16LE converter; validate retained rows afterward."""
+    from mssql_python import SQL_WVARCHAR
+
+    texts = [f"unicode_row_{index}" for index in range(10_000)]
+    expected = [(index, text.upper()) for index, text in enumerate(texts)]
+    api = "fetchmany(1000)" if batched else "fetchall()"
+
+    def converter(raw):
+        return raw.decode("utf-16le").upper()
+
+    with conn.cursor() as cursor:
+        previous = conn.get_output_converter(SQL_WVARCHAR)
+        try:
+            conn.add_output_converter(SQL_WVARCHAR, converter)
+            cursor.execute(f"SELECT TOP (10000) int_col, nvarchar_col FROM {table} ORDER BY id")
+            rows = []
+            ctx.enable()
+            start = time.perf_counter()
+            if batched:
+                while batch := cursor.fetchmany(1000):
+                    rows.extend(batch)
+            else:
+                rows = cursor.fetchall()
+            wall_ms = (time.perf_counter() - start) * 1000
+            cpp, py = ctx.collect()
+            assert [tuple(row) for row in rows] == expected
+            assert all(type(row[0]) is int and type(row[1]) is str for row in rows)
+            assert not cursor.messages, "Clean converter fetch unexpectedly produced diagnostics"
+            return dict(
+                title=f"Output converter / {api}",
+                wall_ms=wall_ms,
+                cpp=cpp,
+                py=py,
+                detail=f"Rows: 10000; types: int,nvarchar; converter: UTF-16LE upper; API: {api}",
+            )
+        finally:
+            try:
+                ctx.disable()
+            finally:
+                if previous is None:
+                    conn.remove_output_converter(SQL_WVARCHAR)
+                else:
+                    conn.add_output_converter(SQL_WVARCHAR, previous)
+
+
 def registry():
     """Keep every PR #552 scenario, including its existing timing boundaries."""
     result = dict(scenarios.SCENARIOS)
@@ -208,4 +254,6 @@ def registry():
     result.update((name, (partial(query, sql=sql), False)) for name, sql in QUERIES.items())
     result["lob_varchar_256k_fetchall"] = (lob_fetch, False)
     result["scalar_fetchval"] = (scalar_fetchval, True)
+    result["output_converter_fetchall"] = (output_converter_fetch, True)
+    result["output_converter_fetchmany1000"] = (partial(output_converter_fetch, batched=True), True)
     return result
