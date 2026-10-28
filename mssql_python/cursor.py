@@ -16,6 +16,7 @@ import logging
 import uuid
 import datetime
 import warnings
+from importlib import import_module
 from typing import List, Mapping, Union, Any, Optional, Tuple, Sequence, TYPE_CHECKING, Iterable
 from mssql_python.constants import ConstantsDDBC as ddbc_sql_const, SQLTypes
 from mssql_python.helpers import check_error, connstr_to_pycore_params
@@ -3316,6 +3317,15 @@ class Cursor:
             # If describe fails, there might be no results in this result set
             self.description = None
 
+        # Update rowcount for the new result, as execute() does: -1 for a
+        # result set, the affected-row count for INSERT/UPDATE/DELETE/MERGE.
+        # Without this, rowcount keeps the value of the first statement of a
+        # multi-statement batch (pyodbc refreshes it here too).
+        if self.description:
+            self.rowcount = -1
+        else:
+            self.rowcount = ddbc_bindings.DDBCSQLRowCount(self.hstmt)
+
         logger.debug(
             "nextset: Moved to next result set - column_count=%d",
             len(self.description) if self.description else 0,
@@ -3476,9 +3486,10 @@ class Cursor:
     @staticmethod
     def _bulkcopy_core_and_validate(table_name, batch_size, timeout):
         """Import the native core and validate the args shared by ``bulkcopy``
-        and ``bulkcopy_arrow``. Returns the imported ``mssql_py_core`` module."""
+        and ``bulkcopy_arrow``. Returns the native ``mssql_py_core`` extension."""
         try:
-            import mssql_py_core
+            # Upgrading from a bundled core can remove the package's __init__.py.
+            mssql_py_core = import_module("mssql_py_core.mssql_py_core")
         except ImportError as exc:
             logger.error("bulkcopy: Failed to import mssql_py_core module")
             raise ImportError(
