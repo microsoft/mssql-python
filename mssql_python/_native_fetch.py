@@ -146,7 +146,7 @@ class _Policy:
                 for name, value in original.items()
             ):
                 return None
-        if perf_timer.is_enabled() or self.logger.is_debug_enabled:
+        if self.logger.is_debug_enabled:
             return None
         if (
             self.row_type.__new__ is not object.__new__

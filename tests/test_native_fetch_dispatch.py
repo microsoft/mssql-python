@@ -15,7 +15,7 @@ import weakref
 import pytest
 
 import mssql_python
-from mssql_python import ddbc_bindings
+from mssql_python import ddbc_bindings, perf_timer
 from mssql_python.cursor import Cursor
 from mssql_python.row import Row
 
@@ -154,9 +154,16 @@ def test_repeated_negative_fetchone_skips_prepare(connection):
 
 
 @pytest.mark.parametrize("method", METHODS)
-def test_warm_native_dispatch_removes_python_control_calls(connection, method):
+@pytest.mark.parametrize("python_profiling", (False, True))
+def test_warm_native_dispatch_removes_python_control_calls(
+    connection, method, python_profiling, request
+):
     if ddbc_bindings._fetch_observer is None:
         pytest.skip("Direct native dispatch requires GIL-enabled CPython 3.12+ watchers")
+    assert not perf_timer.is_enabled()
+    if python_profiling:
+        request.addfinalizer(perf_timer.disable)
+        perf_timer.enable()
     with _native_fetch_counters() as profiling, connection.cursor() as cursor:
         cursor._get_sql_to_c_type_map()
         cursor.setinputsizes([(mssql_python.SQL_INTEGER, 0, 0)])
