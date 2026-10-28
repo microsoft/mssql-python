@@ -104,6 +104,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
   before; users should call `cursor.setinputsizes()` to work around this.
 
 ### Fixed
+- **GH-863:** `Cursor.nextset()` now refreshes `Cursor.rowcount` for
+  the result it moves to, as `execute()` does: the affected-row count for an
+  INSERT/UPDATE/DELETE/MERGE result and -1 for a result set. Previously
+  `rowcount` kept the value of the first statement of a multi-statement batch,
+  so the rows affected by later statements (for example each INSERT of a
+  T-SQL `WHILE` loop) could not be read. This matches pyodbc.
 - **GH-855:** Bulk copy and internal async queries load the Rust extension directly
   when upgrading from 1.15.0 removes `mssql_py_core/__init__.py`. Existing affected
   installations can restore the initializer with
