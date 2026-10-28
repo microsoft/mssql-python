@@ -194,6 +194,58 @@ def scalar_fetchval(conn, table, ctx):
             ctx.disable()
 
 
+def row_to_dict(conn, table, ctx):
+    """Convert fetched rows with warm mapping metadata; fetch and validation are not timed."""
+    names = tuple(f"c{column}" for column in range(32))
+    sql = "SELECT TOP (10000) " + ", ".join(
+        f"CASE WHEN int_col % 7 = 0 THEN CAST(NULL AS INT) "
+        f"ELSE int_col + {column} END AS {name}"
+        for column, name in enumerate(names)
+    )
+    sql += f" FROM {table} ORDER BY id"
+    expected = [
+        tuple(None if value % 7 == 0 else value + column for column in range(32))
+        for value in range(10_000)
+    ]
+
+    with conn.cursor() as cursor:
+        try:
+            cursor.execute(sql)
+            rows = cursor.fetchall()
+            assert len(rows) == len(
+                expected
+            ), "Row-to-dictionary fetch returned the wrong row count"
+            for row in rows:
+                dict(row._mapping)
+
+            ctx.enable()
+            start = time.perf_counter()
+            dictionaries = [dict(row._mapping) for row in rows]
+            wall_ms = (time.perf_counter() - start) * 1000
+            cpp, py = ctx.collect()
+            assert len(dictionaries) == len(expected)
+            for dictionary, values in zip(dictionaries, expected):
+                assert tuple(dictionary) == names
+                assert all(type(key) is str for key in dictionary)
+                actual = tuple(dictionary.values())
+                assert actual == values and all(
+                    type(value) is type(wanted) for value, wanted in zip(actual, values)
+                )
+            assert not cursor.messages, "Clean row-to-dictionary conversion produced diagnostics"
+            return dict(
+                title="Warm row-to-dictionary conversion",
+                wall_ms=wall_ms,
+                cpp=cpp,
+                py=py,
+                detail=(
+                    "Rows: 10000; columns: 32; types: int/NULL; "
+                    "API: dict(row._mapping); mode: warm"
+                ),
+            )
+        finally:
+            ctx.disable()
+
+
 def registry():
     """Keep every PR #552 scenario, including its existing timing boundaries."""
     result = dict(scenarios.SCENARIOS)
@@ -208,4 +260,5 @@ def registry():
     result.update((name, (partial(query, sql=sql), False)) for name, sql in QUERIES.items())
     result["lob_varchar_256k_fetchall"] = (lob_fetch, False)
     result["scalar_fetchval"] = (scalar_fetchval, True)
+    result["row_to_dict"] = (row_to_dict, True)
     return result
