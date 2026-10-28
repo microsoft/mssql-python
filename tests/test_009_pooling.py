@@ -857,9 +857,16 @@ def test_checked_out_pool_is_not_evicted(conn_str):
 
 
 @pytest.mark.parametrize(
-    "pool_size,autocommit,options",
+    "pool_size,autocommit,options,replacement_fails,mixed_pool",
     [
-        pytest.param(pool_size, autocommit, options, id=f"{name}-{pool_size}-{autocommit}")
+        pytest.param(
+            pool_size,
+            autocommit,
+            options,
+            False,
+            False,
+            id=f"{name}-{pool_size}-{autocommit}",
+        )
         for name, options in (
             ("constructor", {"timeout": 1}),
             (
@@ -870,9 +877,23 @@ def test_checked_out_pool_is_not_evicted(conn_str):
         for pool_size in (1, 3)
         for autocommit in (False, True)
     ]
-    + [pytest.param(3, False, {"timeout": 0}, id="finite-default")],
+    + [pytest.param(3, False, {"timeout": 0}, False, False, id="finite-default")]
+    + [
+        pytest.param(
+            size,
+            autocommit,
+            {"timeout": 1},
+            fails,
+            mixed,
+            id=f"recovery-{size}-{autocommit}-{fails}-{mixed}",
+        )
+        for size, fails, mixed in ((1, True, False), (3, False, True), (3, True, True))
+        for autocommit in (False, True)
+    ],
 )
-def test_pool_checkout_validation_timeout(conn_str, autocommit, pool_size, options):
+def test_pool_checkout_validation_timeout(
+    conn_str, autocommit, pool_size, options, replacement_fails, mixed_pool
+):
     """GH #854: stalled checkout validation must time out and open a fresh socket."""
     _run_in_subprocess(
         """
@@ -899,6 +920,11 @@ def test_pool_checkout_validation_timeout(conn_str, autocommit, pool_size, optio
         pool_size = POOL_SIZE
         autocommit = AUTOCOMMIT
         options = TIMEOUT_OPTIONS
+        mixed_pool = MIXED_POOL
+        reject_login = threading.Event()
+        if REPLACEMENT_FAILS:
+            reject_login.set()
+        rejected = []
         use_default = options.get("timeout") == 0
         gate = threading.Event()
         gate.set()
@@ -937,12 +963,17 @@ def test_pool_checkout_validation_timeout(conn_str, autocommit, pool_size, optio
                         client, _ = listener.accept()
                     except socket.timeout:
                         continue
+                    if len(sockets) // 2 >= pool_size and reject_login.is_set():
+                        rejected.append(True)
+                        client.close()
+                        continue
                     sockets.append(client)
                     upstream = socket.create_connection((host, port), timeout=10)
                     upstream.settimeout(None)
                     sockets.append(upstream)
                     index = len(sockets) // 2
-                    allowed = gate if index <= pool_size else threading.Event()
+                    stalled = index == 1 if mixed_pool else index <= pool_size
+                    allowed = gate if stalled else threading.Event()
                     if allowed is not gate:
                         allowed.set()
                     for source, destination in ((client, upstream), (upstream, client)):
@@ -966,12 +997,18 @@ def test_pool_checkout_validation_timeout(conn_str, autocommit, pool_size, optio
         try:
             pooling(max_size=pool_size, idle_timeout=600)
             identities = set()
+            ordered_identities = []
             for _ in range(pool_size):
                 conn = connect(proxied, autocommit=autocommit, **options)
                 leases.append(conn)
                 with conn.cursor() as cur:
-                    cur.execute("SELECT @@SPID")
-                    identities.add(cur.fetchone()[0])
+                    cur.execute(
+                        "SELECT connection_id FROM sys.dm_exec_connections "
+                        "WHERE session_id = @@SPID"
+                    )
+                    identity = cur.fetchone()[0]
+                    identities.add(identity)
+                    ordered_identities.append(identity)
             assert len(identities) == pool_size
             for conn in leases:
                 conn.close()
@@ -983,18 +1020,41 @@ def test_pool_checkout_validation_timeout(conn_str, autocommit, pool_size, optio
             resume = threading.Timer(60 if use_default else 20, gate.set)
             resume.start()
             start = time.monotonic()
-            leases.append(connect(proxied, autocommit=autocommit, **options))
+            if reject_login.is_set():
+                from mssql_python import Error
+                try:
+                    connect(proxied, autocommit=autocommit, **options)
+                except Error:
+                    pass
+                else:
+                    raise AssertionError("Replacement login failure did not reach caller")
+                assert rejected, "Replacement login was not attempted"
+                reject_login.clear()
+            else:
+                leases.append(connect(proxied, autocommit=autocommit, **options))
             elapsed = time.monotonic() - start
             assert len(probed) == 1, f"Checkout probed {len(probed)} unresponsive sockets"
             lower, upper = (10, 55) if use_default else (0.5, 12)
             assert lower <= elapsed < upper, f"Validation timeout not honored: {elapsed:.2f}s"
             assert not gate.is_set(), "Safety timer fired before checkout finished"
+            if mixed_pool or REPLACEMENT_FAILS:
+                while len(leases) < pool_size:
+                    leases.append(connect(proxied, autocommit=autocommit, **options))
+            recovered = set()
             for conn in leases:
                 with conn.cursor() as cur:
-                    cur.execute("SELECT @@SPID, @@TRANCOUNT")
+                    cur.execute(
+                        "SELECT connection_id, @@TRANCOUNT FROM sys.dm_exec_connections "
+                        "WHERE session_id = @@SPID"
+                    )
                     spid, transaction_count = cur.fetchone()
-                    assert spid not in identities, "Unresponsive session was reused"
+                    recovered.add(spid)
+                    stale = {ordered_identities[0]} if mixed_pool else identities
+                    assert spid not in stale, "Unresponsive session was reused"
                     assert transaction_count == (0 if autocommit else 1)
+            assert len(recovered) == len(leases), "Pool capacity was not recovered"
+            if mixed_pool:
+                assert set(ordered_identities[1:]) <= recovered, "Healthy idle session was lost"
             assert len(sockets) // 2 == pool_size + 1
             assert not errors, errors
         finally:
@@ -1022,7 +1082,9 @@ def test_pool_checkout_validation_timeout(conn_str, autocommit, pool_size, optio
                 assert all(not thread.is_alive() for thread in threads)
         """.replace("POOL_SIZE", str(pool_size))
         .replace("AUTOCOMMIT", repr(autocommit))
-        .replace("TIMEOUT_OPTIONS", repr(options)),
+        .replace("TIMEOUT_OPTIONS", repr(options))
+        .replace("REPLACEMENT_FAILS", repr(replacement_fails))
+        .replace("MIXED_POOL", repr(mixed_pool)),
         conn_str,
     )
 
@@ -1053,6 +1115,169 @@ def test_pool_checkout_restores_connection_timeout(conn_str, original_timeout):
                 assert cur.fetchone()[0] == identity
         ms.pooling(enabled=False)
         """.replace("ORIGINAL_TIMEOUT", str(original_timeout)),
+        conn_str,
+    )
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Windows does not export the native ODBC function-pointer globals",
+)
+@pytest.mark.parametrize("failure", ["read", "set", "restore", "autocommit"])
+@pytest.mark.parametrize("replacement_fails", [False, True])
+def test_pool_checkout_attribute_failure_recovery(conn_str, failure, replacement_fails):
+    """Inject failures at the native boundary without adding production test hooks."""
+    _run_in_subprocess(
+        """
+        import ctypes as ct
+        import os
+        from pathlib import Path
+        import mssql_python as ms
+        from mssql_python.constants import ConstantsDDBC
+
+        failure = FAILURE
+        replacement_fails = REPLACEMENT_FAILS
+        ms.pooling(max_size=2)
+        conn_str = os.environ["DB_CONNECTION_STRING"]
+
+        def identity(conn):
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT connection_id FROM sys.dm_exec_connections "
+                    "WHERE session_id = @@SPID"
+                )
+                return cur.fetchone()[0]
+
+        first = ms.connect(conn_str, autocommit=True, timeout=1)
+        sibling = ms.connect(conn_str, autocommit=True, timeout=1)
+        discarded_identity, healthy_identity = identity(first), identity(sibling)
+        first.set_attr(ms.SQL_ATTR_CONNECTION_TIMEOUT, 7)
+        first.close()
+        sibling.close()
+
+        native = Path(ms.ddbc_bindings.module.__file__).resolve()
+        library = ct.CDLL(str(native))
+        signatures = {
+            "SQLGetConnectAttr_ptr": (ct.c_void_p, ct.c_int, ct.c_void_p,
+                                      ct.c_int, ct.c_void_p),
+            "SQLSetConnectAttr_ptr": (ct.c_void_p, ct.c_int, ct.c_void_p, ct.c_int),
+            "SQLDisconnect_ptr": (ct.c_void_p,),
+        }
+        pointers = {name: ct.c_void_p.in_dll(library, name) for name in signatures}
+        addresses = {name: pointer.value for name, pointer in pointers.items()}
+        types = {name: ct.CFUNCTYPE(ct.c_short, *args) for name, args in signatures.items()}
+        originals = {name: types[name](address) for name, address in addresses.items()}
+        target = None
+        injected = []
+        timeouts = []
+        disconnected = []
+
+        @types["SQLGetConnectAttr_ptr"]
+        def get_attr(handle, attr, output, length, actual):
+            global target
+            if target is None and attr == ms.SQL_ATTR_CONNECTION_TIMEOUT:
+                target = handle
+                if failure == "read":
+                    injected.append(failure)
+                    return -1
+            return originals["SQLGetConnectAttr_ptr"](handle, attr, output, length, actual)
+
+        @types["SQLSetConnectAttr_ptr"]
+        def set_attr(handle, attr, value, length):
+            if handle == target:
+                if attr == ms.SQL_ATTR_CONNECTION_TIMEOUT:
+                    timeouts.append(value)
+                should_fail = (
+                    (failure == "set" and attr == ms.SQL_ATTR_CONNECTION_TIMEOUT and value == 1)
+                    or (failure == "restore"
+                        and attr == ms.SQL_ATTR_CONNECTION_TIMEOUT and value == 7)
+                    or (failure == "autocommit"
+                        and attr == ConstantsDDBC.SQL_ATTR_AUTOCOMMIT.value)
+                )
+                if should_fail and not injected:
+                    injected.append(failure)
+                    return -1
+            return originals["SQLSetConnectAttr_ptr"](handle, attr, value, length)
+
+        @types["SQLDisconnect_ptr"]
+        def disconnect(handle):
+            disconnected.append(handle)
+            return originals["SQLDisconnect_ptr"](handle)
+
+        callbacks = {
+            "SQLGetConnectAttr_ptr": get_attr,
+            "SQLSetConnectAttr_ptr": set_attr,
+            "SQLDisconnect_ptr": disconnect,
+        }
+        leases = []
+        try:
+            for name, callback in callbacks.items():
+                pointers[name].value = ct.cast(callback, ct.c_void_p).value
+            if replacement_fails:
+                # Only the replacement's ODBC login receives the invalid credential;
+                # changing connect() arguments would select a different pool.
+                from mssql_python.connection_string_parser import _ConnectionStringParser
+                from mssql_python.connection_string_builder import _ConnectionStringBuilder
+                params = _ConnectionStringParser._normalize_params(
+                    _ConnectionStringParser()._parse(conn_str)
+                )
+                params["UID"] = "issue854_nonexistent_login"
+                invalid_text = _ConnectionStringBuilder(params).build()
+                invalid = ct.create_string_buffer(invalid_text.encode("utf-16le") + b"\\0\\0")
+                login_pointer = ct.c_void_p.in_dll(library, "SQLDriverConnect_ptr")
+                login_address = login_pointer.value
+                login_type = ct.CFUNCTYPE(
+                    ct.c_short, ct.c_void_p, ct.c_void_p, ct.c_void_p, ct.c_short,
+                    ct.c_void_p, ct.c_short, ct.c_void_p, ct.c_ushort,
+                )
+                original_login = login_type(login_address)
+                login_calls = []
+                @login_type
+                def login(handle, window, text, count, output, capacity, actual, completion):
+                    login_calls.append(handle)
+                    return original_login(
+                        handle, window, ct.cast(invalid, ct.c_void_p), -3,
+                        output, capacity, actual, completion,
+                    )
+                try:
+                    login_pointer.value = ct.cast(login, ct.c_void_p).value
+                    try:
+                        ms.connect(conn_str, autocommit=True, timeout=1)
+                    except ms.Error:
+                        pass
+                    else:
+                        raise AssertionError("Replacement login failure did not reach caller")
+                    assert len(login_calls) == 1
+                finally:
+                    login_pointer.value = login_address
+            else:
+                leases.append(ms.connect(conn_str, autocommit=True, timeout=1))
+            assert injected == [failure], injected
+            assert disconnected.count(target) == 1, "Failed candidate was not cleaned up once"
+            expected_timeouts = {
+                "read": [], "set": [1], "restore": [1, 7], "autocommit": [1],
+            }
+            assert timeouts == expected_timeouts[failure], timeouts
+        finally:
+            for name, address in addresses.items():
+                pointers[name].value = address
+
+        while len(leases) < 2:
+            leases.append(ms.connect(conn_str, autocommit=True, timeout=1))
+        identities = {identity(conn) for conn in leases}
+        assert len(identities) == 2, "Pool did not recover its full configured capacity"
+        assert discarded_identity not in identities, "Failed candidate was returned"
+        assert healthy_identity in identities, "Healthy idle sibling was lost"
+        try:
+            ms.connect(conn_str, autocommit=True, timeout=1)
+        except ms.Error:
+            pass
+        else:
+            raise AssertionError("Pool exceeded configured capacity")
+        for conn in leases:
+            conn.close()
+        ms.pooling(enabled=False)
+        """.replace("FAILURE", repr(failure)).replace("REPLACEMENT_FAILS", repr(replacement_fails)),
         conn_str,
     )
 
