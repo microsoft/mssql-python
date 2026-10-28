@@ -92,7 +92,7 @@ def Timestamp(
     hour: int,
     minute: int,
     second: int,
-    microsecond: int,
+    microsecond: int = 0,
 ) -> datetime.datetime:
     """
     Generates a timestamp object.
