@@ -301,11 +301,12 @@ def test_close_cleans_up_after_autocommit_read_failure():
     from unittest.mock import MagicMock, patch
 
     mock_conn = MagicMock()
-    mock_conn.get_autocommit.side_effect = RuntimeError("SQLSTATE:08S01:Communication link failure")
+    mock_conn.get_autocommit.return_value = False
 
     with patch("mssql_python.connection.ddbc_bindings.Connection", return_value=mock_conn):
         conn = connect("Server=testserver;Database=mydb;Trusted_Connection=yes;")
 
+    mock_conn.get_autocommit.side_effect = RuntimeError("SQLSTATE:08S01:Communication link failure")
     with pytest.raises(OperationalError, match="Communication link failure"):
         conn.close()
 
@@ -356,16 +357,16 @@ def test_native_close_error_takes_precedence_over_preclose_failure(preclose_fail
     from unittest.mock import MagicMock, patch
 
     mock_conn = MagicMock()
-    if preclose_failure == "autocommit":
-        mock_conn.get_autocommit.side_effect = RuntimeError("SQLSTATE:08S01:Autocommit read failed")
-    else:
-        mock_conn.get_autocommit.return_value = False
-        mock_conn.rollback.side_effect = RuntimeError("SQLSTATE:08S01:Rollback failed")
-    mock_conn.close.side_effect = RuntimeError("SQLSTATE:08003:Native close failed")
+    mock_conn.get_autocommit.return_value = False
 
     with patch("mssql_python.connection.ddbc_bindings.Connection", return_value=mock_conn):
         conn = connect("Server=testserver;Database=mydb;Trusted_Connection=yes;")
 
+    if preclose_failure == "autocommit":
+        mock_conn.get_autocommit.side_effect = RuntimeError("SQLSTATE:08S01:Autocommit read failed")
+    else:
+        mock_conn.rollback.side_effect = RuntimeError("SQLSTATE:08S01:Rollback failed")
+    mock_conn.close.side_effect = RuntimeError("SQLSTATE:08003:Native close failed")
     with pytest.raises(OperationalError, match="Native close failed"):
         conn.close()
 
