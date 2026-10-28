@@ -51,6 +51,11 @@ schedules:
 # PIPELINE PARAMETERS
 # =========================
 parameters:
+  - name: rsVersionOverride
+    displayName: 'Exact mssql-python-rs test version (NonOfficial only)'
+    type: string
+    default: ''
+
   # OneBranch build type determines compliance level
   # - Official: Production builds with full SDL compliance, all security scanning enabled
   # - NonOfficial: Development/test builds with reduced security scanning
@@ -182,6 +187,8 @@ parameters:
 # PIPELINE VARIABLES
 # =========================
 variables:
+  - name: MSSQL_PYTHON_RS_VERSION
+    value: ${{ parameters.rsVersionOverride }}
   # Determine effective build type: scheduled builds are Official, manual/PR builds use parameter
   # Build.Reason values: Schedule, Manual, IndividualCI, PullRequest, BatchedCI
   - name: effectiveOneBranchType

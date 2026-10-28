@@ -1,36 +1,28 @@
 #!/usr/bin/env python3
-"""Download and stage mssql-python-rs wheels from the internal NuGet transport."""
+"""Stage exact-version runtime wheels from PyPI or the development wheel index."""
 
 from __future__ import annotations
 
 import argparse
 import hashlib
 import json
+import re
 import shutil
 import urllib.request
 import zipfile
-from xml.etree import ElementTree
-from pathlib import Path, PurePosixPath
+from email.parser import BytesParser
+from html.parser import HTMLParser
+from pathlib import Path
+from urllib.parse import parse_qs, unquote, urldefrag, urljoin, urlsplit
 
 if __package__:
     from . import mssql_python_build_safety
-    from .resolve_nuget_feed import resolve
+    from .mssql_python_rs import DEFAULT_INDEX, DEV_INDEX, VERSION_FILE, resolve_runtime
 else:
     import mssql_python_build_safety
-    from resolve_nuget_feed import resolve
+    from mssql_python_rs import DEFAULT_INDEX, DEV_INDEX, VERSION_FILE, resolve_runtime
 
-DEFAULT_FEED = (
-    "https://pkgs.dev.azure.com/sqlclientdrivers/public/"
-    "_packaging/mssql-rs_Public/nuget/v3/index.json"
-)
-PACKAGE_ID = "mssql-python-rs-wheels"
-
-
-def _read_version(version_file: Path) -> str:
-    version = version_file.read_text(encoding="ascii").strip()
-    if not version:
-        raise ValueError(f"Version file is empty: {version_file}")
-    return version
+PACKAGE_ID = "mssql-python-rs"
 
 
 def file_sha256(path: Path) -> str:
@@ -41,104 +33,105 @@ def file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def validate_wheel(path: Path, version: str) -> None:
+    if not path.name.startswith(f"mssql_python_rs-{version}-") or path.suffix != ".whl":
+        raise ValueError(f"Unexpected wheel name for {PACKAGE_ID} {version}: {path.name}")
+    with zipfile.ZipFile(path) as wheel:
+        metadata = [name for name in wheel.namelist() if name.endswith(".dist-info/METADATA")]
+        if len(metadata) != 1:
+            raise ValueError(f"{path.name} must contain exactly one wheel METADATA")
+        identity = BytesParser().parsebytes(wheel.read(metadata[0]))
+    name = re.sub(r"[-_.]+", "-", identity.get("Name", "")).lower()
+    if name != PACKAGE_ID or identity.get("Version") != version:
+        raise ValueError(f"{path.name} metadata does not match {PACKAGE_ID}=={version}")
+
+
+class _WheelLinks(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.links: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag == "a":
+            attributes = dict(attrs)
+            href = attributes.get("href")
+            if href and "data-yanked" not in attributes:
+                self.links.append(href)
+
+
 def download_wheels(
-    feed_url: str,
+    index_url: str | None,
     distribution_version_file: Path,
-    transport_version_file: Path,
     output_dir: Path,
+    *,
+    version: str | None = None,
 ) -> list[Path]:
-    distribution_version = _read_version(distribution_version_file)
-    transport_version = _read_version(transport_version_file)
-
-    output_dir = getattr(mssql_python_build_safety, "resolve_safe_output_directory")(output_dir)
-
-    package_base = resolve(feed_url).rstrip("/") + "/"
-    normalized_version = transport_version.lower()
-    package_url = (
-        f"{package_base}{PACKAGE_ID}/{normalized_version}/"
-        f"{PACKAGE_ID}.{normalized_version}.nupkg"
+    runtime = resolve_runtime(distribution_version_file, version=version)
+    index_url = index_url or runtime.index_url
+    package_url = index_url.rstrip("/") + f"/{PACKAGE_ID}/"
+    if urlsplit(package_url).scheme != "https":
+        raise ValueError("The runtime wheel index must use HTTPS")
+    output_dir = mssql_python_build_safety.resolve_safe_output_directory(output_dir)
+    with urllib.request.urlopen(package_url, timeout=120) as response:
+        page = response.read().decode("utf-8")
+    parser = _WheelLinks()
+    parser.feed(page)
+    candidates: dict[str, tuple[str, str]] = {}
+    pattern = re.compile(
+        rf"mssql_python_rs-{re.escape(runtime.version)}-cp310-abi3-[A-Za-z0-9_]+\.whl"
     )
-
+    for link in parser.links:
+        url, fragment = urldefrag(urljoin(package_url, link))
+        filename = unquote(urlsplit(url).path.rsplit("/", 1)[-1])
+        if not pattern.fullmatch(filename):
+            continue
+        if urlsplit(url).scheme != "https":
+            raise ValueError(f"Wheel download must use HTTPS: {filename}")
+        if filename in candidates:
+            raise ValueError(f"Duplicate wheel filename in index: {filename}")
+        hashes = parse_qs(fragment).get("sha256", [])
+        if len(hashes) != 1 or not re.fullmatch(r"[a-fA-F0-9]{64}", hashes[0]):
+            raise ValueError(f"Missing or invalid SHA-256 for {filename}")
+        candidates[filename] = (url, hashes[0].lower())
+    if not candidates:
+        raise ValueError(f"No {PACKAGE_ID}=={runtime.version} wheels found in {package_url}")
     if output_dir.exists():
         shutil.rmtree(output_dir)
     output_dir.mkdir(parents=True)
-    package_path = output_dir / f"{PACKAGE_ID}.{normalized_version}.nupkg"
-    with urllib.request.urlopen(package_url, timeout=120) as response:
-        with package_path.open("wb") as destination:
-            shutil.copyfileobj(response, destination)
-
-    staged: list[Path] = []
-    seen: set[str] = set()
-    expected_prefix = f"mssql_python_rs-{distribution_version}-"
-    with zipfile.ZipFile(package_path) as package:
-        nuspecs = [name for name in package.namelist() if name.endswith(".nuspec")]
-        if len(nuspecs) != 1:
-            raise ValueError("RS transport must contain exactly one Nuspec")
-        metadata = ElementTree.fromstring(package.read(nuspecs[0])).find("{*}metadata")
-        if (
-            metadata is None
-            or metadata.findtext("{*}id") != PACKAGE_ID
-            or metadata.findtext("{*}version", "").lower() != normalized_version
-        ):
-            raise ValueError("RS transport Nuspec identity does not match the pinned package")
-        description = metadata.findtext("{*}description", "")
-        for entry in package.infolist():
-            path = PurePosixPath(entry.filename)
-            if len(path.parts) != 2 or path.parts[0] != "wheels" or path.suffix != ".whl":
-                continue
-            if not path.name.startswith(expected_prefix) or "\\" in path.name:
-                raise ValueError(
-                    "Unexpected wheel name for mssql-python-rs "
-                    f"{distribution_version}: {path.name}"
-                )
-            if path.name in seen:
-                raise ValueError(f"Duplicate wheel filename in NuGet package: {path.name}")
-            seen.add(path.name)
-            destination = output_dir / path.name
-            with package.open(entry) as source, destination.open("wb") as target:
-                shutil.copyfileobj(source, target)
-            staged.append(destination)
-
-    if not staged:
-        raise ValueError(f"No mssql-python-rs {distribution_version} wheels found in {package_url}")
+    staged = []
+    for filename, (url, expected_hash) in sorted(candidates.items()):
+        destination = output_dir / filename
+        with urllib.request.urlopen(url, timeout=120) as response:
+            with destination.open("wb") as target:
+                shutil.copyfileobj(response, target)
+        if file_sha256(destination) != expected_hash:
+            raise ValueError(f"SHA-256 mismatch for {filename}")
+        validate_wheel(destination, runtime.version)
+        staged.append(destination)
     receipt = {
-        "distribution_version": distribution_version,
-        "transport_version": transport_version,
-        "feed_url": feed_url,
-        "package_id": PACKAGE_ID,
-        "package_sha256": file_sha256(package_path),
-        "nuspec_description": description,
-        "wheel_sha256": {path.name: file_sha256(path) for path in sorted(staged)},
+        "distribution_version": runtime.version,
+        "index_url": index_url,
+        "version_override": runtime.version_override,
+        "wheel_sha256": {path.name: file_sha256(path) for path in staged},
     }
     (output_dir / "transport.json").write_text(
         json.dumps(receipt, indent=2) + "\n", encoding="utf-8", newline="\n"
     )
-    package_path.unlink()
-    return sorted(staged)
+    return staged
 
 
 def main() -> None:
-    repo_root = Path(__file__).resolve().parents[2]
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--feed-url", default=DEFAULT_FEED)
-    parser.add_argument(
-        "--distribution-version-file",
-        type=Path,
-        default=repo_root / "eng" / "versions" / "mssql-python-rs.version",
-    )
-    parser.add_argument(
-        "--transport-version-file",
-        type=Path,
-        default=repo_root / "eng" / "versions" / "mssql-python-rs-nuget.version",
-    )
+    parser.add_argument("--index-url")
+    parser.add_argument("--version")
+    parser.add_argument("--distribution-version-file", type=Path, default=VERSION_FILE)
     parser.add_argument("--output-dir", type=Path, required=True)
     args = parser.parse_args()
-
     wheels = download_wheels(
-        args.feed_url,
+        args.index_url,
         args.distribution_version_file,
-        args.transport_version_file,
         args.output_dir,
+        version=args.version,
     )
     for wheel in wheels:
         print(wheel)
