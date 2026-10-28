@@ -334,6 +334,9 @@ class SqlHandle {
     std::unordered_map<int, DescribedParamInfo> describeCache;
     void clearDescribeCache() { describeCache.clear(); }
     ResultMetadataCache resultMetadata;
+    // Only fetch calls under the GIL access this flag. Batch bindings are
+    // invalidated before installation and become reusable only after unbinding.
+    bool fetchColumnsUnbound = false;
 
   private:
     // The caller must release the GIL before waiting for native cleanup.
