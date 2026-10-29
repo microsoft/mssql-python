@@ -6,9 +6,10 @@ Warning:
     may change without notice.
 """
 
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from ..logging import logger
+from ._auth import prepare_async_authentication
 from ._native import load_py_core
 from ._connection_context import build_async_connection_context
 from .async_cursor import _AsyncCursor  # pyright: ignore[reportPrivateUsage]
@@ -25,6 +26,9 @@ from .exception_translator import (
     Warning,
     translate_py_core_exceptions,
 )
+
+if TYPE_CHECKING:
+    from ..connection import TokenProvider
 
 
 class _AsyncConnection:
@@ -56,8 +60,34 @@ class _AsyncConnection:
         autocommit: bool = False,
         timeout: int = 0,
         python_logger: Optional[Any] = None,
+        *,
+        token_provider: Optional["TokenProvider"] = None,
     ) -> "_AsyncConnection":
-        """Establish an asynchronous connection from an ODBC connection string."""
+        """Establish a TDS connection using connection-string options.
+
+        Entra modes: ActiveDirectoryDefault, ActiveDirectoryMsi (optional UID
+        selects a user-assigned identity), ActiveDirectoryDeviceCode,
+        ActiveDirectoryInteractive, and client-secret ActiveDirectoryServicePrincipal.
+        Interactive authentication uses Python credentials on every platform.
+
+        Alternatively, supply a synchronous credential as ``token_provider``.
+        It must expose ``get_token(scope)`` returning an object with a non-empty
+        string ``token`` attribute; it cannot be combined with Authentication.
+        Async credentials (azure.identity.aio) are not accepted.
+
+        Token acquisition runs off the event loop. Each connect opens a new
+        physical connection; there is no connection pool, per-query refresh,
+        automatic query replay, or background refresh. Built-in credentials are
+        cached and may serve cached tokens. Interactive credentials share one
+        account per process; use per-user providers for multi-user applications.
+
+        The pre-acquired-token scope targets Azure commercial SQL. Service
+        Principal also currently uses the public-cloud authority. Sovereign
+        clouds and CAE claims challenges are not supported by these helpers.
+        ``timeout`` bounds native login, not preceding token acquisition.
+        Cancelling acquisition cannot stop a credential call already running in
+        a worker thread, but prevents subsequent native connection creation.
+        """
         logger_bridge = python_logger
         if logger_bridge is None and logger.is_debug_enabled:
             logger_bridge = logger
@@ -73,6 +103,9 @@ class _AsyncConnection:
         with translate_py_core_exceptions():
             client_context_dict = build_async_connection_context(connection_str, timeout)
             py_core = load_py_core()
+            client_context_dict = await prepare_async_authentication(
+                client_context_dict, token_provider
+            )
             py_core_async_connection = await py_core.PyAsyncConnection.connect(
                 client_context_dict,
                 python_logger=logger_bridge,

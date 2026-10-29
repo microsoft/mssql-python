@@ -2,7 +2,9 @@
 
 from typing import Any
 
+from ..auth import extract_auth_type
 from ..connection_string_parser import _ConnectionStringParser
+from ..constants import _KEY_AUTHENTICATION
 from ..exceptions import InterfaceError, NotSupportedError
 from ..helpers import connstr_to_pycore_params
 
@@ -27,10 +29,15 @@ def build_async_connection_context(connection_str: str, timeout: int) -> dict[st
         raise ValueError("SERVER parameter is required in connection string")
 
     authentication = params.get("authentication", "").strip()
-    if authentication and authentication.lower() != "sqlpassword":
+    if (
+        authentication
+        and authentication.lower() != "sqlpassword"
+        and not extract_auth_type({_KEY_AUTHENTICATION: authentication})
+    ):
         raise NotSupportedError(
             f"Authentication mode '{authentication}' is not supported for async queries",
-            "Use Authentication=SqlPassword or Trusted_Connection for async queries",
+            "Use SqlPassword, Trusted_Connection, a supported ActiveDirectory mode, "
+            "or a token_provider.",
         )
 
     context = connstr_to_pycore_params(params, strict=True)
