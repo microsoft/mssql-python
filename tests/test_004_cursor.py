@@ -7691,6 +7691,78 @@ def test_cursor_messages_nextset_trailing_print(cursor):
     assert not cursor.nextset()
 
 
+def test_nextset_updates_rowcount(cursor, db_connection):
+    """Test that nextset() refreshes rowcount for each statement of a batch.
+
+    execute() sets rowcount from the first statement only; each later
+    INSERT/UPDATE/DELETE result must report its own count after nextset(),
+    and a result set must report -1, as after execute().
+    """
+    try:
+        cursor.execute("CREATE TABLE #nextset_rowcount (id INT)")
+        db_connection.commit()
+
+        cursor.execute("""
+            INSERT INTO #nextset_rowcount VALUES (1);
+            INSERT INTO #nextset_rowcount VALUES (2), (3);
+            SELECT id FROM #nextset_rowcount;
+            UPDATE #nextset_rowcount SET id = id + 10;
+            DELETE FROM #nextset_rowcount WHERE id = 99;
+            """)
+        assert cursor.rowcount == 1, "execute() should report the first INSERT"
+
+        assert cursor.nextset()
+        assert cursor.rowcount == 2, "nextset() should report the second INSERT"
+
+        assert cursor.nextset()
+        assert cursor.description is not None
+        assert cursor.rowcount == -1, "A result set should report -1 before fetching"
+        assert len(cursor.fetchall()) == 3
+
+        assert cursor.nextset()
+        assert cursor.rowcount == 3, "nextset() should report the UPDATE"
+
+        assert cursor.nextset()
+        assert cursor.rowcount == 0, "nextset() should report a DELETE matching no rows"
+
+        assert not cursor.nextset()
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #nextset_rowcount")
+        db_connection.commit()
+
+
+def test_nextset_rowcount_in_loop_batch(cursor, db_connection):
+    """Test that the per-statement counts of a T-SQL loop can be summed.
+
+    A WHILE loop sends one result per INSERT; summing rowcount over
+    nextset() must give the number of rows the batch inserted. Each
+    iteration inserts a different number of rows (1, 2, 3), so a stale
+    rowcount cannot add up to the right total by accident.
+    """
+    try:
+        cursor.execute("CREATE TABLE #nextset_loop (id INT)")
+        db_connection.commit()
+
+        cursor.execute("""
+            DECLARE @i INT = 1;
+            WHILE @i <= 3
+            BEGIN
+                INSERT INTO #nextset_loop
+                SELECT TOP (@i) n FROM (VALUES (1), (2), (3)) AS v(n);
+                SET @i = @i + 1;
+            END;
+            """)
+        counts = [cursor.rowcount]
+        while cursor.nextset():
+            counts.append(cursor.rowcount)
+
+        assert counts == [1, 2, 3], f"Per-statement rowcounts should be [1, 2, 3], got {counts}"
+        assert sum(counts) == 6
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #nextset_loop")
+        db_connection.commit()
+
+
 def test_tables_setup(cursor, db_connection):
     """Create test objects for tables method testing"""
     try:
