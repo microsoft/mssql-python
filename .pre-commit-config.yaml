@@ -1,0 +1,20 @@
+minimum_pre_commit_version: '4.0.0'
+default_install_hook_types: [pre-commit, pre-push]
+
+repos:
+  - repo: https://github.com/psf/black-pre-commit-mirror
+    rev: 26.5.1
+    hooks:
+      - id: black
+        name: Black (format staged Python files)
+        files: ^(mssql_python|tests)/.*\.pyi?$
+        types_or: [python, pyi]
+        args: [--config=pyproject.toml]
+        stages: [pre-commit, manual]
+      - id: black
+        alias: black-check
+        name: Black (full CI formatting check)
+        args: [--config=pyproject.toml, --check, --diff, mssql_python, tests]
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]

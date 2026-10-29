@@ -163,6 +163,37 @@ def lob_fetch(conn, ctx):
             ctx.disable()
 
 
+def scalar_fetchval(conn, table, ctx):
+    """Measure scalar fetching with debug disabled, excluding setup and validation."""
+    from mssql_python.logging import logger
+
+    if logger.is_debug_enabled:
+        raise ValueError("scalar_fetchval requires debug logging to be disabled")
+
+    expected = list(range(10_000))
+    with conn.cursor() as cursor:
+        cursor.execute(f"SELECT TOP (10000) int_col FROM {table} ORDER BY id")
+        ctx.enable()
+        try:
+            start = time.perf_counter()
+            values = [cursor.fetchval() for _ in expected]
+            eof = cursor.fetchval()
+            wall_ms = (time.perf_counter() - start) * 1000
+            cpp, py = ctx.collect()
+            assert values == expected and all(type(value) is int for value in values)
+            assert eof is None, "Scalar fetch did not reach EOF"
+            assert not cursor.messages, "Clean scalar fetch unexpectedly produced diagnostics"
+            return dict(
+                title="Scalar fetchval",
+                wall_ms=wall_ms,
+                cpp=cpp,
+                py=py,
+                detail="Rows: 10000; type: int; API: fetchval; debug: disabled",
+            )
+        finally:
+            ctx.disable()
+
+
 def registry():
     """Keep every PR #552 scenario, including its existing timing boundaries."""
     result = dict(scenarios.SCENARIOS)
@@ -176,4 +207,5 @@ def registry():
     )
     result.update((name, (partial(query, sql=sql), False)) for name, sql in QUERIES.items())
     result["lob_varchar_256k_fetchall"] = (lob_fetch, False)
+    result["scalar_fetchval"] = (scalar_fetchval, True)
     return result

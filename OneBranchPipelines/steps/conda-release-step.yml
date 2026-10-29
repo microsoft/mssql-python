@@ -35,7 +35,7 @@
 # dependency solve PLUS a PE machine-type assert on the vendored arm64 .pyd/.dll, so a
 # broken or wrong-arch package is never STAGED. That build leg is continueOnError (so a
 # win-arm64 hiccup can't nuke the shared win-64 publish), and THIS release gate is where
-# win-arm64 is enforced: a missing win-arm64 fails the gate. Its matrix is 3.12-3.14 (the
+# win-arm64 is enforced: a missing win-arm64 fails the gate. Its matrix is 3.12-3.15 (the
 # gate's per-subdir override), since Anaconda `defaults` has no win-arm64 python for
 # 3.10/3.11. musllinux has no conda subdir at all (conda Linux is glibc-only), so absent.
 #
@@ -64,7 +64,7 @@ parameters:
   # subdir. The gate reads each binding's pyXY build tag from info/index.json.
   - name: pythonVersions
     type: string
-    default: '3.10,3.11,3.12,3.13,3.14'
+    default: '3.10,3.11,3.12,3.13,3.14,3.15'
   # Optional EXACT expected versions. When set, the gate asserts every package's
   # info/index.json version matches; when empty it still enforces one-version-per-
   # package consistency plus the subdir / matrix / pairing checks.

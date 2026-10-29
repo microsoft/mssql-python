@@ -16,6 +16,7 @@ import logging
 import uuid
 import datetime
 import warnings
+from importlib import import_module
 from typing import List, Mapping, Union, Any, Optional, Tuple, Sequence, TYPE_CHECKING, Iterable
 from mssql_python.constants import ConstantsDDBC as ddbc_sql_const, SQLTypes
 from mssql_python.helpers import check_error, connstr_to_pycore_params
@@ -1184,6 +1185,14 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         cursor.executemany(sql, params)
 
         Note:
+            SQL_SS_UDT parameters require a statement whose parameter metadata
+            SQL Server can describe. The driver discovers the UDT identity before
+            binding; this may require a metadata round trip. Temporary tables and
+            table variables may not be describable, and discovery errors are
+            propagated. For built-in spatial types, bind serialized bytes without
+            a SQL_SS_UDT override or use a SQL constructor such as
+            hierarchyid::Parse(?) with a text parameter instead.
+
             When inserting NULL into BINARY/VARBINARY columns in temp tables (#table)
             or table variables, SQLDescribeParam cannot resolve the column type and
             falls back to SQL_VARCHAR. This causes an implicit conversion error from
@@ -2686,15 +2695,21 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                         paraminfo.columnSize = max(max_binary_size, 1)
 
                     parameters_type.append(paraminfo)
-                    if paraminfo.isDAE:
-                        any_dae = True
+                if paraminfo.isDAE:
+                    any_dae = True
 
         if any_dae:
             logger.debug(
                 "DAE parameters detected. Falling back to row-by-row execution with streaming.",
             )
-            for row in seq_of_parameters:
-                self.execute(operation, row)
+            input_sizes = self._inputsizes
+            try:
+                for row in seq_of_parameters:
+                    # execute() consumes overrides; every streamed row needs them.
+                    self._inputsizes = input_sizes
+                    self.execute(operation, row)
+            finally:
+                self._reset_inputsizes()
             return
 
         # Process parameters into column-wise format with possible type conversions
@@ -2732,22 +2747,15 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                                 f"Failed to convert parameter to Decimal at row "
                                 f"{row_index}, column {i} (value type: {type(val).__name__})"
                             )
-                            # Split str(val) from the decimal parse so we only chain a
-                            # cause we know is value-free. decimal.DecimalException
-                            # messages (e.g. ConversionSyntax) never echo the input, so
-                            # they are safe to preserve for debugging. str(val) itself
-                            # or any other error could carry the value in its message
-                            # and surface through __cause__ / formatted tracebacks, so
-                            # those are re-raised with the chain suppressed (from None).
+                            # Raise outside the handler so conversion exceptions are
+                            # not retained as context with rejected input.
+                            conversion_failed = False
                             try:
                                 val_text = str(val)
-                            except Exception:  # pylint: disable=broad-exception-caught
-                                raise ValueError(err_msg) from None
-                            try:
                                 processed_row[i] = format(decimal.Decimal(val_text), "f")
-                            except decimal.DecimalException as e:
-                                raise ValueError(err_msg) from e
                             except Exception:  # pylint: disable=broad-exception-caught
+                                conversion_failed = True
+                            if conversion_failed:
                                 raise ValueError(err_msg) from None
                 processed_parameters.append(processed_row)
 
@@ -3280,6 +3288,15 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             # If describe fails, there might be no results in this result set
             self.description = None
 
+        # Update rowcount for the new result, as execute() does: -1 for a
+        # result set, the affected-row count for INSERT/UPDATE/DELETE/MERGE.
+        # Without this, rowcount keeps the value of the first statement of a
+        # multi-statement batch (pyodbc refreshes it here too).
+        if self.description:
+            self.rowcount = -1
+        else:
+            self.rowcount = ddbc_bindings.DDBCSQLRowCount(self.hstmt)
+
         logger.debug(
             "nextset: Moved to next result set - column_count=%d",
             len(self.description) if self.description else 0,
@@ -3440,9 +3457,10 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
     @staticmethod
     def _bulkcopy_core_and_validate(table_name, batch_size, timeout):
         """Import the native core and validate the args shared by ``bulkcopy``
-        and ``bulkcopy_arrow``. Returns the imported ``mssql_py_core`` module."""
+        and ``bulkcopy_arrow``. Returns the native ``mssql_py_core`` extension."""
         try:
-            import mssql_py_core
+            # Upgrading from a bundled core can remove the package's __init__.py.
+            mssql_py_core = import_module("mssql_py_core.mssql_py_core")
         except ImportError as exc:
             logger.error("bulkcopy: Failed to import mssql_py_core module")
             raise ImportError(
@@ -3833,23 +3851,27 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             After calling fetchval(), the cursor position advances by one row,
             just like fetchone().
         """
-        logger.debug("fetchval: Fetching single value from first column")
+        if logger.is_debug_enabled:
+            logger.debug("fetchval: Fetching single value from first column")
         self._check_closed()  # Check if the cursor is closed
 
         # Check if this is a result-producing statement
         if not self.description:
             # Non-result-set statement (INSERT, UPDATE, DELETE, etc.)
-            logger.debug("fetchval: No result set available (non-SELECT statement)")
+            if logger.is_debug_enabled:
+                logger.debug("fetchval: No result set available (non-SELECT statement)")
             return None
 
         # Fetch the first row
         row = self.fetchone()
 
         if row is None:
-            logger.debug("fetchval: No value available (no rows)")
+            if logger.is_debug_enabled:
+                logger.debug("fetchval: No value available (no rows)")
             return None
 
-        logger.debug("fetchval: Value retrieved successfully")
+        if logger.is_debug_enabled:
+            logger.debug("fetchval: Value retrieved successfully")
         return row[0]
 
     def commit(self):

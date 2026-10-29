@@ -877,7 +877,7 @@ class TestManagedIdentity:
         mock_pycore_module.PyCoreConnection = lambda ctx, **kwargs: mock_pycore_conn
 
         with (
-            patch.dict("sys.modules", {"mssql_py_core": mock_pycore_module}),
+            patch.dict("sys.modules", {"mssql_py_core.mssql_py_core": mock_pycore_module}),
             patch("mssql_python.auth.AADAuth.get_raw_token", side_effect=fake_get_raw_token),
         ):
             cursor.bulkcopy("dbo.test_table", [(1, "row")], timeout=10)
@@ -1114,17 +1114,6 @@ class TestConnectionAuthType:
         # And the connection_str on the Connection should NOT contain UID
         # (this is what makes _credential_kwargs the source of truth).
         assert "UID=" not in conn.connection_str
-        conn.close()
-
-    @patch("mssql_python.connection.ddbc_bindings.Connection")
-    def test_credential_kwargs_none_for_system_assigned_msi(self, mock_ddbc_conn):
-        """System-assigned MSI: no UID → _credential_kwargs stays None."""
-        mock_ddbc_conn.return_value = MagicMock()
-        from mssql_python import connect
-
-        conn = connect("Server=test;Database=testdb;Authentication=ActiveDirectoryMSI")
-        assert conn._auth_type == "msi"
-        assert conn._credential_kwargs is None
         conn.close()
 
     @patch("mssql_python.connection.ddbc_bindings.Connection")

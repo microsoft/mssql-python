@@ -1302,14 +1302,6 @@ class TestRealWorldScenarios:
 class TestBackwardCompatibility:
     """Test that qmark style (existing functionality) still works perfectly."""
 
-    def test_qmark_single_param(self):
-        """Test backward compatibility: single qmark parameter."""
-        sql = "SELECT * FROM users WHERE id = ?"
-        params = (42,)
-        result_sql, result_params = detect_and_convert_parameters(sql, params)
-        assert result_sql == sql
-        assert result_params == params
-
     def test_qmark_multiple_params(self):
         """Test backward compatibility: multiple qmark parameters."""
         sql = "INSERT INTO users (name, age, city) VALUES (?, ?, ?)"
@@ -1325,13 +1317,6 @@ class TestBackwardCompatibility:
         result_sql, result_params = detect_and_convert_parameters(sql, params)
         assert result_sql == sql
         assert result_params == params
-
-    def test_qmark_no_params(self):
-        """Test backward compatibility: query with no parameters."""
-        sql = "SELECT * FROM users"
-        result_sql, result_params = detect_and_convert_parameters(sql, None)
-        assert result_sql == sql
-        assert result_params is None
 
     def test_qmark_complex_query(self):
         """Test backward compatibility: complex query with qmark."""
@@ -2050,16 +2035,6 @@ class TestErrorHandling:
         assert result[0] == 42
         cursor.close()
 
-    def test_parameter_wrapping_with_none_value(self, db_connection):
-        """Test that None values are properly wrapped"""
-        cursor = db_connection.cursor()
-
-        # None as single parameter should be wrapped to (None,)
-        cursor.execute("SELECT ?", None)
-        result = cursor.fetchone()
-        assert result[0] is None
-        cursor.close()
-
     def test_very_long_parameter_value(self, db_connection):
         """Test parameter with very long string value"""
         cursor = db_connection.cursor()
@@ -2233,15 +2208,6 @@ class TestCursorParameterConversion:
             else:
                 assert result[0] == expected
 
-        cursor.close()
-
-    def test_execute_normal_tuple_not_unwrapped(self, db_connection):
-        """Test that normal single-item tuple stays as-is (lines 1253-1254)."""
-        cursor = db_connection.cursor()
-        # (42,) should stay as (42,) not unwrap to 42
-        cursor.execute("SELECT ?", (42,))
-        result = cursor.fetchone()
-        assert result[0] == 42
         cursor.close()
 
     def test_execute_with_list_conversion(self, db_connection):

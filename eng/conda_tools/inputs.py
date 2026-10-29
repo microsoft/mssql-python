@@ -176,7 +176,7 @@ def fetch_wheels(
     else:
         if source_versions.get("mssql-python-rs") != rs_version:
             raise ValueError(
-                "Published binding RS requirement differs from the maintained source pin."
+                "Published binding RS requirement differs from the selected pin."
             )
         versions["mssql-python-rs"] = rs_version
         hashes.update(
@@ -213,11 +213,7 @@ def validate_installed_inputs(
     if len(names) != len(set(names)):
         raise ValueError(f"{path}: duplicate payload members")
     metadata = {}
-    root = (
-        "Lib/site-packages/"
-        if subdir.startswith("win-")
-        else (f"lib/python{python_tag[2]}.{python_tag[3:]}/site-packages/")
-    )
+    root = contracts.site_packages_root(python_tag, subdir)
     for facts, present, owned, prefix in archive.installed_metadata(names, files):
         name = contracts.canonical_distribution_name(facts["name"])
         if name in metadata:
@@ -283,6 +279,11 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--wheel-dir", type=Path, required=True)
     parser.add_argument("--requirements-file", type=Path, required=True)
     parser.add_argument(
+        "--published-smoke",
+        action="store_true",
+        help="Use PyPI's current published binding and its exact dependencies for the PR smoke.",
+    )
+    parser.add_argument(
         "--python-tag",
         required=True,
         help="Expected normal CPython tag (e.g. cp311), not a pip cross-target override.",
@@ -296,7 +297,12 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
 
 def fetch_cli(args: argparse.Namespace) -> int:
     try:
-        source = read_release_versions(lambda path: Path(path).read_text(encoding="utf-8"))
+        if args.published_smoke:
+            if (args.python_tag, args.conda_subdir) != ("cp311", "linux-64"):
+                raise ValueError("The published smoke requires cp311 linux-64.")
+            source = read_published_versions()
+        else:
+            source = read_release_versions(lambda path: Path(path).read_text(encoding="utf-8"))
         versions = fetch_wheels(
             source, args.wheel_dir, args.requirements_file, args.python_tag, args.conda_subdir
         )
@@ -314,6 +320,32 @@ def fetch_cli(args: argparse.Namespace) -> int:
         else "Historical published packaging control; NOT current-source RS qualification."
     )
     return 0
+
+
+def read_published_versions() -> dict[str, str]:
+    """Select PyPI's current binding release, never independently mix latest components."""
+    try:
+        with urlopen("https://pypi.org/pypi/mssql-python/json", timeout=60) as response:
+            release = json.load(response)
+    except URLError as error:
+        raise ValueError(
+            "Cannot select the published binding from PyPI; no fallback is allowed."
+        ) from error
+    info = release.get("info") if isinstance(release, dict) else None
+    if not isinstance(info, dict) or info.get("name") != "mssql-python":
+        raise ValueError("Invalid published binding identity.")
+    requirements = info.get("requires_dist")
+    if not isinstance(requirements, list) or any(
+        not isinstance(item, str) for item in requirements
+    ):
+        raise ValueError("Invalid published binding dependencies.")
+    versions = {
+        "mssql-python": info.get("version"),
+        "mssql-python-odbc": contracts.exact_dependency_pin(requirements, "mssql-python-odbc"),
+    }
+    if rs_version := contracts.exact_dependency_pin(requirements, "mssql-python-rs"):
+        versions["mssql-python-rs"] = rs_version
+    return parse_release_versions(json.dumps(versions))
 
 
 def read_release_versions(read_source: Callable[[str], str]) -> dict[str, str]:

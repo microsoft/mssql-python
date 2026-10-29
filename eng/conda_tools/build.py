@@ -302,10 +302,10 @@ def build_packages(
     croot = os.path.join(os.path.dirname(os.path.abspath(bld)), "croot")
     if os.path.isdir(croot):
         shutil.rmtree(croot)
-    channels = ["microsoft", "conda-forge"]
-    if target_subdir == "win-arm64":
-        channels.insert(0, "defaults")
     for py in pyvers:
+        channels = ["microsoft", "conda-forge"]
+        if target_subdir == "win-arm64" and py != "3.15":
+            channels.insert(0, "defaults")
         environment._log(
             f"=== [py {py}] build mssql-python (self-contained: vendors the ODBC payload) ==="
         )
@@ -471,8 +471,8 @@ def execute(args: argparse.Namespace) -> int:
     conda = environment.find_or_install_conda(output_dir)
     environment._log(f"Using conda: {conda}")
     environment.run([conda, "--version"], what="conda --version")
-    builder = environment.create_builder_env(conda)
     pyvers = detect_pythons(links, python_versions)
+    builder = environment.create_builder_env(conda, target, pyvers)
     cross_build = bool(args.conda_target_subdir)
     env = environment.build_env(mssql_ver, odbc_ver, links, args.conda_target_subdir, rs_ver)
 

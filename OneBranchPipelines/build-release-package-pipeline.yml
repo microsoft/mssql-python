@@ -2,9 +2,9 @@
 # OneBranch Release Pipeline for mssql-python
 # =========================================================================================
 # Builds Python wheels for all supported platforms with SDL compliance:
-# - Windows: Python 3.10-3.14 (x64 + ARM64)
-# - macOS: Python 3.10-3.14 (Universal2 = x86_64 + ARM64 in single binary)
-# - Linux: Python 3.10-3.14 on manylinux/musllinux (x86_64 + ARM64)
+# - Windows: Python 3.10-3.15 (x64 + ARM64)
+# - macOS: Python 3.10-3.15 (Universal2 = x86_64 + ARM64 in single binary)
+# - Linux: Python 3.10-3.15 on manylinux/musllinux (x86_64 + ARM64)
 #
 # Security Features:
 # - ESRP code signing (Windows .pyd files only)
@@ -82,19 +82,19 @@ parameters:
   # PLATFORM CONFIGURATIONS
   # =========================
   # Each platform uses different matrix strategy:
-  # - Windows: Explicit per-version stages (9 stages for x64/ARM64 combos)
-  # - macOS: Explicit per-version stages (5 stages for universal2 builds)
+  # - Windows: Explicit per-version stages (11 stages for x64/ARM64 combos)
+  # - macOS: Explicit per-version stages (6 stages for universal2 builds)
   # - Linux: Per-distro stages, builds ALL Python versions in loop (4 stages)
   
   # Windows Configuration Matrix
   # Each entry creates separate stage: Win_py<pyVer>_<arch>
-  # pyVer format: '310' = Python 3.10, '314' = Python 3.14
+  # pyVer format: '310' = Python 3.10, '315' = Python 3.15
   # arch: 'x64' (Intel/AMD 64-bit) or 'arm64' (ARM64, cross-compiled on x64)
   # Note: ARM64 builds use x64 host with ARM64 python.lib for cross-compilation
   - name: windowsConfigs
     type: object
     default:
-      # x64 builds (5 versions: 3.10-3.14)
+      # x64 builds (6 versions: 3.10-3.15)
       - pyVer: '310'
         arch: 'x64'
       - pyVer: '311'
@@ -105,7 +105,9 @@ parameters:
         arch: 'x64'
       - pyVer: '314'
         arch: 'x64'
-      # ARM64 builds (4 versions: 3.11-3.14)
+      - pyVer: '315'
+        arch: 'x64'
+      # ARM64 builds (5 versions: 3.11-3.15)
       # 3.10 excluded due to limited ARM64 support
       - pyVer: '311'
         arch: 'arm64'
@@ -115,23 +117,26 @@ parameters:
         arch: 'arm64'
       - pyVer: '314'
         arch: 'arm64'
+      - pyVer: '315'
+        arch: 'arm64'
   
   # macOS Configuration Matrix
   # Each entry creates separate stage: MacOS_py<pyVer>
   # All builds are Universal2 (x86_64 + ARM64 in single binary)
-  # pyVer format: '310' = Python 3.10, '314' = Python 3.14
+  # pyVer format: '310' = Python 3.10, '315' = Python 3.15
   - name: macosConfigs
     type: object
     default:
-      # 5 versions: 3.10-3.14 (all universal2)
+      # 6 versions: 3.10-3.15 (all universal2)
       - pyVer: '310'
       - pyVer: '311'
       - pyVer: '312'
       - pyVer: '313'
       - pyVer: '314'
+      - pyVer: '315'
   
   # Linux Configuration Matrix
-  # Each entry creates ONE stage that builds ALL Python versions (3.10-3.14)
+  # Each entry creates ONE stage that builds ALL Python versions (3.10-3.15)
   # tag: 'manylinux' (glibc-based, e.g., Ubuntu/CentOS) or 'musllinux' (musl-based, e.g., Alpine)
   # arch: CPU architecture for Docker platform
   # platform: Docker platform identifier for multi-arch builds
@@ -375,17 +380,17 @@ extends:
     # =========================
     # PIPELINE STAGES
     # =========================
-    # mssql-python: 9 Windows + 5 macOS + 4 Linux + 1 Consolidate = 19 stages
+    # mssql-python: 11 Windows + 6 macOS + 4 Linux + 1 Consolidate = 22 stages
     # mssql-python-odbc: 1 ODBC_BuildAll (single host, all 7 wheels) + 1 ConsolidateOdbc = 2 stages
-    # Total: 21 stages, always built together. The mssql-python build stages depend on
+    # Total: 24 stages, always built together. The mssql-python build stages depend on
     # ConsolidateOdbc so they install the external ODBC wheel before pytest.
     stages:
       # =========================
       # WINDOWS BUILD STAGES
       # =========================
       # Strategy: Explicit stage per Python version × architecture
-      # Total: 9 stages (5 x64 + 4 ARM64)
-      # Python versions: 3.10-3.14 (x64), 3.11-3.14 (ARM64)
+      # Total: 11 stages (6 x64 + 5 ARM64)
+      # Python versions: 3.10-3.15 (x64), 3.11-3.15 (ARM64)
       # Each stage:
       # 1. Installs Python (UsePythonVersion or NuGet for 3.14)
       # 2. Downloads ARM64 python.lib if cross-compiling
@@ -416,7 +421,7 @@ extends:
       # MACOS BUILD STAGES
       # =========================
       # Strategy: Explicit stage per Python version
-      # Total: 5 stages (3.10-3.14)
+      # Total: 6 stages (3.10-3.15)
       # All builds are Universal2 (x86_64 + ARM64 in single .so binary)
       # Each stage:
       # 1. Installs Python via UsePythonVersion@0
@@ -446,7 +451,7 @@ extends:
       # =========================
       # Strategy: One stage per distribution × architecture
       # Total: 4 stages (manylinux_2_28×2 + musllinux×2)
-      # Each stage builds ALL Python versions (3.10-3.14) in a loop
+      # Each stage builds ALL Python versions (3.10-3.15) in a loop
       # Distributions:
       # - manylinux_2_28: glibc 2.28+ (RHEL 8, Ubuntu 20.04+, etc.) — forward-compatible with newer glibc
       # - musllinux: musl-based (Alpine Linux)
@@ -454,12 +459,12 @@ extends:
       # Each stage:
       # 1. Starts PyPA Docker container (manylinux_2_28 or musllinux_1_2)
       # 2. Starts SQL Server Docker container
-      # 3. For each Python version (cp310-cp314):
+      # 3. For each Python version (cp310-cp315):
       #    a. Builds .so native extension
       #    b. Builds wheel
       #    c. Installs wheel in isolated directory
       #    d. Runs pytest against SQL Server
-      # 4. Publishes artifacts (all 5 wheels)
+      # 4. Publishes artifacts (all 6 wheels)
       # 5. Component Governance + AntiMalware scanning
       - ${{ each config in parameters.linuxConfigs }}:
           - template: /OneBranchPipelines/stages/build-linux-single-stage.yml@self
@@ -479,7 +484,7 @@ extends:
       # CONSOLIDATE STAGE
       # =========================
       # Purpose: Collect all artifacts from platform builds into single dist/ folder
-      # Dependencies: All 18 build stages (9 Windows + 5 macOS + 4 Linux)
+      # Dependencies: All 21 build stages (11 Windows + 6 macOS + 4 Linux)
       # Stages run in parallel, Consolidate waits for ALL to complete
       # Outputs:
       # - dist/wheels/*.whl (all platform wheels)
@@ -490,22 +495,25 @@ extends:
       - stage: Consolidate
         displayName: 'Consolidate All Artifacts'
         dependsOn:
-          # Windows dependencies (9 stages)
+          # Windows dependencies (11 stages)
           - Win_py310_x64
           - Win_py311_x64
           - Win_py312_x64
           - Win_py313_x64
           - Win_py314_x64
+          - Win_py315_x64
           - Win_py311_arm64
           - Win_py312_arm64
           - Win_py313_arm64
           - Win_py314_arm64
-          # macOS dependencies (5 stages)
+          - Win_py315_arm64
+          # macOS dependencies (6 stages)
           - MacOS_py310
           - MacOS_py311
           - MacOS_py312
           - MacOS_py313
           - MacOS_py314
+          - MacOS_py315
           # Linux dependencies (4 stages)
           - Linux_manylinux_2_28_x86_64
           - Linux_manylinux_2_28_aarch64

@@ -74,7 +74,7 @@ function Get-PlatformInfo {
     # aarch64 -> arm64 so a Windows arm64 target resolves win_arm64, not win_aarch64.
     $script:WheelPlatform = "win_$($archTag -replace 'x86_64','amd64' -replace 'aarch64','arm64')"
 
-    $script:WheelPattern = "mssql_python_rs-$script:DistributionVersion-$script:PyVersion-$script:PyVersion-$script:WheelPlatform.whl"
+    $script:WheelPattern = "mssql_python_rs-$script:DistributionVersion-cp310-abi3-$script:WheelPlatform.whl"
     Write-Host "Wheel pattern: $script:WheelPattern"
 }
 

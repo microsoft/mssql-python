@@ -186,7 +186,14 @@ def test_binding_rs_requirement_accepts_metadata_spacing(spacing):
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows recipe requires cmd.exe")
-@pytest.mark.parametrize("cross_build", [False, True])
+@pytest.mark.parametrize(
+    "cross_build,tag",
+    [
+        (False, f"{sys.version_info.major}{sys.version_info.minor}"),
+        (True, f"{sys.version_info.major}{sys.version_info.minor}"),
+        (True, "315"),
+    ],
+)
 @pytest.mark.parametrize(
     ("rs_owned", "state"),
     [
@@ -196,12 +203,13 @@ def test_binding_rs_requirement_accepts_metadata_spacing(spacing):
     ]
     + [(True, "missing-private-library")],
 )
-def test_windows_recipe_requires_core_on_both_install_paths(tmp_path, cross_build, rs_owned, state):
+def test_windows_recipe_requires_core_on_both_install_paths(
+    tmp_path, cross_build, tag, rs_owned, state
+):
     wheels = tmp_path / "wheels"
     wheels.mkdir()
     prefix = tmp_path / "prefix"
-    site_packages = prefix / "Lib" / "site-packages"
-    tag = f"{sys.version_info.major}{sys.version_info.minor}"
+    site_packages = prefix / ("lib/python" if int(tag) >= 315 else "Lib") / "site-packages"
     arch = sysconfig.get_platform().replace("-", "_")
     machine = _ARM64 if arch == "win_arm64" else _AMD64
     core = f"mssql_py_core/mssql_py_core.cp{tag}-{arch}.pyd"
@@ -256,6 +264,7 @@ def test_windows_recipe_requires_core_on_both_install_paths(tmp_path, cross_buil
     env = dict(
         os.environ,
         PREFIX=str(prefix),
+        SP_DIR=str(site_packages),
         PYTHON=str(tmp_path / "nonexecutable-python") if cross_build else sys.executable,
         PKG_NAME="mssql-python",
         PKG_VERSION="1.13.0",
@@ -298,9 +307,12 @@ def test_windows_recipe_requires_core_on_both_install_paths(tmp_path, cross_buil
         ) in output
 
 
-def _make_conda(tmp_path, subdir, payload, depends=("python_abi 3.12.* *_cp312",)):
+def _make_conda(
+    tmp_path, subdir, payload, depends=("python_abi 3.12.* *_cp312",), python_tag="cp312"
+):
     """Build a minimal .conda (info-*.tar.zst + pkg-*.tar.zst) with the given payload files."""
-    name = "mssql-python-1.13.0-py312_0"
+    build = f"py{python_tag[2:]}_0"
+    name = f"mssql-python-1.13.0-{build}"
 
     pkg_buf = io.BytesIO()
     with tarfile.open(fileobj=pkg_buf, mode="w") as tf:
@@ -312,7 +324,7 @@ def _make_conda(tmp_path, subdir, payload, depends=("python_abi 3.12.* *_cp312",
     index = {
         "name": "mssql-python",
         "version": "1.13.0",
-        "build": "py312_0",
+        "build": build,
         "subdir": subdir,
         "depends": depends,
     }
@@ -328,6 +340,21 @@ def _make_conda(tmp_path, subdir, payload, depends=("python_abi 3.12.* *_cp312",
         zf.writestr(f"pkg-{name}.tar.zst", _zstd_compress(pkg_buf.getvalue()))
         zf.writestr(f"info-{name}.tar.zst", _zstd_compress(info_buf.getvalue()))
     return str(conda_path)
+
+
+@pytest.mark.parametrize(
+    "root",
+    ["Lib/site-packages/", "lib/python3.15/site-packages/", "nested/lib/python/site-packages/"],
+)
+def test_cp315_native_layout_rejects_other_windows_roots(root):
+    names = [
+        root + "mssql_python/ddbc_bindings.cp315-win_amd64.pyd",
+        root + "mssql_py_core/__init__.py",
+        root + "mssql_py_core/mssql_py_core.pyd",
+    ]
+    assert contracts.validate_native_contract(
+        names, {"subdir": "win-64", "depends": ["python_abi 3.15.* *_cp315"]}
+    )
 
 
 @pytest.mark.skipif(not _zstd_available(), reason="no zstandard backend available")
@@ -435,7 +462,8 @@ def test_win_arm64_binaries_require_binding_metadata(tmp_path, metadata_state):
         "wrong-abi",
     ],
 )
-def test_required_core_contract(tmp_path, state):
+@pytest.mark.parametrize("python_tag", ["cp312", "cp315"])
+def test_required_core_contract(tmp_path, state, python_tag):
     pin = "python_abi 3.12.* *_cp312"
     # The observed defaults CP312 host supplied only the Python range, not an ABI export.
     depends = ["vc14_runtime", "python >=3.12,<3.13.0a0", "azure-identity >=1.12.0"]
@@ -464,8 +492,19 @@ def test_required_core_contract(tmp_path, state):
     payload[prefix + "RECORD"] = "".join(
         f"{name.removeprefix('Lib/site-packages/')},,\n" for name in [*payload, prefix + "RECORD"]
     ).encode()
+    if python_tag == "cp315":
+        payload = {
+            name.replace("Lib/site-packages/", "lib/python/site-packages/").replace(
+                "cp312", "cp315"
+            ): data.replace(b"cp312", b"cp315")
+            for name, data in payload.items()
+        }
+        depends = [
+            dep.replace("3.12", "3.15").replace("3.13", "3.16").replace("cp312", "cp315")
+            for dep in depends
+        ]
     errors = audit.audit_package(
-        _make_conda(tmp_path, "win-arm64", payload, depends=depends), "pe"
+        _make_conda(tmp_path, "win-arm64", payload, depends=depends, python_tag=python_tag), "pe"
     ).violations
     if state in ("valid", "abi3"):
         assert errors == []

@@ -139,14 +139,21 @@ def _sha256(path: str) -> str:
     return h.hexdigest()
 
 
-def create_builder_env(conda: str) -> str:
-    """conda-build<26: 26.7.0 crashes in the local packaging phase; the 25.x series is stable.
+def create_builder_env(conda: str, target_subdir: str, pyvers: list[str]) -> str:
+    """Keep the stable 25.x builder except where Windows 3.15 needs CFEP-27 support.
+    26.9.1 reads the target Python's recorded site-packages path; 25.x computes Lib.
+    Pin that opt-in rather than reopening the range containing the 26.7.0 packaging crash.
     A DEDICATED env (not `install -n base`) because a hosted runner's base may be pinned to a
     python no conda-build<26 supports (e.g. 3.14), making a base install UNSOLVABLE; a fresh
     env lets conda pick a supported python. conda-forge only (--override-channels) avoids the
     defaults ToS; zstandard rides along so the RUNPATH audit reads .conda payloads here."""
     env_name = "conda_builder"
-    _log(f"=== creating dedicated conda-build env ({env_name}: conda-build<26) ===")
+    builder_spec = (
+        "conda-build=26.9.1"
+        if target_subdir.startswith("win-") and "3.15" in pyvers
+        else "conda-build<26"
+    )
+    _log(f"=== creating dedicated conda-build env ({env_name}: {builder_spec}) ===")
     # Idempotent: a reused agent may already have this env; a pre-existing env makes
     # `conda create` fail. Remove first (best-effort).
     run_ok([conda, "env", "remove", "-y", "-n", env_name])
@@ -160,7 +167,7 @@ def create_builder_env(conda: str) -> str:
             "-c",
             "conda-forge",
             "--override-channels",
-            "conda-build<26",
+            builder_spec,
             "zstandard",
         ],
         what=f"conda create {env_name}",

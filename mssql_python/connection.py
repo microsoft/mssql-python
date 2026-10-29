@@ -439,7 +439,11 @@ class Connection:
                 query timeout. An explicit ``attrs_before[SQL_ATTR_LOGIN_TIMEOUT]``
                 takes precedence over this value. (pyodbc migration note: pyodbc
                 lets a positive ``timeout=`` override ``attrs_before``; here the
-                explicit ``attrs_before`` entry wins.)
+                explicit ``attrs_before`` entry wins.) Pooled candidate reset
+                also uses this positive timeout, or 15 seconds when zero/default,
+                temporarily as SQL_ATTR_CONNECTION_TIMEOUT. Driver cancellation
+                and a replacement login can add time; this is not an overall
+                connect deadline.
             native_uuid (bool, optional): Controls whether UNIQUEIDENTIFIER columns return
                 uuid.UUID objects (True) or str (False) for cursors created from this connection.
                 None (default) defers to the module-level ``mssql_python.native_uuid`` setting (True).
@@ -904,6 +908,11 @@ class Connection:
         _provider = ProviderManager.ensure_available()
         ddbc_bindings._set_odbc_provider(_provider)
 
+        # Configure a reused connection's mode inside native checkout, while
+        # its temporary connection timeout still bounds attribute-setting I/O.
+        native_attrs = self._attrs_before.copy()
+        native_attrs[ConstantsDDBC.SQL_ATTR_AUTOCOMMIT.value] = int(bool(autocommit))
+
         # A retry policy wraps only the native connect. Everything above (connection string
         # parsing, the attrs_before copy, any token acquired on the Python side) has already
         # happened once, so every attempt reuses the same inputs. A deferred token factory is
@@ -916,7 +925,7 @@ class Connection:
                 self._conn = ddbc_bindings.Connection(
                     self.connection_str,
                     self._pooling,
-                    self._attrs_before,
+                    native_attrs,
                     self._pool_key,
                     self._token_factory,
                 )
@@ -961,7 +970,11 @@ class Connection:
                         "none",
                     )
                 raise
-        self.setautocommit(autocommit)
+        try:
+            if self._conn.get_autocommit() != autocommit:
+                self.setautocommit(autocommit)
+        except RuntimeError as e:
+            _raise_connection_error(e)
 
         # Register this connection for cleanup before Python shutdown
         # This ensures ODBC handles are freed in correct order, preventing leaks
@@ -1276,15 +1289,24 @@ class Connection:
 
     def setencoding(self, encoding: Optional[str] = None, ctype: Optional[int] = None) -> None:
         """
-        Sets the text encoding for SQL statements and text parameters.
+        Records the requested text encoding settings for compatibility.
 
-        Since Python 3 only has str (which is Unicode), this method configures
-        how text is encoded when sending to the database.
+        SQL statements and str parameters are always sent as UTF-16LE; text
+        parameters are bound as SQL_C_WCHAR on every platform. This applies to
+        execute() and executemany(), with or without setinputsizes(). This method
+        does not change that behavior or enforce the requested codec.
+
+        Requests that pass validation but differ from UTF-16LE with SQL_WCHAR emit
+        UserWarning. Invalid codec names, invalid ctypes, and incompatible
+        combinations (such as UTF-8 with SQL_WCHAR) raise ProgrammingError before
+        any warning is emitted or settings are stored. Accepted settings are still
+        returned by getencoding(), not the effective binding. Use setdecoding()
+        separately to configure how results are read.
 
         Args:
-            encoding (str, optional): The encoding to use. This must be a valid Python
+            encoding (str, optional): The requested encoding. This must be a valid Python
                 encoding that converts text to bytes. If None, defaults to 'utf-16le'.
-            ctype (int, optional): The C data type to use when passing data:
+            ctype (int, optional): The requested C data type:
                 SQL_CHAR or SQL_WCHAR. If not provided, SQL_WCHAR is used for
                 UTF-16 variants (see UTF16_ENCODINGS constant). SQL_CHAR is used
                 for all other encodings.
@@ -1293,15 +1315,20 @@ class Connection:
             None
 
         Raises:
-            ProgrammingError: If the encoding is not valid or not supported.
+            ProgrammingError: If the encoding or ctype is invalid, or their
+                combination is incompatible.
             InterfaceError: If the connection is closed.
 
-        Example:
-            # For databases that only communicate with UTF-8
-            cnxn.setencoding(encoding='utf-8')
+        Warns:
+            UserWarning: If the request passes validation but its encoding or
+                ctype cannot be honored.
 
-            # For explicitly using SQL_CHAR
-            cnxn.setencoding(encoding='utf-8', ctype=mssql_python.SQL_CHAR)
+        Example:
+            # Restore the supported default.
+            cnxn.setencoding()
+
+            # Warns: parameters still use UTF-16LE / SQL_C_WCHAR.
+            cnxn.setencoding(encoding='cp1252', ctype=mssql_python.SQL_CHAR)
         """
         logger.debug(
             "setencoding: Configuring encoding=%s, ctype=%s",
@@ -1369,20 +1396,35 @@ class Connection:
         if ctype == ConstantsDDBC.SQL_WCHAR.value:
             _validate_utf16_wchar_compatibility(encoding, ctype, "SQL_WCHAR")
 
+        if encoding != "utf-16le" or ctype != ConstantsDDBC.SQL_WCHAR.value:
+            warnings.warn(
+                "setencoding() does not change SQL statement encoding or text parameter binding: "
+                "statements and str parameters always use UTF-16LE, and text parameters are "
+                "bound as SQL_C_WCHAR. The requested settings are retained by getencoding() "
+                "for compatibility but are not applied. Use setencoding() with no arguments "
+                "to restore the supported defaults.",
+                UserWarning,
+                stacklevel=2,
+            )
+
         # Store the encoding settings (thread-safe with lock)
         with self._encoding_lock:
             self._encoding_settings = {"encoding": encoding, "ctype": ctype}
 
         # Log with sanitized values for security
         logger.info(
-            "Text encoding set to %s with ctype %s",
+            "Requested text encoding stored as %s with ctype %s",
             sanitize_user_input(encoding),
             sanitize_user_input(str(ctype)),
         )
 
     def getencoding(self) -> Dict[str, Union[str, int]]:
         """
-        Gets the current text encoding settings (thread-safe).
+        Gets the requested text encoding settings (thread-safe).
+
+        These settings are retained for compatibility. They do not describe the
+        effective binding: SQL statements and str parameters always use UTF-16LE,
+        and text parameters are bound as SQL_C_WCHAR.
 
         Returns:
             dict: A dictionary containing 'encoding' and 'ctype' keys.

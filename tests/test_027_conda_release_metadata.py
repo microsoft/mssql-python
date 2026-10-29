@@ -506,8 +506,29 @@ def test_default_subdir_pythons_reduces_win_arm64():
     # The shipped CLI default carries the win-arm64 reduction so the pipeline needs
     # no extra flag; parsing it yields the expected mapping.
     assert vcr._parse_subdir_pythons(vcr._DEFAULT_SUBDIR_PYTHONS) == {
-        "win-arm64": ["3.12", "3.13", "3.14"]
+        "win-arm64": ["3.12", "3.13", "3.14", "3.15"]
     }
+
+
+def test_conda_python_defaults_are_synchronized():
+    args = cli.parser().parse_args(["validate", "--root", "unused"])
+    assert args.pythons == "3.10,3.11,3.12,3.13,3.14,3.15"
+    assert args.subdir_pythons == "win-arm64=3.12,3.13,3.14,3.15"
+    for path in (
+        "OneBranchPipelines/conda-build-pipeline.yml",
+        "OneBranchPipelines/steps/conda-release-step.yml",
+        "OneBranchPipelines/steps/conda-publish-step.yml",
+    ):
+        source = (_ROOT / path).read_text(encoding="utf-8")
+        parameter = source.split("- name: pythonVersions\n", 1)[1].split("\n  - name:", 1)[0]
+        assert f"default: '{args.pythons}'" in parameter, path
+    build_source = (_ROOT / "OneBranchPipelines/conda-build-pipeline.yml").read_text(
+        encoding="utf-8"
+    )
+    assert (
+        f"pythonVersion: '{args.subdir_pythons.split('=')[1]}'\n"
+        "                  condaSubdir: 'win-arm64'"
+    ) in build_source
 
 
 def test_parse_subdir_pythons():
@@ -1514,9 +1535,18 @@ def test_metadata_agreement_across_full_archive_matrix(tmp_path, capsys, build, 
                 index.update(build=build, depends=depends)
             _write_release_archive(tmp_path, folder=subdir, **index)
     assert len(list(tmp_path.rglob("*.tar.bz2"))) == 28
-    assert _metadata_main(["--root", str(tmp_path), "--mssql-python-version", _MP_VER]) == bool(
-        error
-    )
+    assert _metadata_main(
+        [
+            "--root",
+            str(tmp_path),
+            "--mssql-python-version",
+            _MP_VER,
+            "--pythons",
+            ",".join(_PYTHONS),
+            "--subdir-pythons",
+            "win-arm64=3.12,3.13,3.14",
+        ]
+    ) == bool(error)
     output = capsys.readouterr()
     assert error in output.err if error else "metadata-validated" in output.out
 
@@ -1895,22 +1925,27 @@ def test_metadata_cli_read_errors_are_controlled_without_hiding_bugs(
     "count, policy, message",
     [
         (0, [], "no conda packages"),
-        (25, [], "win-arm64"),
-        (28, [], ""),
-        (28, ["--mssql-python-version", "wrong"], "!= expected"),
-        (28, ["--required-subdirs", ""], "must not be empty"),
-        (28, ["--required-subdirs", " , "], "must not be empty"),
-        (28, ["--allowed-subdirs", ""], "must not be empty"),
-        (28, ["--allowed-subdirs", " , "], "must not be empty"),
-        (28, ["--pythons", ""], "must not be empty"),
-        (28, ["--pythons", " , "], "must not be empty"),
-        (28, ["--allowed-subdirs", "invalid"], "not in allowed set"),
+        (33, [], "INCOMPLETE"),
+        (34, [], ""),
+        (34, ["--mssql-python-version", "wrong"], "!= expected"),
+        (34, ["--required-subdirs", ""], "must not be empty"),
+        (34, ["--required-subdirs", " , "], "must not be empty"),
+        (34, ["--allowed-subdirs", ""], "must not be empty"),
+        (34, ["--allowed-subdirs", " , "], "must not be empty"),
+        (34, ["--pythons", ""], "must not be empty"),
+        (34, ["--pythons", " , "], "must not be empty"),
+        (34, ["--allowed-subdirs", "invalid"], "not in allowed set"),
     ],
 )
 def test_metadata_cli_enforces_full_default_release_policy(
     tmp_path, monkeypatch, capsys, count, policy, message
 ):
-    packages = _healthy_set() + [_binding("win-arm64", py) for py in _PYTHONS[2:]]
+    packages = (
+        _healthy_set()
+        + [_binding("win-arm64", py) for py in _PYTHONS[2:]]
+        + [_binding(subdir, "3.15") for subdir in _ALLOWED]
+    )
+    assert len(packages) == 34
     monkeypatch.setattr(vcr, "collect_packages", lambda _root: packages[:count])
     assert _metadata_main(["--root", str(tmp_path), *policy]) == (1 if message else 0)
     output = capsys.readouterr()
@@ -1945,10 +1980,18 @@ def test_metadata_cli_rejects_distinct_builds_in_one_matrix_cell(tmp_path, capsy
                 build=f"py{py.replace('.', '')}_0",
                 depends=[f"python {py}.*"],
             )
-    assert _metadata_main(["--root", str(tmp_path)]) == 0
+    policy = [
+        "--root",
+        str(tmp_path),
+        "--pythons",
+        ",".join(_PYTHONS),
+        "--subdir-pythons",
+        "win-arm64=3.12,3.13,3.14",
+    ]
+    assert _metadata_main(policy) == 0
     _write_release_archive(tmp_path, build="py312_1")
     assert len(list(tmp_path.rglob("*.tar.bz2"))) == 29
-    assert _metadata_main(["--root", str(tmp_path)]) == 1
+    assert _metadata_main(policy) == 1
     assert "DUPLICATE" in capsys.readouterr().err
 
 
