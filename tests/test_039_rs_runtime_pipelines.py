@@ -80,7 +80,7 @@ def test_pr_validation_resolves_nightly_once_and_shares_it_across_all_jobs():
         }
     ]
     consumers = [job for job in jobs if job is not selector]
-    assert len(consumers) == 10
+    assert len(consumers) == 11
     for job in consumers:
         assert job["dependsOn"] == "SelectRsRuntime", job["job"]
         assert job["variables"][VERSION_ENV] == (
