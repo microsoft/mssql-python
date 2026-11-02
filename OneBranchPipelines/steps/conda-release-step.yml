@@ -74,9 +74,6 @@ parameters:
   - name: releaseVersions
     type: string
     default: ''
-  - name: rsTransportVersion
-    type: string
-    default: ''
   # The audit dependency hash targets CPython 3.12 / Windows x64, like the publisher.
   - name: pythonVersion
     type: string
@@ -160,7 +157,6 @@ steps:
       PYTHON_VERSIONS: '${{ parameters.pythonVersions }}'
       MSSQL_PYTHON_VERSION: '${{ parameters.mssqlPythonVersion }}'
       RELEASE_VERSIONS: '${{ parameters.releaseVersions }}'
-      RS_TRANSPORT_VERSION: '${{ parameters.rsTransportVersion }}'
     inputs:
       targetType: 'inline'
       workingDirectory: '$(Build.SourcesDirectory)'

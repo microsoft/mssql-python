@@ -45,7 +45,7 @@ receives a bounded frame-structure pass because its streaming API alone accepts
 truncated frame endings. ZIP envelopes must use stored or deflate compression;
 sparse TAR extensions are rejected before sparse-map processing. Wheel metadata
 reads share the ZIP and metadata budgets. These are package-reader limits, not a
-claim that NuGet transport downloads or total process memory have the same bounds.
+claim that runtime wheel downloads or total process memory have the same bounds.
 
 The GitHub audit job installs its complete Linux x64 / CPython 3.11 test-tool closure
 from `requirements-audit.txt` with `--require-hashes --only-binary=:all:`.
@@ -90,10 +90,15 @@ hashes with the final Conda archive hash after Linux relocation.
 
 Use `build --rs-wheel-dir <producer-artifact>/rs-wheels
 --rs-version-file <producer-artifact>/dist/mssql-python-rs.version` for RS inputs.
-The version file asserts the selected producer's source contract, not a new release-version
-setting. The distinct NuGet transport pin remains in `mssql-python-rs-nuget.version`;
-the downloader records its content hash and individual wheel hashes in `transport.json`.
-Conda consumers use staged producer bytes, not a fresh download using their checkout's pin.
+The version file asserts the selected producer's runtime selection against the binding's
+exact dependency, not a new release-version setting. The producer's `transport.json`
+records `distribution_version`, `index_url`, `version_override` and individual
+`wheel_sha256` values. Released runtimes use PyPI; an explicitly selected `.devN`
+version uses the public `mssql-rs_Public` Python index. Conda consumers validate this
+receipt and use staged producer bytes, not a fresh download using their checkout's
+pin or `MSSQL_PYTHON_RS_VERSION`. No NuGet package or transport pin is required.
+Release validation rejects any receipt with `version_override=true`, including
+an override equal to the committed stable pin. Such artifacts remain test-only.
 
 Published historical bindings that declare no RS dependency are accepted only when their
 payload and RECORD own the core initializer and native extension. They produce an explicit
@@ -269,13 +274,14 @@ acquisition; configuration readback alone is not evidence that a run holds the l
 The release pipeline resolves AUTO from the **recorded upstream wheel commit**, not
 the release checkout or a latest-version lookup. It cross-checks binding setup/runtime
 versions and reads ODBC and, when explicitly required by that source, RS distribution
-versions. RS's NuGet transport pin is separate. Missing or ambiguous source declarations
+versions. Source analysis reads the clean `X.Y.Z` RS pin without executing the
+runtime-selection helper or consulting the consumer's environment override.
+Missing or ambiguous source declarations
 fail rather than select a historical profile. A supplied binding version is only an
 assertion against this resolved version.
 
 Both readiness and the credentialed job use `validate --release-versions` to read the
-verified `RELEASE_VERSIONS` JSON from the environment; `RS_TRANSPORT_VERSION` supplies
-the separate transport assertion. This avoids passing JSON quoting or empty arguments
+verified `RELEASE_VERSIONS` JSON from the environment. This avoids passing JSON quoting or empty arguments
 through Windows PowerShell. Explicit JSON may also follow `--release-versions` in
 source-only controls. With this flag, absent versions fail closed. Without it, `validate`
 remains the metadata/matrix-only inspection command and makes no source-input claim.
@@ -283,7 +289,9 @@ The source-bound gate checks each installed component's METADATA and RECORD owne
 the binding's exact dependency pins, and the selected RS filename/WHEEL tags against
 `rs-transport.json`. Raw wheel/transport hashes remain input evidence; relocated
 installed native files are checked by the native audits, not falsely compared with raw
-wheel hashes. No numeric RS build ID is inferred from a transport-version suffix.
+wheel hashes. The receipt must name the verified RS distribution version and its
+release/development index; a receipt cannot override the verified source version.
+No numeric RS build ID is inferred from a version suffix.
 Release and native auditing also check all installed core paths, not only RECORD-filtered
 members. This detects unowned or cross-owned additions; it cannot recover file origin
 after an overwrite of an already owned path, which is why the raw pre-extraction gate
@@ -313,7 +321,7 @@ The `probe-driver` module command is a convenience diagnostic in the calling
 interpreter, not a substitute for this neutral-directory installed-package check.
 
 The files remaining under `conda/` are the conventional recipe entrypoints,
-metadata, documentation and line-ending configuration. Shared NuGet transport,
-feed-resolution and output-safety utilities remain under `eng/scripts` because
+metadata, documentation and line-ending configuration. Shared Python-index download,
+runtime-selection and output-safety utilities remain under `eng/scripts` because
 non-Conda native build/development workflows also use them; Conda reuses those
 implementations rather than keeping private copies.

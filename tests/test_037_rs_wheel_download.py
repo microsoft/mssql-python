@@ -8,169 +8,132 @@ from pathlib import Path
 
 import pytest
 
-SCRIPTS_DIR = Path(__file__).parents[1] / "eng" / "scripts"
-MODULE_PATH = SCRIPTS_DIR / "download_mssql_python_rs_wheels.py"
-
-if not MODULE_PATH.is_file() or not (Path(__file__).parents[1] / "OneBranchPipelines").is_dir():
+ROOT = Path(__file__).resolve().parents[1]
+if (
+    not (ROOT / "eng/scripts/download_mssql_python_rs_wheels.py").is_file()
+    or not (ROOT / "OneBranchPipelines").is_dir()
+):
     pytest.skip(
-        "rs wheel download contracts require a complete source checkout",
-        allow_module_level=True,
+        "Runtime staging contracts require a complete source checkout", allow_module_level=True
     )
-
 
 from eng.scripts import download_mssql_python_rs_wheels as downloader
+from eng.scripts.mssql_python_rs import DEFAULT_INDEX, DEV_INDEX, VERSION_ENV
 
 
-def _package(entries, transport_version="0.1.0-dev.1"):
-    package = io.BytesIO()
-    with zipfile.ZipFile(package, "w") as archive:
+@pytest.fixture(autouse=True)
+def clear_override(monkeypatch):
+    monkeypatch.delenv(VERSION_ENV, raising=False)
+
+
+def _wheel(version="0.3.0", metadata_version=None):
+    stream = io.BytesIO()
+    with zipfile.ZipFile(stream, "w") as archive:
         archive.writestr(
-            "mssql-python-rs-wheels.nuspec",
-            "<package><metadata><id>mssql-python-rs-wheels</id>"
-            f"<version>{transport_version}</version>"
-            "<description>RS transport fixture</description></metadata></package>",
+            f"mssql_python_rs-{version}.dist-info/METADATA",
+            f"Name: mssql-python-rs\nVersion: {metadata_version or version}\n",
         )
-        for name in entries:
-            archive.writestr(name, name.encode("ascii"))
-    package.seek(0)
-    return package.getvalue()
+    return stream.getvalue()
 
 
-def _mock_download(monkeypatch, module, content, package_base="https://example.test/flat/"):
+def _index(monkeypatch, *, version="0.3.0", content=None, duplicate=False, hash_value=None):
+    content = _wheel(version) if content is None else content
+    name = f"mssql_python_rs-{version}-cp310-abi3-win_amd64.whl"
+    digest = hash_value or hashlib.sha256(content).hexdigest()
+    anchor = f'<a href="https://files.example.test/{name}#sha256={digest}">{name}</a>'
+    page = (anchor * (2 if duplicate else 1)).encode()
     requested = []
-    monkeypatch.setattr(module, "resolve", lambda _url: package_base)
 
     def urlopen(url, timeout):
-        requested.append((url, timeout))
-        return io.BytesIO(content)
+        requested.append(url)
+        return io.BytesIO(page if url.endswith("/mssql-python-rs/") else content)
 
-    monkeypatch.setattr(module.urllib.request, "urlopen", urlopen)
-    return requested
+    monkeypatch.setattr(downloader.urllib.request, "urlopen", urlopen)
+    return name, content, requested
 
 
-def test_downloads_only_matching_wheels_and_clears_stale_output(tmp_path, monkeypatch):
-    module = downloader
-    version_file = tmp_path / "version"
-    version_file.write_text("0.1.0\n", encoding="ascii")
-    transport_file = tmp_path / "transport-version"
-    transport_file.write_text("0.1.0-dev.20260914.174990\n", encoding="ascii")
-    output = tmp_path / "wheels"
+def _pin(tmp_path):
+    path = tmp_path / "version"
+    path.write_text("0.3.0\n", encoding="ascii")
+    return path
+
+
+@pytest.mark.parametrize("override", [None, "0.4.0.dev20261028187000"])
+def test_stages_selected_wheels_and_receipt(tmp_path, monkeypatch, override):
+    pin = _pin(tmp_path)
+    if override:
+        monkeypatch.setenv(VERSION_ENV, override)
+    version = override or "0.3.0"
+    name, content, requested = _index(monkeypatch, version=version)
+    output = tmp_path / "out"
     output.mkdir()
-    (output / "stale.whl").write_bytes(b"stale")
-    content = _package(
-        [
-            "wheels/mssql_python_rs-0.1.0-cp310-abi3-win_amd64.whl",
-            "symbols/debug.pdb",
-        ],
-        "0.1.0-dev.20260914.174990",
-    )
-    requested = _mock_download(monkeypatch, module, content, "https://example.test/flat")
+    (output / "stale.whl").touch()
 
-    wheels = module.download_wheels(
-        "https://example.test/index.json", version_file, transport_file, output
-    )
+    wheels = downloader.download_wheels(None, pin, output)
 
-    assert [wheel.name for wheel in wheels] == ["mssql_python_rs-0.1.0-cp310-abi3-win_amd64.whl"]
-    assert sorted(path.name for path in output.iterdir()) == [wheels[0].name, "transport.json"]
-    receipt = json.loads((output / "transport.json").read_text())
-    assert receipt == {
-        "distribution_version": "0.1.0",
-        "transport_version": "0.1.0-dev.20260914.174990",
-        "feed_url": "https://example.test/index.json",
-        "package_id": "mssql-python-rs-wheels",
-        "package_sha256": hashlib.sha256(content).hexdigest(),
-        "nuspec_description": "RS transport fixture",
-        "wheel_sha256": {wheels[0].name: hashlib.sha256(wheels[0].read_bytes()).hexdigest()},
+    index = DEV_INDEX if override else DEFAULT_INDEX
+    assert wheels == [output / name]
+    assert sorted(path.name for path in output.iterdir()) == [name, "transport.json"]
+    assert json.loads((output / "transport.json").read_text()) == {
+        "distribution_version": version,
+        "index_url": index,
+        "version_override": bool(override),
+        "wheel_sha256": {name: hashlib.sha256(content).hexdigest()},
     }
     assert requested == [
-        (
-            "https://example.test/flat/mssql-python-rs-wheels/0.1.0-dev.20260914.174990/"
-            "mssql-python-rs-wheels.0.1.0-dev.20260914.174990.nupkg",
-            120,
-        )
+        index + "mssql-python-rs/",
+        f"https://files.example.test/{name}",
     ]
 
 
-def test_rejects_wheel_with_unexpected_version(tmp_path, monkeypatch):
-    module = downloader
-    version_file = tmp_path / "version"
-    version_file.write_text("0.1.0", encoding="ascii")
-    transport_file = tmp_path / "transport-version"
-    transport_file.write_text("0.1.0-dev.1", encoding="ascii")
-    content = _package(["wheels/mssql_python_rs-0.1.1-cp310-abi3-win_amd64.whl"])
-    _mock_download(monkeypatch, module, content)
-
-    with pytest.raises(ValueError, match="Unexpected wheel name"):
-        module.download_wheels(
-            "https://example.test/index.json",
-            version_file,
-            transport_file,
-            tmp_path / "out",
-        )
+def test_explicit_version_selects_dev_index(tmp_path, monkeypatch):
+    _index(monkeypatch, version="0.4.0.dev1")
+    wheels = downloader.download_wheels(
+        None, _pin(tmp_path), tmp_path / "out", version="0.4.0.dev1"
+    )
+    assert wheels[0].name.startswith("mssql_python_rs-0.4.0.dev1-")
 
 
-def test_rejects_duplicate_wheel_filename(tmp_path, monkeypatch):
-    module = downloader
-    version_file = tmp_path / "version"
-    version_file.write_text("0.1.0", encoding="ascii")
-    transport_file = tmp_path / "transport-version"
-    transport_file.write_text("0.1.0-dev.1", encoding="ascii")
-    wheel = "wheels/mssql_python_rs-0.1.0-cp310-abi3-win_amd64.whl"
-    with pytest.warns(UserWarning, match="Duplicate name"):
-        content = _package([wheel, wheel])
-    _mock_download(monkeypatch, module, content)
+@pytest.mark.parametrize(
+    ("options", "error"),
+    [
+        ({"duplicate": True}, "Duplicate wheel filename"),
+        ({"hash_value": "0" * 64}, "SHA-256 mismatch"),
+        ({"hash_value": "bad"}, "Missing or invalid SHA-256"),
+        ({"content": _wheel(metadata_version="0.4.0")}, "metadata does not match"),
+        ({"version": "0.4.0"}, "No mssql-python-rs==0.3.0 wheels"),
+    ],
+)
+def test_rejects_bad_or_missing_wheels(tmp_path, monkeypatch, options, error):
+    _index(monkeypatch, **options)
+    with pytest.raises(ValueError, match=error):
+        downloader.download_wheels(None, _pin(tmp_path), tmp_path / "out")
+    assert not (tmp_path / "out" / "transport.json").exists()
 
-    with pytest.raises(ValueError, match="Duplicate wheel filename"):
-        module.download_wheels(
-            "https://example.test/index.json",
-            version_file,
-            transport_file,
-            tmp_path / "out",
-        )
+
+def test_missing_requested_dev_build_does_not_fall_back(tmp_path, monkeypatch):
+    _index(monkeypatch)
+    monkeypatch.setenv(VERSION_ENV, "0.4.0.dev1")
+    with pytest.raises(ValueError, match="No mssql-python-rs==0.4.0.dev1"):
+        downloader.download_wheels(None, _pin(tmp_path), tmp_path / "out")
 
 
 def test_rejects_filesystem_root_as_output(tmp_path):
-    module = downloader
-    version_file = tmp_path / "version"
-    version_file.write_text("0.1.0", encoding="ascii")
-    transport_file = tmp_path / "transport-version"
-    transport_file.write_text("0.1.0-dev.1", encoding="ascii")
-
     with pytest.raises(ValueError, match="filesystem root"):
-        module.download_wheels(
-            "https://example.test/index.json",
-            version_file,
-            transport_file,
-            Path(tmp_path.anchor),
-        )
+        downloader.download_wheels(None, _pin(tmp_path), Path(tmp_path.anchor))
 
 
 def test_rejects_working_directory_and_ancestor_as_output(tmp_path, monkeypatch):
-    module = downloader
-    version_file = tmp_path / "version"
-    version_file.write_text("0.1.0", encoding="ascii")
-    transport_file = tmp_path / "transport-version"
-    transport_file.write_text("0.1.0-dev.1", encoding="ascii")
-    working_directory = tmp_path / "checkout" / "subdirectory"
-    working_directory.mkdir(parents=True)
-    monkeypatch.chdir(working_directory)
-
-    for unsafe in (working_directory, working_directory.parent):
+    pin = _pin(tmp_path)
+    cwd = tmp_path / "checkout" / "subdirectory"
+    cwd.mkdir(parents=True)
+    monkeypatch.chdir(cwd)
+    for unsafe in (cwd, cwd.parent):
         with pytest.raises(ValueError, match="current working directory|ancestors"):
-            module.download_wheels(
-                "https://example.test/index.json",
-                version_file,
-                transport_file,
-                unsafe,
-            )
+            downloader.download_wheels(None, pin, unsafe)
 
 
-def test_rejects_symlink_output_without_deleting_target(tmp_path, monkeypatch):
-    module = downloader
-    version_file = tmp_path / "version"
-    version_file.write_text("0.1.0", encoding="ascii")
-    transport_file = tmp_path / "transport-version"
-    transport_file.write_text("0.1.0-dev.1", encoding="ascii")
+def test_rejects_symlink_output_without_deleting_target(tmp_path):
     target = tmp_path / "unrelated"
     target.mkdir()
     marker = target / "keep.txt"
@@ -184,35 +147,25 @@ def test_rejects_symlink_output_without_deleting_target(tmp_path, monkeypatch):
         )
     else:
         output.symlink_to(target, target_is_directory=True)
-
-    content = _package(["wheels/mssql_python_rs-0.1.0-cp310-abi3-win_amd64.whl"])
-    _mock_download(monkeypatch, module, content)
-
     with pytest.raises(ValueError, match="symbolic link|junction"):
-        module.download_wheels(
-            "https://example.test/index.json", version_file, transport_file, output
-        )
-
+        downloader.download_wheels(None, _pin(tmp_path), output)
     assert marker.read_text(encoding="ascii") == "keep"
 
 
-def test_stress_jobs_resolve_dependency_from_pinned_transport():
-    pipeline = (
-        Path(__file__).parents[1] / "OneBranchPipelines" / "stress-test-pipeline.yml"
-    ).read_text(encoding="utf-8")
+def test_rejects_insecure_index(tmp_path):
+    with pytest.raises(ValueError, match="HTTPS"):
+        downloader.download_wheels(
+            "http://example.test/simple/",  # DevSkim: ignore DS137138 - HTTPS rejection fixture
+            _pin(tmp_path),
+            tmp_path / "out",
+        )
 
-    assert pipeline.count("download_mssql_python_rs_wheels.py --output-dir") == 2
-    assert pipeline.count("--find-links=$(Pipeline.Workspace)\\mssql-python-rs-wheels") == 1
-    assert pipeline.count("--find-links=$(Pipeline.Workspace)/mssql-python-rs-wheels") == 1
 
-
-@pytest.mark.parametrize(
-    "script_name",
-    ["install-mssql-py-core.ps1", "install-mssql-py-core.sh"],
-)
-def test_local_installers_select_stable_abi_wheel(script_name):
-    script = (SCRIPTS_DIR / script_name).read_text(encoding="utf-8")
-
-    assert "cp310-abi3" in script
-    assert "PyVersion-$script:PyVersion" not in script
-    assert "PY_VERSION}-${PY_VERSION" not in script
+def test_ignores_yanked_wheels(tmp_path, monkeypatch):
+    name = "mssql_python_rs-0.3.0-cp310-abi3-win_amd64.whl"
+    page = f'<a href="https://example.test/{name}" data-yanked="broken">wheel</a>'
+    monkeypatch.setattr(
+        downloader.urllib.request, "urlopen", lambda *args, **kwargs: io.BytesIO(page.encode())
+    )
+    with pytest.raises(ValueError, match="No mssql-python-rs"):
+        downloader.download_wheels(None, _pin(tmp_path), tmp_path / "out")
