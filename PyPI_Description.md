@@ -35,33 +35,21 @@ PyBind11 provides:
 - Memory-safe bindings
 - Clean and Pythonic API, while performance-critical logic remains in robust, maintainable C++.
  
-## What's new in v1.16.0
+## What's new in v1.17.0
 
 ### Enhancements
 
-- **Python 3.15 Support** - Release wheels and validation now cover Python 3.15 across supported platforms (#817).
-- **Dictionary-Style Row Access** - `row._mapping` provides a read-only mapping view with dictionary conversion, keys, values, items, membership checks, and stable column metadata (#613).
-- **External Rust Runtime Dependency** - `mssql-python` now depends on the exact compatible `mssql-python-rs` package instead of embedding its files (#768).
-- **Optional `mssql-odbc` Provider** - Customers can opt into the Rust-based provider distributed with `mssql-python-rs` by setting `MSSQL_PYTHON_NATIVE_PROVIDER=mssql-odbc` or `mssql_python.native_provider = "mssql-odbc"` before the first connection; Microsoft ODBC Driver 18 (`msodbcsql18`) remains the default (#730, #804, via `mssql-python-rs`).
-- **Stable-ABI Rust Runtime Wheels** - The Rust runtime now uses CPython's stable ABI and `mssql-python-rs` 0.3.0, eliminating Python-version-specific wheel variants while retaining separate wheels for each supported OS and architecture (#804, via `mssql-python-rs`).
-- **Updated ODBC Runtime Package** - `mssql-python` now pins `mssql-python-odbc==18.6.2.2`, whose Linux wheels separate glibc and musl payloads while retaining the same ODBC Driver 18.6 binaries (#798, #807).
-- **Faster Row Construction and Batch Fetching** - Optimized native Row construction and cursor bookkeeping reduce Python-side overhead in `fetchone()`, `fetchmany()`, and `fetchall()` (#558).
-- **Faster Temporal Fetch Conversion** - DATE, TIME, and TIMESTAMP values use checked CPython constructors to reduce object-construction overhead (#795).
-- **Reusable Result-Set Metadata** - Stable native column metadata is reused within a result set instead of being repeatedly described (#796).
-- **Reduced Fetch Diagnostic Overhead** - Fetch diagnostics are captured once and reused instead of being redundantly rescanned after clean fetches (#809).
-- **Faster Integer Row Indexing** - Exact integer indexes use a direct fast path while preserving existing behavior for booleans, subclasses, slices, and column names (#822).
-- **Lower `fetchval()` Logging Overhead** - Disabled debug logging no longer dispatches unnecessary log calls from `fetchval()` (#823).
+- **Reduced Pooled Connection Return Work** - Proven-clean pooled connections avoid redundant sanitation while transaction, failure-discard, capacity, and native handle-lifetime protections remain in place (#820).
 
 ### Bug Fixes
 
-- **Reliable Windows Shutdown** - Late ODBC environment cleanup no longer causes process-exit access violations after Python finalization (#783).
-- **Preserved Leading BOM-Like Characters** - Bounded UTF-16 text keeps leading U+FEFF and U+FFFE code points as data across fetch paths (#793).
-- **Clean Pooled Connection State** - Connections are rolled back and restored to autocommit before returning to the pool, preventing retained empty transactions (#777).
-- **Safe Native Logging of Dynamic Metadata** - Server-controlled Arrow column metadata can no longer be interpreted as a native format string (#791).
-- **UDT Parameter Binding** - SQL Server UDT parameter identities are resolved before scalar or array binding, including typed NULLs and statement reuse (#818).
-- **Visible Unsupported Encoding Requests** - `setencoding()` now warns when a valid encoding request cannot be applied instead of silently ignoring it (#828).
-- **Bounded Bulk Copy Timeouts** - Positive sub-second bulk-copy timeouts no longer become infinite and are rounded to one second (#804, via `mssql-python-rs`).
-- **Safe Bulk Copy Identifiers** - Bulk-copy destinations, columns, and collations are parsed, quoted, and validated consistently (#804, via `mssql-python-rs`).
+- **Reliable Bulk Copy After Upgrades** - Bulk copy and async loading import the native Rust extension directly, so upgrading from 1.15.0 no longer leaves the shared package initializer missing (#860).
+- **Bounded Pooled Connection Checkout** - Validation of an unresponsive pooled socket now observes the configured login timeout and opens a replacement instead of probing stale sockets indefinitely (#859).
+- **Accurate `nextset()` Row Counts** - Moving to the next result now refreshes `rowcount` for subsequent data-modification statements and resets it for row-producing results (#864).
+- **PEP 249 `Timestamp()` Compatibility** - The `microsecond` argument is optional and defaults to zero, so the standard six-argument constructor works as specified (#872).
+- **UTF-8 Bulk Copy Encoding** - Narrow values now honor UTF-8 flags and SQL sort IDs when encoded for bulk copy, preventing multibyte data failures against UTF-8 destinations (#875, via `mssql-python-rs`).
+- **Bulk Copy Identifier Validation** - Server-qualified four-part destinations are rejected before metadata retrieval or command generation; valid targets remain limited to `database.schema.table` (#875, via `mssql-python-rs`).
+- **Preserved Bulk Copy Datetime Precision** - String values targeting `DATETIME2` and `DATETIMEOFFSET` preserve seven fractional digits, trailing `Z`, and supported ISO forms without Python-version-dependent truncation (#875, via `mssql-python-rs`).
 
 For more information, please visit the project link on Github: https://github.com/microsoft/mssql-python
  
