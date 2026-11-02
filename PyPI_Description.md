@@ -43,7 +43,7 @@ PyBind11 provides:
 
 ### Bug Fixes
 
-- **Reliable Bulk Copy After Upgrades** - Bulk copy and async loading import the native Rust extension directly, so upgrading from 1.15.0 no longer leaves the shared package initializer missing (#860).
+- **Reliable Bulk Copy After Upgrades** - Bulk copy and async loading import the native Rust extension directly, so they continue to work after upgrading from 1.15.0 even when the shared package initializer is missing (#860).
 - **Bounded Pooled Connection Checkout** - Validation of an unresponsive pooled socket now observes the configured login timeout and opens a replacement instead of probing stale sockets indefinitely (#859).
 - **Accurate `nextset()` Row Counts** - Moving to the next result now refreshes `rowcount` for subsequent data-modification statements and resets it for row-producing results (#864).
 - **PEP 249 `Timestamp()` Compatibility** - The `microsecond` argument is optional and defaults to zero, so the standard six-argument constructor works as specified (#872).
