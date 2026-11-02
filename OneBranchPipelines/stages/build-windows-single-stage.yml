@@ -86,6 +86,14 @@ stages:
         steps:
           - checkout: self
             fetchDepth: 0
+
+          - ${{ if eq(parameters.oneBranchType, 'Official') }}:
+              - task: PowerShell@2
+                displayName: 'Reject test overrides and prereleases before Official build'
+                inputs:
+                  targetType: filePath
+                  filePath: OneBranchPipelines/scripts/validate-release-versions.ps1
+                  arguments: '-BuildOnly'
           
           # Python 3.14 Installation: Download from NuGet (not yet in UsePythonVersion@0 task)
           # Microsoft hasn't added Python 3.14 to the standard Python registry yet
@@ -362,6 +370,8 @@ stages:
               if ("$(targetArch)" -eq "arm64") {
                 Write-Host "Skipping pytests on Windows ARM64"
               } else {
+                python eng/scripts/mssql_python_rs.py --verify
+                if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
                 python -m pytest -v
               }
             displayName: 'Run pytests'
