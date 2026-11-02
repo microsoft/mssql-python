@@ -90,6 +90,7 @@ def test_pooled_positive_login_timeout_reaches_native_attrs():
 
     pooling(enabled=True, max_size=2, idle_timeout=30)
     native = MagicMock()
+    native.get_autocommit.return_value = True
     with patch("mssql_python.connection.ddbc_bindings.Connection", return_value=native) as create:
         for _ in range(3):
             connection = connect(
@@ -98,15 +99,17 @@ def test_pooled_positive_login_timeout_reaches_native_attrs():
                 autocommit=True,
             )
             assert create.call_args.args[1] is True
-            assert create.call_args.args[2] == {ConstantsDDBC.SQL_ATTR_LOGIN_TIMEOUT.value: 30}
+            assert create.call_args.args[2] == {
+                ConstantsDDBC.SQL_ATTR_LOGIN_TIMEOUT.value: 30,
+                ConstantsDDBC.SQL_ATTR_AUTOCOMMIT.value: ConstantsDDBC.SQL_AUTOCOMMIT_ON.value,
+            }
             assert connection.timeout == 0  # Query timeout is independent.
             connection.close()
     assert create.call_count == 3
-    assert native.set_autocommit.call_count == 3
-    native.set_autocommit.assert_called_with(True)
+    assert native.get_autocommit.call_count == 3
+    native.set_autocommit.assert_not_called()
     assert native.close.call_count == 3
     native.close.assert_called_with(rollback_before_disconnect=True)
-    native.get_autocommit.assert_not_called()
     native.rollback.assert_not_called()
 
 

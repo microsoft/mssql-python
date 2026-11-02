@@ -736,9 +736,7 @@ bool Connection::reset(unsigned int timeoutSeconds, bool autocommit) {
             return false;
         }
     }
-    if (!autocommit) {
-        setAutocommit(false);
-    }
+    setAutocommit(autocommit);
     {
         py::gil_scoped_release release;
         ret = SQLSetConnectAttr_ptr(
