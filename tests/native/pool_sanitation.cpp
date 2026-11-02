@@ -585,7 +585,7 @@ int main() {
             for (int i = 0; i < 100; ++i) {
                 calls.clear();
                 connection = acquire();
-                expectCalls({"alive", "on"});
+                expectCalls({"alive", "isolation", "on"});
                 calls.clear();
                 connection->setAutocommit(true);
                 expectCalls({});

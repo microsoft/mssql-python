@@ -719,18 +719,20 @@ bool Connection::reset(unsigned int timeoutSeconds, bool autocommit) {
             return false;
         }
 
-        // SQL_ATTR_RESET_CONNECTION does not reset transaction isolation.
-        LOG("Resetting transaction isolation level to READ COMMITTED");
-        {
-            py::gil_scoped_release release;
-            ret = SQLSetConnectAttr_ptr(_dbcHandle->get(), SQL_ATTR_TXN_ISOLATION,
-                                        (SQLPOINTER)SQL_TXN_READ_COMMITTED, SQL_IS_INTEGER);
-        }
-        if (!SQL_SUCCEEDED(ret)) {
-            _poolClean = false;
-            LOG("Failed to reset transaction isolation level (ret=%d). Marking as dead.", ret);
-            return false;
-        }
+    }
+
+    // This both completes a pending session reset and gives proven-clean
+    // leases a bounded server round-trip before reuse.
+    LOG("Setting transaction isolation level to READ COMMITTED");
+    {
+        py::gil_scoped_release release;
+        ret = SQLSetConnectAttr_ptr(_dbcHandle->get(), SQL_ATTR_TXN_ISOLATION,
+                                    (SQLPOINTER)SQL_TXN_READ_COMMITTED, SQL_IS_INTEGER);
+    }
+    if (!SQL_SUCCEEDED(ret)) {
+        _poolClean = false;
+        LOG("Failed to set transaction isolation level (ret=%d). Marking as dead.", ret);
+        return false;
     }
     setAutocommit(autocommit, true);
     {
