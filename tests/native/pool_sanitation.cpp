@@ -577,7 +577,7 @@ int main() {
             statement.reset();
             connection->close();
         });
-        run("new login is not clean proof; repeated empty leases skip all sanitation", [] {
+        run("new login is not clean proof; repeated empty leases skip sanitation", [] {
             auto connection = acquire();
             calls.clear();
             connection->close();
@@ -585,7 +585,7 @@ int main() {
             for (int i = 0; i < 100; ++i) {
                 calls.clear();
                 connection = acquire();
-                expectCalls({"alive"});
+                expectCalls({"alive", "on"});
                 calls.clear();
                 connection->setAutocommit(true);
                 expectCalls({});

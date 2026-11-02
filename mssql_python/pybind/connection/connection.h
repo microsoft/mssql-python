@@ -53,7 +53,7 @@ class Connection {
     void rollback();
 
     // Enable or disable autocommit mode.
-    void setAutocommit(bool value);
+    void setAutocommit(bool value, bool force = false);
 
     //  Check whether autocommit is enabled.
     bool getAutocommit() const;

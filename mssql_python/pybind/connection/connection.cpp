@@ -323,7 +323,7 @@ void Connection::rollback() {
     checkError(ret);
 }
 
-void Connection::setAutocommit(bool enable) {
+void Connection::setAutocommit(bool enable, bool force) {
     PERF_TIMER("Connection::setAutocommit");
     if (!enable) {
         _poolClean = false;
@@ -335,7 +335,7 @@ void Connection::setAutocommit(bool enable) {
     clearResultMetadata();
     // Only successful native sanitation with no retained statement/raw handle
     // aliases proves ON. A new login or _autocommit alone is not proof.
-    if (enable && _dbcHandle->get() && _poolClean && !_poolProofDisabled) {
+    if (!force && enable && _dbcHandle->get() && _poolClean && !_poolProofDisabled) {
         _autocommit = true;
         return;
     }
@@ -671,10 +671,6 @@ bool Connection::reset(unsigned int timeoutSeconds, bool autocommit) {
         return false;
     }
     const bool sessionClean = _poolClean && _poolSessionReset && !_poolProofDisabled;
-    if (sessionClean && autocommit) {
-        updateLastUsed();
-        return true;
-    }
     clearResultMetadata();
     // Login and statement timeouts do not bound connection-attribute calls.
     // Keep a finite connection timeout through reset and lease configuration;
@@ -736,7 +732,7 @@ bool Connection::reset(unsigned int timeoutSeconds, bool autocommit) {
             return false;
         }
     }
-    setAutocommit(autocommit);
+    setAutocommit(autocommit, true);
     {
         py::gil_scoped_release release;
         ret = SQLSetConnectAttr_ptr(
