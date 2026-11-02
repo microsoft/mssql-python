@@ -514,7 +514,7 @@ stages:
           # Scans wheel files for malware using Microsoft Defender and custom signatures
           # Only runs for Official builds (production compliance requirement)
           - ${{ if eq(parameters.oneBranchType, 'Official') }}:
-              - task: EsrpMalwareScanning@5
+              - task: EsrpMalwareScanning@6
                 displayName: 'ESRP MalwareScanning - Python Wheels (Official)'
                 inputs:
                   ConnectedServiceName: '$(SigningEsrpConnectedServiceName)'
