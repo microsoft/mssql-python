@@ -93,6 +93,9 @@ SQLRETURN SQL_API login(SQLHDBC dbc, SQLHWND, SQLWCHAR*, SQLSMALLINT,
 }
 
 SQLRETURN SQL_API setAttr(SQLHDBC dbc, SQLINTEGER attribute, SQLPOINTER value, SQLINTEGER length) {
+    if (attribute == SQL_ATTR_CONNECTION_TIMEOUT) {
+        return SQL_SUCCESS;
+    }
     std::string operation = "attribute";
     if (attribute == SQL_ATTR_AUTOCOMMIT) {
         operation = value ? "on" : "off";
@@ -126,6 +129,10 @@ SQLRETURN SQL_API setAttr(SQLHDBC dbc, SQLINTEGER attribute, SQLPOINTER value, S
 
 SQLRETURN SQL_API getAttr(SQLHDBC dbc, SQLINTEGER attribute, SQLPOINTER value,
                          SQLINTEGER, SQLINTEGER*) {
+    if (attribute == SQL_ATTR_CONNECTION_TIMEOUT) {
+        *static_cast<SQLULEN*>(value) = 0;
+        return SQL_SUCCESS;
+    }
     auto ret = record(attribute == SQL_ATTR_AUTOCOMMIT ? "get" : "alive");
     if (SQL_SUCCEEDED(ret)) {
         *static_cast<SQLINTEGER*>(value) = attribute == SQL_ATTR_AUTOCOMMIT
@@ -687,7 +694,7 @@ int main() {
                 if (timeoutFirst) {
                     setTimeout();
                 }
-                attrs[py::int_(SQL_ATTR_AUTOCOMMIT)] = py::int_(SQL_AUTOCOMMIT_ON);
+                attrs[py::int_(SQL_ATTR_ACCESS_MODE)] = py::int_(SQL_MODE_READ_WRITE);
                 if (!timeoutFirst) {
                     setTimeout();
                 }
@@ -1042,7 +1049,7 @@ int main() {
         });
         run("arbitrary attrs_before disable proof", [] {
             py::dict attrs;
-            attrs[py::int_(SQL_ATTR_AUTOCOMMIT)] = py::int_(SQL_AUTOCOMMIT_OFF);
+            attrs[py::int_(SQL_ATTR_CONNECTION_TIMEOUT)] = py::int_(30);
             auto connection = acquire(true, attrs);
             connection->close();
             connection = acquire();

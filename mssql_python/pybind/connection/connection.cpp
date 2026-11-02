@@ -631,8 +631,17 @@ void Connection::applyAttrsBefore(const py::dict& attrs) {
             continue;
         }
 
-        // Apply all supported attributes
+        // Python injects the requested lease mode into attrs_before so pooled
+        // checkout can configure it under a bounded timeout. Unlike arbitrary
+        // attributes, this scalar is fully tracked and must not permanently
+        // disable the clean-connection proof.
+        const bool preservePoolProof =
+            key == SQL_ATTR_AUTOCOMMIT && PyLong_CheckExact(item.second.ptr());
+        const bool poolProofDisabled = _poolProofDisabled;
         SQLRETURN ret = setAttribute(key, py::reinterpret_borrow<py::object>(item.second));
+        if (preservePoolProof) {
+            _poolProofDisabled = poolProofDisabled;
+        }
         if (!SQL_SUCCEEDED(ret)) {
             std::string attrName = std::to_string(key);
             std::string errorMsg = "Failed to set attribute " + attrName + " before connect";
@@ -651,7 +660,7 @@ bool Connection::isAlive() const {
     return SQL_SUCCEEDED(ret) && status == SQL_CD_FALSE;
 }
 
-bool Connection::reset() {
+bool Connection::reset(unsigned int timeoutSeconds, bool autocommit) {
     if (!_dbcHandle) {
         ThrowStdException("Connection handle not allocated");
     }
@@ -661,50 +670,84 @@ bool Connection::reset() {
         LOG("Cannot reuse connection after a statement handle failed to free");
         return false;
     }
-    if (_poolClean && _poolSessionReset && !_poolProofDisabled) {
+    const bool sessionClean = _poolClean && _poolSessionReset && !_poolProofDisabled;
+    if (sessionClean && autocommit) {
         updateLastUsed();
         return true;
     }
     clearResultMetadata();
-    LOG("Resetting connection via SQL_ATTR_RESET_CONNECTION");
-    // NOTE: SQL_ATTR_RESET_CONNECTION is a pool-checkin reset: it asks the
-    // driver to wipe per-session state (temp tables, open cursors, SET
-    // options, etc.) on the next use. It does NOT tear down the underlying
-    // TCP/TLS connection nor the driver-side authentication context, and
-    // it does NOT discard the deferred connect attributes the driver has
-    // stashed (e.g., the SQL_COPT_SS_ACCESS_TOKEN pointer used to build
-    // the FedAuth Login7 packet). The driver may still dereference those
-    // pointers after this reset on Idle Connection Resiliency re-auth or
-    // a transparent reconnect, so the per-attribute buffers owned by this
-    // Connection (_attrStringBuffers / _attrBytesBuffers) are intentionally
-    // retained here. Clearing them would reintroduce issue #594 in a new
-    // form (UAF during silent reconnect).
-    SQLRETURN ret;
-    {
-        // Release the GIL around the ODBC call for consistency with the
-        // other connection-attribute paths; some attributes can block.
-        py::gil_scoped_release release;
-        ret = SQLSetConnectAttr_ptr(_dbcHandle->get(), SQL_ATTR_RESET_CONNECTION,
-                                    (SQLPOINTER)SQL_RESET_CONNECTION_YES, SQL_IS_INTEGER);
-    }
+    // Login and statement timeouts do not bound connection-attribute calls.
+    // Keep a finite connection timeout through reset and lease configuration;
+    // retain it on failure so discarding the candidate is bounded too (#854).
+    SQLULEN originalTimeout = 0;
+    SQLRETURN ret = SQLGetConnectAttr_ptr(_dbcHandle->get(), SQL_ATTR_CONNECTION_TIMEOUT,
+                                         &originalTimeout, 0, nullptr);
     if (!SQL_SUCCEEDED(ret)) {
-        _poolClean = false;
-        LOG("Failed to reset connection (ret=%d). Marking as dead.", ret);
+        LOG("Failed to read pooled connection timeout (ret=%d). Marking as dead.", ret);
         return false;
     }
-
-    // SQL_ATTR_RESET_CONNECTION does NOT reset the transaction isolation level.
-    // Explicitly reset it to the default (SQL_TXN_READ_COMMITTED) to prevent
-    // isolation level settings from leaking between pooled connection usages.
-    LOG("Resetting transaction isolation level to READ COMMITTED");
     {
         py::gil_scoped_release release;
-        ret = SQLSetConnectAttr_ptr(_dbcHandle->get(), SQL_ATTR_TXN_ISOLATION,
-                                    (SQLPOINTER)SQL_TXN_READ_COMMITTED, SQL_IS_INTEGER);
+        ret = SQLSetConnectAttr_ptr(
+            _dbcHandle->get(), SQL_ATTR_CONNECTION_TIMEOUT,
+            reinterpret_cast<SQLPOINTER>(static_cast<SQLULEN>(timeoutSeconds)), SQL_IS_UINTEGER);
+    }
+    if (!SQL_SUCCEEDED(ret)) {
+        LOG("Failed to set pooled connection timeout (ret=%d). Marking as dead.", ret);
+        return false;
+    }
+    if (!sessionClean) {
+        LOG("Resetting connection via SQL_ATTR_RESET_CONNECTION");
+        // NOTE: SQL_ATTR_RESET_CONNECTION is a pool-checkin reset: it asks the
+        // driver to wipe per-session state (temp tables, open cursors, SET
+        // options, etc.) on the next use. It does NOT tear down the underlying
+        // TCP/TLS connection nor the driver-side authentication context, and
+        // it does NOT discard the deferred connect attributes the driver has
+        // stashed (e.g., the SQL_COPT_SS_ACCESS_TOKEN pointer used to build
+        // the FedAuth Login7 packet). The driver may still dereference those
+        // pointers after this reset on Idle Connection Resiliency re-auth or
+        // a transparent reconnect, so the per-attribute buffers owned by this
+        // Connection (_attrStringBuffers / _attrBytesBuffers) are intentionally
+        // retained here. Clearing them would reintroduce issue #594 in a new
+        // form (UAF during silent reconnect).
+        {
+            // Release the GIL around the ODBC call for consistency with the
+            // other connection-attribute paths; some attributes can block.
+            py::gil_scoped_release release;
+            ret = SQLSetConnectAttr_ptr(_dbcHandle->get(), SQL_ATTR_RESET_CONNECTION,
+                                        (SQLPOINTER)SQL_RESET_CONNECTION_YES, SQL_IS_INTEGER);
+        }
+        if (!SQL_SUCCEEDED(ret)) {
+            _poolClean = false;
+            LOG("Failed to reset connection (ret=%d). Marking as dead.", ret);
+            return false;
+        }
+
+        // SQL_ATTR_RESET_CONNECTION does not reset transaction isolation.
+        LOG("Resetting transaction isolation level to READ COMMITTED");
+        {
+            py::gil_scoped_release release;
+            ret = SQLSetConnectAttr_ptr(_dbcHandle->get(), SQL_ATTR_TXN_ISOLATION,
+                                        (SQLPOINTER)SQL_TXN_READ_COMMITTED, SQL_IS_INTEGER);
+        }
+        if (!SQL_SUCCEEDED(ret)) {
+            _poolClean = false;
+            LOG("Failed to reset transaction isolation level (ret=%d). Marking as dead.", ret);
+            return false;
+        }
+    }
+    if (!autocommit) {
+        setAutocommit(false);
+    }
+    {
+        py::gil_scoped_release release;
+        ret = SQLSetConnectAttr_ptr(
+            _dbcHandle->get(), SQL_ATTR_CONNECTION_TIMEOUT,
+            reinterpret_cast<SQLPOINTER>(originalTimeout), SQL_IS_UINTEGER);
     }
     if (!SQL_SUCCEEDED(ret)) {
         _poolClean = false;
-        LOG("Failed to reset transaction isolation level (ret=%d). Marking as dead.", ret);
+        LOG("Failed to restore pooled connection timeout (ret=%d). Marking as dead.", ret);
         return false;
     }
 
@@ -1066,6 +1109,21 @@ py::object Connection::getInfo(SQLUSMALLINT infoType) const {
     result["info_type"] = infoType;
 
     return result;
+}
+
+SQLULEN ConnectionHandle::getConnectionTimeout() const {
+    if (!_conn) {
+        ThrowStdException("Connection object is not initialized");
+    }
+    SQLULEN timeout = 0;
+    const auto& handle = _conn->getDbcHandle();
+    SQLRETURN ret = SQLGetConnectAttr_ptr(handle->get(), SQL_ATTR_CONNECTION_TIMEOUT,
+                                         &timeout, 0, nullptr);
+    if (!SQL_SUCCEEDED(ret)) {
+        ErrorInfo error = SQLCheckError_Wrap(SQL_HANDLE_DBC, handle, ret);
+        ThrowStdException("Failed to read connection timeout: " + error.ddbcErrorMsg);
+    }
+    return timeout;
 }
 
 py::object ConnectionHandle::getInfo(SQLUSMALLINT infoType) const {

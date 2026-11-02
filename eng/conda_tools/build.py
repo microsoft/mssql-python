@@ -13,7 +13,7 @@ from pathlib import Path
 
 from eng.scripts.download_mssql_python_rs_wheels import file_sha256
 
-from . import archive, contracts, environment, verify
+from . import archive, contracts, environment, inputs, verify
 from .formats import elf, macho, pe
 
 _KNOWN_SUBDIRS = ("win-64", "win-arm64", "osx-64", "osx-arm64", "linux-64", "linux-aarch64")
@@ -167,19 +167,7 @@ def gather_wheels(
             receipt_path = Path(rs_dir, "transport.json")
             if receipt_path.exists():
                 receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
-                if not isinstance(receipt, dict) or not isinstance(
-                    receipt.get("wheel_sha256"), dict
-                ):
-                    raise ValueError("RS transport receipt must contain a wheel_sha256 mapping")
-                if receipt.get("distribution_version") != rs_ver:
-                    raise ValueError("RS transport receipt disagrees with the binding dependency")
-                if rs_version_file is not None:
-                    pin_file = Path(rs_version_file).with_name("mssql-python-rs-nuget.version")
-                    transport = pin_file.read_text(encoding="ascii").strip()
-                    if not transport or receipt.get("transport_version") != transport:
-                        raise ValueError(
-                            "RS transport receipt disagrees with the producer transport pin"
-                        )
+                inputs.validate_rs_transport(receipt, {"mssql-python-rs": rs_ver})
                 for wheel in rs:
                     if receipt["wheel_sha256"].get(Path(wheel).name) != file_sha256(Path(wheel)):
                         raise ValueError(
