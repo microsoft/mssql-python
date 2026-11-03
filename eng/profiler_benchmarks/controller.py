@@ -11,6 +11,7 @@ from pathlib import Path, PurePosixPath
 import platform
 import re
 import signal
+import statistics
 import subprocess
 import sys
 import tarfile
@@ -145,6 +146,49 @@ def load_suite():
     return core, workloads
 
 
+def measure_scenario(profiler, name):
+    repetitions = workloads.MEASUREMENT_REPEATS.get(name, 1)
+    warmups = 0 if name == "connect" else 1
+    results = []
+    identity = None
+    for index in range(warmups + repetitions):
+        with contextlib.redirect_stdout(io.StringIO()):
+            result = profiler.run(name)[0]
+        if result["cpp"] is None or result["py"] is None:
+            raise RuntimeError(f"Scenario {name} was skipped")
+        if not result["cpp"]:
+            raise RuntimeError(f"Scenario {name} has no native samples")
+        work = result.get("detail", "Connection: 1").split(" (")[0]
+        if identity is not None and work != identity:
+            raise RuntimeError(f"Workload changed within scenario {name}")
+        identity = work
+        if index >= warmups:
+            results.append(result)
+
+    times = [result["wall_ms"] for result in results]
+    output = dict(
+        wall_ms=statistics.mean(times),
+        wall_samples_ms=times,
+        repetitions=repetitions,
+        warmups=warmups,
+        work=identity,
+    )
+    for layer in ("cpp", "py"):
+        stats = {}
+        for result in results:
+            for label, counter in result[layer].items():
+                if label not in stats:
+                    stats[label] = dict(counter)
+                else:
+                    total = stats[label]
+                    total["calls"] += counter["calls"]
+                    total["total_us"] += counter["total_us"]
+                    total["min_us"] = min(total["min_us"], counter["min_us"])
+                    total["max_us"] = max(total["max_us"], counter["max_us"])
+        output[layer] = stats
+    return output
+
+
 def worker(args):
     # Import the chosen driver FIRST, then the SAME workload/controller for both
     # revisions. Never mix two native extensions into one interpreter.
@@ -165,22 +209,14 @@ def worker(args):
                 json.dumps(dict(status="running", active_scenario=name, scenarios=output)),
                 encoding="utf-8",
             )
-            # Keep phase tables out of logs, but never hide which workload stalled.
-            with contextlib.redirect_stdout(io.StringIO()):
-                result = profiler.run(name)[0]
-            if result["cpp"] is None or result["py"] is None:
-                raise RuntimeError(f"Scenario {name} was skipped")
-            if not result["cpp"]:
-                raise RuntimeError(f"Scenario {name} has no native samples")
-            output[name] = {key: result[key] for key in ("wall_ms", "cpp", "py")}
-            output[name]["work"] = result.get("detail", "Connection: 1").split(" (")[0]
+            output[name] = measure_scenario(profiler, name)
             args.output.write_text(
                 json.dumps(
                     dict(status="running", active_scenario=None, scenarios=output), allow_nan=False
                 ),
                 encoding="utf-8",
             )
-            print(f"Completed scenario: {name} ({result['wall_ms']:.3f} ms)", flush=True)
+            print(f"Completed scenario: {name} ({output[name]['wall_ms']:.3f} ms)", flush=True)
         print("Collecting server metadata", flush=True)
         profiler._ensure_connection()
         with profiler._conn.cursor() as cursor:
