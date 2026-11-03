@@ -92,35 +92,41 @@ async def executemany(
     """Execute parameter rows from a synchronous iterable through py-core.
 
     Py-core consumes and validates the iterable before dispatch; this is not
-    streaming execution. Asynchronous iterables are not supported.
+    streaming execution. Asynchronous iterables are not supported. Exceptions
+    raised by the parameter iterable are propagated unchanged.
     """
     cursor._check_closed()  # pyright: ignore[reportPrivateUsage]
-    iteration_failed = False
+    iteration_error: BaseException | None = None
 
     def parameter_rows():
-        nonlocal iteration_failed
+        nonlocal iteration_error
         try:
             yield from seq_of_parameters
-        except BaseException:
-            iteration_failed = True
+        except BaseException as error:
+            iteration_error = error
             raise
 
     logger.debug(
         "AsyncCursor.executemany: starting; use_prepare=%s",
         use_prepare,
     )
-    with translate_py_core_exceptions():
-        executemany_awaitable = _get_py_core_async_cursor(cursor).executemany(
-            operation,
-            parameter_rows(),
-            use_prepare=use_prepare,
-        )
     try:
         with translate_py_core_exceptions():
-            await executemany_awaitable
-    except (Exception, asyncio.CancelledError) as error:
-        if not iteration_failed:
-            _reconcile_failed_execution(cursor, error)
+            executemany_awaitable = _get_py_core_async_cursor(cursor).executemany(
+                operation,
+                parameter_rows(),
+                use_prepare=use_prepare,
+            )
+        try:
+            with translate_py_core_exceptions():
+                await executemany_awaitable
+        except (Exception, asyncio.CancelledError) as error:
+            if iteration_error is None:
+                _reconcile_failed_execution(cursor, error)
+            raise
+    except BaseException:
+        if iteration_error is not None:
+            raise iteration_error from None
         raise
     cursor._reset_fetch_tracking()  # pyright: ignore[reportPrivateUsage]
     cursor._clear_result_metadata()  # pyright: ignore[reportPrivateUsage]

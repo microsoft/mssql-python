@@ -78,6 +78,69 @@ async def test_rejected_execution_preserves_pending_result_state(method, error, 
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("consume_on_call", (False, True))
+@pytest.mark.parametrize("yield_before_failure", (False, True))
+@pytest.mark.parametrize(
+    "failure",
+    (
+        RuntimeError("Connection is closed"),
+        TypeError("Parameter style mismatch: iterator failure"),
+        asyncio.CancelledError("iterator failure"),
+    ),
+)
+async def test_executemany_preserves_iterator_exception_identity(
+    consume_on_call, yield_before_failure, failure
+):
+    def rows():
+        if yield_before_failure:
+            yield (3,)
+        raise failure
+
+    class ConsumingNativeCursor:
+        description = [("value", int, None, None, None, None, True)]
+        rowcount = 1
+        arraysize = 1
+
+        def executemany(self, _operation, parameters, **_kwargs):
+            if consume_on_call:
+                list(parameters)
+
+            async def complete():
+                if not consume_on_call:
+                    list(parameters)
+
+            return complete()
+
+        async def fetchone(self):
+            self.rowcount = 2
+            return (2,)
+
+    class StatefulAsyncCursor(_AsyncCursor):
+        def seed_result_state(self):
+            self._description = [("value", int, None, None, None, None, True)]
+            self._column_map = {"value": 0}
+            self._fetched_row_count = 1
+            self._fetch_rowcount = 1
+
+    cursor = StatefulAsyncCursor(ConsumingNativeCursor())
+    cursor.seed_result_state()
+    description = cursor.description
+    generation = getattr(cursor, "_result_generation")
+
+    with pytest.raises(type(failure)) as caught:
+        await cursor.executemany("SELECT ?", rows())
+
+    assert caught.value is failure
+    assert cursor.description is description
+    assert getattr(cursor, "_result_generation") == generation
+    assert cursor.rowcount == 1
+    row = await cursor.fetchone()
+    assert row is not None
+    assert row.value == 2
+    assert cursor.rowcount == 2
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("method", ("execute", "executemany"))
 async def test_missing_named_parameter_preserves_result_snapshot(async_cursor, monkeypatch, method):
     monkeypatch.setattr(mssql_python, "lowercase", False)
@@ -774,7 +837,12 @@ async def test_executemany_empty_generator(async_cursor):
 @pytest.mark.parametrize("use_prepare", (False, True))
 @pytest.mark.parametrize("yield_before_failure", (False, True))
 @pytest.mark.parametrize(
-    "failure", (ValueError("iteration failed"), RuntimeError("iteration failed"))
+    "failure",
+    (
+        ValueError("iteration failed"),
+        RuntimeError("iteration failed"),
+        RuntimeError("Connection is closed"),
+    ),
 )
 async def test_executemany_iterator_failure_preserves_result(
     async_cursor, failure, yield_before_failure, use_prepare
