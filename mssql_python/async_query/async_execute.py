@@ -135,7 +135,7 @@ async def executemany(
             raise
     except BaseException:
         if iteration_error is not None:
-            raise iteration_error from None
+            raise iteration_error from iteration_error.__cause__
         raise
     cursor._reset_fetch_tracking()  # pyright: ignore[reportPrivateUsage]
     cursor._clear_result_metadata()  # pyright: ignore[reportPrivateUsage]
