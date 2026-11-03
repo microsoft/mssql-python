@@ -96,6 +96,7 @@ def test_async_tvp_is_internal_native_constructor():
 
 
 def test_async_tvp_accepts_numeric_and_temporal_column_metadata():
+    pytest.importorskip("mssql_py_core.mssql_py_core", exc_type=ImportError)
     from mssql_python.async_query import _TableValuedParameter
 
     columns = [
