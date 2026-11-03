@@ -101,10 +101,19 @@ async def executemany(
     def parameter_rows():
         nonlocal iteration_error
         try:
-            yield from seq_of_parameters
+            iterator = iter(seq_of_parameters)
         except BaseException as error:
             iteration_error = error
             raise
+        while True:
+            try:
+                row = next(iterator)
+            except StopIteration:
+                return
+            except BaseException as error:
+                iteration_error = error
+                raise
+            yield row
 
     logger.debug(
         "AsyncCursor.executemany: starting; use_prepare=%s",
