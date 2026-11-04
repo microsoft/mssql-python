@@ -417,7 +417,11 @@ class Connection:
                 query timeout. An explicit ``attrs_before[SQL_ATTR_LOGIN_TIMEOUT]``
                 takes precedence over this value. (pyodbc migration note: pyodbc
                 lets a positive ``timeout=`` override ``attrs_before``; here the
-                explicit ``attrs_before`` entry wins.)
+                explicit ``attrs_before`` entry wins.) Pooled candidate reset
+                also uses this positive timeout, or 15 seconds when zero/default,
+                temporarily as SQL_ATTR_CONNECTION_TIMEOUT. Driver cancellation
+                and a replacement login can add time; this is not an overall
+                connect deadline.
             native_uuid (bool, optional): Controls whether UNIQUEIDENTIFIER columns return
                 uuid.UUID objects (True) or str (False) for cursors created from this connection.
                 None (default) defers to the module-level ``mssql_python.native_uuid`` setting (True).
@@ -858,17 +862,22 @@ class Connection:
         _provider = ProviderManager.ensure_available()
         ddbc_bindings._set_odbc_provider(_provider)
 
+        # Configure a reused connection's mode inside native checkout, while
+        # its temporary connection timeout still bounds attribute-setting I/O.
+        native_attrs = self._attrs_before.copy()
+        native_attrs[ConstantsDDBC.SQL_ATTR_AUTOCOMMIT.value] = int(bool(autocommit))
         try:
             self._conn = ddbc_bindings.Connection(
                 self.connection_str,
                 self._pooling,
-                self._attrs_before,
+                native_attrs,
                 self._pool_key,
                 self._token_factory,
             )
+            if self._conn.get_autocommit() != autocommit:
+                self.setautocommit(autocommit)
         except RuntimeError as e:
             _raise_connection_error(e)
-        self.setautocommit(autocommit)
 
         # Register this connection for cleanup before Python shutdown
         # This ensures ODBC handles are freed in correct order, preventing leaks
@@ -2223,35 +2232,14 @@ class Connection:
         # Close the connection even if cursor cleanup had issues
         try:
             if self._conn:
-                autocommit_error = None
-                rollback_error = None
-                manual_commit = False
+                # Native close owns transaction cleanup and fail-closed discard.
+                # Avoid duplicate attribute probes and untrusted rollback hints.
                 try:
-                    manual_commit = not self._conn.get_autocommit()
-                except RuntimeError as e:
-                    autocommit_error = e
-                if manual_commit:
-                    # End caller work before native close. Pooled connections are
-                    # additionally restored to autocommit by native check-in,
-                    # which atomically discards them if sanitation fails.
-                    logger.debug("Rolling back uncommitted changes before closing connection.")
-                    try:
-                        self._conn.rollback()
-                    except RuntimeError as e:
-                        rollback_error = e
-                # TODO: Check potential race conditions in case of multithreaded scenarios
-                # Close the connection
-                try:
-                    self._conn.close(manual_commit and rollback_error is None)
+                    self._conn.close(rollback_before_disconnect=True)
                 except RuntimeError as e:
                     _raise_connection_error(e)
                 finally:
                     self._conn = None
-                if rollback_error is not None:
-                    # Preserve prior DB-API error mapping after deterministic cleanup.
-                    _raise_connection_error(rollback_error)
-                if autocommit_error is not None:
-                    _raise_connection_error(autocommit_error)
         except Exception as e:
             logger.error(f"Error closing database connection: {e}")
             # Re-raise the connection close error as it's more critical

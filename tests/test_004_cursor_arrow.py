@@ -533,6 +533,13 @@ def test_arrow_reader_cancel_from_other_thread(cursor: mssql_python.Cursor):
                 pytest.fail("reader was not cancelled by the other thread")
     except pa.ArrowInvalid:
         pass  # acceptable: reader was closed mid-iteration
+    except mssql_python.OperationalError as e:
+        # Acceptable: SQLCancel landed while the driver was inside the fetch,
+        # so the fetch returned SQLSTATE HY008 (ODBC-specified behaviour).
+        # HY008 is the only SQLSTATE mapped to driver_error "Operation canceled";
+        # any other OperationalError is a real failure.
+        if getattr(e, "driver_error", None) != "Operation canceled":
+            raise
 
     closer_done.wait(timeout=5)
     t.join(timeout=5)

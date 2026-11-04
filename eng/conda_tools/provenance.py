@@ -60,15 +60,7 @@ def _producer_inputs(get_json: Callable[[str], dict], commit: str) -> dict:
             raise ValueError(f"Missing or mismatched wheel producer source for {path} at {commit}.")
         return item["content"]
 
-    versions = read_release_versions(read_source)
-    result = {"versions": versions, "rsTransportVersion": ""}
-    if "mssql-python-rs" in versions:
-        path = "eng/versions/mssql-python-rs-nuget.version"
-        transport_version = read_source(path).strip()
-        if not re.fullmatch(r"[0-9][A-Za-z0-9.+_-]*", transport_version):
-            raise ValueError(f"{path} must contain one RS transport version.")
-        result["rsTransportVersion"] = transport_version
-    return result
+    return {"versions": read_release_versions(read_source)}
 
 
 def _verify_run(build: dict, run: dict, pipeline_id: int, run_id: int) -> dict:
@@ -202,8 +194,6 @@ def execute() -> None:
     print(f"##vso[task.setvariable variable=mssqlPythonVersion;isOutput=true]{version}")
     versions = json.dumps(result["versions"], sort_keys=True)
     print(f"##vso[task.setvariable variable=releaseVersions;isOutput=true]{versions}")
-    transport = result["rsTransportVersion"]
-    print(f"##vso[task.setvariable variable=rsTransportVersion;isOutput=true]{transport}")
     if publish == "false":
         print("Validate-only: provenance verified; package readiness is gated separately.")
 
