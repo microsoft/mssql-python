@@ -1,6 +1,8 @@
 import re
 from pathlib import Path
 
+import yaml
+
 ROOT = Path(__file__).parents[1]
 WORKFLOW = ROOT / ".github" / "workflows" / "refresh-build-dependencies.yml"
 RELEASE_PIPELINE = ROOT / "OneBranchPipelines" / "stages" / "build-linux-single-stage.yml"
@@ -70,3 +72,27 @@ def test_isolated_wheel_suite_excludes_release_repository_contracts():
     pipeline = RELEASE_PIPELINE.read_text(encoding="utf-8")
 
     assert pipeline.count("--ignore=tests/test_release_build_dependencies.py") == 2
+
+
+def test_python_315_source_builds_preserve_stable_binary_only_matrix():
+    workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    job = workflow["jobs"]["validate-locks"]
+    matrix = {item["name"]: item for item in job["strategy"]["matrix"]["include"]}
+
+    for name in ("Linux build", "Linux test", "macOS", "Windows build host"):
+        stable = matrix[name]
+        assert stable["versions"].split() == ["3.10", "3.11", "3.12", "3.13", "3.14"]
+        assert stable.get("allowSourceBuilds", False) is False
+
+        preview = matrix[f"{name} Python 3.15"]
+        assert preview["versions"] == "3.15"
+        assert preview["allowSourceBuilds"] is True
+        for field in ("artifact", "lock", "platforms"):
+            assert preview[field] == stable[field]
+
+    step = next(step for step in job["steps"] if "ALLOW_SOURCE_BUILDS" in step.get("env", {}))
+    assert step["env"]["ALLOW_SOURCE_BUILDS"] == "${{ matrix.allowSourceBuilds || false }}"
+    assert "binary_args=(--only-binary :all:)" in step["run"]
+    assert 'if [ "$ALLOW_SOURCE_BUILDS" = true ]; then binary_args=(); fi' in step["run"]
+    assert '"${binary_args[@]}"' in step["run"]
+    assert "--require-hashes" in step["run"]

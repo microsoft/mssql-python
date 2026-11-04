@@ -155,7 +155,6 @@ extends:
                 parameters:
                   mssqlPythonVersion: '$(Provenance.mssqlPythonVersion)'
                   releaseVersions: '$(Provenance.releaseVersions)'
-                  rsTransportVersion: '$(Provenance.rsTransportVersion)'
 
           # Both modes share provisioning and audits; only production receives the group.
           - job: PublishConda
@@ -173,7 +172,6 @@ extends:
               WindowsContainerImage: 'onebranch.azurecr.io/windows/ltsc2022/vse2022:latest'
               mssqlPythonVersion: $[ dependencies.ValidateConda.outputs['Provenance.mssqlPythonVersion'] ]
               releaseVersions: $[ dependencies.ValidateConda.outputs['Provenance.releaseVersions'] ]
-              rsTransportVersion: $[ dependencies.ValidateConda.outputs['Provenance.rsTransportVersion'] ]
             steps:
               - checkout: self
                 # Match OneBranch's injected checkout; restricted commands cannot relocate it.
@@ -186,4 +184,3 @@ extends:
                   condaLabel: '${{ parameters.condaLabel }}'
                   mssqlPythonVersion: '$(mssqlPythonVersion)'
                   releaseVersions: '$(releaseVersions)'
-                  rsTransportVersion: '$(rsTransportVersion)'

@@ -74,9 +74,6 @@ parameters:
   - name: releaseVersions
     type: string
     default: ''
-  - name: rsTransportVersion
-    type: string
-    default: ''
   # Optional display-name prefix (e.g. '[TEST] ' for the dummy pipeline).
   - name: labelPrefix
     type: string
@@ -152,7 +149,6 @@ steps:
       MSSQL_CONDA_PYTHON_VERSIONS: '${{ parameters.pythonVersions }}'
       MSSQL_PYTHON_VERSION: '${{ parameters.mssqlPythonVersion }}'
       RELEASE_VERSIONS: '${{ parameters.releaseVersions }}'
-      RS_TRANSPORT_VERSION: '${{ parameters.rsTransportVersion }}'
     inputs:
       targetType: 'inline'
       workingDirectory: '$(Build.SourcesDirectory)'
