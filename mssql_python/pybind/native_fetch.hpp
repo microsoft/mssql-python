@@ -472,8 +472,7 @@ inline py::object fallback(PyObject* self, const py::tuple& rt, Mode mode,
         return steal(PyObject_Vectorcall(functions[static_cast<size_t>(mode)].ptr(),
                                          &receiver, 1, keywords));
     }
-    // Only fetchmany accepts arguments; vectorcall forwards invalid shapes to
-    // the original Python signature rather than silently normalizing them.
+    // Forward the original size spelling and value without normalization.
     const Py_ssize_t keywordCount = keywords ? PyTuple_GET_SIZE(keywords) : 0;
     std::vector<PyObject*> forwarded;
     forwarded.reserve(static_cast<size_t>(nargs + keywordCount + 1));
@@ -496,7 +495,8 @@ inline std::shared_ptr<Plan> prepare(PyObject* self, const py::tuple& rt, py::di
         if (!PyDict_CheckExact(plan->at(CursorDict).ptr()) ||
             !PyDict_CheckExact(plan->at(ConnectionDict).ptr()) ||
             !PyDict_CheckExact(plan->at(ColumnMap).ptr()) ||
-            !PyTuple_CheckExact(plan->at(Names).ptr()) ||
+            // The Python policy admits only tuple and the shared _ColumnNames type.
+            !PyTuple_Check(plan->at(Names).ptr()) ||
             !PyType_Check(plan->at(RowType).ptr()) ||
             !PyList_CheckExact(plan->at(Description).ptr()) ||
             !PyList_CheckExact(plan->at(Messages).ptr()) ||
@@ -616,21 +616,25 @@ inline bool conversion_ineligible(py::handle data) {
            PyTuple_GET_SIZE(converters) != 0 || uuidIndices != Py_None;
 }
 
+inline bool valid_many_arguments(Py_ssize_t nargs, PyObject* keywords) {
+    const Py_ssize_t count = keywords ? PyTuple_GET_SIZE(keywords) : 0;
+    if (count == 0)
+        return nargs <= 1;
+    if (nargs != 0 || count != 1)
+        return false;
+    PyObject* key = PyTuple_GET_ITEM(keywords, 0);
+    if (!PyUnicode_CheckExact(key))
+        return false;
+    const int comparison = PyUnicode_CompareWithASCIIString(key, "size");
+    if (PyErr_Occurred())
+        throw py::error_already_set();
+    return comparison == 0;
+}
+
 inline bool explicit_nonunit_size(PyObject* const* args, Py_ssize_t nargs,
                                   PyObject* keywords) {
-    const Py_ssize_t count = keywords ? PyTuple_GET_SIZE(keywords) : 0;
-    if (nargs == 0 && count == 1) {
-        PyObject* key = PyTuple_GET_ITEM(keywords, 0);
-        if (!PyUnicode_CheckExact(key))
-            return false;
-        const int comparison = PyUnicode_CompareWithASCIIString(key, "size");
-        if (PyErr_Occurred())
-            throw py::error_already_set();
-        if (comparison != 0)
-            return false;
-    } else if (nargs != 1 || count != 0) {
+    if (nargs == 0 && (!keywords || PyTuple_GET_SIZE(keywords) == 0))
         return false;
-    }
     if (!PyLong_CheckExact(args[0]))
         return false;
     int overflow = 0;
@@ -643,18 +647,6 @@ inline bool explicit_nonunit_size(PyObject* const* args, Py_ssize_t nargs,
 inline bool single_size(const Plan& plan, PyObject* const* args, Py_ssize_t nargs,
                          PyObject* keywords) {
     const Py_ssize_t count = keywords ? PyTuple_GET_SIZE(keywords) : 0;
-    if (nargs + count > 1)
-        return false;
-    if (count) {
-        PyObject* key = PyTuple_GET_ITEM(keywords, 0);
-        if (!PyUnicode_CheckExact(key))
-            return false;
-        const int comparison = PyUnicode_CompareWithASCIIString(key, "size");
-        if (PyErr_Occurred())
-            throw py::error_already_set();
-        if (comparison != 0)
-            return false;
-    }
     PyObject* size = nargs + count ? args[0] : Py_None;
     if (size == Py_None)
         size = plan.at(ArraySize).ptr();
@@ -795,13 +787,14 @@ inline PyObject* method_entry(PyObject* owner, PyObject* const* args, Py_ssize_t
             throw std::runtime_error("Native fetch context is not initialized");
         if (context->runtime && count > 0 &&
             PyObject_TypeCheck(args[0], reinterpret_cast<PyTypeObject*>(context->cursorType)) &&
-            (mode == Mode::Many ||
-             (count == 1 && (!keywords || PyTuple_GET_SIZE(keywords) == 0)))) {
+            (mode == Mode::Many
+                 ? valid_many_arguments(count - 1, keywords)
+                 : (count == 1 && (!keywords || PyTuple_GET_SIZE(keywords) == 0)))) {
             return fetch(args[0], context, mode, args + 1,
                          count - 1, keywords).release().ptr();
         }
-        // Unbound keyword-self calls and duck-typed receivers keep the original
-        // Python signature. Ordinary bound calls reach fetch directly.
+        // Malformed arguments and keyword subclasses reach the original binder
+        // before any cursor-state access, as do keyword-self and duck-typed calls.
         auto functions = py::reinterpret_borrow<py::tuple>(context->functions);
         return PyObject_Vectorcall(functions[static_cast<size_t>(mode)].ptr(), args,
                                    static_cast<size_t>(count), keywords);

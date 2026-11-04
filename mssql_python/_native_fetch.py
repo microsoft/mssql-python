@@ -9,6 +9,7 @@ Unsupported interpreters keep the ordinary Python methods.
 Runtime schema 2 keeps the original six tuple fields and appends the GC-visible
 dispatch context. Cursor-owned state is lazy and visible at _native_fetch_state;
 it is not a public API or a change to constructor initialization.
+Plans retain the cursor's shared column-name cache without copying it.
 """
 
 import sys
@@ -21,6 +22,7 @@ class _Policy:
     def __init__(self, cursor_type, row_type, namespace, fallbacks):
         self.cursor_type = cursor_type
         self.row_type = row_type
+        self.column_names_type = namespace["_ColumnNames"]
         self.namespace = namespace
         self.observer = ddbc_bindings._fetch_observer
         self._conversion_ineligible = ddbc_bindings._fetch_conversion_ineligible
@@ -200,7 +202,7 @@ class _Policy:
             or type(column_map) is not dict
             or not column_map
             or (lower_map is not None and type(lower_map) is not dict)
-            or type(names) is not tuple
+            or type(names) not in (tuple, self.column_names_type)
             or type(index) is not int
             or not 0 <= index < sys.maxsize - 1
             or type(data.get("_rownumber")) is not int

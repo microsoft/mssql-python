@@ -134,6 +134,25 @@ def test_single_row_interleaves_batches_and_keeps_row_ownership(connection, widt
         assert reference() is None
 
 
+def test_fetchmany_one_decimal_null_preserves_decimal_context(connection):
+    with connection.cursor() as cursor, decimal.localcontext() as context:
+        context.traps[decimal.InvalidOperation] = False
+        context.clear_flags()
+        cursor.execute(
+            "SELECT CAST(CASE WHEN n = 2 THEN 1.25 END AS DECIMAL(5,2)) AS d, "
+            "CAST(CASE WHEN n = 2 THEN 2.50 END AS NUMERIC(5,2)) AS n "
+            "FROM (VALUES (1), (2), (3)) AS v(n) ORDER BY v.n"
+        )
+        for expected in (
+            [None, None],
+            [decimal.Decimal("1.25"), decimal.Decimal("2.50")],
+            [None, None],
+        ):
+            assert list(cursor.fetchmany(1)[0]) == expected
+            assert not context.flags[decimal.InvalidOperation]
+        assert cursor.fetchmany(1) == []
+
+
 @pytest.mark.parametrize("method", ("fetchone", "fetchmany_one"))
 def test_partial_native_metadata_is_not_a_result_column_count(connection, method):
     with connection.cursor() as cursor:

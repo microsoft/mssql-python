@@ -3921,6 +3921,10 @@ static SQLRETURN GetRowData(const SqlHandlePtr& StatementHandle, SQLUSMALLINT co
                                      &indicator);
                 CaptureFetchDiagnostics(hStmt, ret, messages);
 
+                if (SQL_SUCCEEDED(ret) && indicator == SQL_NULL_DATA) {
+                    row.append(py::none());
+                    break;
+                }
                 if (SQL_SUCCEEDED(ret)) {
                     try {
                         // Validate 'indicator' to avoid buffer overflow and

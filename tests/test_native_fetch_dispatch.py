@@ -17,7 +17,7 @@ import pytest
 import mssql_python
 from mssql_python import ddbc_bindings, perf_timer
 from mssql_python.cursor import Cursor
-from mssql_python.row import Row
+from mssql_python.row import Row, RowMapping, _ColumnNames
 
 METHODS = ("fetchone", "fetchmany", "fetchval", "iterator")
 SELECT_FIVE = "SELECT n FROM (VALUES (1), (2), (3), (4), (5)) AS v(n) ORDER BY n"
@@ -170,6 +170,8 @@ def test_warm_native_dispatch_removes_python_control_calls(
         with pytest.warns(Warning, match="Number of input sizes"):
             cursor.execute("SELECT ?, ?", 1, 2)
         warm(cursor, method)
+        names = cursor._cached_result_columns
+        assert type(names) is _ColumnNames
         with _fetchone_window(profiling) as observation:
             rows = [read(cursor, method) for _ in range(4)]
         assert [value(row, method) for row in rows] == [3, 4, 5, None]
@@ -201,6 +203,36 @@ def test_warm_native_dispatch_removes_python_control_calls(
                 "SQLBindColums",
             ):
                 assert counts.get("ddbc::" + name, 0) == 0
+        if method != "fetchval":
+            assert all(row._column_names is names for row in rows[:-1])
+            assert dict(rows[0]._mapping) == {"n": 3}
+            keys, schema = names._unique, names._prepared
+            for row in rows[1:-1]:
+                assert dict(row._mapping) == {"n": row[0]}
+                assert names._unique is keys
+                assert names._prepared is schema
+
+
+def test_native_names_accept_plain_tuple_but_not_custom_subclass(connection):
+    if ddbc_bindings._fetch_observer is None:
+        pytest.skip("Direct native dispatch requires supported CPython watchers")
+
+    class CustomNames(_ColumnNames):
+        pass
+
+    with _native_fetch_counters() as profiling, connection.cursor() as cursor:
+        for names_type in (tuple, CustomNames):
+            warm(cursor, "fetchone")
+            names = names_type(cursor._cached_result_columns)
+            cursor._cached_result_columns = names
+            with _fetchone_window(profiling) as observation:
+                row = cursor.fetchone()
+            assert row[0] == 3
+            assert row._column_names is names
+            eligible = int(names_type is tuple)
+            _assert_fetchone_counts(
+                observation, prepare=1, native=eligible, fallback=1 - eligible, sql=1
+            )
 
 
 @pytest.mark.parametrize("method", METHODS)
@@ -595,38 +627,81 @@ def test_warm_native_result_transitions_and_closure(connection, method):
             read(cursor, method)
 
 
-def test_native_retained_rows_and_cycles_are_collectible(connection):
-    cursor = connection.cursor()
-    warm(cursor, "fetchone")
-    row = cursor.fetchone()
-    mapping = row._mapping
-    cursor.saved_row = row
-    cursor_reference, row_reference = weakref.ref(cursor), weakref.ref(row)
-    cursor.close()
-    assert list(mapping.values()) == [3]
-    del mapping, row, cursor
-    gc.collect()
-    assert cursor_reference() is None
-    assert row_reference() is None
+def test_native_retained_rows_and_cycles_are_collectible(conn_str):
+    if not conn_str:
+        pytest.skip("DB_CONNECTION_STRING is required")
+    # Row/metadata type mutations in other tests permanently invalidate mapping's plan.
+    _redesign_subprocess("_retained_rows_and_mapping_cache")
+
+
+def _retained_rows_and_mapping_cache():
+    import os
+
+    with (
+        _native_fetch_counters() as profiling,
+        mssql_python.connect(os.environ["DB_CONNECTION_STRING"]) as connection,
+    ):
+        cursor = connection.cursor()
+        warm(cursor, "fetchone")
+        row = cursor.fetchone()
+        names = cursor._cached_result_columns
+        assert row._column_names is names
+        mapping = row._mapping
+        assert dict(mapping) == {"n": 3}
+        schema = names._prepared
+        if RowMapping._prepared_supported:
+            assert schema is not None
+        with _fetchone_window(profiling) as observation:
+            following = cursor.fetchone()
+        if ddbc_bindings._fetch_observer is not None:
+            _assert_fetchone_counts(observation, prepare=0, native=1, fallback=0, sql=1)
+        assert following._column_names is names
+        assert dict(following._mapping) == {"n": 4}
+        assert names._prepared is schema
+        cursor.saved_row = row
+        cursor_reference, row_reference = weakref.ref(cursor), weakref.ref(row)
+        cursor.close()
+        assert list(mapping.values()) == [3]
+        del following, names, schema, mapping, row, cursor
+        gc.collect()
+        assert cursor_reference() is None
+        assert row_reference() is None
 
 
 def test_native_fetchmany_argument_contract(connection):
+    lookups = []
+
+    class RejectLookup(dict):
+        def get(self, name, *args):
+            lookups.append(name)
+            raise RuntimeError("unexpected dictionary lookup")
+
     with connection.cursor() as cursor:
-        warm(cursor, "fetchmany")
+        for warmed in (False, True):
+            if warmed:
+                warm(cursor, "fetchmany")
+            original = cursor.__dict__
+            cursor.__dict__ = RejectLookup(original)
+            try:
+                for call in (
+                    lambda: cursor.fetchmany(1, 2),
+                    lambda: cursor.fetchmany(1, size=1),
+                    lambda: cursor.fetchmany(unknown=1),
+                    lambda: cursor.fetchmany(size=1, unknown=1),
+                ):
+                    with pytest.raises(TypeError):
+                        call()
+                assert lookups == []
+            finally:
+                cursor.__dict__ = original
         assert cursor.fetchmany(size=1)[0][0] == 3
         assert cursor.fetchmany(None)[0][0] == 4
         assert cursor.fetchmany(True)[0][0] == 5
         assert cursor.fetchmany(0) == []
-        for call in (
-            lambda: cursor.fetchmany(1, 2),
-            lambda: cursor.fetchmany(1, size=1),
-            lambda: cursor.fetchmany(unknown=1),
-        ):
-            with pytest.raises(TypeError):
-                call()
 
 
-def test_native_fetchmany_keyword_subclass_preserves_binding_error(connection):
+@pytest.mark.parametrize("warmed", (False, True))
+def test_native_fetchmany_keyword_subclass_preserves_binding_error(connection, warmed):
     calls = []
 
     class Keyword(str):
@@ -638,18 +713,25 @@ def test_native_fetchmany_keyword_subclass_preserves_binding_error(connection):
 
     keywords = {Keyword("size"): 1}
     with _native_fetch_counters() as profiling, connection.cursor() as cursor:
-        warm(cursor, "fetchmany")
+        if warmed:
+            warm(cursor, "fetchmany")
+        else:
+            cursor.execute(SELECT_FIVE)
+        position = cursor.rowcount, cursor.rownumber
         before = profiling.get_stats() if profiling is not None else {}
-        with pytest.raises(RuntimeError, match="keyword equality sentinel"):
-            cursor.fetchmany(**keywords)
+        with _fetchone_window(profiling) as observation:
+            with pytest.raises(RuntimeError, match="keyword equality sentinel"):
+                cursor.fetchmany(**keywords)
         assert calls
-        assert cursor.rowcount == 2
-        assert cursor.rownumber == 1
+        assert (cursor.rowcount, cursor.rownumber) == position
+        runtime = getattr(sys.modules[Cursor.__module__], "_NATIVE_FETCH_RUNTIME", None)
+        if runtime is not None:
+            assert type(runtime[2]).__call__.__code__ not in observation["python"]
         if profiling is not None:
             after = profiling.get_stats()
             for name in ("ddbc::NativeCursor::fetch", "ddbc::FetchSingleRow"):
                 assert after.get(name, {}).get("calls", 0) == before.get(name, {}).get("calls", 0)
-        assert cursor.fetchmany(size=1)[0][0] == 3
+        assert cursor.fetchmany(size=1)[0][0] == (3 if warmed else 1)
 
 
 def test_native_fetchmany_oversized_int_preserves_closed_cursor_error():
