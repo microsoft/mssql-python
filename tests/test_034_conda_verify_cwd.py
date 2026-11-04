@@ -15,6 +15,7 @@ and run under ``--noconftest``.
 """
 
 import importlib.machinery
+import json
 import os
 import subprocess
 import sys
@@ -716,6 +717,48 @@ def _rs_inputs(tmp_path, platform="win_amd64", python_tags=("cp313",)):
     for tag in python_tags:
         _write_wheel(rs / f"mssql_python_rs-0.1.0-{tag}-{tag}-{platform}.whl")
     return code, odbc, links, rs
+
+
+@pytest.mark.parametrize(
+    "problem", ["valid", "distribution", "source", "index", "hash", "missing-hash", "override"]
+)
+def test_gather_rs_receipt_uses_producer_version_and_bytes(tmp_path, monkeypatch, capsys, problem):
+    code, odbc, links, rs = _rs_inputs(tmp_path)
+    selected = next(rs.glob("*.whl"))
+    assertion = tmp_path / "mssql-python-rs.version"
+    assertion.write_text("0.2.0\n" if problem == "source" else "0.1.0\n")
+    receipt = {
+        "distribution_version": "0.2.0" if problem == "distribution" else "0.1.0",
+        "index_url": build.inputs.DEV_INDEX if problem == "index" else build.inputs.DEFAULT_INDEX,
+        "version_override": "false" if problem == "override" else False,
+        "wheel_sha256": {
+            selected.name: "a" * 64 if problem == "hash" else build.file_sha256(selected)
+        },
+    }
+    if problem == "missing-hash":
+        receipt["wheel_sha256"] = {}
+    (rs / "transport.json").write_text(json.dumps(receipt))
+    monkeypatch.setenv("MSSQL_PYTHON_RS_VERSION", "9.9.9.dev123")
+    arguments = (
+        str(code),
+        "*.whl",
+        str(odbc),
+        "*.whl",
+        str(links),
+        str(rs),
+        str(assertion),
+        "win-64",
+        "3.13",
+    )
+    if problem == "valid":
+        assert build.gather_wheels(*arguments) == ("1.2.3", "18.6.2", "0.1.0")
+        assert (links / selected.name).read_bytes() == selected.read_bytes()
+    else:
+        with pytest.raises(SystemExit) as error:
+            build.gather_wheels(*arguments)
+        assert error.value.code == 1
+        assert "RS" in capsys.readouterr().err
+        assert not list(links.iterdir())
 
 
 @pytest.mark.parametrize("with_rs", [False, True])
