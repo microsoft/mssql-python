@@ -31,7 +31,8 @@ fetch APIs over 10,000 ordered integer/NVARCHAR rows from the existing fixture.
 An `SQL_WVARCHAR` converter decodes UTF-16LE bytes and uppercases the text.
 Both retain all converted rows through the timer boundary; the batched case
 includes the terminal empty `fetchmany(1000)` call and accumulating its batches.
-The timed callback only performs UTF-16LE decode and uppercase conversion.
+Callback execution is included in the fetch timer; the callback only performs
+UTF-16LE decode and uppercase conversion.
 Exact output values/types, count/order, and diagnostics are checked after
 collection; focused contract tests check callback bytes using a fake cursor.
 Registration, query execution, expected-value construction, validation, cursor
