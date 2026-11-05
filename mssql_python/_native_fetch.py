@@ -9,7 +9,9 @@ Unsupported interpreters keep the ordinary Python methods.
 Runtime schema 2 keeps the original six tuple fields and appends the GC-visible
 dispatch context. Cursor-owned state is lazy and visible at _native_fetch_state;
 it is not a public API or a change to constructor initialization.
-Plans retain the cursor's shared column-name cache without copying it.
+Plans retain the cursor's shared column-name cache without copying it. Column
+names must be a plain tuple or an exact _ColumnNames instance; custom subclasses
+keep the Python fallback.
 """
 
 import sys
