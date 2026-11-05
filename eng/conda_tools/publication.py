@@ -467,6 +467,39 @@ def promote(
         )
 
 
+def rehearse_auth() -> None:
+    """Deliberately fail at a read-only authentication boundary; never publish."""
+    from uuid import uuid4
+
+    token = f"mssql-python-invalid-rehearsal-{uuid4().hex}"
+    os.environ["ANACONDA_API_TOKEN"] = token
+    os.environ.pop("BINSTAR_API_TOKEN", None)
+
+    from binstar_client.errors import Unauthorized  # type: ignore[import-not-found]
+    from binstar_client.utils import get_server_api  # type: ignore[import-not-found]
+
+    api = get_server_api(token=token, config={"url": _ANACONDA_API_URL, "ssl_verify": True})
+    request = api.session.request
+
+    def rehearsal_request(*args: Any, **kwargs: Any) -> Any:
+        kwargs.update(timeout=(15, 60), allow_redirects=False)
+        return request(*args, **kwargs)
+
+    api.session.request = rehearsal_request
+    try:
+        api.user()
+    except Unauthorized as error:
+        if len(error.args) != 2 or error.args[1] != 401:
+            raise
+        print(
+            "EXPECTED_REHEARSAL_AUTH_REJECTION: GET https://api.anaconda.org/user HTTP 401; "
+            "no upload, promotion or cleanup attempted.",
+            flush=True,
+        )
+        raise SystemExit(1) from None
+    raise RuntimeError("Rehearsal token unexpectedly accepted; no publication attempted.")
+
+
 def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--owner", required=True)
     parser.add_argument("--staging-label", required=True)
