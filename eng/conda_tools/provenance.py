@@ -195,7 +195,7 @@ def execute() -> None:
     versions = json.dumps(result["versions"], sort_keys=True)
     print(f"##vso[task.setvariable variable=releaseVersions;isOutput=true]{versions}")
     if publish == "false":
-        print("Validate-only: provenance verified; package readiness is gated separately.")
+        print("Non-publishing run: provenance verified; publisher rehearsal is gated separately.")
 
 
 def cli() -> int:
