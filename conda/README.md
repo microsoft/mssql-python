@@ -262,7 +262,8 @@ on the host and in the container; restricted task commands remain enabled.
 Rehearsal omits `Anaconda Publishing` and its production lock, marks the job
 nonproduction and uses a newly generated invalid token, never a supplied or cached
 credential. After all shared gates pass, the pinned client makes only an authenticated
-`GET https://api.anaconda.org/user`. The expected result is a **failed task** with
+`GET https://api.anaconda.org/user`. Redirects are disabled, with enforced 15-second
+connect and 60-second read timeouts. The expected result is a **failed task** with
 `EXPECTED_REHEARSAL_AUTH_REJECTION` and HTTP 401. Network/TLS/setup errors, other HTTP
 statuses and unexpectedly accepted credentials are failures, not successful rehearsals.
 No rehearsal path can reach upload, promotion or cleanup. This tests the authentication
