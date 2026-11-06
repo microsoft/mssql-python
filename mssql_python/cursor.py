@@ -61,6 +61,8 @@ ODBC3_TEMPORAL_SQL_TYPES = {
     ddbc_sql_const.SQL_TIME.value: ddbc_sql_const.SQL_TYPE_TIME.value,
     ddbc_sql_const.SQL_TIMESTAMP.value: ddbc_sql_const.SQL_TYPE_TIMESTAMP.value,
 }
+_SQL_HANDLE_STMT = ddbc_sql_const.SQL_HANDLE_STMT.value
+_SQL_NO_DATA = ddbc_sql_const.SQL_NO_DATA.value
 
 
 def _string_only_output_converter(converter):
@@ -332,7 +334,8 @@ class _ArrowReader:
         self._inner = None
 
 
-class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-methods
+# pylint: disable=too-many-instance-attributes,too-many-public-methods
+class Cursor:
     """
     Represents a database cursor, which is used to manage the context of a fetch operation.
 
@@ -1640,6 +1643,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
     def _reset_rownumber(self) -> None:
         """Reset the rownumber tracking when starting a new result set."""
+        ddbc_bindings._invalidate_native_fetch(self)
         self._rownumber = -1
         self._next_row_index = 0
         self._has_result_set = True
@@ -1684,6 +1688,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
         This should be called when the result set is cleared or when the cursor is reset.
         """
+        ddbc_bindings._invalidate_native_fetch(self)
         self._rownumber = -1
         self._has_result_set = False
         self._skip_increment_for_next_fetch = False
@@ -2859,24 +2864,18 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                     self.messages,
                 )
 
-            check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
-
-            if ret == ddbc_sql_const.SQL_NO_DATA.value:
-                # No more data available
+            check_error(_SQL_HANDLE_STMT, self.hstmt, ret)
+            if ret == _SQL_NO_DATA:
                 if self._next_row_index == 0 and self.description is not None:
                     self.rowcount = 0
                 return None
 
-            # Update internal position after successful fetch
             if self._skip_increment_for_next_fetch:
                 self._skip_increment_for_next_fetch = False
                 self._next_row_index += 1
             else:
                 self._increment_rownumber()
-
             self.rowcount = self._next_row_index
-
-            # Get column and converter maps
             column_map, converter_map, column_map_lower = self._get_column_and_converter_maps()
             with perf_phase("py::fetchone::row_wrap"):
                 if not converter_map and not self._uuid_str_indices:
@@ -2895,6 +2894,39 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         except Exception:
             # On error, don't increment rownumber - rethrow the error
             raise
+
+    def _complete_fetchone(self, row_data, ret):
+        """Complete an already-consumed fetch, including mutation/error fallback."""
+        check_error(_SQL_HANDLE_STMT, self.hstmt, ret)
+        if ret == _SQL_NO_DATA:
+            if self._next_row_index == 0 and self.description is not None:
+                self.rowcount = 0
+            return None
+
+        if self._skip_increment_for_next_fetch:
+            self._skip_increment_for_next_fetch = False
+            self._next_row_index += 1
+        else:
+            self._increment_rownumber()
+        self.rowcount = self._next_row_index
+        return self._wrap_fetchone(row_data)
+
+    def _wrap_fetchone(self, row_data):
+        column_map, converter_map, column_map_lower = self._get_column_and_converter_maps()
+        with perf_phase("py::fetchone::row_wrap"):
+            if not converter_map and not self._uuid_str_indices:
+                return Row._fast_create(
+                    row_data, column_map, self, column_map_lower, self._cached_result_columns
+                )
+            return Row(
+                row_data,
+                column_map,
+                cursor=self,
+                converter_map=converter_map,
+                uuid_str_indices=self._uuid_str_indices,
+                column_map_lower=column_map_lower,
+                column_names=self._cached_result_columns,
+            )
 
     def fetchmany(self, size: Optional[int] = None) -> List[Row]:
         """
@@ -2935,50 +2967,47 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                     self.messages,
                 )
 
-            check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
-
-            # Update rownumber for the number of rows actually fetched
-            if rows_data and self._has_result_set:
-                # advance counters by number of rows actually returned
-                self._next_row_index += len(rows_data)
-                self._rownumber = self._next_row_index - 1
-
-            # Centralize rowcount assignment after fetch
-            if len(rows_data) == 0 and self._next_row_index == 0:
-                self.rowcount = 0
-            else:
-                self.rowcount = self._next_row_index
-
-            # Get column and converter maps
-            column_map, converter_map, column_map_lower = self._get_column_and_converter_maps()
-
-            # Convert raw data to Row objects
-            uuid_idx = self._uuid_str_indices
-            with perf_phase("py::fetchmany::row_wrap"):
-                if not converter_map and not uuid_idx:
-                    return ddbc_bindings.construct_rows(
-                        rows_data,
-                        Row,
-                        column_map,
-                        self,
-                        column_map_lower,
-                        self._cached_result_columns,
-                    )
-                return [
-                    Row(
-                        row_data,
-                        column_map,
-                        cursor=self,
-                        converter_map=converter_map,
-                        uuid_str_indices=uuid_idx,
-                        column_map_lower=column_map_lower,
-                        column_names=self._cached_result_columns,
-                    )
-                    for row_data in rows_data
-                ]
+            return self._complete_fetchmany(rows_data, ret)
         except Exception:
             # On error, don't increment rownumber - rethrow the error
             raise
+
+    def _complete_fetchmany(self, rows_data, ret):
+        """Complete a batch without issuing another fetch on deoptimization."""
+        check_error(_SQL_HANDLE_STMT, self.hstmt, ret)
+        if rows_data and self._has_result_set:
+            self._next_row_index += len(rows_data)
+            self._rownumber = self._next_row_index - 1
+        self.rowcount = (
+            0 if len(rows_data) == 0 and self._next_row_index == 0 else self._next_row_index
+        )
+        return self._wrap_fetchmany(rows_data)
+
+    def _wrap_fetchmany(self, rows_data):
+        column_map, converter_map, column_map_lower = self._get_column_and_converter_maps()
+        uuid_idx = self._uuid_str_indices
+        with perf_phase("py::fetchmany::row_wrap"):
+            if not converter_map and not uuid_idx:
+                return ddbc_bindings.construct_rows(
+                    rows_data,
+                    Row,
+                    column_map,
+                    self,
+                    column_map_lower,
+                    self._cached_result_columns,
+                )
+            return [
+                Row(
+                    row_data,
+                    column_map,
+                    cursor=self,
+                    converter_map=converter_map,
+                    uuid_str_indices=uuid_idx,
+                    column_map_lower=column_map_lower,
+                    column_names=self._cached_result_columns,
+                )
+                for row_data in rows_data
+            ]
 
     def fetchall(self) -> List[Row]:
         """
@@ -3010,7 +3039,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 )
 
             # Check for errors
-            check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
+            check_error(_SQL_HANDLE_STMT, self.hstmt, ret)
 
             # Update rownumber for the number of rows actually fetched
             if rows_data and self._has_result_set:
@@ -4197,3 +4226,10 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             are managed automatically by the underlying driver.
         """
         # This is a no-op - buffer sizes are managed automatically
+
+
+# Installed only where CPython supplies public dictionary/type/function watchers.
+# Python 3.10/3.11 and free-threaded builds retain the methods above.
+from mssql_python._native_fetch import install as _install_native_fetch
+
+_NATIVE_FETCH_RUNTIME = _install_native_fetch(Cursor, Row, globals())

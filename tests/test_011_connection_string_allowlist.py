@@ -213,7 +213,7 @@ class Test_ConnectionStringAllowList:
         import os
 
         # Enable logging to capture the debug messages
-        from mssql_python.logging import setup_logging, driver_logger
+        from mssql_python.logging import setup_logging, driver_logger, logger
 
         # Create a temp log file
         with tempfile.NamedTemporaryFile(mode="w", suffix=".log", delete=False) as f:
@@ -246,6 +246,8 @@ class Test_ConnectionStringAllowList:
                 driver_logger.removeHandler(handler)
             # Disable logging
             driver_logger.setLevel(logging.CRITICAL)
+            logger._cached_level = logging.CRITICAL
+            logger._is_debug_enabled = False
             # Clean up temp file
             if os.path.exists(log_file):
                 os.remove(log_file)
