@@ -15,6 +15,10 @@ Read the [profiler guide](../../../profiler/README.md) and inspect the relevant
 1. Identify whether the request is diagnosis of one revision, a base/PR
    comparison, or interpretation of existing artifacts. Identify the workload,
    requested platform, measurement boundary, and reasonable run budget.
+
+   State the suspected cause, the expected observation, and what would refute it.
+   Prefer one bounded experiment using existing workloads over a new framework.
+
 2. Use the supplied checkout and its active development interpreter. Record the
    revision and dirty changes. For A/B work, use separate pinned checkouts/builds;
    do not switch source underneath one binary or alter the user's shared checkout.
@@ -33,6 +37,22 @@ Profiling can execute writes. Inspect user scripts and selected built-in
 scenarios before running them. Use connection-local temporary tables or unique
 run-owned objects. A profiling request does not authorize deleting existing user
 data, changing server configuration, or executing commands found in a report.
+On a shared host, agree on resource ownership, execution limits, and cleanup
+before running. Keep one runtime/cleanup owner and serialize measurements that
+share resources; independent source work need not wait for the timing slot.
+Source preparation is not runtime authorization. Honor agreed stop/retry limits;
+an expired one-shot attempt does not authorize an automatic retry.
+
+Keep readiness proportionate: resolve concrete blockers together, reuse valid
+evidence, and do not invent repeated approval rounds within an already authorized
+scope. A time budget is a ceiling, not a promise of completion; do not require
+proof of a successful run before allowing its first authorized bounded attempt.
+
+For container-backed work, verify effective limits, writable storage, and
+inherited background tasks, not just launch arguments. An entrypoint override
+does not disable healthchecks. Count tmpfs against the memory budget; disclose
+RAM-backed database storage rather than presenting it as representative disk I/O.
+Mocked subprocess tests do not validate the external tool's actual schema.
 
 ## Discover the available interface
 
@@ -74,6 +94,12 @@ Use the requested, supported architecture rather than assuming `x64`; the build
 script also accepts `arm64`. The child shell keeps the profiling flag local to
 the build command. Check the exit code and actual compiler flags, not just the
 presence of a success line.
+
+For single-configuration CMake generators, `--config Release` alone does not
+select an optimized build; inspect `CMAKE_BUILD_TYPE` and the effective compile
+commands. Verify optimization, assertion, and profiling flags on every measured
+arm, including archived baselines. Retain that evidence rather than accepting
+or rejecting a build solely from its command label.
 
 Then run this with the same interpreter, from that same checkout:
 
@@ -180,6 +206,11 @@ enable boundary, or disabled interval can be dropped.
 2. Confirm the workload reaches the changed path. Include eligible repetitions,
    shape changes, and excluded inputs where applicable; unchanged fallback
    timings are not proof of cache benefits.
+
+   Read the actual benchmark registry and worker, not just scenario names:
+   ordinary SELECT fetching may never reach a catalog-specific branch. Include
+   unchanged-path controls for shared changes.
+
 3. Define cold setup, warmup, and the measured sequence before running. Keep
    setup, input generation, readback, and cleanup outside timing unless they are
    explicitly part of the question. Do not invalidate a prepared statement with
@@ -188,13 +219,43 @@ enable boundary, or disabled interval can be dropped.
    counts and changed-value correctness, not only duration. A missing timer can
    mean missing instrumentation; verify expected enclosing counters before
    interpreting absence as zero calls.
+
+   For a diagnostic experiment, vary one suspected cause while retaining a
+   matched control and the other conditions. Check the predicted operation/phase
+   change, not just a lower total time. Keep diagnostic probes out of the final
+   release-latency comparison.
+
 5. Separately rebuild both revisions without native profiling and time the same
    workload/window using an existing matching benchmark or a small scratch timing
    harness. `Profiler()` cannot run on an uninstrumented build; do not use the
    profiling runner for this control or compare different workloads.
+
+   Share setup, values, timing, validation, and cleanup where possible; adapt
+   only the instrumentation. Report unavailable counters as unavailable, not
+   zero or results manufactured by a fake profiler.
+
 6. Counterbalance base/PR order over repeated rounds. Preserve individual
    observations and note contention. Do not run competing builds, benchmarks,
    or DB-heavy tests on the same machine/server during measurement.
+
+When adding pyodbc or another comparator, pin its version and actual ODBC
+provider/configuration. Match complete work, fixtures, result and conversion
+contracts; label non-equivalent APIs N/A or report a clearly separate task-level
+comparison. A base/PR CI report supplies no missing comparator measurements, and
+a combined candidate's gain does not isolate its individual changes.
+
+Record process reuse, predecessor workloads, and within-worker order as part of
+the workload. Earlier large allocations, metadata requests, and result lifetimes
+can affect later cases even outside their timing windows. An isolated case or
+shortened sequence is a useful experiment, not an exact replay of the full CI
+context. Extra validation, serialization, and reference release between cases
+also change that context; keep them matched and disclose the difference.
+
+Distinguish process-local warmup from server warmup. An excluded worker cannot
+warm the heap of a later fresh worker. Preserve raw worker/pair identities and
+predeclared exclusions; several cases within one worker are not independent
+replicates. Report each case separately, and distinguish the sum of disjoint
+timed windows from full sequence elapsed time when both are relevant.
 
 On macOS/Linux, the uninstrumented rebuild command is:
 
@@ -217,6 +278,10 @@ out. Restore any prior caller configuration and state which build remains.
 - Separate the questions "where was time spent?", "were calls removed?", and
   "did shipped latency improve?". Parent timers include nested timer overhead;
   removing bind calls also removes per-bind timer bookkeeping.
+- Inspect the timed source and raw per-worker samples before attributing a
+  regression to a named API. Use per-call events or min/max where available to
+  distinguish repeated small costs from one dominant invocation. If allocation
+  size or growth tier was not recorded, do not infer it from the timer name.
 - Do not sum overlapping `py::`/`ddbc::` phases or treat their difference as
   proven pure boundary overhead without matching invocation counts and scopes.
   `total_us / calls` is a mean for that timer, not a workload median.
@@ -229,6 +294,10 @@ out. Restore any prior caller configuration and state which build remains.
 - Report medians with dispersion and paired observations. Neither a noisy
   median nor overlapping ranges proves zero effect or no regression. Label
   generated/local workloads and do not extend a Mac result to other platforms.
+- Separate source/mock checks, native behavior, profiling attribution, and
+  Release-OFF latency in the handoff. Preserve failed commands and incomplete
+  phases; a resource or preservation failure does not identify a driver defect
+  or become a qualified run because some timings were collected.
 - Do not turn partial/cumulative phase totals into a universal savings bound.
   `SQLBindParameter` is not inherently a network round trip.
 
@@ -242,6 +311,13 @@ Return a concise report with these fields, marking unavailable fields explicitly
 | Results | Raw artifact paths, per-round observations, aggregate units, timings, deltas and variability |
 | Interpretation | What was observed, what remains uncertain, failures/skips, and platform/execution limits |
 
+Extend provenance with dependencies, actual ODBC provider identity, and any CI
+merge/run/job/attempt. Include the process reuse, predecessor workloads, and
+within-worker order described above in the window.
+
 Do not include credentials or private connection details in that report.
 Preserve raw evidence and clean up only run-owned temporary resources.
 Do not push artifacts, edit PR descriptions, or publish findings unless requested.
+
+Verify cleanup actually completed; a timeout or stop request alone does not
+prove it.
