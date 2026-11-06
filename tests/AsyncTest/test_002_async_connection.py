@@ -14,6 +14,49 @@ from mssql_python.helpers import connstr_to_pycore_params
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "suffix",
+    [";APP=", ";APP=\ud800", ";APP=" + "a" * 116, ";APP=" + "\U0001f600" * 58],
+)
+async def test_invalid_async_app_fails_before_loading_backend(suffix):
+    from unittest.mock import patch
+
+    with patch("mssql_python.async_query.async_connection.load_py_core") as load:
+        with pytest.raises((ValueError, ConnectionStringParseError)):
+            await _AsyncConnection.connect("Server=localhost" + suffix)
+        load.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("suffix", "name"),
+    [
+        ("", None),
+        (";APP=Orders", "Orders"),
+        (";Application Name=Orders", "Orders"),
+        (";APP=First;Application Name=Second", "First"),
+        (";Application Name=First;APP=Second", "First"),
+        (";APP={ Orders;West}} }", " Orders;West} "),
+        (";APP=" + "a" * 115, "a" * 115),
+        (";APP=" + "\U0001f600" * 57 + "x", "\U0001f600" * 57 + "x"),
+    ],
+)
+async def test_async_application_name_received_by_server(async_connection_string, suffix, name):
+    async with await _AsyncConnection.connect(async_connection_string + suffix) as connection:
+        cursor = connection.cursor()
+        try:
+            await cursor.execute(
+                "SELECT APP_NAME(), program_name FROM sys.dm_exec_sessions "
+                "WHERE session_id = @@SPID"
+            )
+            row = await cursor.fetchone()
+            expected = "MSSQL-Python" if name is None else f"MSSQL-Python|{name}"
+            assert tuple(row) == (expected, expected)
+        finally:
+            await cursor.close()
+
+
+@pytest.mark.asyncio
 async def test_connect_accepts_login_options_with_real_py_core(async_connection_string):
     connection = await _AsyncConnection.connect(
         async_connection_string,
@@ -50,6 +93,7 @@ def test_sql_password_authentication_is_forwarded_to_py_core():
         "authentication": "SqlPassword",
         "user_name": "user",
         "password": "password",
+        "application_name": "MSSQL-Python",
     }
 
 
@@ -62,6 +106,7 @@ def test_trusted_connection_is_forwarded_to_py_core():
     assert context == {
         "server": "test-server.example.invalid",
         "trusted_connection": "Yes",
+        "application_name": "MSSQL-Python",
     }
 
 

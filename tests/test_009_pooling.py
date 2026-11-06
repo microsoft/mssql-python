@@ -127,6 +127,35 @@ def test_connection_pooling_reuse_spid(conn_str):
     assert spid1 == spid2, "Connections not reused - different SPIDs"
 
 
+def test_application_names_isolate_pools_and_aliases_reuse_sessions(conn_str):
+    _run_in_subprocess(
+        """
+        import os
+        from mssql_python import connect, pooling
+
+        pooling(max_size=1, idle_timeout=60)
+        base = os.environ["DB_CONNECTION_STRING"]
+
+        def identity(conn):
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT @@SPID, APP_NAME()")
+                return tuple(cursor.fetchone())
+
+        with connect(base, APP="Pool-A") as conn:
+            first = identity(conn)
+        with connect(base + ";Application Name=Pool-A") as conn:
+            equivalent = identity(conn)
+            with connect(base, APP="Pool-B") as other:
+                different = identity(other)
+        assert first == equivalent
+        assert first[1] == "MSSQL-Python|Pool-A"
+        assert different[1] == "MSSQL-Python|Pool-B"
+        assert different[0] != first[0]
+        """,
+        conn_str,
+    )
+
+
 def test_pooled_close_paths_leave_no_open_transaction(conn_str):
     """Every close path must leave the physical connection transaction-clean."""
     _run_in_subprocess(
