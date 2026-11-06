@@ -4,6 +4,7 @@
 
 The native plan is invalidated by public CPython watchers, not private dict
 versions. Eligibility checks run after invalidation, never for each warm row.
+Cold preparation rearms type notifications before admitting another plan.
 Unsupported interpreters keep the ordinary Python methods.
 
 Runtime schema 2 keeps the original six tuple fields and appends the GC-visible
@@ -111,11 +112,12 @@ class _Policy:
         ):
             return None
         connection_data = object.__getattribute__(connection, "__dict__")
-        ddbc_bindings._watch_fetch_dependencies(
+        if not ddbc_bindings._watch_fetch_dependencies(
             self.observer,
             (data, connection_data),
-            Connection.__mro__,
-        )
+            self.classes + Connection.__mro__,
+        ):
+            return None
         index = data.get("_next_row_index")
         if type(index) is not int or index < 1:
             return None

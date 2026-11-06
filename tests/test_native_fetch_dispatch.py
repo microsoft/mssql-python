@@ -288,6 +288,71 @@ def test_warm_factory_override_keeps_consumed_position(connection, method):
         assert value(read(cursor, method), method) == 4
 
 
+def test_saved_fetchone_observes_consecutive_class_mutations(connection):
+    runtime = getattr(sys.modules[Cursor.__module__], "_NATIVE_FETCH_RUNTIME", None)
+    original = Cursor._get_column_and_converter_maps
+    observed = []
+
+    def fail_map(cursor):
+        observed.append((cursor.rowcount, cursor.rownumber, cursor._next_row_index))
+        raise RuntimeError("saved method map override")
+
+    for python_fallback in (True, False):
+        with _native_fetch_counters() as profiling, connection.cursor() as cursor:
+            warm(cursor, "fetchone")
+            fetchone = (
+                runtime[3][0].__get__(cursor)
+                if python_fallback and runtime is not None
+                else cursor.fetchone
+            )
+            Cursor._saved_fetch_test = None
+            del Cursor._saved_fetch_test
+            with _fetchone_window(profiling) as republished:
+                assert fetchone()[0] == 3
+            Cursor._get_column_and_converter_maps = fail_map
+            try:
+                # Do not look up another Cursor attribute between these saved calls.
+                with pytest.raises(RuntimeError, match="saved method map override"):
+                    fetchone()
+            finally:
+                Cursor._get_column_and_converter_maps = original
+            if not python_fallback and runtime is not None:
+                _assert_fetchone_counts(republished, prepare=1, native=1, fallback=0, sql=1)
+            assert (cursor.rowcount, cursor.rownumber, cursor._next_row_index) == (4, 3, 4)
+            assert fetchone()[0] == 5
+    assert observed == [(4, 3, 4), (4, 3, 4)]
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 13),
+    reason="Custom MRO prevents type version assignment on CPython 3.13+",
+)
+def test_native_plan_requires_rearmed_type_dependencies(connection):
+    runtime = _redesign_runtime()
+
+    class CustomMro(type):
+        def mro(cls):
+            return [cls, object]
+
+    class Unversioned(metaclass=CustomMro):
+        pass
+
+    with _native_fetch_counters() as profiling, connection.cursor() as cursor:
+        warm(cursor, "fetchone")
+        policy = runtime[2]
+        with patch.object(policy, "classes", (*policy.classes, Unversioned)):
+            ddbc_bindings._invalidate_native_fetch(cursor)
+            with _fetchone_window(profiling) as declined:
+                assert cursor.fetchone()[0] == 3
+        _assert_fetchone_counts(declined, prepare=1, native=0, fallback=1, sql=1)
+        ddbc_bindings._invalidate_native_fetch(cursor)
+        with _fetchone_window(profiling) as restored:
+            assert cursor.fetchone()[0] == 4
+        _assert_fetchone_counts(restored, prepare=1, native=1, fallback=0, sql=1)
+        assert cursor.rowcount == 4
+        assert cursor.rownumber == 3
+
+
 @pytest.mark.parametrize("method", ("fetchval", "iterator"))
 def test_warm_fetchone_override_is_not_bypassed(connection, method):
     with connection.cursor() as cursor:

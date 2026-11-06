@@ -1145,14 +1145,21 @@ inline void bind(py::module_& m) {
             if (PyDict_Watch(observer->dict, dict.ptr()) < 0)
                 throw py::error_already_set();
         }
+        bool armed = true;
         for (auto type : types) {
             if (!PyType_Check(type.ptr()))
                 throw py::type_error("Expected a type dependency");
-            if (!(PyType_GetFlags(reinterpret_cast<PyTypeObject*>(type.ptr())) &
-                  Py_TPFLAGS_IMMUTABLETYPE) &&
-                PyType_Watch(observer->type, type.ptr()) < 0)
+            auto* dependency = reinterpret_cast<PyTypeObject*>(type.ptr());
+            if (PyType_GetFlags(dependency) & Py_TPFLAGS_IMMUTABLETYPE)
+                continue;
+            if (PyType_Watch(observer->type, type.ptr()) < 0)
                 throw py::error_already_set();
+            // CPython coalesces notifications until a valid tag is assigned again.
+            // Rearm without an attribute lookup that could invoke user descriptors.
+            if (!PyUnstable_Type_AssignVersionTag(dependency))
+                armed = false;
         }
+        return armed;
     });
 }
 
