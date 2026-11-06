@@ -233,15 +233,16 @@ def test_bcp_conversion_does_not_fall_through_invalid_first_synonym():
     assert context == {}
 
 
-def test_async_connection_rejects_entra_authentication():
-    with pytest.raises(
-        NotSupportedError,
-        match="Authentication mode 'ActiveDirectoryDefault' is not supported",
-    ):
-        build_async_connection_context(
-            "Server=test-server.example.invalid;Authentication=ActiveDirectoryDefault",
-            0,
-        )
+def test_async_connection_context_accepts_entra_authentication_without_acquiring_token():
+    context = build_async_connection_context(
+        "Server=test-server.example.invalid;Authentication=ActiveDirectoryDefault",
+        0,
+    )
+
+    assert context == {
+        "server": "test-server.example.invalid",
+        "authentication": "ActiveDirectoryDefault",
+    }
 
 
 def test_async_connection_reports_invalid_authentication_mode():
