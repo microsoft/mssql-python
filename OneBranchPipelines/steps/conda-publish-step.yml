@@ -101,7 +101,7 @@ steps:
       targetType: 'inline'
       script: |
         $ErrorActionPreference = 'Stop'
-        $baseDirectory = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'Programs\Python\Python312'
+        $baseDirectory = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'Programs\Python\Python313'
         $basePython = Join-Path $baseDirectory 'python.exe'
         if (-not (Test-Path -LiteralPath $basePython -PathType Leaf)) {
           throw "Required image Python is missing: $basePython. No installation or fallback is permitted."
@@ -114,7 +114,7 @@ steps:
             "prefix": sys.prefix, "base_prefix": sys.base_prefix,
             "platform": sysconfig.get_platform(),
         }))
-        assert sys.implementation.name == "cpython" and sys.version_info[:2] == (3, 12) and sys.platform == "win32" and sysconfig.get_platform() == "win-amd64", "Publisher lock requires CPython 3.12 Windows x64"
+        assert sys.implementation.name == "cpython" and sys.version_info[:2] == (3, 13) and sys.platform == "win32" and sysconfig.get_platform() == "win-amd64", "Publisher lock requires CPython 3.13 Windows x64"
         assert pathlib.Path(sys.executable).resolve() == root / "python.exe" and pathlib.Path(sys.prefix).resolve() == pathlib.Path(sys.base_prefix).resolve() == root, "Image Python executable/prefix mismatch"
         import ssl, venv, encodings, _ssl, ensurepip, xml.etree.ElementTree as et
         misplaced = {m.__name__: str(pathlib.Path(m.__file__).resolve()) for m in (ssl, venv, encodings, _ssl, ensurepip, et) if not pathlib.Path(m.__file__).resolve().is_relative_to(root)}
