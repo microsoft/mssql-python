@@ -293,3 +293,32 @@ def test_single_row_reuses_unbound_state_without_batch_setup(connection, method)
         assert counts.get("ddbc::SQLNumResultCols_wrap", 0) <= 1
         assert counts.get("ddbc::SQLBindColums", 0) == 0
         assert counts.get("ddbc::FetchBatchData", 0) == 0
+
+
+@pytest.mark.parametrize("sql_type", ("CHAR", "VARCHAR", "NCHAR", "NVARCHAR"))
+def test_fetchmany_one_text_keeps_batch_conversion(connection, sql_type):
+    profiling = getattr(ddbc_bindings, "profiling", None)
+    if profiling is None:
+        pytest.skip("Operation counts require an ENABLE_PROFILING=ON diagnostic build")
+    with connection.cursor() as cursor:
+        cursor.execute(
+            f"SELECT n, CAST(N'x' AS {sql_type}(1)) AS payload "
+            "FROM (VALUES (1), (2), (3), (4)) AS v(n) ORDER BY n"
+        )
+        for n in (1, 2):
+            assert tuple(cursor.fetchmany(1)[0]) == (n, "x")
+        profiling.reset()
+        profiling.enable()
+        try:
+            assert tuple(cursor.fetchmany()[0]) == (3, "x")
+            assert tuple(cursor.fetchmany(1)[0]) == (4, "x")
+            assert cursor.fetchmany() == []
+        finally:
+            profiling.disable()
+        counts = {name: stats["calls"] for name, stats in profiling.get_stats().items()}
+        assert counts.get("ddbc::NativeCursor::fetch", 0) == 0
+        assert counts.get("ddbc::FetchSingleRow", 0) == 0
+        assert counts["ddbc::FetchMany_wrap"] == 3
+        assert counts["ddbc::FetchBatchData"] == 3
+        assert cursor.rowcount == 4
+        assert cursor.rownumber == 3

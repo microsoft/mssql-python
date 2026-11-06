@@ -521,7 +521,7 @@ inline std::shared_ptr<Plan> prepare(PyObject* self, const py::tuple& rt, py::di
         plan->manyEligible = metadata && metadata->completeResult && metadata->namesValidated;
         if (plan->manyEligible) {
             for (const auto& column : metadata->columns) {
-                if (IsLobOrVariantColumn(column.dataType, column.columnSize)) {
+                if (!CanUseSingleRowForFetchMany(column.dataType, column.columnSize)) {
                     plan->manyEligible = false;
                     break;
                 }

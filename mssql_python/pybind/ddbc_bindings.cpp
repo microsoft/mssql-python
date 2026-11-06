@@ -3455,6 +3455,22 @@ static inline bool IsLobOrVariantColumn(SQLSMALLINT dataType, SQLULEN columnSize
             (columnSize == 0 || columnSize == SQL_NO_TOTAL || columnSize > SQL_MAX_LOB_SIZE));
 }
 
+static inline bool CanUseSingleRowForFetchMany(SQLSMALLINT dataType, SQLULEN columnSize) {
+    // Bound text conversion has platform/codec-specific fallbacks that GetRowData
+    // does not share. Keep that contract even when the requested batch size is one.
+    switch (dataType) {
+        case SQL_CHAR:
+        case SQL_VARCHAR:
+        case SQL_LONGVARCHAR:
+        case SQL_WCHAR:
+        case SQL_WVARCHAR:
+        case SQL_WLONGVARCHAR:
+            return false;
+        default:
+            return !IsLobOrVariantColumn(dataType, columnSize);
+    }
+}
+
 static SQLRETURN GetRowData(const SqlHandlePtr& StatementHandle, SQLUSMALLINT colCount,
                             py::list& row, const std::string& charEncoding,
                             const std::string& wcharEncoding, int charCtype,
@@ -4275,7 +4291,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                       messages, StatementHandle->resultMetadata.snapshot());
 }
 
-// An unbound, exactly-one-row fetch shared by fetchone and fetchmany(1).
+// An unbound, exactly-one-row fetch shared by fetchone and eligible fetchmany(1).
 // No buffers or ODBC pointers survive the call.
 static SQLRETURN FetchSingleRow(const SqlHandlePtr& handle, py::list& row,
                                 const std::string& charEncoding,
@@ -5095,14 +5111,17 @@ SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetch
     }
 
     std::vector<SQLUSMALLINT> lobColumns;
+    bool singleRowEligible = fetchSize == 1;
     for (SQLSMALLINT i = 0; i < numCols; i++) {
         const auto& column = columnNames.at(i);
         if (IsLobOrVariantColumn(column.dataType, column.columnSize)) {
             lobColumns.push_back(i + 1);  // 1-based
         }
+        singleRowEligible = singleRowEligible &&
+                            CanUseSingleRowForFetchMany(column.dataType, column.columnSize);
     }
 
-    if (fetchSize == 1 && lobColumns.empty()) {
+    if (singleRowEligible) {
         py::list row;
         ret = FetchSingleRow(StatementHandle, row, charEncoding, wcharEncoding, charCtype, messages);
         if (SQL_SUCCEEDED(ret))

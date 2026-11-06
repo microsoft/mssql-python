@@ -13,6 +13,8 @@ it is not a public API or a change to constructor initialization.
 Plans retain the cursor's shared column-name cache without copying it. Column
 names must be a plain tuple or an exact _ColumnNames instance; custom subclasses
 keep the Python fallback.
+Size-one fetchmany keeps text-bearing results on the batch path, whose
+platform-specific decoding and malformed-text fallbacks differ from fetchone.
 """
 
 import sys
