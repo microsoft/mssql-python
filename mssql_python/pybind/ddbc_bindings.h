@@ -13,6 +13,7 @@
 #include <pybind11/pytypes.h>  // Add this line for datetime support
 #include <pybind11/stl.h>
 
+#include <atomic>
 #include <cstring>
 #include <exception>
 #include <memory>
@@ -291,6 +292,9 @@ struct DescribedParamInfo {
 struct ConnectionCleanupState {
     std::mutex mutex;
     bool disconnected = false;  // Protected by mutex, shared with every child.
+    // Unlike weak_ptr expiration, this count includes destructors still freeing handles.
+    std::atomic<size_t> childStatementCount{0};
+    std::atomic<bool> childFreeFailed{false};  // Sticky for this physical connection.
 };
 
 class SqlHandle {

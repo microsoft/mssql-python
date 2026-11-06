@@ -45,7 +45,7 @@ receives a bounded frame-structure pass because its streaming API alone accepts
 truncated frame endings. ZIP envelopes must use stored or deflate compression;
 sparse TAR extensions are rejected before sparse-map processing. Wheel metadata
 reads share the ZIP and metadata budgets. These are package-reader limits, not a
-claim that NuGet transport downloads or total process memory have the same bounds.
+claim that runtime wheel downloads or total process memory have the same bounds.
 
 The GitHub audit job installs its complete Linux x64 / CPython 3.11 test-tool closure
 from `requirements-audit.txt` with `--require-hashes --only-binary=:all:`.
@@ -90,10 +90,15 @@ hashes with the final Conda archive hash after Linux relocation.
 
 Use `build --rs-wheel-dir <producer-artifact>/rs-wheels
 --rs-version-file <producer-artifact>/dist/mssql-python-rs.version` for RS inputs.
-The version file asserts the selected producer's source contract, not a new release-version
-setting. The distinct NuGet transport pin remains in `mssql-python-rs-nuget.version`;
-the downloader records its content hash and individual wheel hashes in `transport.json`.
-Conda consumers use staged producer bytes, not a fresh download using their checkout's pin.
+The version file asserts the selected producer's runtime selection against the binding's
+exact dependency, not a new release-version setting. The producer's `transport.json`
+records `distribution_version`, `index_url`, `version_override` and individual
+`wheel_sha256` values. Released runtimes use PyPI; an explicitly selected `.devN`
+version uses the public `mssql-rs_Public` Python index. Conda consumers validate this
+receipt and use staged producer bytes, not a fresh download using their checkout's
+pin or `MSSQL_PYTHON_RS_VERSION`. No NuGet package or transport pin is required.
+Release validation rejects any receipt with `version_override=true`, including
+an override equal to the committed stable pin. Such artifacts remain test-only.
 
 Published historical bindings that declare no RS dependency are accepted only when their
 payload and RECORD own the core initializer and native extension. They produce an explicit
@@ -146,6 +151,16 @@ Windows ARM64 3.15 uses `microsoft`, then `conda-forge`, for both build and veri
 (after the local verification channel), without `defaults`. Older targets retain their
 existing channel policies and the ARM64 3.12 manual ABI pin. The blocking full dependency
 solve remains; every 3.15 package must pass the `python_abi 3.15.* *_cp315` native audit.
+
+Windows builds pass the package target through conda-build's `target_platform`
+variant, leaving its build process native (win-64 on the x64 agent). Only that
+command's environment removes `CONDA_SUBDIR`, avoiding the ARM64 `/machine`
+launcher on Windows Server 2022. Verification keeps `CONDA_SUBDIR=win-arm64`
+for both target environment creation and the full dependency dry-run.
+
+POSIX steps pass the requested Python matrix through `MSSQL_CONDA_PYTHON_VERSIONS`
+so the shared `PYTHON_VERSIONS` pipeline variable cannot replace it. Custom subsets
+and empty-input wheel auto-detection remain supported.
 
 ### Python 3.15 packaging
 
@@ -215,13 +230,57 @@ access. `promote --check-local-only` needs neither a publishing token nor an
 Anaconda client; actual publication and recovery require restricted credentials and
 the shared protected release stage described below. Module placement is not a new
 authorization boundary. The PowerShell upload process deadlines, attempted-file
-tracking, process-tree termination, and dry-run plan remain in their pipeline tasks.
+tracking and process-tree termination remain in their pipeline tasks.
 Network publication and recovery require an explicit nonblank `ANACONDA_API_TOKEN`,
 not an ambient or cached login. The publishing task removes `BINSTAR_API_TOKEN`
 only from its process and children so the CLI uploader uses the same reviewed credential.
 User/machine environment settings and saved credentials are not modified.
 
-Only trusted, reviewed release revisions may be queued, including validate-only feature
+The official Windows publisher invokes the image's existing interpreter by its
+full path: `%LOCALAPPDATA%\Programs\Python\Python312\python.exe` (the account's
+LocalApplicationData special folder, not a PATH search). It requires CPython 3.12
+Windows x64, without unnecessarily pinning the patch version. Before creating any
+environment, it checks executable/prefix/base-prefix coherence and required
+SSL/native, encoding, venv and XML module ownership. A missing or unusable image
+interpreter fails explicitly; there is no automatic installation, uninstall,
+registry repair, runtime download or fallback to another interpreter.
+
+The bootstrap creates a unique job-owned venv under `Agent.TempDirectory` and
+verifies that it belongs to the checked image interpreter. Only that venv's absolute
+path is passed to the publishing task through a read-only task output. Dependencies
+still use the unchanged hash lock and explicit package-feed-proxy `--index-url`
+with pip's `--isolated` mode. Both production and rehearsal use this same code.
+
+With `publishToConda=false` (the default), the release pipeline now rehearses the
+publisher instead of only printing an upload plan. Both modes use the Official
+template, Windows 2022 managed container, network isolation, independent producer
+download, Python 3.12 bootstrap, hash-locked dependencies and metadata/native audits.
+The publisher checkout explicitly uses `path: s`, matching OneBranch's injected
+checkout so the lock, Python modules and artifacts share `Build.SourcesDirectory`
+on the host and in the container; restricted task commands remain enabled.
+
+Rehearsal omits `Anaconda Publishing` and its production lock, marks the job
+nonproduction and uses a newly generated invalid token, never a supplied or cached
+credential. After all shared gates pass, the pinned client makes only an authenticated
+`GET https://api.anaconda.org/user`. Redirects are disabled, with enforced 15-second
+connect and 60-second read timeouts. The expected result is a **failed task** with
+`EXPECTED_REHEARSAL_AUTH_REJECTION` and HTTP 401. Network/TLS/setup errors, other HTTP
+statuses and unexpectedly accepted credentials are failures, not successful rehearsals.
+No rehearsal path can reach upload, promotion or cleanup. This tests the authentication
+boundary, not valid-token authorization or successful publication/recovery.
+
+To rehearse a reviewed PR branch, queue the existing release definition with that
+exact branch/commit, `publishToConda=false` and the intended recorded Conda producer
+run. Inspect actual hosted logs through the expected rejection; a compiled preview
+or a local interpreter check does not establish hosted image/venv/dependency coverage.
+Resource or policy denials must be resolved by the owner, never by weakening the
+production checks. `publishToConda=true` retains the main-branch provenance guard,
+publishing credential group and shared exclusive lock.
+The old upload-plan-only task and duplicate interpreter selection in the validation
+job are removed. Superseded MSI cleanup and temporary installer diagnostics are removed;
+the short base-library check remains. Independent publisher artifact rechecks are retained.
+
+Only trusted, reviewed release revisions may be queued, including rehearsal feature
 branches: their YAML and Python run with `System.AccessToken`. YAML provenance checks
 cannot sandbox an untrusted queued revision or protect that token from it. Administrators
 must restrict pipeline editing/queueing and source access, minimize the job identity's
@@ -238,8 +297,8 @@ must fail before the stage receives the publishing credential. Preserve existing
 permissions and approvals, and restrict permission to administer or bypass the check.
 Do not grant broader pipeline access as part of configuring it.
 
-The existing `publishToConda` condition omits this group for validate-only runs, so
-trusted feature-branch validation remains separate from credentialed publication.
+The existing `publishToConda` condition omits this group for rehearsal runs, so
+trusted feature-branch rehearsal remains separate from credentialed publication.
 Neither a checkout-local branch check nor a secondary pinned checkout can replace
 the resource-side control: editable YAML could bypass either. These external checks
 are not installed by this repository; production must remain unapproved until the
@@ -255,7 +314,7 @@ create the external check. The lock spans validation, staged uploads, the initia
 label snapshot, promotion, rollback and staging cleanup until the stage ends.
 All publishers and recovery paths for `microsoft/mssql-python` must consume that
 same resource, across versions and target labels; separate groups would not serialize
-them. Keep the group and lock behavior absent from validate-only runs.
+them. Keep the group and lock behavior absent from rehearsal runs.
 
 Recover by rerunning the original protected release stage with its original artifact
 inputs, preserving the build-specific staging label and reacquiring the shared lock.
@@ -269,13 +328,14 @@ acquisition; configuration readback alone is not evidence that a run holds the l
 The release pipeline resolves AUTO from the **recorded upstream wheel commit**, not
 the release checkout or a latest-version lookup. It cross-checks binding setup/runtime
 versions and reads ODBC and, when explicitly required by that source, RS distribution
-versions. RS's NuGet transport pin is separate. Missing or ambiguous source declarations
+versions. Source analysis reads the clean `X.Y.Z` RS pin without executing the
+runtime-selection helper or consulting the consumer's environment override.
+Missing or ambiguous source declarations
 fail rather than select a historical profile. A supplied binding version is only an
 assertion against this resolved version.
 
 Both readiness and the credentialed job use `validate --release-versions` to read the
-verified `RELEASE_VERSIONS` JSON from the environment; `RS_TRANSPORT_VERSION` supplies
-the separate transport assertion. This avoids passing JSON quoting or empty arguments
+verified `RELEASE_VERSIONS` JSON from the environment. This avoids passing JSON quoting or empty arguments
 through Windows PowerShell. Explicit JSON may also follow `--release-versions` in
 source-only controls. With this flag, absent versions fail closed. Without it, `validate`
 remains the metadata/matrix-only inspection command and makes no source-input claim.
@@ -283,7 +343,9 @@ The source-bound gate checks each installed component's METADATA and RECORD owne
 the binding's exact dependency pins, and the selected RS filename/WHEEL tags against
 `rs-transport.json`. Raw wheel/transport hashes remain input evidence; relocated
 installed native files are checked by the native audits, not falsely compared with raw
-wheel hashes. No numeric RS build ID is inferred from a transport-version suffix.
+wheel hashes. The receipt must name the verified RS distribution version and its
+release/development index; a receipt cannot override the verified source version.
+No numeric RS build ID is inferred from a version suffix.
 Release and native auditing also check all installed core paths, not only RECORD-filtered
 members. This detects unowned or cross-owned additions; it cannot recover file origin
 after an overwrite of an already owned path, which is why the raw pre-extraction gate
@@ -313,7 +375,7 @@ The `probe-driver` module command is a convenience diagnostic in the calling
 interpreter, not a substitute for this neutral-directory installed-package check.
 
 The files remaining under `conda/` are the conventional recipe entrypoints,
-metadata, documentation and line-ending configuration. Shared NuGet transport,
-feed-resolution and output-safety utilities remain under `eng/scripts` because
+metadata, documentation and line-ending configuration. Shared Python-index download,
+runtime-selection and output-safety utilities remain under `eng/scripts` because
 non-Conda native build/development workflows also use them; Conda reuses those
 implementations rather than keeping private copies.

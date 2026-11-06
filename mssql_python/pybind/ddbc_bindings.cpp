@@ -14,6 +14,7 @@
 #include "py_type_cache.hpp"
 #include "fetch_temporal.hpp"
 #include "row_factory.hpp"
+#include "row_mapping.hpp"
 #include "utf_utils.h"
 #include "fetch_text.hpp"
 
@@ -1590,11 +1591,18 @@ void DriverLoader::loadDriver() {
 // SqlHandle definition
 SqlHandle::SqlHandle(SQLSMALLINT type, SQLHANDLE rawHandle,
                      std::shared_ptr<ConnectionCleanupState> cleanupState)
-    : _type(type), _handle(rawHandle), _cleanupState(std::move(cleanupState)) {}
+    : _type(type), _handle(rawHandle), _cleanupState(std::move(cleanupState)) {
+    if (_type == SQL_HANDLE_STMT && _cleanupState) {
+        ++_cleanupState->childStatementCount;
+    }
+}
 
 SqlHandle::~SqlHandle() {
     if (_handle) {
         free();
+    }
+    if (_type == SQL_HANDLE_STMT && _cleanupState) {
+        --_cleanupState->childStatementCount;
     }
 }
 
@@ -1660,7 +1668,7 @@ SQLRETURN SqlHandle::freeHandle() {
 
     auto freeNative = [this]() -> SQLRETURN {
         auto cleanupLock = lockForCleanup();
-        if (!_handle || !SQLFreeHandle_ptr) {
+        if (!_handle) {
             return SQL_INVALID_HANDLE;
         }
         describeCache.clear();
@@ -1668,9 +1676,11 @@ SQLRETURN SqlHandle::freeHandle() {
             _handle = nullptr;
             return SQL_SUCCESS;
         }
-        SQLRETURN ret = SQLFreeHandle_ptr(_type, _handle);
+        SQLRETURN ret = SQLFreeHandle_ptr ? SQLFreeHandle_ptr(_type, _handle) : SQL_INVALID_HANDLE;
         if (SQL_SUCCEEDED(ret)) {
             _handle = nullptr;
+        } else if (_type == SQL_HANDLE_STMT && _cleanupState) {
+            _cleanupState->childFreeFailed = true;
         }
         return ret;
     };
@@ -2025,10 +2035,22 @@ py::list SQLGetAllDiagRecords(SqlHandlePtr handle) {
     return records;
 }
 
+static bool FetchDiagnosticsAreEmpty(SQLHSTMT hStmt) {
+    if (!SQLGetDiagField_ptr)
+        return false;
+    // Diagnostic header reads preserve the originating records. An unsupported
+    // or uncertain count must retain the original record enumeration.
+    SQLINTEGER count = -1;
+    SQLRETURN ret = SQLGetDiagField_ptr(SQL_HANDLE_STMT, hStmt, 0, SQL_DIAG_NUMBER,
+                                       &count, 0, nullptr);
+    return ret == SQL_SUCCESS && count == 0;
+}
+
 // Called only with the GIL held, immediately after the originating ODBC call.
 static void CaptureFetchDiagnostics(SQLHSTMT hStmt, SQLRETURN ret, py::handle messages,
                                     bool internalTruncation = false) {
-    if ((ret == SQL_SUCCESS_WITH_INFO || ret == SQL_NO_DATA) && messages && !messages.is_none())
+    if ((ret == SQL_SUCCESS_WITH_INFO || ret == SQL_NO_DATA) && messages && !messages.is_none() &&
+        !FetchDiagnosticsAreEmpty(hStmt))
         AppendDiagRecords(hStmt, SQL_HANDLE_STMT, messages, internalTruncation);
 }
 
@@ -6471,7 +6493,7 @@ PYBIND11_MODULE(ddbc_bindings, m) {
              py::arg("conn_str"), py::arg("use_pool"), py::arg("attrs_before") = py::dict(),
              py::arg("pool_key") = std::u16string(), py::arg("token_factory") = py::none())
         .def("close", &ConnectionHandle::close,
-             py::arg("transaction_already_rolled_back") = false, "Close the connection")
+             py::arg("rollback_before_disconnect") = false, "Close the connection")
         .def("commit", &ConnectionHandle::commit, "Commit the current transaction")
         .def("rollback", &ConnectionHandle::rollback, "Rollback the current transaction")
         .def("set_autocommit", &ConnectionHandle::setAutocommit)
@@ -6626,6 +6648,8 @@ PYBIND11_MODULE(ddbc_bindings, m) {
 
     // Add a version attribute
     m.attr("__version__") = "1.0.0";
+
+    m.def("_make_row_mapping_base", &RowMappingView::make_base);
 
     // Fast Row construction in C++ — replaces Python list comprehension
     m.def("construct_rows", &RowFactory::construct_rows,

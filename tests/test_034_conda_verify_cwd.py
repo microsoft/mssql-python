@@ -15,6 +15,7 @@ and run under ``--noconftest``.
 """
 
 import importlib.machinery
+import json
 import os
 import subprocess
 import sys
@@ -718,6 +719,48 @@ def _rs_inputs(tmp_path, platform="win_amd64", python_tags=("cp313",)):
     return code, odbc, links, rs
 
 
+@pytest.mark.parametrize(
+    "problem", ["valid", "distribution", "source", "index", "hash", "missing-hash", "override"]
+)
+def test_gather_rs_receipt_uses_producer_version_and_bytes(tmp_path, monkeypatch, capsys, problem):
+    code, odbc, links, rs = _rs_inputs(tmp_path)
+    selected = next(rs.glob("*.whl"))
+    assertion = tmp_path / "mssql-python-rs.version"
+    assertion.write_text("0.2.0\n" if problem == "source" else "0.1.0\n")
+    receipt = {
+        "distribution_version": "0.2.0" if problem == "distribution" else "0.1.0",
+        "index_url": build.inputs.DEV_INDEX if problem == "index" else build.inputs.DEFAULT_INDEX,
+        "version_override": "false" if problem == "override" else False,
+        "wheel_sha256": {
+            selected.name: "a" * 64 if problem == "hash" else build.file_sha256(selected)
+        },
+    }
+    if problem == "missing-hash":
+        receipt["wheel_sha256"] = {}
+    (rs / "transport.json").write_text(json.dumps(receipt))
+    monkeypatch.setenv("MSSQL_PYTHON_RS_VERSION", "9.9.9.dev123")
+    arguments = (
+        str(code),
+        "*.whl",
+        str(odbc),
+        "*.whl",
+        str(links),
+        str(rs),
+        str(assertion),
+        "win-64",
+        "3.13",
+    )
+    if problem == "valid":
+        assert build.gather_wheels(*arguments) == ("1.2.3", "18.6.2", "0.1.0")
+        assert (links / selected.name).read_bytes() == selected.read_bytes()
+    else:
+        with pytest.raises(SystemExit) as error:
+            build.gather_wheels(*arguments)
+        assert error.value.code == 1
+        assert "RS" in capsys.readouterr().err
+        assert not list(links.iterdir())
+
+
 @pytest.mark.parametrize("with_rs", [False, True])
 @pytest.mark.parametrize("recorded", [False, True])
 @pytest.mark.parametrize(
@@ -1215,6 +1258,59 @@ def test_conda_build_and_verify_use_only_explicit_channels(
             "local-channel",
             *verify_channels,
         ]
+
+
+@pytest.mark.parametrize("target_subdir", ["win-64", "win-arm64", "osx-arm64", "linux-aarch64"])
+@pytest.mark.parametrize("python_version", ["3.12", "3.15"])
+def test_conda_build_target_does_not_change_verification_environment(
+    target_subdir, python_version, tmp_path, monkeypatch
+):
+    env = environment.build_env("1.16.0", "18.6.2.2", "wheels", target_subdir, "0.3.0")
+    original = env.copy()
+    calls = []
+
+    def capture(command, **kwargs):
+        calls.append((command, kwargs["env"].copy()))
+
+    monkeypatch.setattr(environment, "run", capture)
+    build.build_packages(
+        "conda",
+        "builder",
+        str(tmp_path / "recipe"),
+        [python_version],
+        str(tmp_path / "bld"),
+        target_subdir,
+        env,
+    )
+    command, build_env = calls.pop()
+    if target_subdir.startswith("win-"):
+        assert "CONDA_SUBDIR" not in build_env
+        assert json.loads(command[command.index("--variants") + 1]) == {
+            "target_platform": target_subdir
+        }
+        assert build_env == {key: value for key, value in original.items() if key != "CONDA_SUBDIR"}
+    else:
+        assert "--variants" not in command
+        assert build_env == original
+    assert env == original
+
+    monkeypatch.setattr(environment, "run_ok", lambda *_args, **_kwargs: 0)
+    monkeypatch.setattr(environment, "run_capture", lambda *_args, **_kwargs: (0, ""))
+    verify._verify_impl(
+        "conda",
+        "local-channel",
+        str(tmp_path),
+        [python_version],
+        "1.16.0",
+        target_subdir,
+        True,
+        env,
+    )
+    creates = [(cmd, call_env) for cmd, call_env in calls if cmd[1:2] == ["create"]]
+    assert len(creates) == (2 if target_subdir == "win-arm64" else 1)
+    assert all(call_env == original for _, call_env in creates)
+    if target_subdir == "win-arm64":
+        assert any("--dry-run" in cmd for cmd, _ in creates)
 
 
 @pytest.mark.parametrize(
