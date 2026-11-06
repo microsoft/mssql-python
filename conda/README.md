@@ -236,9 +236,17 @@ not an ambient or cached login. The publishing task removes `BINSTAR_API_TOKEN`
 only from its process and children so the CLI uploader uses the same reviewed credential.
 User/machine environment settings and saved credentials are not modified.
 
-The official Windows publisher invokes the image's existing interpreter by its
-full path: `%LOCALAPPDATA%\Programs\Python\Python312\python.exe` (the account's
-LocalApplicationData special folder, not a PATH search). It requires CPython 3.12
+The `PublishConda` job pins the Windows 2022 image to
+`onebranch.azurecr.io/windows/ltsc2022/vse2022@sha256:d627cfbe15f21c34cfde8db6131c39adcc6577fc3b9d504cb4b43bfcef5de87a`
+instead of the moving `latest` tag. The publisher uses this image's existing
+Python 3.13 with a Windows x64 dependency lock; the separate validation job remains
+on Python 3.12 with its own lock. Package versions stay pinned, but native wheel
+hashes are specific to each interpreter target. A replacement image digest must
+pass the same false-token rehearsal before adoption. Build and PyPI images are
+unchanged.
+The official Windows publisher invokes this image's existing interpreter by its
+full path: `%LOCALAPPDATA%\Programs\Python\Python313\python.exe` (the account's
+LocalApplicationData special folder, not a PATH search). It requires CPython 3.13
 Windows x64, without unnecessarily pinning the patch version. Before creating any
 environment, it checks executable/prefix/base-prefix coherence and required
 SSL/native, encoding, venv and XML module ownership. A missing or unusable image
@@ -248,13 +256,13 @@ registry repair, runtime download or fallback to another interpreter.
 The bootstrap creates a unique job-owned venv under `Agent.TempDirectory` and
 verifies that it belongs to the checked image interpreter. Only that venv's absolute
 path is passed to the publishing task through a read-only task output. Dependencies
-still use the unchanged hash lock and explicit package-feed-proxy `--index-url`
+use the publisher's target-specific hash lock and explicit package-feed-proxy `--index-url`
 with pip's `--isolated` mode. Both production and rehearsal use this same code.
 
 With `publishToConda=false` (the default), the release pipeline now rehearses the
 publisher instead of only printing an upload plan. Both modes use the Official
 template, Windows 2022 managed container, network isolation, independent producer
-download, Python 3.12 bootstrap, hash-locked dependencies and metadata/native audits.
+download, Python 3.13 bootstrap, hash-locked dependencies and metadata/native audits.
 The publisher checkout explicitly uses `path: s`, matching OneBranch's injected
 checkout so the lock, Python modules and artifacts share `Build.SourcesDirectory`
 on the host and in the container; restricted task commands remain enabled.
