@@ -1856,7 +1856,8 @@ def test_dry_release_shares_the_official_publisher_without_credentials():
     assert "                  publishToConda: ${{ parameters.publishToConda }}" in guarded_job
     assert "path: s" in guarded_job
     assert (
-        "WindowsContainerImage: 'onebranch.azurecr.io/windows/ltsc2022/vse2022:latest'"
+        "WindowsContainerImage: 'onebranch.azurecr.io/windows/ltsc2022/vse2022"
+        "@sha256:d627cfbe15f21c34cfde8db6131c39adcc6577fc3b9d504cb4b43bfcef5de87a'"
         in guarded_job.split("            steps:\n", 1)[0]
     )
     assert pipeline.count("task: UsePythonVersion@0") == 1
@@ -1875,12 +1876,23 @@ def test_dry_release_shares_the_official_publisher_without_credentials():
     assert "\nstages:" not in publisher and "\njobs:" not in publisher
 
 
+def test_publisher_runtime_lock_does_not_change_validation_runtime():
+    pipeline = (_ROOT / "OneBranchPipelines/conda-release-pipeline.yml").read_text()
+    inputs = (_ROOT / "conda/requirements-publish.in").read_text()
+    assert "CPython 3.13, Windows x64" in inputs
+    assert "'--python-version', '3.13'" in inputs
+    assert "versionSpec: '3.12'" in pipeline
+    assert "Inspect image Python locations" not in pipeline
+
+
 def test_publisher_reuses_verified_image_python_without_fallback():
     source = (_ROOT / "OneBranchPipelines/steps/conda-publish-step.yml").read_text(encoding="utf-8")
     bootstrap, publisher = source.split("  - task: PowerShell@2\n")[1:]
     assert "container: windows_build_container\n      commands: restricted" in bootstrap
     assert '\'@ | & $basePython -I - "$baseDirectory"' in bootstrap
-    assert "sys.version_info[:2] == (3, 12)" in bootstrap
+    assert "'Programs\\Python\\Python313'" in bootstrap
+    assert "sys.version_info[:2] == (3, 13)" in bootstrap
+    assert "Publisher lock requires CPython 3.13 Windows x64" in bootstrap
     assert 'sysconfig.get_platform() == "win-amd64"' in bootstrap
     assert "for m in (ssl, venv, encodings, _ssl, ensurepip, et)" in bootstrap
     assert bootstrap.index("PUBLISHER_BASE_STDLIB_OK") < bootstrap.index("-I -m venv")
@@ -1918,7 +1930,7 @@ function Test-Path {
 function mock-python {
     $input | Out-Null
     if ($args[0] -ne '-I' -or $args[1] -ne '-' -or
-        -not $args[2].EndsWith('\\Programs\\Python\\Python312')) { throw 'Wrong image interpreter arguments' }
+        -not $args[2].EndsWith('\\Programs\\Python\\Python313')) { throw 'Wrong image interpreter arguments' }
     Write-Host 'IMAGE_HEALTH_CHECK'
     $global:LASTEXITCODE = [int]($env:TEST_OUTCOME -eq 'invalid-runtime')
 }
