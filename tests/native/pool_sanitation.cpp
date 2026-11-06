@@ -14,7 +14,7 @@
 SQLSMALLINT SQLNumResultCols_wrap(SqlHandlePtr statementHandle, py::handle messages);
 SQLRETURN FetchOne_wrap(SqlHandlePtr statementHandle, py::list& row,
                        const std::string& charEncoding, const std::string& wcharEncoding,
-                       int charCtype, py::handle messages);
+                       int charCtype, py::handle messages, py::handle converters);
 py::list SQLGetAllDiagRecords(SqlHandlePtr handle);
 
 namespace {
@@ -513,7 +513,7 @@ int main() {
                 py::list rows, messages;
                 calls.clear();
                 auto ret = FetchOne_wrap(statement, rows, "utf-16le", "utf-16le",
-                                         SQL_C_WCHAR, messages);
+                                         SQL_C_WCHAR, messages, py::none());
                 require(ret == SQL_NO_DATA && rows.empty(), "NO_DATA result changed");
                 if (empty) {
                     expectCalls({"statement_unbind", "fetch_no_data", "diag_number"});
