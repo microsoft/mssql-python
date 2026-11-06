@@ -77,7 +77,7 @@ class _ConnectionStringBuilder:
         """
         Escape a parameter value if it contains special characters.
 
-        - Values containing ';', '{', '}', '=', or spaces should be braced for safety
+        - Values containing ';', '{', '}', '=', or whitespace are braced for safety
         - '}' inside braced values is escaped as '}}'
         - '{' does not need to be escaped
 
@@ -102,8 +102,8 @@ class _ConnectionStringBuilder:
             return value
 
         # Check if value contains special characters that require bracing
-        # Include spaces and = for safety, even though technically not always required
-        needs_braces = any(ch in value for ch in ";{}= ")
+        # Preserve whitespace that the parser would trim from an unbraced value.
+        needs_braces = any(ch in ";{}=" or ch.isspace() for ch in value)
 
         if needs_braces:
             # Escape closing braces by doubling them (ODBC requirement)
