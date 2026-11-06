@@ -23,7 +23,7 @@ async def test_invalid_async_app_fails_before_loading_backend(suffix):
 
     with patch("mssql_python.async_query.async_connection.load_py_core") as load:
         with pytest.raises((ValueError, ConnectionStringParseError)):
-            await _AsyncConnection.connect("Server=localhost" + suffix)
+            await _AsyncConnection.connect("Server=test-server.example.invalid" + suffix)
         load.assert_not_called()
 
 

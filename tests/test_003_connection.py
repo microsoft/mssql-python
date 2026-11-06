@@ -55,7 +55,9 @@ from conftest import is_azure_sql_connection
 )
 def test_app_length_uses_utf16_units_without_echoing_input(name):
     with pytest.raises(ValueError, match="128 UTF-16.*provided: 129") as error:
-        Connection._construct_connection_string(None, "Server=localhost", APP=name)
+        Connection._construct_connection_string(
+            None, "Server=test-server.example.invalid", APP=name
+        )
     assert name not in str(error.value)
 
 
@@ -94,7 +96,7 @@ def test_app_length_uses_utf16_units_without_echoing_input(name):
 def test_application_name_construction_and_server_value(conn_str, suffix, kwargs, name):
     expected = "MSSQL-Python" if name is None else f"MSSQL-Python|{name}"
     built, params = Connection._construct_connection_string(
-        None, "Server=localhost;Database=test" + suffix, **kwargs
+        None, "Server=test-server.example.invalid;Database=test" + suffix, **kwargs
     )
     parsed = _ConnectionStringParser()._parse(built)
     assert params["APP"] == parsed["app"] == expected
@@ -140,7 +142,9 @@ def test_invalid_app_fails_before_authentication_or_native_connect(suffix, kwarg
     credential = Mock()
     with patch("mssql_python.connection.ddbc_bindings.Connection") as native:
         with pytest.raises(error):
-            connect("Server=localhost" + suffix, token_provider=credential, **kwargs)
+            connect(
+                "Server=test-server.example.invalid" + suffix, token_provider=credential, **kwargs
+            )
         credential.get_token.assert_not_called()
         native.assert_not_called()
 

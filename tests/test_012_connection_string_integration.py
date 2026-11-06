@@ -91,7 +91,7 @@ class TestConnectionStringIntegration:
         """APP is accepted; Driver remains reserved."""
         parser = _ConnectionStringParser(validate_keywords=True)
 
-        assert parser._parse("APP=UserApp;Server=localhost")["app"] == "UserApp"
+        assert parser._parse("APP=UserApp;Server=test-server.example.invalid")["app"] == "UserApp"
 
         # Test with Driver
         with pytest.raises(ConnectionStringParseError) as exc_info:
@@ -316,7 +316,7 @@ class TestConnectAPIIntegration:
     @patch("mssql_python.connection.ddbc_bindings.Connection")
     def test_connect_app_parameter_in_connection_string(self, mock_ddbc_conn):
         mock_ddbc_conn.return_value = MagicMock()
-        with connect("Server=localhost;APP=UserApp;Database=test") as conn:
+        with connect("Server=test-server.example.invalid;APP=UserApp;Database=test") as conn:
             assert _ConnectionStringParser()._parse(conn.connection_str)["app"] == (
                 "MSSQL-Python|UserApp"
             )
@@ -324,7 +324,7 @@ class TestConnectAPIIntegration:
     @patch("mssql_python.connection.ddbc_bindings.Connection")
     def test_connect_app_parameter_in_kwargs(self, mock_ddbc_conn):
         mock_ddbc_conn.return_value = MagicMock()
-        with connect("Server=localhost;Database=test", APP="UserApp") as conn:
+        with connect("Server=test-server.example.invalid;Database=test", APP="UserApp") as conn:
             assert _ConnectionStringParser()._parse(conn.connection_str)["app"] == (
                 "MSSQL-Python|UserApp"
             )
