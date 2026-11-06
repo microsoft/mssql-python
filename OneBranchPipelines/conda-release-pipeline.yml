@@ -169,7 +169,7 @@ extends:
               type: windows
             variables:
               ob_outputDirectory: '$(Build.ArtifactStagingDirectory)'
-              WindowsContainerImage: 'onebranch.azurecr.io/windows/ltsc2022/vse2022:latest'
+              WindowsContainerImage: 'onebranch.azurecr.io/windows/ltsc2022/vse2022@sha256:d627cfbe15f21c34cfde8db6131c39adcc6577fc3b9d504cb4b43bfcef5de87a'
               mssqlPythonVersion: $[ dependencies.ValidateConda.outputs['Provenance.mssqlPythonVersion'] ]
               releaseVersions: $[ dependencies.ValidateConda.outputs['Provenance.releaseVersions'] ]
             steps:
