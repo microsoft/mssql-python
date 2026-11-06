@@ -60,6 +60,7 @@ using py::literals::operator""_a;
 // Include logger bridge for LOG macros
 #include "logger_bridge.hpp"
 #include "fetch_text.hpp"
+#include "output_converter.hpp"
 
 #if defined(__APPLE__) || defined(__linux__)
 #include <dlfcn.h>
@@ -469,6 +470,7 @@ struct ColumnInfoExt {
     bool useWideChar;          // True when charCtype == SQL_C_WCHAR (VARCHAR fetched as UTF-16)
     std::string charEncoding;  // Effective decoding encoding for SQL_C_CHAR data
     PyObject* messages = nullptr;  // Borrowed from the enclosing native fetch call.
+    bool converterText = false;
 };
 
 // Forward declare FetchLobColumnData (defined in ddbc_bindings.cpp) - MUST be
@@ -600,6 +602,15 @@ inline void ProcessChar(PyObject* row, ColumnBuffers& buffers, const void* colIn
                         SQLUSMALLINT col, SQLULEN rowIdx, SQLHSTMT hStmt) {
     const ColumnInfoExt* colInfo = static_cast<const ColumnInfoExt*>(colInfoPtr);
     SQLLEN dataLen = buffers.indicators[col - 1][rowIdx];
+    if (colInfo->converterText && colInfo->useWideChar && !colInfo->isLob && dataLen >= 0 &&
+        static_cast<uint64_t>(dataLen / sizeof(SQLWCHAR)) < colInfo->fetchBufferSize) {
+        const auto* data = &buffers.wcharBuffers[col - 1][rowIdx * colInfo->fetchBufferSize];
+        py::object text = OutputConverters::text(reinterpret_cast<const char*>(data), dataLen);
+        if (text) {
+            PyList_SET_ITEM(row, col - 1, text.release().ptr());
+            return;
+        }
+    }
 
     // Handle empty strings
     if (dataLen == 0) {
@@ -713,6 +724,15 @@ inline void ProcessWChar(PyObject* row, ColumnBuffers& buffers, const void* colI
                          SQLUSMALLINT col, SQLULEN rowIdx, SQLHSTMT hStmt) {
     const ColumnInfoExt* colInfo = static_cast<const ColumnInfoExt*>(colInfoPtr);
     SQLLEN dataLen = buffers.indicators[col - 1][rowIdx];
+    if (colInfo->converterText && !colInfo->isLob && dataLen >= 0 &&
+        static_cast<uint64_t>(dataLen / sizeof(SQLWCHAR)) < colInfo->fetchBufferSize) {
+        const auto* data = &buffers.wcharBuffers[col - 1][rowIdx * colInfo->fetchBufferSize];
+        py::object text = OutputConverters::text(reinterpret_cast<const char*>(data), dataLen);
+        if (text) {
+            PyList_SET_ITEM(row, col - 1, text.release().ptr());
+            return;
+        }
+    }
 
     // Handle empty strings
     if (dataLen == 0) {
