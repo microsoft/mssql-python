@@ -358,6 +358,32 @@ static SQLRETURN stream_dae_chunks(const void* data, size_t total_bytes, PutData
     return SQL_SUCCESS;
 }
 
+// Clears every parameter binding on the statement (SQL_RESET_PARAMS) and the
+// handle's record of them. Drivers drop their prepared handle after this, so
+// the next execution of a prepared statement re-prepares it.
+static SQLRETURN ResetParamBindings(SqlHandle& handle, SQLHANDLE hStmt) {
+    handle.boundParamSignature.clear();
+    SQLRETURN rc = SQLFreeStmt_ptr(hStmt, SQL_RESET_PARAMS);
+    if (SQL_SUCCEEDED(rc)) {
+        handle.paramsBound = false;
+        handle.boundParamBuffers.clear();
+    }
+    return rc;
+}
+
+// Sets the forward-only / read-only cursor the driver relies on. These are
+// statement attributes that persist for the handle's lifetime, and the DM
+// rejects them (HY011) once the statement is prepared, so set them once.
+static void ApplyForwardOnlyCursorAttrs(SqlHandle& handle, SQLHANDLE hStmt) {
+    if (handle.cursorAttrsApplied || !SQLSetStmtAttr_ptr)
+        return;
+    SQLRETURN typeRc =
+        SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_CURSOR_TYPE, (SQLPOINTER)SQL_CURSOR_FORWARD_ONLY, 0);
+    SQLRETURN concurrencyRc =
+        SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_CONCURRENCY, (SQLPOINTER)SQL_CONCUR_READ_ONLY, 0);
+    handle.cursorAttrsApplied = SQL_SUCCEEDED(typeRc) && SQL_SUCCEEDED(concurrencyRc);
+}
+
 // GH-610: Resolve SQL type for a NULL parameter using per-handle cache.
 // On cache miss, calls SQLDescribeParam and stores the result.
 static DescribedParamInfo ResolveNullParamType(SqlHandle& handle, SQLHANDLE hStmt, int paramIndex) {
@@ -429,11 +455,11 @@ static DescribedParamInfo ResolveNullParamType(SqlHandle& handle, SQLHANDLE hStm
 // When `params` is provided (execute path), an additional py::none check is
 // performed; for executemany (array path), SQL_C_DEFAULT already guarantees
 // all values in that column are NULL, so no Python-level check is needed.
-static void PreResolveUnknownNullTypes(SqlHandle& handle, SQLHANDLE hStmt,
-                                       std::vector<ParamInfo>& paramInfos,
-                                       const py::list* params = nullptr) {
+static SQLRETURN PreResolveUnknownNullTypes(SqlHandle& handle, SQLHANDLE hStmt,
+                                            std::vector<ParamInfo>& paramInfos,
+                                            const py::list* params = nullptr) {
     if (paramInfos.empty())
-        return;
+        return SQL_SUCCESS;
 
     for (size_t paramIndex = 0; paramIndex < paramInfos.size(); ++paramIndex) {
         ParamInfo& paramInfo = paramInfos[paramIndex];
@@ -446,14 +472,27 @@ static void PreResolveUnknownNullTypes(SqlHandle& handle, SQLHANDLE hStmt,
             continue;
         }
 
+        // A cache miss describes the parameter, which must see unbound records.
+        // execute() may have left its previous bindings on the statement.
+        if (handle.paramsBound &&
+            handle.describeCache.find(static_cast<int>(paramIndex)) == handle.describeCache.end()) {
+            SQLRETURN resetRc = ResetParamBindings(handle, hStmt);
+            if (!SQL_SUCCEEDED(resetRc)) {
+                LOG("PreResolveUnknownNullTypes: SQL_RESET_PARAMS failed, rc=%d", resetRc);
+                return resetRc;
+            }
+        }
+
         auto resolved = ResolveNullParamType(handle, hStmt, static_cast<int>(paramIndex));
         paramInfo.paramSQLType = resolved.sqlType;
         paramInfo.columnSize = resolved.columnSize;
         paramInfo.decimalDigits = resolved.decimalDigits;
     }
+    return SQL_SUCCESS;
 }
 
-static SQLRETURN PreResolveUdtTypes(SQLHANDLE hStmt, std::vector<ParamInfo>& paramInfos) {
+static SQLRETURN PreResolveUdtTypes(SqlHandle& handle, SQLHANDLE hStmt,
+                                    std::vector<ParamInfo>& paramInfos) {
     bool hasUdt = false;
     for (const auto& info : paramInfos) {
         if (info.paramSQLType == SQL_SS_UDT) {
@@ -465,7 +504,7 @@ static SQLRETURN PreResolveUdtTypes(SQLHANDLE hStmt, std::vector<ParamInfo>& par
 
     // UDT identity lives in the IPD, not in the scalar describe cache. Describe
     // unbound records on each execution, including reused statements and DAE rows.
-    SQLRETURN rc = SQLFreeStmt_ptr(hStmt, SQL_RESET_PARAMS);
+    SQLRETURN rc = ResetParamBindings(handle, hStmt);
     if (!SQL_SUCCEEDED(rc)) {
         LOG("PreResolveUdtTypes: SQL_RESET_PARAMS failed, rc=%d", rc);
         return rc;
@@ -493,20 +532,47 @@ static SQLRETURN PreResolveUdtTypes(SQLHANDLE hStmt, std::vector<ParamInfo>& par
 }
 
 // Given a list of parameters and their ParamInfo, calls SQLBindParameter on
-// each of them with appropriate arguments
+// each of them with appropriate arguments.
+//
+// reuseMatchingBindings (execute() only): when the statement still holds the
+// previous execute()'s bindings and every parameter definition is unchanged,
+// rebind over those records instead of issuing SQL_RESET_PARAMS first. An
+// unchanged IPD lets msodbcsql and mssql-odbc keep their prepared handle and
+// send sp_execute; any difference resets first, as before.
 SQLRETURN BindParameters(SqlHandle& handle, SQLHANDLE hStmt, const py::list& params,
                          std::vector<ParamInfo>& paramInfos,
                          std::vector<std::shared_ptr<void>>& paramBuffers,
-                         const std::string& charEncoding = "utf-8") {
+                         const std::string& charEncoding = "utf-8",
+                         bool reuseMatchingBindings = false) {
     PERF_TIMER("BindParameters");
     LOG("BindParameters: Starting parameter binding for statement handle %p "
         "with %zu parameters",
         (void*)hStmt, params.size());
 
-    SQLRETURN describeRc = PreResolveUdtTypes(hStmt, paramInfos);
+    SQLRETURN describeRc = PreResolveUdtTypes(handle, hStmt, paramInfos);
     if (!SQL_SUCCEEDED(describeRc)) return describeRc;
     // GH-627: resolve unknown NULL param SQL types before binding any param.
-    PreResolveUnknownNullTypes(handle, hStmt, paramInfos, &params);
+    describeRc = PreResolveUnknownNullTypes(handle, hStmt, paramInfos, &params);
+    if (!SQL_SUCCEEDED(describeRc))
+        return describeRc;
+
+    std::vector<ParamBindSignature> signature;
+    if (reuseMatchingBindings) {
+        signature.reserve(paramInfos.size());
+        for (const ParamInfo& info : paramInfos) {
+            signature.push_back({info.inputOutputType, info.paramCType, info.paramSQLType,
+                                 info.columnSize, info.decimalDigits, info.isDAE});
+        }
+        if (handle.paramsBound && (signature.empty() || signature != handle.boundParamSignature)) {
+            SQLRETURN resetRc = ResetParamBindings(handle, hStmt);
+            if (!SQL_SUCCEEDED(resetRc))
+                return resetRc;
+        }
+    }
+    // Until this binding completes, the statement's records are not reusable.
+    handle.boundParamSignature.clear();
+    handle.paramsBound = true;
+
     for (int paramIndex = 0; paramIndex < params.size(); paramIndex++) {
         const auto& param = params[paramIndex];
         ParamInfo& paramInfo = paramInfos[paramIndex];
@@ -982,6 +1048,9 @@ SQLRETURN BindParameters(SqlHandle& handle, SQLHANDLE hStmt, const py::list& par
     LOG("BindParameters: Completed parameter binding for statement handle %p - "
         "%zu parameters bound successfully",
         (void*)hStmt, params.size());
+    if (reuseMatchingBindings) {
+        handle.boundParamSignature = std::move(signature);
+    }
     return SQL_SUCCESS;
 }
 
@@ -1767,9 +1836,8 @@ SQLRETURN SQLResetStmt_wrap(SqlHandlePtr statementHandle) {
     {
         py::gil_scoped_release release;
         rc = SQLFreeStmt_ptr(hStmt, SQL_CLOSE);
-        if (SQL_SUCCEEDED(rc)) {
-            rc = SQLFreeStmt_ptr(hStmt, SQL_RESET_PARAMS);
-        }
+        // Parameter bindings are intentionally kept: SQL_RESET_PARAMS makes
+        // drivers re-prepare. The next execute decides whether to reset them.
         if (SQL_SUCCEEDED(rc) && SQLSetStmtAttr_ptr) {
             rc = SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_PARAMSET_SIZE, (SQLPOINTER)1, 0);
         }
@@ -2073,11 +2141,14 @@ SQLRETURN SQLExecDirect_wrap(SqlHandlePtr StatementHandle, const std::u16string&
     }
 
     // Configure forward-only cursor
-    if (SQLSetStmtAttr_ptr && StatementHandle && StatementHandle->get()) {
-        SQLSetStmtAttr_ptr(StatementHandle->get(), SQL_ATTR_CURSOR_TYPE,
-                           (SQLPOINTER)SQL_CURSOR_FORWARD_ONLY, 0);
-        SQLSetStmtAttr_ptr(StatementHandle->get(), SQL_ATTR_CONCURRENCY,
-                           (SQLPOINTER)SQL_CONCUR_READ_ONLY, 0);
+    if (StatementHandle && StatementHandle->get()) {
+        ApplyForwardOnlyCursorAttrs(*StatementHandle, StatementHandle->get());
+        // A direct execution has no parameters; drop any an earlier execute() left bound.
+        if (StatementHandle->paramsBound) {
+            SQLRETURN resetRc = ResetParamBindings(*StatementHandle, StatementHandle->get());
+            if (!SQL_SUCCEEDED(resetRc))
+                return resetRc;
+        }
     }
 
     SQLWCHAR* queryPtr = reinterpretU16stringAsSqlWChar(Query);
@@ -2150,14 +2221,6 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
     statementHandle->resultMetadata.clear();
     SQLHANDLE hStmt = statementHandle->get();
 
-    // Configure forward-only / read-only cursor (matches slow path semantics).
-    if (SQLSetStmtAttr_ptr) {
-        SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_CURSOR_TYPE,
-                           (SQLPOINTER)SQL_CURSOR_FORWARD_ONLY, 0);
-        SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_CONCURRENCY,
-                           (SQLPOINTER)SQL_CONCUR_READ_ONLY, 0);
-    }
-
     // This codec only applies to parameters already typed as real SQL_C_CHAR (1).
     // Public text parameter detection uses SQL_C_WCHAR (-8), including the
     // Python layer's legacy SQL_C_CHAR alias. setencoding() does not change
@@ -2189,6 +2252,13 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
     // - use_prepare=false + not prepared: error (cannot execute unprepared)
     if (!already_prepared) {
         if (use_prepare) {
+            // Configure forward-only / read-only cursor (matches slow path
+            // semantics). The DM rejects these once the statement is prepared.
+            ApplyForwardOnlyCursorAttrs(*statementHandle, hStmt);
+            // New SQL: earlier bindings belong to another statement text.
+            rc = ResetParamBindings(*statementHandle, hStmt);
+            if (!SQL_SUCCEEDED(rc))
+                return rc;
             SQLWCHAR* queryPtr = reinterpretU16stringAsSqlWChar(query);
             {
                 py::gil_scoped_release release;
@@ -2203,8 +2273,12 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
     }
 
     std::vector<std::shared_ptr<void>> paramBuffers;
-    rc = BindParameters(*statementHandle, hStmt, params, paramInfos, paramBuffers, charEncoding);
+    rc = BindParameters(*statementHandle, hStmt, params, paramInfos, paramBuffers, charEncoding,
+                        /*reuseMatchingBindings=*/true);
     if (!SQL_SUCCEEDED(rc)) return rc;
+    // The APD now points at paramBuffers. Keep them on the handle; the previous
+    // execution's buffers are no longer referenced and are freed on return.
+    statementHandle->boundParamBuffers.swap(paramBuffers);
 
     {
         py::gil_scoped_release release;
@@ -2297,11 +2371,11 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
 
     if (!SQL_SUCCEEDED(rc) && rc != SQL_NO_DATA) return rc;
 
-    // Unbind parameter buffers before they go out of scope.
-    // Not called on error paths — diagnostics must remain readable.
-    SQLRETURN exec_rc = rc;
-    SQLFreeStmt_ptr(hStmt, SQL_RESET_PARAMS);
-    return exec_rc;
+    // Parameters stay bound (buffers owned by statementHandle) so a re-execution
+    // with identical definitions reuses the driver's prepared handle. Data-at-
+    // execution records hold &paramInfos[i] only as an opaque SQLParamData token,
+    // which the driver never dereferences outside this call.
+    return rc;
 }
 
 SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list& columnwise_params,
@@ -2316,10 +2390,15 @@ SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list&
     std::vector<std::shared_ptr<void>> tempBuffers;
 
     try {
-        SQLRETURN describeRc = PreResolveUdtTypes(hStmt, paramInfos);
+        SQLRETURN describeRc = PreResolveUdtTypes(handle, hStmt, paramInfos);
         if (!SQL_SUCCEEDED(describeRc)) return describeRc;
         // GH-627: resolve unknown NULL array param SQL types before binding any param.
-        PreResolveUnknownNullTypes(handle, hStmt, paramInfos);
+        describeRc = PreResolveUnknownNullTypes(handle, hStmt, paramInfos);
+        if (!SQL_SUCCEEDED(describeRc))
+            return describeRc;
+        // Array bindings are never reused by execute().
+        handle.boundParamSignature.clear();
+        handle.paramsBound = true;
         for (int paramIndex = 0; paramIndex < columnwise_params.size(); ++paramIndex) {
             const py::list& columnValues = columnwise_params[paramIndex].cast<py::list>();
             ParamInfo& info = paramInfos[paramIndex];
@@ -2948,6 +3027,8 @@ SQLRETURN SQLExecuteMany_wrap(const SqlHandlePtr statementHandle, const std::u16
                               const py::dict& encodingSettings) {
     PERF_TIMER("SQLExecuteMany_wrap");
     statementHandle->resultMetadata.clear();
+    // executemany() binds parameter arrays; execute() must not reuse them.
+    statementHandle->boundParamSignature.clear();
     LOG("SQLExecuteMany: Starting batch execution - param_count=%zu, "
         "param_set_size=%zu",
         columnwise_params.size(), paramSetSize);
@@ -6556,7 +6637,7 @@ PYBIND11_MODULE(ddbc_bindings, m) {
           py::arg("messages") = py::none());
     m.def("DDBCSQLFreeHandle", &SQLFreeHandle_wrap, "Free a handle");
     m.def("DDBCSQLResetStmt", &SQLResetStmt_wrap,
-          "Close cursor and unbind params without freeing HSTMT");
+          "Close cursor without freeing HSTMT or its parameter bindings");
     m.def("DDBCSQLCheckError", &SQLCheckError_Wrap, "Check for driver errors");
     m.def("DDBCSQLGetAllDiagRecords", &SQLGetAllDiagRecords,
           "Get all diagnostic records for a handle", py::arg("handle"));
@@ -6573,6 +6654,12 @@ PYBIND11_MODULE(ddbc_bindings, m) {
         "DDBCSQLSetStmtAttr",
         [](SqlHandlePtr stmt, SQLINTEGER attr, py::object value) {
             stmt->resultMetadata.clear();
+            if (attr != SQL_ATTR_QUERY_TIMEOUT) {
+                // An attribute set outside the execute pipeline may change cursor or
+                // parameter semantics; do not assume earlier state still holds.
+                stmt->cursorAttrsApplied = false;
+                stmt->boundParamSignature.clear();
+            }
             SQLPOINTER ptr_value;
             if (py::isinstance<py::int_>(value)) {
                 // For integer attributes like SQL_ATTR_QUERY_TIMEOUT
