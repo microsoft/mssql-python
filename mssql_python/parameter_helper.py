@@ -12,12 +12,15 @@ quoted identifiers, and SQL comments.
 Reference: https://www.python.org/dev/peps/pep-0249/#paramstyle
 """
 
+from functools import lru_cache
 from typing import Dict, List, Tuple, Any, Union
 from mssql_python.logging import logger
 
-# Distinctive marker for escaped percent signs during pyformat conversion
-# Uses a unique prefix/suffix that's extremely unlikely to appear in real SQL
-_ESCAPED_PERCENT_MARKER = "__MSSQL_PYFORMAT_ESCAPED_PERCENT_PLACEHOLDER__"
+# Number of pyformat -> qmark rewrites kept, keyed by SQL text. The cache matters
+# most for large statements re-executed in batches (an ORM's multi-row INSERT is
+# ~30 KB of SQL with ~2,000 parameters, about 125 KB per entry), so it is kept
+# small: worst case a few MB. Small statements are cheap to rescan on a miss.
+_PYFORMAT_CACHE_SIZE = 32
 
 
 def _skip_quoted_context(sql: str, i: int, length: int) -> int:
@@ -179,7 +182,37 @@ def parse_pyformat_params(sql: str) -> List[str]:
         len(sql),
         sql[:100] if len(sql) > 100 else sql,
     )
-    params = []
+    spans = _scan_pyformat(sql)
+    params = [name for name, _, _ in spans]
+
+    if logger.is_debug_enabled:
+        for name, start, _ in spans:
+            logger.debug(
+                "parse_pyformat_params: Found parameter '%s' at position %d",
+                name,
+                start,
+            )
+        logger.debug(
+            "parse_pyformat_params: Completed - found %d parameters: %s",
+            len(params),
+            params,
+        )
+    return params
+
+
+def _scan_pyformat(sql: str) -> List[Tuple[str, int, int]]:
+    """
+    Locate executable %(name)s placeholders in a SQL string.
+
+    Uses the same context-aware scanning as parse_pyformat_params(): patterns inside
+    string literals, quoted identifiers, bracketed identifiers, and comments are skipped,
+    and "%%" (an escaped literal percent) never starts a placeholder.
+
+    Returns:
+        List of (name, start, end) per placeholder in order of appearance, where
+        sql[start:end] is the full "%(name)s" text.
+    """
+    spans = []
     i = 0
     length = len(sql)
 
@@ -188,6 +221,11 @@ def parse_pyformat_params(sql: str) -> List[str]:
         skipped = _skip_quoted_context(sql, i, length)
         if skipped >= 0:
             i = skipped
+            continue
+
+        # "%%" is an escaped literal percent, never the start of a placeholder
+        if sql[i] == "%" and i + 1 < length and sql[i + 1] == "%":
+            i += 2
             continue
 
         # Look for %(
@@ -200,25 +238,42 @@ def parse_pyformat_params(sql: str) -> List[str]:
             # Check if we found ) and it's followed by 's'
             if j < length and sql[j] == ")":
                 if j + 1 < length and sql[j + 1] == "s":
-                    # Extract parameter name
-                    param_name = sql[i + 2 : j]
-                    params.append(param_name)
-                    logger.debug(
-                        "parse_pyformat_params: Found parameter '%s' at position %d",
-                        param_name,
-                        i,
-                    )
+                    spans.append((sql[i + 2 : j], i, j + 2))
                     i = j + 2
                     continue
 
         i += 1
 
-    logger.debug(
-        "parse_pyformat_params: Completed - found %d parameters: %s",
-        len(params),
-        params,
-    )
-    return params
+    return spans
+
+
+@lru_cache(maxsize=_PYFORMAT_CACHE_SIZE)
+def _compile_pyformat(sql: str) -> Tuple[str, Tuple[str, ...]]:
+    """
+    Rewrite %(name)s placeholders in executable SQL to ? in a single pass.
+
+    Placeholders inside string literals, quoted/bracketed identifiers, and comments
+    are left untouched, and each %% (escaped percent) becomes a literal %, wherever
+    it appears. The result depends only on the SQL text, so it is cached: re-executing
+    the same statement (for example every batch of a multi-row INSERT) skips the scan.
+
+    Returns:
+        (qmark_sql, parameter names in placeholder order, with duplicates if reused)
+    """
+    spans = _scan_pyformat(sql)
+
+    # The scanner never starts a placeholder inside a %% pair, so un-escaping each
+    # segment between placeholders pairs the % signs exactly as a whole-string pass would
+    parts = []
+    last = 0
+    for _, start, end in spans:
+        parts.append(sql[last:start].replace("%%", "%"))
+        parts.append("?")
+        last = end
+    parts.append(sql[last:].replace("%%", "%"))
+    rewritten_sql = "".join(parts)
+
+    return rewritten_sql, tuple(name for name, _, _ in spans)
 
 
 def convert_pyformat_to_qmark(sql: str, param_dict: Dict[str, Any]) -> Tuple[str, Tuple[Any, ...]]:
@@ -251,53 +306,50 @@ def convert_pyformat_to_qmark(sql: str, param_dict: Dict[str, Any]) -> Tuple[str
         ... )
         ("WHERE name = ? OR email = ?", ("alice", "alice"))
     """
-    logger.debug(
-        "convert_pyformat_to_qmark: Starting conversion - sql_length=%d, param_count=%d",
-        len(sql),
-        len(param_dict),
-    )
-    logger.debug(
-        "convert_pyformat_to_qmark: SQL preview: %s",
-        sql[:200] if len(sql) > 200 else sql,
-    )
-    logger.debug(
-        "convert_pyformat_to_qmark: Parameters provided: %s",
-        list(param_dict.keys()),
-    )
-
-    # Support %% escaping - replace %% with a placeholder before parsing
-    # This allows users to have literal % in their SQL
-    escaped_sql = sql.replace("%%", _ESCAPED_PERCENT_MARKER)
-
-    if "%%" in sql:
+    if logger.is_debug_enabled:
         logger.debug(
-            "convert_pyformat_to_qmark: Detected %d escaped percent sequences (%%%%)",
-            sql.count("%%"),
+            "convert_pyformat_to_qmark: Starting conversion - sql_length=%d, param_count=%d",
+            len(sql),
+            len(param_dict),
         )
+        logger.debug(
+            "convert_pyformat_to_qmark: SQL preview: %s",
+            sql[:200] if len(sql) > 200 else sql,
+        )
+        logger.debug(
+            "convert_pyformat_to_qmark: Parameters provided: %s",
+            list(param_dict.keys()),
+        )
+        # Support %% escaping - %% is a literal % in the SQL, not a placeholder
+        if "%%" in sql:
+            logger.debug(
+                "convert_pyformat_to_qmark: Detected %d escaped percent sequences (%%%%)",
+                sql.count("%%"),
+            )
 
-    # Extract parameter names in order
-    param_names = parse_pyformat_params(escaped_sql)
+    # Rewrite placeholders to ? and extract parameter names in order (cached per SQL text)
+    rewritten_sql, param_names = _compile_pyformat(sql)
 
     if not param_names:
         logger.debug(
             "convert_pyformat_to_qmark: No pyformat parameters found - returning SQL as-is"
         )
-        # No parameters found - restore escaped %% and return as-is
-        restored_sql = escaped_sql.replace(_ESCAPED_PERCENT_MARKER, "%")
-        return restored_sql, ()
+        return rewritten_sql, ()
 
-    logger.debug(
-        "convert_pyformat_to_qmark: Extracted %d parameter references (with duplicates): %s",
-        len(param_names),
-        param_names,
-    )
-    logger.debug(
-        "convert_pyformat_to_qmark: Unique parameters needed: %s",
-        sorted(set(param_names)),
-    )
+    if logger.is_debug_enabled:
+        logger.debug(
+            "convert_pyformat_to_qmark: Extracted %d parameter references (with duplicates): %s",
+            len(param_names),
+            list(param_names),
+        )
+        logger.debug(
+            "convert_pyformat_to_qmark: Unique parameters needed: %s",
+            sorted(set(param_names)),
+        )
 
-    # Validate all required parameters are present
-    missing = set(param_names) - set(param_dict.keys())
+    # Validate all required parameters are present (membership, not lookup, so a
+    # dict subclass with __missing__ such as defaultdict can't fill them in)
+    missing = {name for name in param_names if name not in param_dict}
     if missing:
         # Provide helpful error message
         missing_list = sorted(missing)
@@ -320,54 +372,25 @@ def convert_pyformat_to_qmark(sql: str, param_dict: Dict[str, Any]) -> Tuple[str
     # Build positional parameter tuple (with duplicates if param reused)
     positional_params = tuple(param_dict[name] for name in param_names)
 
-    logger.debug(
-        "convert_pyformat_to_qmark: Built positional params tuple - length=%d",
-        len(positional_params),
-    )
-
-    # Replace %(name)s with ? using simple string replacement
-    # We replace each unique parameter name to avoid issues with overlapping names
-    rewritten_sql = escaped_sql
-    unique_params = set(param_names)
-    logger.debug(
-        "convert_pyformat_to_qmark: Replacing %d unique parameter placeholders with ?",
-        len(unique_params),
-    )
-
-    for param_name in unique_params:  # Use set to avoid duplicate replacements
-        pattern = f"%({param_name})s"
-        occurrences = rewritten_sql.count(pattern)
-        rewritten_sql = rewritten_sql.replace(pattern, "?")
+    if logger.is_debug_enabled:
         logger.debug(
-            "convert_pyformat_to_qmark: Replaced parameter '%s' (%d occurrences)",
-            param_name,
-            occurrences,
+            "convert_pyformat_to_qmark: Built positional params tuple - length=%d",
+            len(positional_params),
         )
-
-    # Restore escaped %% back to %
-    if _ESCAPED_PERCENT_MARKER in rewritten_sql:
-        marker_count = rewritten_sql.count(_ESCAPED_PERCENT_MARKER)
-        rewritten_sql = rewritten_sql.replace(_ESCAPED_PERCENT_MARKER, "%")
         logger.debug(
-            "convert_pyformat_to_qmark: Restored %d escaped percent markers to %%",
-            marker_count,
+            "convert_pyformat_to_qmark: Conversion complete - result_sql_length=%d, param_count=%d",
+            len(rewritten_sql),
+            len(positional_params),
         )
-
-    logger.debug(
-        "convert_pyformat_to_qmark: Conversion complete - result_sql_length=%d, param_count=%d",
-        len(rewritten_sql),
-        len(positional_params),
-    )
-    logger.debug(
-        "convert_pyformat_to_qmark: Result SQL preview: %s",
-        rewritten_sql[:200] if len(rewritten_sql) > 200 else rewritten_sql,
-    )
-
-    logger.debug(
-        "Converted pyformat to qmark: params=%s, positional=%s",
-        list(param_dict.keys()),
-        positional_params,
-    )
+        logger.debug(
+            "convert_pyformat_to_qmark: Result SQL preview: %s",
+            rewritten_sql[:200] if len(rewritten_sql) > 200 else rewritten_sql,
+        )
+        logger.debug(
+            "Converted pyformat to qmark: params=%s, positional=%s",
+            list(param_dict.keys()),
+            positional_params,
+        )
 
     return rewritten_sql, positional_params
 
@@ -426,8 +449,8 @@ def detect_and_convert_parameters(
             len(parameters),
         )
 
-        # Check if SQL has pyformat placeholders
-        param_names = parse_pyformat_params(sql)
+        # Check if SQL has pyformat placeholders (every placeholder contains "%(")
+        param_names = parse_pyformat_params(sql) if "%(" in sql else []
         if param_names:
             logger.error(
                 "detect_and_convert_parameters: Parameter style mismatch - SQL has pyformat placeholders %s but received %s",
