@@ -5,6 +5,7 @@
 
 #include <atomic>
 #include <cstddef>
+#include <cstring>
 #include <limits>
 #include <new>
 
@@ -35,7 +36,11 @@ inline int dict_changed(PyDict_WatchEvent event, PyObject* dict, PyObject* key,
     if (event != PyDict_EVENT_MODIFIED || dict != internalDict ||
         (key != internalKey &&
          (!key || !internalKey || !PyUnicode_CheckExact(key) ||
-          PyUnicode_Compare(key, internalKey) != 0)) ||
+          !PyUnicode_CheckExact(internalKey) || !PyUnicode_IS_ASCII(key) ||
+          !PyUnicode_IS_ASCII(internalKey) ||
+          PyUnicode_GET_LENGTH(key) != PyUnicode_GET_LENGTH(internalKey) ||
+          std::memcmp(PyUnicode_1BYTE_DATA(key), PyUnicode_1BYTE_DATA(internalKey),
+                      static_cast<size_t>(PyUnicode_GET_LENGTH(key))) != 0)) ||
         value != internalValue)
         mutationEpoch.fetch_add(1, std::memory_order_relaxed);
     return 0;

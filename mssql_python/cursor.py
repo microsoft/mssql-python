@@ -2870,6 +2870,8 @@ class Cursor:
                     self.rowcount = 0
                 return None
 
+            # Keep completion inline: calling the helpers below adds Python calls
+            # per fallback row. Keep this in sync with _complete/_wrap_fetchone.
             if self._skip_increment_for_next_fetch:
                 self._skip_increment_for_next_fetch = False
                 self._next_row_index += 1

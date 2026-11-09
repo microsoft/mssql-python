@@ -244,9 +244,7 @@ class Test_ConnectionStringAllowList:
                 handler.close()
                 driver_logger.removeHandler(handler)
             # Disable logging
-            driver_logger.setLevel(logging.CRITICAL)
-            logger._cached_level = logging.CRITICAL
-            logger._is_debug_enabled = False
+            logger._setLevel(logging.CRITICAL)
             # Clean up temp file
             if os.path.exists(log_file):
                 os.remove(log_file)

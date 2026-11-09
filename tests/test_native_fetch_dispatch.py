@@ -398,6 +398,26 @@ def test_warm_dictionary_replacement_and_direct_counter_mutation(connection, met
             connection.remove_output_converter(mssql_python.SQL_INTEGER)
 
 
+def test_equal_counter_keys_preserve_warm_plan(connection):
+    if ddbc_bindings._fetch_observer is None:
+        pytest.skip("Requires supported CPython watchers")
+    keys = {name: (" " + name)[1:] for name in ("_next_row_index", "_rownumber", "rowcount")}
+    assert all(name is not key for name, key in keys.items())
+    with _native_fetch_counters() as profiling, connection.cursor() as cursor:
+        warm(cursor, "fetchone")
+        cursor.__dict__ = {keys.get(name, name): value for name, value in cursor.__dict__.items()}
+        assert cursor.fetchone()[0] == 3
+        with _fetchone_window(profiling) as repeated:
+            assert cursor.fetchone()[0] == 4
+        _assert_fetchone_counts(repeated, prepare=0, native=1, fallback=0, sql=1)
+        cursor.__dict__["\u2603"] = None
+        with _fetchone_window(profiling) as external_write:
+            assert cursor.fetchone()[0] == 5
+        _assert_fetchone_counts(external_write, prepare=1, native=1, fallback=0, sql=1)
+        assert (cursor.rowcount, cursor.rownumber, cursor._next_row_index) == (5, 4, 5)
+        assert cursor.fetchone() is None
+
+
 @pytest.mark.parametrize("method", METHODS)
 @pytest.mark.parametrize("target", ("cursor", "connection"))
 def test_warm_dictionary_subclass_uses_python_fallback(connection, method, target):
