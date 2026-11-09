@@ -2273,11 +2273,27 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
     }
 
     std::vector<std::shared_ptr<void>> paramBuffers;
-    rc = BindParameters(*statementHandle, hStmt, params, paramInfos, paramBuffers, charEncoding,
-                        /*reuseMatchingBindings=*/true);
-    if (!SQL_SUCCEEDED(rc)) return rc;
-    // The APD now points at paramBuffers. Keep them on the handle; the previous
-    // execution's buffers are no longer referenced and are freed on return.
+    // If binding stops part-way, records bound so far point at paramBuffers and
+    // the rest still point at the previous buffers. Keep both alive until the
+    // next reset or handle free; resetting here would clear the diagnostics.
+    auto retainPartialBuffers = [&]() {
+        auto& owned = statementHandle->boundParamBuffers;
+        owned.insert(owned.end(), std::make_move_iterator(paramBuffers.begin()),
+                     std::make_move_iterator(paramBuffers.end()));
+    };
+    try {
+        rc = BindParameters(*statementHandle, hStmt, params, paramInfos, paramBuffers, charEncoding,
+                            /*reuseMatchingBindings=*/true);
+    } catch (...) {
+        retainPartialBuffers();
+        throw;
+    }
+    if (!SQL_SUCCEEDED(rc)) {
+        retainPartialBuffers();
+        return rc;
+    }
+    // The APD now points only at paramBuffers. Keep them on the handle; the
+    // previous execution's buffers are no longer referenced and are freed on return.
     statementHandle->boundParamBuffers.swap(paramBuffers);
 
     {

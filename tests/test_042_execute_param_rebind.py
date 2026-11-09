@@ -70,8 +70,7 @@ def test_reexecute_same_sql_with_changing_types(cursor):
 
 def test_reexecute_with_none_into_typed_columns(cursor, db_connection):
     # A permanent table: SQLDescribeParam cannot type parameters against #temp tables.
-    table = "dbo.pytest_param_rebind_nulls"
-    cursor.execute(f"DROP TABLE IF EXISTS {table}")
+    table = f"dbo.pytest_param_rebind_nulls_{uuid.uuid4().hex}"
     cursor.execute(f"CREATE TABLE {table} (id INT, b VARBINARY(20), d DECIMAL(10, 2))")
     db_connection.commit()
     try:
