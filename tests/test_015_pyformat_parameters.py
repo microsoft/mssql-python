@@ -20,6 +20,7 @@ from mssql_python.parameter_helper import (
     _skip_quoted_context,
     _compile_pyformat,
 )
+from mssql_python import parameter_helper
 
 
 class TestParsePyformatParams:
@@ -443,6 +444,94 @@ class TestPyformatRewrite:
             detect_and_convert_parameters("SELECT %(id)s", (1,))
         sql = "SELECT '%(id)s', ?"
         assert detect_and_convert_parameters(sql, (1,)) == (sql, (1,))
+
+
+class TestPyformatScanner:
+    """The regex-driven scanner must keep the quoting rules of _skip_quoted_context()."""
+
+    @pytest.mark.parametrize(
+        "sql, expected_sql, expected_names",
+        [
+            ("/* a /* %(x)s */ %(y)s */ %(z)s", "/* a /* %(x)s */ %(y)s */ ?", ("z",)),
+            ("SELECT 'it''s %(x)s' , %(y)s", "SELECT 'it''s %(x)s' , ?", ("y",)),
+            ("SELECT [a]]%(x)s] , %(y)s", "SELECT [a]]%(x)s] , ?", ("y",)),
+            ('SELECT "a""%(x)s" , %(y)s', 'SELECT "a""%(x)s" , ?', ("y",)),
+            ("SELECT %(a)s -- %(x)s", "SELECT ? -- %(x)s", ("a",)),
+            ("SELECT %(a)s, 'open %(x)s", "SELECT ?, 'open %(x)s", ("a",)),
+            ("SELECT %(a)s /* open %(x)s", "SELECT ? /* open %(x)s", ("a",)),
+            ("SELECT a - b / c * %(a)s", "SELECT a - b / c * ?", ("a",)),
+            ("SELECT %(a)s%(b)s%%%(c)s", "SELECT ??%?", ("a", "b", "c")),
+            ("SELECT a %(b) s, %(c", "SELECT a %(b) s, %(c", ()),
+            ("SELECT %(a)x, %(b)s", "SELECT %(a)x, ?", ("b",)),
+            ("SELECT %(a'b)s, 'x'", "SELECT ?, 'x'", ("a'b",)),
+            ("SELECT %()s", "SELECT ?", ("",)),
+            ("", "", ()),
+        ],
+    )
+    def test_rewrite(self, sql, expected_sql, expected_names):
+        assert _compile_pyformat(sql) == (expected_sql, expected_names)
+        assert parse_pyformat_params(sql) == list(expected_names)
+
+
+class TestPyformatCache:
+    """The rewrite cache stays bounded and the hot path scans a statement once."""
+
+    @staticmethod
+    def _large_insert(rows, tag):
+        return f"INSERT INTO t (id, name) /* {tag} */ VALUES " + ", ".join(
+            f"(%(id_m{i})s, %(name_m{i})s)" for i in range(rows)
+        )
+
+    def test_varying_large_statements_stay_bounded(self):
+        """Multi-row INSERTs with a varying row count must not accumulate."""
+        for rows in range(300, 340):
+            _compile_pyformat(self._large_insert(rows, "bounded-test"))
+        info = _compile_pyformat.cache_info()
+        assert info.currsize <= info.maxsize == parameter_helper._PYFORMAT_CACHE_SIZE
+
+    def test_parse_then_convert_scans_once(self):
+        """executemany() calls parse_pyformat_params() and then convert_pyformat_to_qmark()."""
+        sql = self._large_insert(1000, "scan-once-test")
+        values = {f"{col}_m{i}": i for i in range(1000) for col in ("id", "name")}
+        _compile_pyformat.cache_clear()
+        names = parse_pyformat_params(sql)
+        _, params = convert_pyformat_to_qmark(sql, values)
+        assert len(names) == len(params) == 2000
+        assert _compile_pyformat.cache_info().misses == 1
+
+    def test_valid_pyformat_with_question_mark_skips_qmark_scan(self, monkeypatch):
+        """A ? in a literal or comment must not force a rescan of a statement that has placeholders."""
+
+        def fail(sql):
+            raise AssertionError("qmark scan should not run when pyformat placeholders exist")
+
+        monkeypatch.setattr(parameter_helper, "_has_unquoted_question_marks", fail)
+        sql = "SELECT 'why?' AS q, %(id)s AS v /* really? */"
+        assert detect_and_convert_parameters(sql, {"id": 1}) == (
+            "SELECT 'why?' AS q, ? AS v /* really? */",
+            (1,),
+        )
+
+    def test_dict_with_only_qmark_placeholders_still_rejected(self):
+        with pytest.raises(TypeError, match="Parameter style mismatch"):
+            detect_and_convert_parameters("SELECT ? AS v, 'x' AS mismatch_test", {"id": 1})
+        sql = "SELECT 'why?' AS q"
+        assert detect_and_convert_parameters(sql, {"id": 1}) == (sql, ())
+
+    def test_keys_not_materialized_when_debug_logging_is_off(self, monkeypatch):
+        class CountingDict(dict):
+            keys_calls = 0
+
+            def keys(self):
+                CountingDict.keys_calls += 1
+                return super().keys()
+
+        from mssql_python.logging import logger
+
+        monkeypatch.setattr(logger, "_is_debug_enabled", False)
+        values = CountingDict(id=1)
+        assert detect_and_convert_parameters("SELECT %(id)s", values) == ("SELECT ?", (1,))
+        assert CountingDict.keys_calls == 0
 
 
 class TestSkipQuotedContext:
