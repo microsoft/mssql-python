@@ -265,10 +265,17 @@ def test_repeat_execute_reuses_prepared_statement(conn_str):
     # CREATE EVENT SESSION cannot run inside a user transaction.
     admin_conn = connect(conn_str, autocommit=True)
     admin = admin_conn.cursor()
-    admin.execute("SELECT HAS_PERMS_BY_NAME(NULL, NULL, 'ALTER ANY EVENT SESSION')")
-    if admin.fetchone()[0] != 1:
+    admin.execute(
+        "SELECT HAS_PERMS_BY_NAME(NULL, NULL, 'ALTER ANY EVENT SESSION'), "
+        "CASE WHEN HAS_PERMS_BY_NAME(NULL, NULL, 'VIEW SERVER STATE') = 1 "
+        # SQL Server 2022+ can grant the XE DMVs through this narrower permission.
+        "OR COALESCE(HAS_PERMS_BY_NAME(NULL, NULL, 'VIEW SERVER PERFORMANCE STATE'), 0) = 1 "
+        "THEN 1 ELSE 0 END"
+    )
+    can_create, can_read = admin.fetchone()
+    if can_create != 1 or can_read != 1:
         admin_conn.close()
-        pytest.skip("Requires ALTER ANY EVENT SESSION")
+        pytest.skip("Requires ALTER ANY EVENT SESSION and permission to read the XE DMVs")
 
     sql = "SELECT CAST(? AS INT) + CAST(? AS INT)"
     lob_sql = "SELECT LEN(CAST(? AS NVARCHAR(MAX)))"
