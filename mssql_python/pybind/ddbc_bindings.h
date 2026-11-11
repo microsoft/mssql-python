@@ -356,6 +356,9 @@ class SqlHandle {
     std::unordered_map<int, DescribedParamInfo> describeCache;
     void clearDescribeCache() { describeCache.clear(); }
     ResultMetadataCache resultMetadata;
+    // Only fetch calls under the GIL access this flag. Batch bindings are
+    // invalidated before installation and become reusable only after unbinding.
+    bool fetchColumnsUnbound = false;
 
     // Parameter bindings that execute() leaves on the statement. Drivers
     // re-prepare (sp_prepexec instead of sp_execute) when SQL_RESET_PARAMS
