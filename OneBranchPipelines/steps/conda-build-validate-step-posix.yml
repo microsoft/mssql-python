@@ -93,12 +93,13 @@ steps:
         --stage-dir "$(ob_outputDirectory)/conda" \
         --conda-subdir "${{ parameters.condaSubdir }}" \
         --conda-target-subdir "${CONDA_TARGET_SUBDIR:-}" \
-        --python-versions "${PYTHON_VERSIONS:-}"
+        --python-versions "${MSSQL_CONDA_PYTHON_VERSIONS:-}"
     workingDirectory: $(Build.SourcesDirectory)
     env:
       # Surface the caller's value inputs as env vars (validated in-script above) rather than
       # interpolating them into the script text -- repo secret-handling convention.
-      PYTHON_VERSIONS: ${{ parameters.pythonVersions }}
+      # Avoid the shared PYTHON_VERSIONS pipeline variable overwriting this input.
+      MSSQL_CONDA_PYTHON_VERSIONS: ${{ parameters.pythonVersions }}
       CONDA_TARGET_SUBDIR: ${{ parameters.condaTargetSubdir }}
     displayName: 'Conda build + validate (${{ parameters.condaSubdir }})'
     continueOnError: ${{ parameters.continueOnError }}
