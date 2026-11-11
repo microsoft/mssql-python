@@ -12,15 +12,15 @@
 # Expected packages (validated conda subdirs). The self-contained mssql-python
 # package (which vendors the ODBC payload) is emitted per-Python by each build leg;
 # there is NO separate companion package:
-#   win-64        : 5 py x mssql-python                                       = 5
-#   win-arm64     : 3 py x mssql-python  (py3.12-3.14, cross-built on x64)    = 3
-#   osx-64        : 5 py x mssql-python  (Intel Mac, native)                  = 5
-#   osx-arm64     : 5 py x mssql-python  (Intel Mac, cross-built)             = 5
-#   linux-64      : 5 py x mssql-python  (glibc x86_64 host, native)          = 5
-#   linux-aarch64 : 5 py x mssql-python  (x86_64 host + QEMU, best-effort)    = 5
+#   win-64        : 6 py x mssql-python  (py3.10-3.15)                      = 6
+#   win-arm64     : 4 py x mssql-python  (py3.12-3.15, cross-built on x64)   = 4
+#   osx-64        : 6 py x mssql-python  (Intel Mac, native)                = 6
+#   osx-arm64     : 6 py x mssql-python  (Intel Mac, cross-built)            = 6
+#   linux-64      : 6 py x mssql-python  (glibc x86_64 host, native)         = 6
+#   linux-aarch64 : 6 py x mssql-python  (x86_64 host + QEMU, best-effort)   = 6
 #   ------------------------------------------------------------------------------
-#   TOTAL (PyPI parity minus musllinux)                                      = 28
-# win-arm64 is cross-built for py3.12-3.14 only (py3.10/3.11 have no win-arm64 deps
+#   TOTAL (ordinary CPython, no musllinux or free-threaded variants)           = 34
+# win-arm64 is cross-built for py3.12-3.15 only (py3.10/3.11 have no win-arm64 deps
 # on Anaconda defaults); its runtime import is skipped on the x64 host, so its arch
 # is enforced by the PE audit (eng.conda_tools pe). musllinux (no conda
 # musl subdir) is intentionally NOT conda-built. This job is BEST-EFFORT and never
@@ -117,7 +117,7 @@ jobs:
             n=$(find "$d" -type f \( -name '*.conda' -o -name '*.tar.bz2' \) | wc -l)
             printf '  %-14s %s\n' "$sub" "$n"
           done
-          echo "Total conda package count: $PKG_COUNT (full PyPI-parity set = 28)"
+          echo "Total conda package count: $PKG_COUNT (full ordinary-CPython set = 34)"
 
           # BEST-EFFORT: never exit non-zero — an empty set emits a warning; a partial set
           # remains visible in the counts above. A conda hiccup must not block the wheel

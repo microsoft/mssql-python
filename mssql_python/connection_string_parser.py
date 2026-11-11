@@ -81,7 +81,7 @@ class _ConnectionStringParser:
         This method performs several operations:
         - Normalizes parameter names (e.g., addr/address → Server, uid → UID)
         - Filters out parameters not in the allow-list
-        - Removes reserved parameters (Driver, APP)
+        - Removes reserved parameters (Driver)
         - Deduplicates via normalized keys
 
         Args:
@@ -92,8 +92,8 @@ class _ConnectionStringParser:
             Dictionary containing only allowed parameters with normalized keys
 
         Note:
-            Driver and APP parameters are filtered here but will be set by
-            the driver in _construct_connection_string to maintain control.
+            Driver is filtered here and supplied by _construct_connection_string.
+            APP is preserved for application-name resolution after kwargs are merged.
         """
         filtered = {}
 
@@ -106,7 +106,7 @@ class _ConnectionStringParser:
             normalized_key = _ConnectionStringParser.normalize_key(key)
 
             if normalized_key:
-                # Skip Driver and APP - these are controlled by the driver
+                # Driver selection is controlled by the driver.
                 if normalized_key in _RESERVED_PARAMETERS:
                     continue
 

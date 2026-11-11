@@ -66,7 +66,7 @@ class AsyncCoreCursor(Protocol):
     async def executemany(
         self,
         operation: str,
-        seq_of_parameters: Sequence[Sequence[Any]] | Sequence[Mapping[str, Any]],
+        seq_of_parameters: Iterable[Sequence[Any] | Mapping[str, Any]],
         *,
         use_prepare: bool = True,
     ) -> None: ...

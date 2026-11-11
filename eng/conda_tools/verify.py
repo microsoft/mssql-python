@@ -131,6 +131,8 @@ def _verify_impl(
             # (no link / post-link / arm64 exec) -- a pure "installable?" check. win-arm64 deps
             # span microsoft (noarch azure-identity/msal) + Anaconda defaults, so no
             # --strict-channel-priority. Pin the freshly built version so no channel can shadow it.
+            # Python 3.15 is supplied by conda-forge; retain the old channels for 3.12-3.14.
+            python_channel = "conda-forge" if py == "3.15" else "defaults"
             environment.run(
                 [
                     conda,
@@ -143,7 +145,7 @@ def _verify_impl(
                     "-c",
                     "microsoft",
                     "-c",
-                    "defaults",
+                    python_channel,
                     "--override-channels",
                     f"python={py}",
                     f"mssql-python={mssql_ver}",
@@ -163,7 +165,7 @@ def _verify_impl(
                     "-c",
                     "microsoft",
                     "-c",
-                    "defaults",
+                    python_channel,
                     "--override-channels",
                     f"python={py}",
                     f"mssql-python={mssql_ver}",

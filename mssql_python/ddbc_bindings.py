@@ -16,8 +16,19 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from ._ddbc_types import *
     from ._ddbc_types import (
+        _abort_native_fetch_install as _abort_native_fetch_install,
+        _activate_native_fetch_install as _activate_native_fetch_install,
+        _begin_native_fetch_install as _begin_native_fetch_install,
+        _disable_native_fetch_install as _disable_native_fetch_install,
+        _fetch_conversion_ineligible as _fetch_conversion_ineligible,
+        _fetch_observer as _fetch_observer,
         _get_odbc_driver_path as _get_odbc_driver_path,
+        _invalidate_native_fetch as _invalidate_native_fetch,
+        _make_row_mapping_base as _make_row_mapping_base,
+        _native_fetch_context as _native_fetch_context,
+        _native_fetch_methods as _native_fetch_methods,
         _set_odbc_provider as _set_odbc_provider,
+        _watch_fetch_dependencies as _watch_fetch_dependencies,
     )
 
 

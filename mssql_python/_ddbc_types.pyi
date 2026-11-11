@@ -1,9 +1,11 @@
 """Native declarations; kept separate so mypy also checks the Python loader."""
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from types import ModuleType
 from typing import Any, NoReturn, TypedDict, overload
 
-from .row import Row
+from .cursor import Cursor
+from .row import Row, OutputConverter
 
 __all__ = [
     "ARCHITECTURE",
@@ -43,10 +45,13 @@ __all__ = [
     "SQL_NO_TOTAL",
     "SqlHandle",
     "ThrowStdException",
+    "_ConverterRowBuilder",
+    "apply_output_converters",
     "close_pooling",
     "construct_rows",
     "disable_pooling",
     "enable_pooling",
+    "restore_output_converter_text",
     "update_log_level",
 ]
 
@@ -81,7 +86,7 @@ class Connection:
         token_factory: Callable[[], tuple[dict[int, int | str | bytes], int | None]] | None = None,
     ) -> None: ...
     def alloc_statement_handle(self) -> SqlHandle: ...
-    def close(self, transaction_already_rolled_back: bool = False) -> None: ...
+    def close(self, rollback_before_disconnect: bool = False) -> None: ...
     def commit(self) -> None: ...
     def rollback(self) -> None: ...
     def get_autocommit(self) -> bool: ...
@@ -114,9 +119,66 @@ class ErrorInfo:
     sqlState: str
     ddbcErrorMsg: str
 
+class _RowMappingBase:
+    _row: Row
+    def __getitem__(self, key: str) -> Any: ...
+    def __iter__(self) -> Iterator[str]: ...
+
+class _ConverterRowBuilder:
+    def __init__(self, row_class: type[Row], bindings: ModuleType, /) -> None: ...
+    def matches(self, row_class: type[Row], /) -> bool: ...
+    def one(
+        self,
+        values: list[Any],
+        row_class: type[Row],
+        converters: Sequence[OutputConverter | None] | None,
+        column_map: Mapping[str, int] | None,
+        cursor: Cursor,
+        uuid_indices: tuple[int, ...] | None,
+        lower_map: Mapping[str, int] | None,
+        names: tuple[str, ...] | None,
+        /,
+    ) -> Row: ...
+    def many(
+        self,
+        rows_data: list[list[Any]],
+        cursor_globals: dict[str, Any],
+        converters: Sequence[OutputConverter | None] | None,
+        column_map: Mapping[str, int] | None,
+        cursor: Cursor,
+        uuid_indices: tuple[int, ...] | None,
+        lower_map: Mapping[str, int] | None,
+        /,
+    ) -> list[Row]: ...
+
 ARCHITECTURE: str
 SQL_NO_TOTAL: int
 
+_fetch_observer: object | None
+_native_fetch_context: object
+_native_fetch_methods: tuple[object, ...]
+
+def _make_row_mapping_base(
+    row_class: type[Row],
+    column_names_class: type[tuple[str, ...]],
+    iter_mapping_keys: Callable[[Iterable[str]], Iterator[str]],
+    /,
+) -> type[_RowMappingBase]: ...
+def _fetch_conversion_ineligible(data: dict[str, Any], /) -> bool: ...
+def _watch_fetch_dependencies(
+    observer: object, dicts: tuple[dict[str, Any], ...], types: tuple[type, ...], /
+) -> bool: ...
+def _begin_native_fetch_install(
+    cursor_type: type[Cursor], fallbacks: tuple[Callable[..., Any], ...], /
+) -> None: ...
+def _activate_native_fetch_install(runtime: tuple[object, ...], /) -> None: ...
+def _abort_native_fetch_install() -> None: ...
+def _disable_native_fetch_install() -> None: ...
+def _invalidate_native_fetch(cursor: Cursor, /) -> None: ...
+def apply_output_converters(
+    values: list[Any], converters: list[OutputConverter | None], /
+) -> list[Any]: ...
+def restore_output_converter_text(values: list[Any], /) -> list[Any]: ...
 def _get_odbc_driver_path(base_dir: str, provider: str) -> str: ...
 def _set_odbc_provider(provider: str) -> None: ...
 def GetDriverPathCpp(base_dir: str) -> str: ...
@@ -173,6 +235,7 @@ def DDBCSQLFetchOne(
     wcharEncoding: str = "utf-16le",
     charCtype: int = -8,
     messages: list[tuple[str, str]] | None = None,
+    converters: Sequence[OutputConverter | None] | None = None,
 ) -> int: ...
 def DDBCSQLFetchMany(
     StatementHandle: SqlHandle | None,
@@ -182,6 +245,7 @@ def DDBCSQLFetchMany(
     wcharEncoding: str = "utf-16le",
     charCtype: int = -8,
     messages: list[tuple[str, str]] | None = None,
+    converters: Sequence[OutputConverter | None] | None = None,
 ) -> int: ...
 def DDBCSQLFetchAll(
     StatementHandle: SqlHandle | None,
@@ -190,6 +254,7 @@ def DDBCSQLFetchAll(
     wcharEncoding: str = "utf-16le",
     charCtype: int = -8,
     messages: list[tuple[str, str]] | None = None,
+    converters: Sequence[OutputConverter | None] | None = None,
 ) -> int: ...
 def DDBCSQLFetchArrowBatch(
     StatementHandle: SqlHandle | None,

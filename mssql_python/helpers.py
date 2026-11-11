@@ -11,7 +11,7 @@ from typing import Any, Mapping, Union, Tuple, Optional
 from mssql_python import ddbc_bindings
 from mssql_python.exceptions import raise_exception
 from mssql_python.logging import logger
-from mssql_python.constants import ConstantsDDBC
+from mssql_python.constants import ConstantsDDBC, _DEFAULT_APP_NAME, _MAX_APP_NAME_LENGTH
 
 # normalize_architecture import removed as it's unused
 
@@ -251,7 +251,33 @@ def validate_attribute_value(
     return True, None, sanitized_attr, sanitized_val
 
 
+def _resolve_app_name(user_app_name: object) -> str:
+    """Resolve a raw application name once, before transport serialization."""
+    if user_app_name is None:
+        return _DEFAULT_APP_NAME
+    if not isinstance(user_app_name, str):
+        raise TypeError("Application name must be a string")
+    if not user_app_name:
+        raise ValueError("Application name must not be empty")
+
+    app_name = f"{_DEFAULT_APP_NAME}|{user_app_name}"
+    try:
+        length = len(app_name.encode("utf-16-le")) // 2
+    except UnicodeEncodeError:
+        raise ValueError("Application name must contain valid Unicode") from None
+    if length > _MAX_APP_NAME_LENGTH:
+        suffix_limit = _MAX_APP_NAME_LENGTH - len(_DEFAULT_APP_NAME) - 1
+        raise ValueError(
+            f"Application name exceeds {_MAX_APP_NAME_LENGTH} UTF-16 code units "
+            f"including the driver prefix (provided: {length}). "
+            f"The user-supplied name may contain at most {suffix_limit} UTF-16 code units."
+        )
+    return app_name
+
+
 _PYCORE_CONNECTION_KEY_MAP = {
+    "app": "application_name",
+    "application name": "application_name",
     "uid": "user_name",
     "pwd": "password",
     "trusted_connection": "trusted_connection",
@@ -314,7 +340,8 @@ def connstr_to_pycore_params(
     ``strict`` is enabled, they raise ``ValueError`` instead.
     """
     # Only keys listed below are forwarded to py-core.
-    # Unknown/reserved keys (app, workstationid, language, connect_timeout,
+    # Forward APP unchanged: async resolves it next; bulk copy inherits the parent's name.
+    # Unknown/reserved keys (workstationid, language, connect_timeout,
     # mars_connection) are silently dropped here.  In the normal connect()
     # path the parser validates keywords first (validate_keywords=True),
     # but bulkcopy parses with validation off, so this mapping is the

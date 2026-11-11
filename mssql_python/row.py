@@ -7,14 +7,43 @@ from a cursor fetch operation.
 
 import decimal
 import uuid as _uuid
-from collections.abc import Callable, Iterator, Mapping, Sequence
-from typing import Any, TYPE_CHECKING
+from collections.abc import Callable, Iterable, Iterator, KeysView, Mapping, Sequence
+from typing import Any, Literal, TYPE_CHECKING
+from mssql_python import ddbc_bindings
 from mssql_python.logging import logger
 
 if TYPE_CHECKING:
     from mssql_python.cursor import Cursor
 
 OutputConverter = Callable[[Any], Any]
+
+
+class _ColumnNames(tuple[str, ...]):
+    """Result-shared names; validate and deduplicate only on mapping use."""
+
+    _unique: dict[str, None] | Literal[False] | None
+    _prepared: object | None
+
+    def __new__(cls, names: Iterable[str]) -> "_ColumnNames":
+        result = super().__new__(cls, names)
+        result._unique = None
+        result._prepared = None
+        return result
+
+    def _unique_keys(self) -> dict[str, None] | Literal[False]:
+        keys = self._unique
+        if keys is None:
+            if not all(type(name) is str for name in self):
+                self._unique = False
+                return False
+            keys = dict.fromkeys(self)
+            self._unique = keys
+        return keys
+
+    def __getstate__(self) -> dict[str, Any]:
+        state = self.__dict__.copy()
+        state["_prepared"] = None
+        return state
 
 
 class Row:
@@ -99,6 +128,8 @@ class Row:
             cursor: Optional cursor reference (for backward compatibility and lowercase access)
             converter_map: Pre-computed converter map (shared across rows for performance).
                 An empty sequence skips converters; None enables the connection fallback.
+                Built-in cursor conversion can perform the same initialization in native
+                code; overridden Row hooks retain this Python constructor.
             uuid_str_indices: Tuple of column indices whose uuid.UUID values should be
                 converted to str. Pre-computed once per result set when native_uuid=False.
                 None means no conversion (native_uuid=True, the default).
@@ -214,12 +245,16 @@ class Row:
         Apply output converters using pre-computed converter map for optimal performance.
 
         Args:
-            values: Raw values from the database
+            values: Raw values from the database. Eligible native text cells own
+                UTF-16LE bytes until conversion; failures restore the original str.
             converter_map: Pre-computed list of converters (one per column, None if no converter)
 
         Returns:
             List of converted values
         """
+        if type(values) is list and type(converter_map) is list:
+            return ddbc_bindings.apply_output_converters(values, converter_map)
+
         converted_values = list(values)
 
         for i, (value, converter) in enumerate(zip(values, converter_map)):
@@ -302,6 +337,12 @@ class Row:
           set, ``in`` and ``[]`` always agree. Unlike ``row[name]`` / ``row.name``,
           the view does NOT resolve case-insensitive names or catalog aliases; with
           ``lowercase=True`` the keys are the lowercased names.
+        - Cursor rows share lazily deduplicated canonical keys; values are never
+          cached in the view. Existing views continue to observe changes to the row.
+        - On GIL-enabled CPython 3.12+, ordinary mapping iteration can prepare a
+          shared index schema, invalidated by dictionary watchers. This lazily
+          materializes the row's standard attribute dictionary, but stores no
+          cache in it. Custom storage and hooks retain ordinary lookup behavior.
         - ``_mapping`` is a property, so a column literally named ``_mapping`` is
           shadowed: read it with ``row["_mapping"]`` or ``row._mapping["_mapping"]``.
         """
@@ -374,7 +415,29 @@ class Row:
         return repr(tuple(self._values))
 
 
-class RowMapping(Mapping[str, Any]):
+def _iter_mapping_keys(names: Iterable[str]) -> Iterator[str]:
+    seen = set()
+    for name in names:
+        if name not in seen:
+            seen.add(name)
+            yield name
+
+
+class _RowMappingKeys(KeysView[str]):
+    __slots__ = ()
+    _mapping: Mapping[str, Any]
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._mapping)
+
+
+if TYPE_CHECKING:
+    from mssql_python._ddbc_types import _RowMappingBase
+else:
+    _RowMappingBase = ddbc_bindings._make_row_mapping_base(Row, _ColumnNames, _iter_mapping_keys)
+
+
+class RowMapping(_RowMappingBase, Mapping[str, Any]):
     """Read-only ``Mapping`` view over a :class:`Row` (column name -> value).
 
     Created via :attr:`Row._mapping`. Keys are the row's canonical column names,
@@ -384,27 +447,17 @@ class RowMapping(Mapping[str, Any]):
     reflects the row it wraps and copies no values.
     """
 
-    __slots__ = ("_row",)
+    __slots__ = ()
 
     def __init__(self, row: "Row") -> None:
         self._row = row
 
-    def __getitem__(self, key: str) -> Any:
-        # Restrict lookups to the canonical column names yielded by __iter__ so
-        # membership and lookup agree with iteration (proper Mapping semantics).
-        # Row.__getitem__ additionally accepts case-insensitive names and catalog
-        # aliases, but those are not iterated keys, so the view must not resolve
-        # them here.
-        if isinstance(key, str) and key in self._row._mapping_keys():
-            return self._row[key]
-        raise KeyError(key)
+    def __getnewargs__(self) -> tuple[()]:
+        """Initialize native state before copying or restoring Python slots."""
+        return ()
 
-    def __iter__(self) -> Iterator[str]:
-        seen = set()
-        for name in self._row._mapping_keys():
-            if name not in seen:
-                seen.add(name)
-                yield name
+    def keys(self) -> KeysView[str]:
+        return _RowMappingKeys(self)
 
     def __len__(self) -> int:
         return sum(1 for _ in self)

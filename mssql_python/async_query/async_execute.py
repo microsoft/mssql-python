@@ -1,7 +1,7 @@
 """Asynchronous statement execution through mssql-py-core."""
 
 import asyncio
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
 from ..exceptions import OperationalError, ProgrammingError
@@ -10,10 +10,11 @@ from ..row import Row
 from .exception_translator import translate_py_core_exceptions
 
 if TYPE_CHECKING:
+    from .._pycore_types import AsyncCoreCursor
     from .async_cursor import _AsyncCursor  # pyright: ignore[reportPrivateUsage]
 
 
-def _get_py_core_async_cursor(cursor: "_AsyncCursor") -> Any:
+def _get_py_core_async_cursor(cursor: "_AsyncCursor") -> "AsyncCoreCursor":
     return cursor._py_core_async_cursor  # pyright: ignore[reportPrivateUsage]
 
 
@@ -85,29 +86,57 @@ async def execute(
 async def executemany(
     cursor: "_AsyncCursor",
     operation: str,
-    seq_of_parameters: Sequence[Sequence[Any]] | Sequence[Mapping[str, Any]],
+    seq_of_parameters: Iterable[Sequence[Any] | Mapping[str, Any]],
     *,
     use_prepare: bool = True,
 ) -> None:
-    """Execute a statement for every parameter row using the py-core async cursor."""
+    """Execute parameter rows from a synchronous iterable through py-core.
+
+    Py-core consumes and validates the iterable before dispatch; this is not
+    streaming execution. Asynchronous iterables are not supported. Exceptions
+    raised by the parameter iterable are propagated unchanged.
+    """
     cursor._check_closed()  # pyright: ignore[reportPrivateUsage]
-    batch_count = len(seq_of_parameters)
+    iteration_error: BaseException | None = None
+
+    def parameter_rows() -> Iterator[Sequence[Any] | Mapping[str, Any]]:
+        nonlocal iteration_error
+        try:
+            iterator = iter(seq_of_parameters)
+        except BaseException as error:
+            iteration_error = error
+            raise
+        while True:
+            try:
+                row = next(iterator)
+            except StopIteration:
+                return
+            except BaseException as error:
+                iteration_error = error
+                raise
+            yield row
+
     logger.debug(
-        "AsyncCursor.executemany: starting; batch_count=%d; use_prepare=%s",
-        batch_count,
+        "AsyncCursor.executemany: starting; use_prepare=%s",
         use_prepare,
     )
-    with translate_py_core_exceptions():
-        executemany_awaitable = _get_py_core_async_cursor(cursor).executemany(
-            operation,
-            seq_of_parameters,
-            use_prepare=use_prepare,
-        )
     try:
         with translate_py_core_exceptions():
-            await executemany_awaitable
-    except (Exception, asyncio.CancelledError) as error:
-        _reconcile_failed_execution(cursor, error)
+            executemany_awaitable = _get_py_core_async_cursor(cursor).executemany(
+                operation,
+                parameter_rows(),
+                use_prepare=use_prepare,
+            )
+        try:
+            with translate_py_core_exceptions():
+                await executemany_awaitable
+        except (Exception, asyncio.CancelledError) as error:
+            if iteration_error is None:
+                _reconcile_failed_execution(cursor, error)
+            raise
+    except BaseException:
+        if iteration_error is not None:
+            raise iteration_error from iteration_error.__cause__
         raise
     cursor._reset_fetch_tracking()  # pyright: ignore[reportPrivateUsage]
     cursor._clear_result_metadata()  # pyright: ignore[reportPrivateUsage]

@@ -3,16 +3,20 @@
 
 #pragma once
 
-// pybind11.h must be the first include
-#include <cstring>
-#include <exception>
-#include <memory>
+// Python.h must precede standard-library headers so its feature-test macros
+// are established before libc headers consume them.
+#include <Python.h>
 #include <pybind11/chrono.h>
 #include <pybind11/complex.h>
 #include <pybind11/functional.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/pytypes.h>  // Add this line for datetime support
 #include <pybind11/stl.h>
+
+#include <atomic>
+#include <cstring>
+#include <exception>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -56,6 +60,7 @@ using py::literals::operator""_a;
 // Include logger bridge for LOG macros
 #include "logger_bridge.hpp"
 #include "fetch_text.hpp"
+#include "output_converter.hpp"
 
 #if defined(__APPLE__) || defined(__linux__)
 #include <dlfcn.h>
@@ -288,6 +293,9 @@ struct DescribedParamInfo {
 struct ConnectionCleanupState {
     std::mutex mutex;
     bool disconnected = false;  // Protected by mutex, shared with every child.
+    // Unlike weak_ptr expiration, this count includes destructors still freeing handles.
+    std::atomic<size_t> childStatementCount{0};
+    std::atomic<bool> childFreeFailed{false};  // Sticky for this physical connection.
 };
 
 class SqlHandle {
@@ -331,6 +339,9 @@ class SqlHandle {
     std::unordered_map<int, DescribedParamInfo> describeCache;
     void clearDescribeCache() { describeCache.clear(); }
     ResultMetadataCache resultMetadata;
+    // Only fetch calls under the GIL access this flag. Batch bindings are
+    // invalidated before installation and become reusable only after unbinding.
+    bool fetchColumnsUnbound = false;
 
   private:
     // The caller must release the GIL before waiting for native cleanup.
@@ -462,6 +473,7 @@ struct ColumnInfoExt {
     bool useWideChar;          // True when charCtype == SQL_C_WCHAR (VARCHAR fetched as UTF-16)
     std::string charEncoding;  // Effective decoding encoding for SQL_C_CHAR data
     PyObject* messages = nullptr;  // Borrowed from the enclosing native fetch call.
+    bool converterText = false;
 };
 
 // Forward declare FetchLobColumnData (defined in ddbc_bindings.cpp) - MUST be
@@ -593,6 +605,15 @@ inline void ProcessChar(PyObject* row, ColumnBuffers& buffers, const void* colIn
                         SQLUSMALLINT col, SQLULEN rowIdx, SQLHSTMT hStmt) {
     const ColumnInfoExt* colInfo = static_cast<const ColumnInfoExt*>(colInfoPtr);
     SQLLEN dataLen = buffers.indicators[col - 1][rowIdx];
+    if (colInfo->converterText && colInfo->useWideChar && !colInfo->isLob && dataLen >= 0 &&
+        static_cast<uint64_t>(dataLen / sizeof(SQLWCHAR)) < colInfo->fetchBufferSize) {
+        const auto* data = &buffers.wcharBuffers[col - 1][rowIdx * colInfo->fetchBufferSize];
+        py::object text = OutputConverters::text(reinterpret_cast<const char*>(data), dataLen);
+        if (text) {
+            PyList_SET_ITEM(row, col - 1, text.release().ptr());
+            return;
+        }
+    }
 
     // Handle empty strings
     if (dataLen == 0) {
@@ -706,6 +727,15 @@ inline void ProcessWChar(PyObject* row, ColumnBuffers& buffers, const void* colI
                          SQLUSMALLINT col, SQLULEN rowIdx, SQLHSTMT hStmt) {
     const ColumnInfoExt* colInfo = static_cast<const ColumnInfoExt*>(colInfoPtr);
     SQLLEN dataLen = buffers.indicators[col - 1][rowIdx];
+    if (colInfo->converterText && !colInfo->isLob && dataLen >= 0 &&
+        static_cast<uint64_t>(dataLen / sizeof(SQLWCHAR)) < colInfo->fetchBufferSize) {
+        const auto* data = &buffers.wcharBuffers[col - 1][rowIdx * colInfo->fetchBufferSize];
+        py::object text = OutputConverters::text(reinterpret_cast<const char*>(data), dataLen);
+        if (text) {
+            PyList_SET_ITEM(row, col - 1, text.release().ptr());
+            return;
+        }
+    }
 
     // Handle empty strings
     if (dataLen == 0) {
