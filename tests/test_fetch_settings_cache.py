@@ -79,6 +79,46 @@ def fetch_rows(cursor, method):
     return cursor.fetchall()
 
 
+@pytest.mark.parametrize("method", ("fetchone", "fetchmany"))
+def test_native_completion_preserves_consumed_position_without_refetch(method):
+    cursor = Cursor.__new__(Cursor)
+    cursor.closed = True
+    cursor.hstmt = None
+    cursor._has_result_set = True
+    cursor._skip_increment_for_next_fetch = False
+    cursor._next_row_index = 0
+    cursor._rownumber = -1
+    cursor.rowcount = 0
+    cursor._uuid_str_indices = None
+    cursor._cached_result_columns = ("value",)
+    cursor._get_column_and_converter_maps = Mock(return_value=({"value": 0}, None, None))
+    complete = getattr(cursor, "_complete_" + method)
+    wrap = getattr(cursor, "_wrap_" + method)
+
+    def values(value):
+        return [[value]] if method == "fetchmany" else [value]
+
+    def row(result):
+        return result[0] if method == "fetchmany" else result
+
+    with (
+        patch.object(ddbc, "DDBCSQLFetchOne", side_effect=AssertionError("unexpected fetch")),
+        patch.object(ddbc, "DDBCSQLFetchMany", side_effect=AssertionError("unexpected fetch")),
+        patch.object(ddbc, "construct_rows", wraps=ddbc.construct_rows) as batch,
+    ):
+        assert row(complete(values(42), 0)).value == 42
+        assert (cursor.rowcount, cursor._rownumber) == (1, 0)
+        assert batch.call_count == int(method == "fetchmany")
+        # Native completion may already have committed the position before deoptimizing.
+        cursor._next_row_index, cursor._rownumber, cursor.rowcount = 2, 1, 2
+        assert row(wrap(values(43))).value == 43
+        assert (cursor.rowcount, cursor._rownumber) == (2, 1)
+        cursor._get_column_and_converter_maps.side_effect = RuntimeError("maps changed")
+        with pytest.raises(RuntimeError, match="maps changed"):
+            complete(values(44), 0)
+        assert (cursor.rowcount, cursor._rownumber) == (3, 2)
+
+
 @pytest.mark.parametrize("method", FETCH_METHODS)
 @pytest.mark.parametrize("lob", (False, True), ids=("bound", "lob"))
 @pytest.mark.parametrize(
@@ -1286,8 +1326,8 @@ def _check_native_mixed_fetch_diagnostics(mode, expected_native):
     ]
     all_records = [(f"[{state}] ({number})", message) for state, number, message in records]
     wanted = [all_records[index] for index in (0, 2, 4)]
-    rec_calls, field_calls, callback_errors = [], [], []
-    observed_handles, delegated_records = [], []
+    rec_calls, field_calls, header_calls, callback_errors = [], [], [], []
+    observed_handles, delegated_records, delegated_headers = [], [], []
     phase, target_handle = "observe", None
 
     def guarded(callback_type):
@@ -1337,13 +1377,31 @@ def _check_native_mixed_fetch_diagnostics(mode, expected_native):
         return success
 
     @guarded(field_type)
-    def read_state(handle_type, handle, number, identifier, output, capacity, length):
+    def read_field(handle_type, handle, number, identifier, output, capacity, length):
         if phase != "inject" or (handle_type, handle) != target_handle:
-            if original_read_state is None:
+            if original_read_field is None:
                 return error
-            return original_read_state(
+            result = original_read_field(
                 handle_type, handle, number, identifier, output, capacity, length
             )
+            if identifier == 2 and output:  # SQL_DIAG_NUMBER is a SQLINTEGER header field.
+                count = ctypes.cast(output, ctypes.POINTER(ctypes.c_int32))[0]
+                delegated_headers.append((handle_type, handle, number, result, count))
+            return result
+        if identifier == 2:
+            header_calls.append(number)
+            if (
+                not handle
+                or handle_type != ConstantsDDBC.SQL_HANDLE_STMT.value
+                or number != 0
+                or not output
+                or capacity != 0
+                or length
+            ):
+                callback_errors.append("invalid diagnostic-count header lookup")
+                return error
+            ctypes.cast(output, ctypes.POINTER(ctypes.c_int32))[0] = len(records)
+            return success
         field_calls.append(number)
         # SQL_DIAG_SQLSTATE uses bytes, including the sixth SQLWCHAR terminator.
         if (
@@ -1379,7 +1437,7 @@ def _check_native_mixed_fetch_diagnostics(mode, expected_native):
         original_rec, original_field = rec_pointer.value, field_pointer.value
         assert original_rec, "Driver diagnostic records must be available"
         original_read_record = rec_type(original_rec)
-        original_read_state = field_type(original_field) if original_field else None
+        original_read_field = field_type(original_field) if original_field else None
         try:
             rec_pointer.value = ctypes.cast(read_record, ctypes.c_void_p).value
             # Learn this cursor's raw handle while forwarding the diagnostic call unchanged.
@@ -1390,7 +1448,7 @@ def _check_native_mixed_fetch_diagnostics(mode, expected_native):
             assert target_handle[0] == ConstantsDDBC.SQL_HANDLE_STMT.value and target_handle[1]
             phase = "inject"
             field_pointer.value = (
-                None if mode == "missing" else ctypes.cast(read_state, ctypes.c_void_p).value
+                None if mode == "missing" else ctypes.cast(read_field, ctypes.c_void_p).value
             )
             delegated_records.clear()
             assert mssql_python.ddbc_bindings.DDBCSQLGetAllDiagRecords(other_cursor.hstmt) == []
@@ -1400,6 +1458,7 @@ def _check_native_mixed_fetch_diagnostics(mode, expected_native):
             assert tuple(cursor.fetchone()) == (b"x" * 8193,)
             assert not callback_errors, callback_errors
             assert cursor.messages == wanted
+            assert header_calls == ([] if mode == "missing" else [0])
             assert field_calls == ([] if mode == "missing" else [1, 2, 3, 4, 5, 6])
             if mode == "available":
                 assert rec_calls == [1, 3, 5]
@@ -1408,15 +1467,28 @@ def _check_native_mixed_fetch_diagnostics(mode, expected_native):
 
             rec_calls.clear()
             field_calls.clear()
+            header_calls.clear()
             assert mssql_python.ddbc_bindings.DDBCSQLGetAllDiagRecords(cursor.hstmt) == all_records
             assert not callback_errors, callback_errors
             assert rec_calls == [1, 2, 3, 4, 5, 6]
             assert field_calls == []
+            assert header_calls == []
             delegated_records.clear()
+            delegated_headers.clear()
             phase = "delegate"
             assert cursor.fetchone() is None
             assert not callback_errors, callback_errors
-            assert delegated_records == [(*target_handle, 1)]
+            if mode == "missing":
+                assert delegated_headers == []
+                assert delegated_records == [(*target_handle, 1)]
+            else:
+                assert len(delegated_headers) == 1
+                handle_type, handle, number, result, count = delegated_headers[0]
+                assert (handle_type, handle, number) == (*target_handle, 0)
+                if result == success and count == 0:
+                    assert delegated_records == []
+                else:
+                    assert delegated_records == [(*target_handle, 1)]
             assert cursor.messages == wanted
         finally:
             rec_pointer.value, field_pointer.value = original_rec, original_field
@@ -1709,7 +1781,7 @@ def _check_native_fetchone_full_column_count_cache(mode, expected_native):
 def _run_fetch_script(conn_str, script, *arguments, timeout=45):
     result = subprocess.run(
         [sys.executable, "-c", script, *arguments],
-        env={**os.environ, "DB_CONNECTION_STRING": conn_str},
+        env={**os.environ, "DB_CONNECTION_STRING": conn_str} if conn_str is not None else None,
         capture_output=True,
         text=True,
         timeout=timeout,
@@ -1837,7 +1909,7 @@ def test_single_row_converters_run_in_column_order(cursor):
         cursor.connection.remove_output_converter(mssql_python.SQL_INTEGER)
 
 
-def test_single_row_wrapper_does_not_enter_batch_factory(cursor):
+def test_single_row_wrapper_preserves_replaced_batch_factory(cursor):
     from mssql_python import ddbc_bindings
 
     cursor.execute(
@@ -1852,11 +1924,11 @@ def test_single_row_wrapper_does_not_enter_batch_factory(cursor):
     ):
         retained = cursor.fetchmany(1)[0]
         assert tuple(retained) == (1, "text")
-        batch.assert_not_called()
-        assert [row[0] for row in cursor.fetchmany(2)] == [2, 3]
         batch.assert_called_once()
-        assert cursor.fetchmany(2)[0][0] == 4
+        assert [row[0] for row in cursor.fetchmany(2)] == [2, 3]
         assert batch.call_count == 2
+        assert cursor.fetchmany(2)[0][0] == 4
+        assert batch.call_count == 3
         assert tuple(retained) == (1, "text")
         fused.assert_not_called()
 
@@ -2030,7 +2102,18 @@ def test_count_generation_change_with_unbound_marker(conn_str, first_fetch):
 
 
 @pytest.mark.parametrize("mutation", ("new", "setattr", "code", "abstract", "descriptor"))
-def test_fast_row_inplace_customization(monkeypatch, mutation):
+def test_fast_row_inplace_customization(mutation):
+    # Deleting a patched __new__ does not restore CPython's original tp_new slot.
+    script = (
+        "import runpy, sys, pytest\n"
+        "with pytest.MonkeyPatch.context() as patcher:\n"
+        "    runpy.run_path(sys.argv[1])['_check_fast_row_inplace_customization']"
+        "(patcher, sys.argv[2])\n"
+    )
+    _run_fetch_script(None, script, str(Path(__file__).resolve()), mutation)
+
+
+def _check_fast_row_inplace_customization(monkeypatch, mutation):
     import weakref
     from mssql_python import ddbc_bindings
     from mssql_python.row import Row
@@ -2121,7 +2204,17 @@ def test_single_row_construction_failure_keeps_fetch_position(cursor, method, fa
 
 
 @pytest.mark.parametrize("target", ("__new__", "__setattr__"))
-def test_native_row_guard_does_not_invoke_descriptors(monkeypatch, target):
+def test_native_row_guard_does_not_invoke_descriptors(target):
+    script = (
+        "import runpy, sys, pytest\n"
+        "with pytest.MonkeyPatch.context() as patcher:\n"
+        "    runpy.run_path(sys.argv[1])['_check_native_row_guard_descriptors']"
+        "(patcher, sys.argv[2])\n"
+    )
+    _run_fetch_script(None, script, str(Path(__file__).resolve()), target)
+
+
+def _check_native_row_guard_descriptors(monkeypatch, target):
     from mssql_python.cursor import _native_row_eligible
     from mssql_python.row import Row
 
@@ -2209,7 +2302,18 @@ def test_single_row_fusion_handles_post_fetch_factory_change(cursor, method, whe
 
 
 @pytest.mark.parametrize("method", ("fetchone", "fetchmany", "fetchval"))
-def test_single_row_late_allocator_preserves_factory_global_lookup(cursor, method):
+def test_single_row_late_allocator_preserves_factory_global_lookup(conn_str, method):
+    script = (
+        "import os, runpy, sys, mssql_python\n"
+        "with mssql_python.connect(os.environ['DB_CONNECTION_STRING'], timeout=5) as conn:\n"
+        "    with conn.cursor() as cursor:\n"
+        "        runpy.run_path(sys.argv[1])['_check_single_row_late_allocator']"
+        "(cursor, sys.argv[2])\n"
+    )
+    _run_fetch_script(conn_str, script, str(Path(__file__).resolve()), method)
+
+
+def _check_single_row_late_allocator(cursor, method):
     from mssql_python import ddbc_bindings
     from mssql_python.row import Row
 

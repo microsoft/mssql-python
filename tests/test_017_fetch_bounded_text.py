@@ -33,9 +33,16 @@ def utf8_collation(db_connection):
 def _fetch_rows(cursor, method):
     if method == "fetchall":
         rows = cursor.fetchall()
-    elif method == "fetchmany":
+    elif method.startswith("fetchmany"):
         rows = []
-        while batch := cursor.fetchmany(2):
+        while True:
+            batch = (
+                cursor.fetchmany()
+                if method == "fetchmany_default"
+                else cursor.fetchmany(1 if method == "fetchmany_one" else 2)
+            )
+            if not batch:
+                break
             rows.extend(batch)
     else:
         rows = []
@@ -167,33 +174,94 @@ def test_bounded_varchar_decoding_controls(db_connection, encoding, ctype, metho
 @pytest.mark.parametrize("raw", ["00D8", "00DC"], ids=["unpaired-high", "unpaired-low"])
 @pytest.mark.parametrize(
     "method, forced_max",
-    [("fetchone", False), ("fetchone", True), ("fetchmany", True), ("fetchall", True)],
-    ids=["bounded-fetchone", "beside-max-fetchone", "beside-max-fetchmany", "beside-max-fetchall"],
+    [
+        ("fetchone", False),
+        ("fetchone", True),
+        ("fetchmany_one", True),
+        ("fetchmany_default", True),
+        ("fetchmany", True),
+        ("fetchall", True),
+    ],
+    ids=[
+        "bounded-fetchone",
+        "beside-max-fetchone",
+        "beside-max-explicit",
+        "beside-max-default",
+        "beside-max-fetchmany",
+        "beside-max-fetchall",
+    ],
 )
 def test_bounded_nvarchar_strict_decode_error(db_connection, raw, method, forced_max):
     extra = ", CAST(N'route' AS nvarchar(max)) AS force_max" if forced_max else ""
     with db_connection.cursor() as cursor:
-        cursor.execute(f"SELECT CAST(0x{raw} AS nvarchar(64)) {extra}")
+        cursor.execute(
+            f"SELECT CASE WHEN n = 1 THEN CAST(0x{raw} AS nvarchar(64)) ELSE N'after' END {extra} "
+            "FROM (VALUES (1), (2)) AS v(n) ORDER BY n"
+        )
+        position = (cursor.rowcount, cursor.rownumber, cursor._next_row_index)
         with pytest.raises(UnicodeDecodeError):
             _fetch_rows(cursor, method)
+        assert (cursor.rowcount, cursor.rownumber, cursor._next_row_index) == position
+        assert cursor.fetchone()[0] == "after"
+        assert (cursor.rowcount, cursor.rownumber, cursor._next_row_index) == (1, 0, 1)
+        assert cursor.fetchone() is None
         cursor.execute("SELECT CAST(N'recovered' AS nvarchar(64))")
         assert cursor.fetchone()[0] == "recovered"
 
 
 @pytest.mark.parametrize("raw", ["00D8", "00DC"], ids=["unpaired-high", "unpaired-low"])
-@pytest.mark.parametrize("method", ["fetchmany", "fetchall"])
-def test_bounded_nvarchar_batch_malformed_fallback(db_connection, raw, method):
+@pytest.mark.parametrize(
+    "method, warmed",
+    [
+        ("fetchmany_one", False),
+        ("fetchmany_one", True),
+        ("fetchmany_default", False),
+        ("fetchmany_default", True),
+        ("fetchmany", False),
+        ("fetchall", False),
+    ],
+    ids=["explicit-cold", "explicit-warm", "default-cold", "default-warm", "batch", "all"],
+)
+def test_bounded_nvarchar_batch_malformed_fallback(db_connection, raw, method, warmed):
     """Preserve the existing platform-specific batch behavior for unpaired surrogates."""
     expression = f"CAST(0x{raw} AS nvarchar(64))"
     raw_bytes = bytes.fromhex(raw)
     with db_connection.cursor() as cursor:
         cursor.execute(f"SELECT DATALENGTH({expression}), CAST({expression} AS varbinary(64))")
         assert tuple(cursor.fetchone()) == (len(raw_bytes), raw_bytes)
-        cursor.execute(f"SELECT {expression}")
+        cursor.execute(
+            f"SELECT n, CASE WHEN n IN (1, 3) THEN {expression} ELSE N'valid' END AS payload "
+            "FROM (VALUES (-1), (0), (1), (2), (3), (4)) AS v(n) "
+            f"WHERE n >= {-1 if warmed else 1} ORDER BY n"
+        )
         expected = (
             raw_bytes.decode("utf-16le", errors="surrogatepass") if sys.platform == "win32" else ""
         )
-        assert _fetch_rows(cursor, method) == [(expected,)]
+        assert cursor.arraysize == 1
+        if warmed:
+            for n in (-1, 0):
+                batch = cursor.fetchmany(1) if method == "fetchmany_one" else cursor.fetchmany()
+                assert [tuple(row) for row in batch] == [(n, "valid")]
+        offset = 2 if warmed else 0
+        rows = []
+        while True:
+            if method == "fetchmany_one":
+                batch = cursor.fetchmany(1)
+            elif method == "fetchmany_default":
+                batch = cursor.fetchmany()
+            elif method == "fetchmany":
+                batch = cursor.fetchmany(2)
+            else:
+                batch = cursor.fetchall()
+            assert type(batch) is list
+            rows.extend(tuple(row) for row in batch)
+            assert cursor.rowcount == offset + len(rows)
+            assert cursor.rownumber == offset + len(rows) - 1
+            assert cursor._next_row_index == offset + len(rows)
+            if not batch:
+                break
+        assert rows == [(1, expected), (2, "valid"), (3, expected), (4, "valid")]
+        assert cursor.fetchone() is None
         cursor.execute("SELECT CAST(N'recovered' AS nvarchar(64))")
         assert cursor.fetchone()[0] == "recovered"
 

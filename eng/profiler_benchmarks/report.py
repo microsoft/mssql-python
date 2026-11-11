@@ -39,6 +39,7 @@ TASK_NAMES = {
     "cte": "Common table expression queries",
     "lob_varchar_256k_fetchall": "256 KiB VARCHAR(MAX) / fetchall()",
     "scalar_fetchval": "10,000 scalar values / fetchval() (debug disabled)",
+    "row_to_dict": "10,000 rows x 32 columns / dict(row._mapping) (warm)",
 }
 CASES = tuple(TASK_NAMES)
 MODES = ("diagnostic", "latency", "route")
@@ -132,6 +133,49 @@ def text(value, limit=160):
     if any(ord(char) < 32 or ord(char) == 127 for char in value):
         raise ValueError("Control character in performance label")
     return value
+
+
+def validate_phases(name, layer, stats, mode="diagnostic"):
+    """Uninstrumented latency and warm row-to-dict may have no native phases."""
+    if (
+        not isinstance(stats, dict)
+        or len(stats) > 300
+        or (layer == "cpp" and not stats and mode != "latency" and name != "row_to_dict")
+    ):
+        raise ValueError("Missing or oversized profiling data")
+    for label, counter in stats.items():
+        text(label)
+        if not label.startswith("ddbc::" if layer == "cpp" else "py::"):
+            raise ValueError("Invalid phase prefix")
+        if not isinstance(counter, dict):
+            raise ValueError("Invalid phase counter")
+        calls = counter["calls"]
+        if type(calls) is not int or not 1 <= calls <= 100_000_000:
+            raise ValueError("Invalid call count")
+        for field in ("total_us", "min_us", "max_us"):
+            number(counter[field])
+        if not counter["min_us"] <= counter["max_us"] <= counter["total_us"]:
+            raise ValueError("Inconsistent phase totals")
+
+
+def validate_fetch_calls(stats, method, expected=1001):
+    if not isinstance(stats, dict):
+        raise ValueError("Missing native fetch route evidence")
+    wrapper = "ddbc::FetchMany_wrap" if method == "fetchmany" else "ddbc::FetchOne_wrap"
+    calls = 0
+    for timer in (wrapper, "ddbc::NativeCursor::fetch"):
+        if timer not in stats:
+            continue
+        counter = stats[timer]
+        if (
+            not isinstance(counter, dict)
+            or type(counter.get("calls")) is not int
+            or not 1 <= counter["calls"] <= expected
+        ):
+            raise ValueError("Invalid native fetch route count")
+        calls += counter["calls"]
+    if calls != expected:
+        raise ValueError("Native fetch route count mismatch")
 
 
 def validate(report, build_id=None, head=None, source=None, base=None):
@@ -241,42 +285,15 @@ def validate_samples(report, selected_cases=None):
                     if scenario["work"] != f"Rows: 1000; shape: {shape}; API: {method}; EOF: 1":
                         raise ValueError("Single-row workload identity mismatch")
                     if mode == "route":
-                        timer = (
-                            "ddbc::FetchMany_wrap"
-                            if method == "fetchmany"
-                            else "ddbc::FetchOne_wrap"
-                        )
                         stats = scenario["cpp"]
-                        if not isinstance(stats, dict) or not isinstance(stats.get(timer), dict):
-                            raise ValueError("Missing native fetch route evidence")
-                        if stats[timer].get("calls") != 1001:
-                            raise ValueError("Native fetch route count mismatch")
+                        validate_fetch_calls(stats, method)
                         constructor = stats.get("ddbc::FetchRow::construct_row", {})
                         if not isinstance(constructor, dict) or constructor.get("calls", 0) != (
                             expected_constructors(native_identity, method)
                         ):
                             raise ValueError("Native constructor route count mismatch")
                 for layer in ("cpp", "py"):
-                    stats = scenario[layer]
-                    if (
-                        not isinstance(stats, dict)
-                        or len(stats) > 300
-                        or (layer == "cpp" and mode != "latency" and not stats)
-                    ):
-                        raise ValueError("Missing or oversized profiling data")
-                    for label, counter in stats.items():
-                        text(label)
-                        if not label.startswith("ddbc::" if layer == "cpp" else "py::"):
-                            raise ValueError("Invalid phase prefix")
-                        if not isinstance(counter, dict):
-                            raise ValueError("Invalid phase counter")
-                        calls = counter["calls"]
-                        if type(calls) is not int or not 1 <= calls <= 100_000_000:
-                            raise ValueError("Invalid call count")
-                        for field in ("total_us", "min_us", "max_us"):
-                            number(counter[field])
-                        if not counter["min_us"] <= counter["max_us"] <= counter["total_us"]:
-                            raise ValueError("Inconsistent phase totals")
+                    validate_phases(name, layer, scenario[layer], mode)
     return report
 
 
@@ -314,10 +331,10 @@ def route_description(report, method):
     for side in ("base", "candidate"):
         identity = report["pairs"][0][side]["provenance"]
         descriptions.append(
-            f"{side}: binding={identity['guarded_row']}, default {method} native Row="
+            f"{side}: FetchRow binding={identity['guarded_row']}, default {method} FetchRow="
             f"{bool(expected_constructors(identity, method))}"
         )
-    return "; ".join(descriptions) + "."
+    return "; ".join(descriptions) + ". NativeCursor dispatch is recorded separately."
 
 
 def validate_python_sources(report):
@@ -501,7 +518,7 @@ def render_ci_reports(reports, head, build_id, issues=()):
     artifact_note = "Raw samples and logs are attached to the ADO run as `profiler-*` artifacts."
     body = body.replace(
         artifact_note,
-        "This headline uses the original 22-task profiling-enabled diagnostics; separate "
+        f"This headline uses the {len(CASES)}-task profiling-enabled diagnostics; separate "
         "OFF/OFF latency and ON/OFF route measurements, when available, are retained in the raw artifacts "
         "and are not headline inputs.\n\n" + artifact_note,
         1,

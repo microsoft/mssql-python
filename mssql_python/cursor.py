@@ -16,6 +16,7 @@ import logging
 import uuid
 import datetime
 import warnings
+from importlib import import_module
 from typing import List, Mapping, Union, Any, Optional, Tuple, Sequence, TYPE_CHECKING, Iterable
 from mssql_python.constants import ConstantsDDBC as ddbc_sql_const, SQLTypes
 from mssql_python.helpers import check_error, connstr_to_pycore_params
@@ -28,7 +29,7 @@ from mssql_python.exceptions import (
     OperationalError,
     DatabaseError,
 )
-from mssql_python.row import Row
+from mssql_python.row import Row, _ColumnNames
 from mssql_python.perf_timer import perf_phase, perf_start, perf_stop
 from mssql_python import get_settings
 from mssql_python.parameter_helper import (
@@ -54,6 +55,7 @@ _DEFAULT_NATIVE_ROW_ROUTE = {
 }
 _DEFAULT_NATIVE_FETCH_ONE = ddbc_bindings.DDBCSQLFetchOne
 _DEFAULT_NATIVE_FETCH_MANY = ddbc_bindings.DDBCSQLFetchMany
+_DEFAULT_CONSTRUCT_ROWS = ddbc_bindings.construct_rows
 _NATIVE_ROW_PLAN = object()
 
 
@@ -91,6 +93,8 @@ ODBC3_TEMPORAL_SQL_TYPES = {
     ddbc_sql_const.SQL_TIME.value: ddbc_sql_const.SQL_TYPE_TIME.value,
     ddbc_sql_const.SQL_TIMESTAMP.value: ddbc_sql_const.SQL_TYPE_TIMESTAMP.value,
 }
+_SQL_HANDLE_STMT = ddbc_sql_const.SQL_HANDLE_STMT.value
+_SQL_NO_DATA = ddbc_sql_const.SQL_NO_DATA.value
 
 
 def _string_only_output_converter(converter):
@@ -362,7 +366,8 @@ class _ArrowReader:
         self._inner = None
 
 
-class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-methods
+# pylint: disable=too-many-instance-attributes,too-many-public-methods
+class Cursor:
     """
     Represents a database cursor, which is used to manage the context of a fetch operation.
 
@@ -1555,7 +1560,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         # Snapshot canonical column names once per result set (identity-tracked against
         # self.description) so each Row carries stable names even after the cursor is reused.
         if self.description is not None and self._result_columns_src is not self.description:
-            self._cached_result_columns = tuple(col_desc[0] for col_desc in self.description)
+            self._cached_result_columns = _ColumnNames(col_desc[0] for col_desc in self.description)
             self._result_columns_src = self.description
 
         return column_map, converter_map, self._cached_column_map_lower
@@ -1681,6 +1686,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
     def _reset_rownumber(self) -> None:
         """Reset the rownumber tracking when starting a new result set."""
+        ddbc_bindings._invalidate_native_fetch(self)
         self._rownumber = -1
         self._next_row_index = 0
         self._has_result_set = True
@@ -1725,6 +1731,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
         This should be called when the result set is cleared or when the cursor is reset.
         """
+        ddbc_bindings._invalidate_native_fetch(self)
         self._rownumber = -1
         self._has_result_set = False
         self._skip_increment_for_next_fetch = False
@@ -2788,22 +2795,15 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                                 f"Failed to convert parameter to Decimal at row "
                                 f"{row_index}, column {i} (value type: {type(val).__name__})"
                             )
-                            # Split str(val) from the decimal parse so we only chain a
-                            # cause we know is value-free. decimal.DecimalException
-                            # messages (e.g. ConversionSyntax) never echo the input, so
-                            # they are safe to preserve for debugging. str(val) itself
-                            # or any other error could carry the value in its message
-                            # and surface through __cause__ / formatted tracebacks, so
-                            # those are re-raised with the chain suppressed (from None).
+                            # Raise outside the handler so conversion exceptions are
+                            # not retained as context with rejected input.
+                            conversion_failed = False
                             try:
                                 val_text = str(val)
-                            except Exception:  # pylint: disable=broad-exception-caught
-                                raise ValueError(err_msg) from None
-                            try:
                                 processed_row[i] = format(decimal.Decimal(val_text), "f")
-                            except decimal.DecimalException as e:
-                                raise ValueError(err_msg) from e
                             except Exception:  # pylint: disable=broad-exception-caught
+                                conversion_failed = True
+                            if conversion_failed:
                                 raise ValueError(err_msg) from None
                 processed_parameters.append(processed_row)
 
@@ -2925,25 +2925,26 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             # On error, don't increment rownumber - rethrow the error
             raise
 
-    def _finish_fetchone(self, ret, row_data, native=False):
-        check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
+    def _complete_fetchone(self, row_data, ret):
+        """Complete an already-consumed fetch, including mutation/error fallback."""
+        return self._finish_fetchone(ret, row_data)
 
-        if ret == ddbc_sql_const.SQL_NO_DATA.value:
-            # No more data available
+    def _finish_fetchone(self, ret, row_data, native=False):
+        check_error(_SQL_HANDLE_STMT, self.hstmt, ret)
+        if ret == _SQL_NO_DATA:
             if self._next_row_index == 0 and self.description is not None:
                 self.rowcount = 0
             return None
 
-        # Update internal position after successful fetch
         if self._skip_increment_for_next_fetch:
             self._skip_increment_for_next_fetch = False
             self._next_row_index += 1
         else:
             self._increment_rownumber()
-
         self.rowcount = self._next_row_index
+        return self._wrap_fetchone(row_data, native)
 
-        # Get column and converter maps
+    def _wrap_fetchone(self, row_data, native=False):
         column_map, converter_map, column_map_lower = self._get_column_and_converter_maps()
         started = perf_start()
         try:
@@ -3035,8 +3036,12 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             # On error, don't increment rownumber - rethrow the error
             raise
 
+    def _complete_fetchmany(self, rows_data, ret):
+        """Complete a batch without issuing another fetch on deoptimization."""
+        return self._finish_fetchmany(ret, rows_data)
+
     def _finish_fetchmany(self, ret, rows_data, native=False, size=1):
-        check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
+        check_error(_SQL_HANDLE_STMT, self.hstmt, ret)
 
         # Update rownumber for the number of rows actually fetched
         if rows_data and self._has_result_set:
@@ -3049,8 +3054,9 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             self.rowcount = 0
         else:
             self.rowcount = self._next_row_index
+        return self._wrap_fetchmany(rows_data, native, size)
 
-        # Get column and converter maps
+    def _wrap_fetchmany(self, rows_data, native=False, size=1):
         column_map, converter_map, column_map_lower = self._get_column_and_converter_maps()
 
         # Convert raw data to Row objects
@@ -3064,6 +3070,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                     and len(rows_data) == 1
                     and Row is _DEFAULT_ROW_TYPE
                     and Row._fast_create is _DEFAULT_FAST_ROW_CREATE
+                    and ddbc_bindings.construct_rows is _DEFAULT_CONSTRUCT_ROWS
                 ):
                     if native and not started and _native_row_eligible(Row):
                         row_type = Row
@@ -3142,7 +3149,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 )
 
             # Check for errors
-            check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
+            check_error(_SQL_HANDLE_STMT, self.hstmt, ret)
 
             # Update rownumber for the number of rows actually fetched
             if rows_data and self._has_result_set:
@@ -3420,6 +3427,15 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             # If describe fails, there might be no results in this result set
             self.description = None
 
+        # Update rowcount for the new result, as execute() does: -1 for a
+        # result set, the affected-row count for INSERT/UPDATE/DELETE/MERGE.
+        # Without this, rowcount keeps the value of the first statement of a
+        # multi-statement batch (pyodbc refreshes it here too).
+        if self.description:
+            self.rowcount = -1
+        else:
+            self.rowcount = ddbc_bindings.DDBCSQLRowCount(self.hstmt)
+
         logger.debug(
             "nextset: Moved to next result set - column_count=%d",
             len(self.description) if self.description else 0,
@@ -3580,9 +3596,10 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
     @staticmethod
     def _bulkcopy_core_and_validate(table_name, batch_size, timeout):
         """Import the native core and validate the args shared by ``bulkcopy``
-        and ``bulkcopy_arrow``. Returns the imported ``mssql_py_core`` module."""
+        and ``bulkcopy_arrow``. Returns the native ``mssql_py_core`` extension."""
         try:
-            import mssql_py_core
+            # Upgrading from a bundled core can remove the package's __init__.py.
+            mssql_py_core = import_module("mssql_py_core.mssql_py_core")
         except ImportError as exc:
             logger.error("bulkcopy: Failed to import mssql_py_core module")
             raise ImportError(
@@ -4319,3 +4336,10 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             are managed automatically by the underlying driver.
         """
         # This is a no-op - buffer sizes are managed automatically
+
+
+# Installed only where CPython supplies public dictionary/type/function watchers.
+# Python 3.10/3.11 and free-threaded builds retain the methods above.
+from mssql_python._native_fetch import install as _install_native_fetch
+
+_NATIVE_FETCH_RUNTIME = _install_native_fetch(Cursor, Row, globals())

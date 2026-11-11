@@ -3,17 +3,21 @@
 
 #pragma once
 
-// pybind11.h must be the first include
-#include <cstring>
-#include <exception>
-#include <memory>
-#include <optional>
+// Python.h must precede standard-library headers so its feature-test macros
+// are established before libc headers consume them.
+#include <Python.h>
 #include <pybind11/chrono.h>
 #include <pybind11/complex.h>
 #include <pybind11/functional.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/pytypes.h>  // Add this line for datetime support
 #include <pybind11/stl.h>
+
+#include <atomic>
+#include <cstring>
+#include <exception>
+#include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -289,6 +293,9 @@ struct DescribedParamInfo {
 struct ConnectionCleanupState {
     std::mutex mutex;
     bool disconnected = false;  // Protected by mutex, shared with every child.
+    // Unlike weak_ptr expiration, this count includes destructors still freeing handles.
+    std::atomic<size_t> childStatementCount{0};
+    std::atomic<bool> childFreeFailed{false};  // Sticky for this physical connection.
 };
 
 class SqlHandle {

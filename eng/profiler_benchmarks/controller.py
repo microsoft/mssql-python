@@ -32,6 +32,8 @@ from .report import (
     expected_constructors,
     validate_python_sources,
     validate_samples,
+    validate_phases,
+    validate_fetch_calls,
 )
 from . import workloads
 
@@ -285,6 +287,11 @@ _PLAIN_COMPLETION_ROUTE = (
 _FETCH_OPTIONS_ROUTE = (
     "6c8545f38956380e22b8cc9376e215e032d45ec68d1a29c669201f09477ec507"  # DevSkim: ignore DS173237
 )
+# These Python fallbacks do not use FetchRow; the installed native cursor has
+# separate NativeCursor::fetch evidence in route measurements.
+_NATIVE_CURSOR_PYTHON_ROUTE = (
+    "73c4ce6daca4d9a9aa16384644d2b37473a4c2fabdeaf67434db013190a1643e"  # DevSkim: ignore DS173237
+)
 
 
 def python_source_identity(source_root, revision):
@@ -364,7 +371,12 @@ def python_source_identity(source_root, revision):
     fingerprint = hashlib.sha256(
         json.dumps(methods, ensure_ascii=True, separators=(",", ":")).encode()
     ).hexdigest()
-    if fingerprint in (_LEGACY_PYTHON_ROUTE, _PLAIN_COMPLETION_ROUTE, _FETCH_OPTIONS_ROUTE):
+    if fingerprint in (
+        _LEGACY_PYTHON_ROUTE,
+        _PLAIN_COMPLETION_ROUTE,
+        _FETCH_OPTIONS_ROUTE,
+        _NATIVE_CURSOR_PYTHON_ROUTE,
+    ):
         values = (False, False, False)
     elif fingerprint == _LEGACY_FUSED_ROUTE:
         values = (True, True, True)
@@ -457,13 +469,9 @@ def fetch_worker(args, mode):
                 checkpoint(name)
                 result = cases[name](conn, ctx)
                 if mode == "route":
-                    timer = (
-                        "ddbc::FetchMany_wrap"
-                        if name.endswith("fetchmany")
-                        else "ddbc::FetchOne_wrap"
+                    validate_fetch_calls(
+                        result["cpp"], name.split("_")[1], workloads.SINGLE_ROW_COUNT + 1
                     )
-                    if result["cpp"].get(timer, {}).get("calls") != workloads.SINGLE_ROW_COUNT + 1:
-                        raise RuntimeError("Native fetch call count does not match the workload")
                     constructors = (
                         result["cpp"].get("ddbc::FetchRow::construct_row", {}).get("calls", 0)
                     )
@@ -518,8 +526,10 @@ def worker(args):
                 result = profiler.run(name)[0]
             if result["cpp"] is None or result["py"] is None:
                 raise RuntimeError(f"Scenario {name} was skipped")
-            if not result["cpp"]:
+            if not result["cpp"] and name != "row_to_dict":
                 raise RuntimeError(f"Scenario {name} has no native samples")
+            for layer in ("cpp", "py"):
+                validate_phases(name, layer, result[layer])
             output[name] = {key: result[key] for key in ("wall_ms", "cpp", "py")}
             output[name]["work"] = result.get("detail", "Connection: 1").split(" (")[0]
             args.output.write_text(

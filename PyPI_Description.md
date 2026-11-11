@@ -35,23 +35,21 @@ PyBind11 provides:
 - Memory-safe bindings
 - Clean and Pythonic API, while performance-critical logic remains in robust, maintainable C++.
  
-## What's new in v1.15.0
+## What's new in v1.17.0
 
 ### Enhancements
 
-- **Faster parameterized queries with `setinputsizes()`** - Queries that declare parameter types up front now execute measurably faster (up to ~50%), especially repeated `execute()` workloads. No code changes needed (#736).
-- **`memoryview` Support in `Binary()`** - `Binary()` now accepts `memoryview` objects in addition to existing bytes-like inputs (#741).
-- **Module-Level SQL Server Type Constants** - SQL Server-specific type constants are now available directly from the `mssql_python` module for simpler API access (#764).
+- **Reduced Pooled Connection Return Work** - Proven-clean pooled connections avoid redundant sanitation while transaction, failure-discard, capacity, and native handle-lifetime protections remain in place (#820).
 
 ### Bug Fixes
 
-- **Concurrent Logging No Longer Deadlocks** - Logging now avoids GIL and mutex lock-order inversions during concurrent multithreaded use (#678).
-- **Correct Rust Core in Windows ARM64 Wheels** - Windows ARM64 wheels now vendor the matching `mssql_py_core` binary, restoring installation and bulk-copy compatibility (#737).
-- **Reliable Package-Local DLL Loading on Windows** - Bundled driver and authentication DLLs are resolved from package-local directories for more reliable deployment (#735).
-- **Consistent Decimal Parameter Binding** - `Decimal` values are now bound as `SQL_NUMERIC` regardless of their value, preventing inconsistent parameter typing (#742).
-- **ODBC 3.x Parameter Types** - Parameter binding now uses ODBC 3.x types instead of obsolete ODBC 2.x types for improved standards compatibility (#758).
-- **Database Name Metadata Is Decoded** - `Connection.getinfo(SQL_DATABASE_NAME)` now returns correctly decoded text (#771).
-- **Mixed Cursor Cleanup No Longer Crashes at Shutdown** - Cleanup for connections with mixed cursor states no longer causes a process-shutdown crash (#772).
+- **Reliable Bulk Copy After Upgrades** - Bulk copy and async loading import the native Rust extension directly, so they continue to work after upgrading from 1.15.0 even when the shared package initializer is missing (#860).
+- **Bounded Pooled Connection Checkout** - Validation of an unresponsive pooled socket now observes the configured login timeout and opens a replacement instead of probing stale sockets indefinitely (#859).
+- **Accurate `nextset()` Row Counts** - Moving to the next result now refreshes `rowcount` for subsequent data-modification statements and resets it for row-producing results (#864).
+- **PEP 249 `Timestamp()` Compatibility** - The `microsecond` argument is optional and defaults to zero, so the standard six-argument constructor works as specified (#872).
+- **UTF-8 Bulk Copy Encoding** - Narrow values now honor UTF-8 flags and SQL sort IDs when encoded for bulk copy, preventing multibyte data failures against UTF-8 destinations (#875, via `mssql-python-rs`).
+- **Bulk Copy Identifier Validation** - Server-qualified four-part destinations are rejected before metadata retrieval or command generation; valid targets remain limited to `database.schema.table` (#875, via `mssql-python-rs`).
+- **Preserved Bulk Copy Datetime Precision** - String values targeting `DATETIME2` and `DATETIMEOFFSET` preserve seven fractional digits, trailing `Z`, and supported ISO forms without Python-version-dependent truncation (#875, via `mssql-python-rs`).
 
 For more information, please visit the project link on Github: https://github.com/microsoft/mssql-python
  

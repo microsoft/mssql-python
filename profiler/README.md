@@ -31,6 +31,14 @@ Recording supports worker threads; independent concurrent profiling sessions are
 not supported. Enabled instrumentation adds bookkeeping overhead, so compare runs
 using the same profiling configuration.
 
+Profiling does not disable native row-fetch dispatch. Eligible one-row fetches
+keep the same native path used without profiling and appear under
+`ddbc::NativeCursor::fetch` and `ddbc::FetchSingleRow`. Python fetch phases appear
+only when the Python fallback actually runs; their absence on a native fetch is
+not missing coverage or zero-cost Python work. Use a profiling-enabled native
+build to observe that path, and a separate uninstrumented build for release
+latency comparisons.
+
 ## How the timers are named
 
 Every timer has a prefix telling you which layer it belongs to:

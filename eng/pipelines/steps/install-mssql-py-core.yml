@@ -1,4 +1,4 @@
-# Step template: Install mssql-python-rs from the internal NuGet transport
+# Install the committed PyPI release, or the explicit MSSQL_PYTHON_RS_VERSION test override.
 #
 # Usage:
 #   # Windows (host)
@@ -54,7 +54,7 @@ steps:
 # Inside a Docker container
 - ${{ if eq(parameters.platform, 'container') }}:
   - script: |
-      docker exec ${{ parameters.containerName }} bash -c "
+      docker exec -e MSSQL_PYTHON_RS_VERSION ${{ parameters.containerName }} bash -c "
         ${{ parameters.venvActivate }}
         chmod +x eng/scripts/install-mssql-py-core.sh
         ./eng/scripts/install-mssql-py-core.sh

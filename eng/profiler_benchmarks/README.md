@@ -12,7 +12,7 @@ python -m eng.profiler_benchmarks.controller --base main --candidate HEAD \
 python -m eng.profiler_benchmarks.report profiler-results/report.json
 ```
 
-The fixed registry has 22 tasks. `--scenarios` runs a local subset, but subset
+The fixed registry has 23 tasks. `--scenarios` runs a local subset, but subset
 reports remain incomplete and cannot produce a verdict.
 
 `lob_varchar_256k_fetchall` fetches one 256 KiB `VARCHAR(MAX)` value to exercise
@@ -26,11 +26,37 @@ validation (including zero), EOF validation, and diagnostic checks are outside
 the timed fetch window. Both revisions run the same workload; the report's
 improvement thresholds are unchanged.
 
+`row_to_dict` measures **warm-only** conversion of 10,000 real cursor-fetched rows
+with 32 unique integer columns and deterministic NULLs using `dict(row._mapping)`.
+It uses the existing `#perf_test` fixture and selects the first 10,000 rows in `id`
+order. All 32 output values are NULL when the source `int_col` is divisible by 7.
+SQL and expected values are constructed, rows are fetched, and every row's
+mapping is converted once before timing on both revisions. Only construction and
+retention of the 10,000 output dictionaries is timed; fetch, cold metadata
+preparation, key/order/value/type/NULL checks, row counts, cursor diagnostics,
+and cleanup are excluded. This is one additional workload, not a cold/warm or
+width matrix.
+
+This conversion has no guaranteed instrumented native phase, so **only**
+`row_to_dict` permits an empty native diagnostics dictionary. Skipped results,
+malformed counters, and missing native samples from the other 22 tasks remain
+invalid in both the worker and report validation. The row uses the existing
+paired wall-time comparison and unchanged thresholds: it can demonstrate an
+observed main-relative improvement, not assert a speedup in advance or establish
+pyodbc superiority or broader performance qualification.
+
 ## Measurement contract
 
 CI uses the PR merge's first parent as the exact base. It reuses the
 profiling-enabled candidate build after pytest and builds the base separately.
 Fresh processes run five measured pairs after one warmup pair in alternating order.
+
+Single-row route measurements count both Python-to-native fetch wrappers and the
+cursor-scoped `NativeCursor::fetch` dispatch, requiring exactly 1,000 row fetches
+plus EOF in total. The version-1 `row_route` source declaration describes the
+older `FetchRow` constructor path, not whether cursor-scoped native dispatch ran.
+The latter is recorded separately in the native counters. Profiling-OFF latency
+samples remain free of phase counters; this does not relax diagnostics validation.
 
 Workers have six minutes each. CI allows 90 minutes inside a 100-minute step and
 160-minute job; local runs receive 105 minutes because they build both revisions.
