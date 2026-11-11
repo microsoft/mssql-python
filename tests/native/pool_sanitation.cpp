@@ -159,7 +159,11 @@ SQLRETURN SQL_API endTran(SQLSMALLINT, SQLHANDLE dbc, SQLSMALLINT completion) {
 }
 
 SQLRETURN SQL_API executeDirect(SQLHSTMT statement, SQLWCHAR* query, SQLINTEGER) {
-    const auto sql = dupeSqlWCharAsUtf16Le(query, std::char_traits<SQLWCHAR>::length(query));
+    size_t length = 0;
+    while (query[length] != 0) {
+        ++length;
+    }
+    const auto sql = dupeSqlWCharAsUtf16Le(query, length);
     if (duringRollbackBatch) duringRollbackBatch();
     auto& handle = *handles.at(handles.at(statement)->parent);
     if (handle.resetPending) {
