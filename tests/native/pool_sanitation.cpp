@@ -4,6 +4,7 @@
 #include "connection/connection.h"
 #include "connection/connection_pool.h"
 #include "logger_bridge.hpp"
+#include "utf_utils.h"
 #include <pybind11/embed.h>
 #include <algorithm>
 #include <array>
@@ -37,6 +38,7 @@ std::vector<SQLULEN> loginTimeouts;
 std::function<void()> duringFree;
 std::function<void()> duringRollbackBatch;
 std::function<void()> duringReset;
+bool rejectReadCommitted = false;
 
 struct CallbackScope {
     std::function<void()>& hook;
@@ -156,7 +158,8 @@ SQLRETURN SQL_API endTran(SQLSMALLINT, SQLHANDLE dbc, SQLSMALLINT completion) {
     return ret;
 }
 
-SQLRETURN SQL_API executeDirect(SQLHSTMT statement, SQLWCHAR*, SQLINTEGER) {
+SQLRETURN SQL_API executeDirect(SQLHSTMT statement, SQLWCHAR* query, SQLINTEGER) {
+    const auto sql = dupeSqlWCharAsUtf16Le(query, std::char_traits<SQLWCHAR>::length(query));
     if (duringRollbackBatch) duringRollbackBatch();
     auto& handle = *handles.at(handles.at(statement)->parent);
     if (handle.resetPending) {
@@ -164,6 +167,10 @@ SQLRETURN SQL_API executeDirect(SQLHSTMT statement, SQLWCHAR*, SQLINTEGER) {
         handle.resetPending = false;
     }
     auto ret = record("rollback_batch");
+    if (rejectReadCommitted &&
+        sql.find(u"SET TRANSACTION ISOLATION LEVEL READ COMMITTED") != std::u16string::npos) {
+        ret = SQL_ERROR;
+    }
     if (SQL_SUCCEEDED(ret)) {
         handle.transaction = handle.pendingWork = false;
     }
@@ -385,6 +392,7 @@ void resetScenario() {
     calls.clear();
     commits = logins = 0;
     loginTimeouts.clear();
+    rejectReadCommitted = false;
 }
 }  // namespace
 
@@ -411,6 +419,15 @@ int main() {
         std::cout << "PASS " << name << '\n';
     };
     try {
+        run("autocommit pool return does not require READ COMMITTED support", [] {
+            rejectReadCommitted = true;
+            auto connection = acquire();
+            auto statement = connection->allocStatementHandle();
+            startWork(statement);
+            statement.reset();
+            connection->close();
+            checkParked();
+        });
         run("getInfo size queries allow null output and length pointers", [] {
             Handle handle{SQL_HANDLE_DBC, nullptr};
             SQLSMALLINT length = 0;
