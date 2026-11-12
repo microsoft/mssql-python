@@ -496,10 +496,9 @@ def test_arrow_reader_gc_cleanup(cursor: mssql_python.Cursor):
     assert cursor.fetchone()[0] == 5
 
 
-@pytest.mark.stress  # large cross-join + 50ms timing race — flaky under CI CPU contention
+@pytest.mark.stress  # timing fuzz supplements the deterministic cancellation-boundary tests
 def test_arrow_reader_cancel_from_other_thread(cursor: mssql_python.Cursor):
-    """close() called from a separate thread must unblock an in-flight fetch
-    via SQLCancel and leave the parent Cursor reusable."""
+    """Concurrent close must stop streaming and leave the parent Cursor reusable."""
     import threading
     import time
 
@@ -513,7 +512,7 @@ def test_arrow_reader_cancel_from_other_thread(cursor: mssql_python.Cursor):
 
     def closer():
         try:
-            time.sleep(0.05)  # let the consumer get into a fetch
+            time.sleep(0.05)  # exercise varying close/fetch interleavings
             reader.close()
         except Exception as e:  # pragma: no cover - reported to main thread
             closer_exc.append(e)
@@ -559,6 +558,305 @@ def test_arrow_reader_cancel_from_other_thread(cursor: mssql_python.Cursor):
     # Parent cursor must still work after the cross-thread cancel.
     cursor.execute("select 99")
     assert cursor.fetchone()[0] == 99
+
+
+@pytest.mark.parametrize("consumer", ["iteration", "delegated", "c_stream"])
+@pytest.mark.parametrize("fetch_error", [False, True])
+def test_arrow_reader_close_waits_for_batch(cursor, monkeypatch, consumer, fetch_error):
+    """Close must fence a batch already admitted by any Arrow consumption path."""
+    import threading
+
+    reader = cursor.execute("select top 10 1 a from sys.objects").arrow_reader(batch_size=128)
+    stream = pa.RecordBatchReader.from_stream(reader) if consumer == "c_stream" else reader
+    read = next if consumer == "iteration" else lambda r: r.read_next_batch()
+    entered = threading.Event()
+    release = threading.Event()
+    requested = threading.Event()
+    close_done = threading.Event()
+    errors = []
+    close_errors = []
+    fetch = cursor._fetch_arrow_batch
+    state = reader._close_requested
+
+    class ObservedClose:
+        def request_close(self):
+            state.request_close()
+            requested.set()
+
+    reader._close_requested = ObservedClose()
+
+    def paused_fetch(*args):
+        entered.set()
+        assert release.wait(5), "batch was not released"
+        if fetch_error:
+            raise mssql_python.ProgrammingError("unrelated fetch failure", "synthetic diagnostic")
+        return fetch(*args)
+
+    monkeypatch.setattr(cursor, "_fetch_arrow_batch", paused_fetch)
+
+    def consume():
+        try:
+            read(stream)
+        except StopIteration:
+            pass
+        except Exception as error:
+            errors.append(error)
+
+    def close():
+        try:
+            reader.close()
+        except Exception as error:
+            close_errors.append(error)
+        finally:
+            close_done.set()
+
+    worker = threading.Thread(target=consume, daemon=True)
+    closer = threading.Thread(target=close, daemon=True)
+    worker.start()
+    try:
+        assert entered.wait(5), "consumer did not enter the batch"
+        closer.start()
+        assert requested.wait(5), "close request was not published"
+        assert not close_done.is_set(), "close returned before the active batch completed"
+    finally:
+        release.set()
+        worker.join(5)
+        if closer.ident is not None:
+            closer.join(5)
+        reader.close()
+        if consumer == "c_stream":
+            stream.close()
+
+    assert not worker.is_alive() and not closer.is_alive()
+    assert not close_errors
+    if fetch_error:
+        assert len(errors) == 1
+        # Arrow's C stream translates the Python exception to ArrowInvalid.
+        assert "unrelated fetch failure" in str(errors[0])
+        if consumer != "c_stream":
+            assert isinstance(errors[0], mssql_python.ProgrammingError)
+    else:
+        assert not errors
+    assert reader.closed
+    cursor.execute("select 99")
+    assert cursor.fetchone()[0] == 99
+
+
+def test_arrow_reader_idle_close_request_does_not_cancel(cursor):
+    """An idle request must not close the statement before iterator cleanup."""
+    from mssql_python import ddbc_bindings
+
+    reader = cursor.execute("select top 10 1 a from sys.objects").arrow_reader(batch_size=2)
+    try:
+        assert next(reader).num_rows == 2
+        reader._close_requested.request_close()
+        assert ddbc_bindings.DDBCSQLNumResultCols(cursor.hstmt) == 1
+        with pytest.raises(StopIteration):
+            reader.read_next_batch()
+    finally:
+        reader.close()
+    cursor.execute("select 99")
+    assert cursor.fetchone()[0] == 99
+
+
+def test_arrow_reader_close_before_first_batch_releases_cursor(cursor, monkeypatch):
+    """The generator's unstarted state must not skip server-side cleanup."""
+    reader = cursor.execute("select 1 a").arrow_reader(batch_size=2)
+    handle_type = type(cursor.hstmt)
+    close_cursor = handle_type._close_cursor
+    calls = []
+
+    def observed_close(handle):
+        calls.append(handle)
+        close_cursor(handle)
+
+    monkeypatch.setattr(handle_type, "_close_cursor", observed_close)
+    reader.close()
+    reader.close()
+    assert calls == [cursor.hstmt]
+    assert cursor.rowcount == -1
+    cursor.execute("select 99")
+    assert cursor.fetchone()[0] == 99
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        "partial_cancel",
+        "closing_cancel",
+        "closing_hy007",
+        "closing_hy010",
+        "closing_24000",
+        "closing_error",
+        "closing_mixed",
+    ],
+)
+def test_arrow_reader_native_cancel_boundary(outcome):
+    """Interpose native ODBC calls in an isolated process, never shared fixtures."""
+    import ctypes
+    import subprocess
+    import sys
+    from pathlib import Path
+    from mssql_python import ddbc_bindings
+
+    library = ctypes.CDLL(ddbc_bindings.module.__file__)
+    try:
+        ctypes.c_void_p.in_dll(library, "SQLFetch_ptr")
+    except ValueError:
+        pytest.skip("Requires exported ODBC function pointers")
+    code = (
+        "import runpy, sys; runpy.run_path(sys.argv[1])['_arrow_native_cancel_probe'](sys.argv[2])"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code, str(Path(__file__).resolve()), outcome],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, (result.stdout, result.stderr)
+
+
+def _arrow_native_cancel_probe(outcome):
+    import ctypes
+    import os
+    import threading
+    from mssql_python import ddbc_bindings
+
+    library = ctypes.CDLL(ddbc_bindings.module.__file__)
+    callback = ctypes.WINFUNCTYPE if os.name == "nt" else ctypes.CFUNCTYPE
+    fetch_type = callback(ctypes.c_short, ctypes.c_void_p)
+    diag_type = callback(
+        ctypes.c_short,
+        ctypes.c_short,
+        ctypes.c_void_p,
+        ctypes.c_short,
+        ctypes.POINTER(ctypes.c_ushort),
+        ctypes.POINTER(ctypes.c_int),
+        ctypes.POINTER(ctypes.c_ushort),
+        ctypes.c_short,
+        ctypes.POINTER(ctypes.c_short),
+    )
+    pointers = {
+        name: ctypes.c_void_p.in_dll(library, name)
+        for name in ("SQLFetch_ptr", "SQLCancel_ptr", "SQLGetDiagRec_ptr")
+    }
+    entered = threading.Event()
+    cancel_entered = threading.Event()
+    release_fetch = threading.Event()
+    release_cancel = threading.Event()
+    cancel_done = threading.Event()
+    finished = threading.Event()
+    errors = []
+    close_errors = []
+    violations = []
+    calls = []
+
+    @fetch_type
+    def fetch(handle):
+        calls.append(handle)
+        ret = real_fetch(handle)
+        if ret != 0:
+            violations.append(("unexpected real fetch result", ret))
+        entered.set()
+        if outcome != "partial_cancel" and not release_fetch.wait(10):
+            violations.append("fetch release timed out")
+        return -1 if outcome not in ("partial_cancel", "closing_cancel", "closing_mixed") else 1
+
+    @fetch_type
+    def cancel(_handle):
+        cancel_entered.set()
+        if not release_cancel.wait(10):
+            violations.append("cancel release timed out")
+        cancel_done.set()
+        return 0
+
+    @diag_type
+    def diag(_kind, _handle, record, state, native, message, capacity, length):
+        if outcome != "partial_cancel" and not cancel_done.is_set():
+            violations.append("diagnostics raced SQLCancel")
+        if record > (2 if outcome == "closing_mixed" else 1):
+            return 100
+        text = {
+            "closing_error": "22003",
+            "closing_hy007": "HY007",
+            "closing_hy010": "HY010",
+            "closing_24000": "24000",
+            "closing_mixed": "22003" if record == 1 else "HY008",
+        }.get(outcome, "HY008")
+        for index, character in enumerate(text + "\0"):
+            state[index] = ord(character)
+        native[0] = 0
+        length[0] = 0
+        if capacity:
+            message[0] = 0
+        return 0
+
+    with mssql_python.connect(os.environ["DB_CONNECTION_STRING"]) as connection:
+        with connection.cursor() as cursor:
+            reader = cursor.execute(
+                "select top 1000 1 a from sys.objects o1, sys.objects o2"
+            ).arrow_reader(batch_size=128)
+            original = {name: pointer.value for name, pointer in pointers.items()}
+            real_fetch = fetch_type(original["SQLFetch_ptr"])
+
+            def consume():
+                try:
+                    next(reader)
+                except StopIteration:
+                    pass
+                except Exception as error:
+                    errors.append(error)
+                finally:
+                    finished.set()
+
+            def close():
+                try:
+                    reader.close()
+                except Exception as error:
+                    close_errors.append(error)
+
+            worker = threading.Thread(target=consume, daemon=True)
+            closer = threading.Thread(target=close, daemon=True)
+            try:
+                pointers["SQLFetch_ptr"].value = ctypes.cast(fetch, ctypes.c_void_p).value
+                pointers["SQLCancel_ptr"].value = ctypes.cast(cancel, ctypes.c_void_p).value
+                pointers["SQLGetDiagRec_ptr"].value = ctypes.cast(diag, ctypes.c_void_p).value
+                worker.start()
+                assert entered.wait(5)
+                if outcome != "partial_cancel":
+                    closer.start()
+                    assert cancel_entered.wait(5)
+                    release_fetch.set()
+                    assert not finished.wait(0.1), "fetch escaped the cancellation fence"
+                release_cancel.set()
+                worker.join(5)
+                if closer.ident is not None:
+                    closer.join(5)
+                assert not worker.is_alive() and not closer.is_alive()
+            finally:
+                release_fetch.set()
+                release_cancel.set()
+                worker.join(5)
+                if closer.ident is not None:
+                    closer.join(5)
+                for name, pointer in pointers.items():
+                    pointer.value = original[name]
+                reader.close()
+
+            assert not violations, violations
+            assert not close_errors, close_errors
+            assert len(calls) == 1, "cancelled batch issued another SQLFetch"
+            if outcome not in ("partial_cancel", "closing_error", "closing_mixed"):
+                assert not errors, errors
+            else:
+                expected = (
+                    mssql_python.DataError
+                    if outcome in ("closing_error", "closing_mixed")
+                    else mssql_python.OperationalError
+                )
+                assert len(errors) == 1 and isinstance(errors[0], expected), errors
+            cursor.execute("select 99")
+            assert cursor.fetchone()[0] == 99
 
 
 def test_arrow_reader_diagnostics_drained_on_close(cursor: mssql_python.Cursor):

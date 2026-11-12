@@ -16,6 +16,7 @@ import logging
 import uuid
 import datetime
 import warnings
+import threading
 from importlib import import_module
 from typing import List, Mapping, Union, Any, Optional, Tuple, Sequence, TYPE_CHECKING, Iterable
 from mssql_python.constants import ConstantsDDBC as ddbc_sql_const, SQLTypes
@@ -94,6 +95,37 @@ def _normalize_time_param(value, c_type):
     return None
 
 
+class _ArrowBatchIterator:
+    """Serialize generator advancement with close, including delegated Arrow reads."""
+
+    def __init__(self, generator, state, cleanup):
+        self._generator = generator
+        self._state = state
+        self._cleanup = cleanup
+        self._lock = threading.Lock()
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        with self._lock:
+            if self._state.closed:
+                self._generator.close()
+                self._cleanup()
+                raise StopIteration
+            return next(self._generator)
+
+    @property
+    def gi_frame(self):
+        return self._generator.gi_frame
+
+    def close(self):
+        with self._lock:
+            self._generator.close()
+            # Closing a generator that has never been advanced skips its finally.
+            self._cleanup()
+
+
 class _ArrowReader:
     """RecordBatchReader-compatible wrapper that makes ``close()`` actually
     release server-side resources.
@@ -120,11 +152,11 @@ class _ArrowReader:
         block — so server-side cleanup runs symmetrically whether the user
         exhausts the reader, calls ``close()`` mid-iteration, exits a ``with``
         block, or just lets the reader be garbage-collected.  ``close()``
-        itself only has to (a) call ``SQLCancel`` to unblock any fetch in
-        flight on another thread and (b) close the generator; the
-        ``finally`` clause does the rest.
-      * ``SQLCancel`` is called *before* ``SQLFreeStmt(SQL_CLOSE)`` so a fetch
-        running on another thread returns cleanly first.  ``SQLCancel`` is
+        first requests shutdown, cancelling only an active native fetch.
+        Iterator advancement and generator close share a lock, including
+        when consumption bypasses this wrapper through an Arrow C stream.
+      * An in-flight ``SQLCancel`` completes before fetch diagnostics or
+        cleanup can run. ``SQLCancel`` is
         the single ODBC entry point (with the diag-record functions) that the
         spec marks as safe to call from a different thread than the one
         owning the statement.
@@ -161,7 +193,7 @@ class _ArrowReader:
         inner: "pyarrow.RecordBatchReader",
         generator,
         arrow_invalid_exc: type,
-        close_requested: list[bool],
+        close_requested,
     ) -> None:
         self._cursor = cursor
         self._inner = inner
@@ -203,9 +235,10 @@ class _ArrowReader:
         """
         if name.startswith("_"):
             raise AttributeError(name)
+        inner = self._inner
         if self._closed:
             raise self._arrow_invalid("Reader is closed")
-        return getattr(self._inner, name)
+        return getattr(inner, name)
 
     def __arrow_c_stream__(self, requested_schema=None):
         """Arrow PyCapsule Protocol — export as an Arrow C stream.
@@ -223,13 +256,14 @@ class _ArrowReader:
         further calls to ``read_next_batch()`` on this wrapper will fail
         with ``ArrowInvalid``.  That mirrors pyarrow's own semantics.
         """
+        inner = self._inner
         if self._closed:
             raise self._arrow_invalid("Reader is closed")
         # Delegate to the inner pyarrow reader.  pyarrow >= 14 exposes
         # ``__arrow_c_stream__`` directly on ``RecordBatchReader``; older
         # versions do not implement the protocol.  Fail explicitly rather
         # than silently returning something invalid.
-        inner_export = getattr(self._inner, "__arrow_c_stream__", None)
+        inner_export = getattr(inner, "__arrow_c_stream__", None)
         if inner_export is None:
             raise self._arrow_invalid(
                 "Arrow PyCapsule Protocol requires pyarrow>=14; "
@@ -242,9 +276,10 @@ class _ArrowReader:
         return self
 
     def __next__(self):
+        inner = self._inner
         if self._closed:
             raise self._arrow_invalid("Reader is closed")
-        return self._inner.read_next_batch()
+        return inner.read_next_batch()
 
     def __enter__(self):
         if self._closed:
@@ -302,20 +337,14 @@ class _ArrowReader:
         # Mark closed first so any racing read raises immediately, even if
         # the cleanup steps below fail and we end up retried later.
         self._closed = True
-        self._close_requested[0] = True
+        try:
+            self._close_requested.request_close()
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            logger.warning("arrow_reader.close: SQLCancel raised: %s", e)
 
-        # SQLCancel (cross-thread safe) — unblocks a fetch running on another
-        # thread so that the generator's finally clause can then run
-        # SQLFreeStmt(SQL_CLOSE) without risking the undefined-behaviour
-        # window of closing an HSTMT mid-fetch.  Safe no-op for an idle stmt.
-        cursor = self._cursor
-        if cursor is not None and not cursor.closed and cursor.hstmt is not None:
-            try:
-                cursor.hstmt._cancel()  # pylint: disable=protected-access
-            except Exception as e:  # pylint: disable=broad-exception-caught
-                logger.debug("arrow_reader.close: SQLCancel raised: %s", e)
-
-        # Close the generator — this raises GeneratorExit inside it, which
+        # Wait for any iterator advancement before closing the generator. The
+        # native close request interrupts a blocked fetch without taking this lock.
+        # Closing raises GeneratorExit inside the generator, which
         # runs the try/finally cleanup block (SQLFreeStmt + diag drain +
         # cursor bookkeeping reset).  If close() raises and the generator is
         # still alive (e.g. another thread is currently executing it), keep
@@ -3192,6 +3221,13 @@ class Cursor:
         Returns:
             A pyarrow RecordBatch object containing up to batch_size rows.
         """
+        batch = self._fetch_arrow_batch(batch_size)
+        assert batch is not None
+        return batch
+
+    def _fetch_arrow_batch(
+        self, batch_size: int, reader_state=None
+    ) -> Optional["pyarrow.RecordBatch"]:
         self._check_closed()  # Check if the cursor is closed
         pyarrow = self._ensure_pyarrow()
 
@@ -3202,9 +3238,11 @@ class Cursor:
         char_decoding = self._get_decoding_settings(ddbc_sql_const.SQL_CHAR.value)
         char_c_type = char_decoding.get("ctype", ddbc_sql_const.SQL_WCHAR.value)
         ret = ddbc_bindings.DDBCSQLFetchArrowBatch(
-            self.hstmt, capsules, max(batch_size, 0), char_c_type, self.messages
+            self.hstmt, capsules, max(batch_size, 0), char_c_type, self.messages, reader_state
         )
         check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
+        if reader_state is not None and ret == _SQL_NO_DATA:
+            return None
 
         batch = pyarrow.RecordBatch._import_from_c_capsule(*capsules)
 
@@ -3254,10 +3292,11 @@ class Cursor:
         The returned object is an ``_ArrowReader`` wrapper that behaves like
         ``pyarrow.RecordBatchReader``
         (``schema``, ``read_next_batch``, iteration, context manager) but
-        its ``close()`` is fully effective.  Cleanup is driven
-        by a ``try/finally`` block inside the underlying batch generator, so
-        the same teardown — ``SQLCancel`` to unblock any in-flight fetch on
-        another thread, ``SQLFreeStmt(SQL_CLOSE)`` to release the server-side
+        its ``close()`` is fully effective. Close requests prevent further batches,
+        cancel an active native fetch, and wait for iterator advancement before
+        cleanup. An already-running read may finish or terminate with cancellation.
+        Cleanup is shared with the underlying batch generator, so
+        the same teardown — ``SQLFreeStmt(SQL_CLOSE)`` to release the server-side
         cursor and locks, draining diagnostics into ``cursor.messages``, and
         resetting the parent ``Cursor``'s rownumber / ``rowcount`` state —
         runs whether the user (a) exhausts the reader normally, (b) calls
@@ -3282,69 +3321,80 @@ class Cursor:
         # can null out after cleanup, so a GC'd reader does not keep the
         # cursor pinned.
         cursor_ref = [self]
-        close_requested = [False]
+        close_requested = ddbc_bindings.module._ArrowReaderState(self.hstmt)
+        exhausted = False
 
-        def batch_generator():
-            exhausted = False
-            try:
-                while (batch := cursor_ref[0].arrow_batch(batch_size)).num_rows > 0:
-                    yield batch
-                exhausted = True
-            finally:
-                # Symmetric server-side teardown — runs on exhaustion,
-                # GeneratorExit (from close()), or an exception inside the
-                # body.  This is the single canonical cleanup site.
-                cur = cursor_ref[0]
-                cursor_ref[0] = None
-                if not cur.closed and cur.hstmt is not None:
-                    # Natural EOF was captured natively. A close/cancel request
-                    # (including a racing one) or an error still needs the drain.
-                    if not exhausted or close_requested[0]:
-                        try:
-                            cur.messages.extend(ddbc_bindings.DDBCSQLGetAllDiagRecords(cur.hstmt))
-                        except Exception as e:  # pylint: disable=broad-exception-caught
-                            logger.debug("arrow_reader cleanup: pre-close diag drain failed: %s", e)
-
-                    # 2) Release the server-side cursor & locks while keeping the
-                    #    HSTMT and prepared plan intact, so the parent Cursor can
-                    #    be re-executed.
-                    try:
-                        cur.hstmt._close_cursor()  # pylint: disable=protected-access
-                    except Exception as e:  # pylint: disable=broad-exception-caught
-                        # Elevated to WARNING: unlike the diag-drain failures
-                        # (which only cost us some warning text), a failed
-                        # SQLFreeStmt(SQL_CLOSE) leaves the server-side cursor
-                        # and its locks/tempdb resources open on SQL Server
-                        # until this parent Cursor is closed or re-executed.
-                        # DEBUG is typically disabled in production, so that
-                        # leak would be invisible; WARNING makes it visible.
-                        logger.warning(
-                            "arrow_reader cleanup: _close_cursor failed (%s); "
-                            "server-side cursor may remain open until this "
-                            "Cursor is closed or re-executed",
-                            e,
-                        )
-
-                    # 3) Drain diagnostics produced by SQL_CLOSE itself.  This
-                    #    runs unconditionally because SQL_CLOSE can return
-                    #    SQL_SUCCESS_WITH_INFO (a *success* code) and still leave
-                    #    warning records on the HSTMT diag stack; the previous
-                    #    "only on failure" path would silently drop those.
+        def cleanup():
+            # Symmetric server-side teardown — runs on exhaustion,
+            # GeneratorExit (from close()), or an exception inside the
+            # body.  This is the single canonical cleanup site.
+            cur = cursor_ref[0]
+            if cur is None:
+                return
+            cursor_ref[0] = None
+            if not cur.closed and cur.hstmt is not None:
+                # Natural EOF was captured natively. A close/cancel request
+                # (including a racing one) or an error still needs the drain.
+                if not exhausted or close_requested.closed:
                     try:
                         cur.messages.extend(ddbc_bindings.DDBCSQLGetAllDiagRecords(cur.hstmt))
                     except Exception as e:  # pylint: disable=broad-exception-caught
-                        logger.debug("arrow_reader cleanup: post-close diag drain failed: %s", e)
+                        logger.debug("arrow_reader cleanup: pre-close diag drain failed: %s", e)
 
-                    # 4) Reset cursor bookkeeping to a clean "no result set"
-                    #    state.  rowcount becomes -1 to signal that the prior
-                    #    result is no longer meaningful.
-                    try:
-                        cur._clear_rownumber()  # pylint: disable=protected-access
-                        cur.rowcount = -1
-                    except Exception as e:  # pylint: disable=broad-exception-caught
-                        logger.debug("arrow_reader cleanup: bookkeeping reset failed: %s", e)
+                # 2) Release the server-side cursor & locks while keeping the
+                #    HSTMT and prepared plan intact, so the parent Cursor can
+                #    be re-executed.
+                try:
+                    cur.hstmt._close_cursor()  # pylint: disable=protected-access
+                except Exception as e:  # pylint: disable=broad-exception-caught
+                    # Elevated to WARNING: unlike the diag-drain failures
+                    # (which only cost us some warning text), a failed
+                    # SQLFreeStmt(SQL_CLOSE) leaves the server-side cursor
+                    # and its locks/tempdb resources open on SQL Server
+                    # until this parent Cursor is closed or re-executed.
+                    # DEBUG is typically disabled in production, so that
+                    # leak would be invisible; WARNING makes it visible.
+                    logger.warning(
+                        "arrow_reader cleanup: _close_cursor failed (%s); "
+                        "server-side cursor may remain open until this "
+                        "Cursor is closed or re-executed",
+                        e,
+                    )
 
-        gen = batch_generator()
+                # 3) Drain diagnostics produced by SQL_CLOSE itself.  This
+                #    runs unconditionally because SQL_CLOSE can return
+                #    SQL_SUCCESS_WITH_INFO (a *success* code) and still leave
+                #    warning records on the HSTMT diag stack; the previous
+                #    "only on failure" path would silently drop those.
+                try:
+                    cur.messages.extend(ddbc_bindings.DDBCSQLGetAllDiagRecords(cur.hstmt))
+                except Exception as e:  # pylint: disable=broad-exception-caught
+                    logger.debug("arrow_reader cleanup: post-close diag drain failed: %s", e)
+
+                # 4) Reset cursor bookkeeping to a clean "no result set"
+                #    state.  rowcount becomes -1 to signal that the prior
+                #    result is no longer meaningful.
+                try:
+                    cur._clear_rownumber()  # pylint: disable=protected-access
+                    cur.rowcount = -1
+                except Exception as e:  # pylint: disable=broad-exception-caught
+                    logger.debug("arrow_reader cleanup: bookkeeping reset failed: %s", e)
+
+        def batch_generator():
+            nonlocal exhausted
+            try:
+                while not close_requested.closed:
+                    batch = cursor_ref[0]._fetch_arrow_batch(batch_size, close_requested)
+                    if batch is None or close_requested.closed:
+                        return
+                    if batch.num_rows == 0:
+                        exhausted = True
+                        return
+                    yield batch
+            finally:
+                cleanup()
+
+        gen = _ArrowBatchIterator(batch_generator(), close_requested, cleanup)
         inner = pyarrow.RecordBatchReader.from_batches(schema, gen)
         return _ArrowReader(self, inner, gen, pyarrow.ArrowInvalid, close_requested)
 
