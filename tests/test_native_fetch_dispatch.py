@@ -3,7 +3,6 @@
 
 """Mutation, lifetime and mechanism coverage for the native fetch prototype."""
 
-import cProfile
 from contextlib import contextmanager, nullcontext
 import gc
 from pathlib import Path
@@ -80,18 +79,23 @@ def _fetchone_window(profiling, enabled=True):
     if profiling is not None:
         assert profiling.is_enabled()
     before = profiling.get_stats() if profiling is not None else None
-    profile = cProfile.Profile()
+    calls = {}
+
+    def profile(frame, event, argument):
+        if event == "call":
+            code = frame.f_code
+            calls[code] = calls.get(code, 0) + 1
+
     observation = {}
-    profile.enable()
+    # cProfile can omit outer fallback frames around the native converter builder.
+    # Count Python call events directly; native operation assertions remain separate.
+    previous = sys.getprofile()
+    sys.setprofile(profile)
     try:
         yield observation
     finally:
-        profile.disable()
-        observation["python"] = {
-            entry.code: entry.callcount
-            for entry in profile.getstats()
-            if not isinstance(entry.code, str)
-        }
+        sys.setprofile(previous)
+        observation["python"] = calls
         after = profiling.get_stats() if profiling is not None else None
         observation["native"] = (
             {

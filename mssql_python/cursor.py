@@ -63,6 +63,11 @@ ODBC3_TEMPORAL_SQL_TYPES = {
 }
 _SQL_HANDLE_STMT = ddbc_sql_const.SQL_HANDLE_STMT.value
 _SQL_NO_DATA = ddbc_sql_const.SQL_NO_DATA.value
+_CONVERTER_ROW_BUILDER = ddbc_bindings._ConverterRowBuilder(Row, ddbc_bindings)
+
+
+def _native_converter_row():
+    return _CONVERTER_ROW_BUILDER.matches(Row)
 
 
 def _string_only_output_converter(converter):
@@ -2853,19 +2858,34 @@ class Cursor:
             self._refresh_decoding_cache()
         char_enc = self._cached_char_encoding
         wchar_enc = self._cached_wchar_encoding
+        native_converters = self._cached_converter_map
+        deferred_text = False
+        if native_converters and _native_converter_row():
+            deferred_text = True
 
         # Fetch raw data
         row_data = []
         try:
             with perf_phase("py::fetchone::cpp_call"):
-                ret = ddbc_bindings.DDBCSQLFetchOne(
-                    self.hstmt,
-                    row_data,
-                    char_enc,
-                    wchar_enc,
-                    self._cached_char_ctype,
-                    self.messages,
-                )
+                if deferred_text:
+                    ret = ddbc_bindings.DDBCSQLFetchOne(
+                        self.hstmt,
+                        row_data,
+                        char_enc,
+                        wchar_enc,
+                        self._cached_char_ctype,
+                        self.messages,
+                        native_converters,
+                    )
+                else:
+                    ret = ddbc_bindings.DDBCSQLFetchOne(
+                        self.hstmt,
+                        row_data,
+                        char_enc,
+                        wchar_enc,
+                        self._cached_char_ctype,
+                        self.messages,
+                    )
 
             check_error(_SQL_HANDLE_STMT, self.hstmt, ret)
             if ret == _SQL_NO_DATA:
@@ -2882,7 +2902,21 @@ class Cursor:
                 self._increment_rownumber()
             self.rowcount = self._next_row_index
             column_map, converter_map, column_map_lower = self._get_column_and_converter_maps()
+            if deferred_text and not converter_map:
+                ddbc_bindings.restore_output_converter_text(row_data)
+                deferred_text = False
             with perf_phase("py::fetchone::row_wrap"):
+                if deferred_text:
+                    return _CONVERTER_ROW_BUILDER.one(
+                        row_data,
+                        Row,
+                        converter_map,
+                        column_map,
+                        self,
+                        self._uuid_str_indices,
+                        column_map_lower,
+                        self._cached_result_columns,
+                    )
                 if not converter_map and not self._uuid_str_indices:
                     return Row._fast_create(
                         row_data, column_map, self, column_map_lower, self._cached_result_columns
@@ -2957,27 +2991,45 @@ class Cursor:
             self._refresh_decoding_cache()
         char_enc = self._cached_char_encoding
         wchar_enc = self._cached_wchar_encoding
+        native_converters = self._cached_converter_map
+        deferred_text = False
+        if native_converters and _native_converter_row():
+            deferred_text = True
 
         # Fetch raw data
         rows_data = []
         try:
             with perf_phase("py::fetchmany::cpp_call"):
-                ret = ddbc_bindings.DDBCSQLFetchMany(
-                    self.hstmt,
-                    rows_data,
-                    size,
-                    char_enc,
-                    wchar_enc,
-                    self._cached_char_ctype,
-                    self.messages,
-                )
+                if deferred_text:
+                    ret = ddbc_bindings.DDBCSQLFetchMany(
+                        self.hstmt,
+                        rows_data,
+                        size,
+                        char_enc,
+                        wchar_enc,
+                        self._cached_char_ctype,
+                        self.messages,
+                        native_converters,
+                    )
+                else:
+                    ret = ddbc_bindings.DDBCSQLFetchMany(
+                        self.hstmt,
+                        rows_data,
+                        size,
+                        char_enc,
+                        wchar_enc,
+                        self._cached_char_ctype,
+                        self.messages,
+                    )
 
+            if deferred_text:
+                return self._complete_fetchmany(rows_data, ret, deferred_text=True)
             return self._complete_fetchmany(rows_data, ret)
         except Exception:
             # On error, don't increment rownumber - rethrow the error
             raise
 
-    def _complete_fetchmany(self, rows_data, ret):
+    def _complete_fetchmany(self, rows_data, ret, deferred_text=False):
         """Complete a batch without issuing another fetch on deoptimization."""
         check_error(_SQL_HANDLE_STMT, self.hstmt, ret)
         if rows_data and self._has_result_set:
@@ -2986,12 +3038,28 @@ class Cursor:
         self.rowcount = (
             0 if len(rows_data) == 0 and self._next_row_index == 0 else self._next_row_index
         )
+        if deferred_text:
+            return self._wrap_fetchmany(rows_data, deferred_text=True)
         return self._wrap_fetchmany(rows_data)
 
-    def _wrap_fetchmany(self, rows_data):
+    def _wrap_fetchmany(self, rows_data, deferred_text=False):
         column_map, converter_map, column_map_lower = self._get_column_and_converter_maps()
+        if deferred_text and not converter_map:
+            for row_data in rows_data:
+                ddbc_bindings.restore_output_converter_text(row_data)
+            deferred_text = False
         uuid_idx = self._uuid_str_indices
         with perf_phase("py::fetchmany::row_wrap"):
+            if deferred_text:
+                return _CONVERTER_ROW_BUILDER.many(
+                    rows_data,
+                    globals(),
+                    converter_map,
+                    column_map,
+                    self,
+                    uuid_idx,
+                    column_map_lower,
+                )
             if not converter_map and not uuid_idx:
                 return ddbc_bindings.construct_rows(
                     rows_data,
@@ -3029,19 +3097,34 @@ class Cursor:
             self._refresh_decoding_cache()
         char_enc = self._cached_char_encoding
         wchar_enc = self._cached_wchar_encoding
+        native_converters = self._cached_converter_map
+        deferred_text = False
+        if native_converters and _native_converter_row():
+            deferred_text = True
 
         # Fetch raw data
         rows_data = []
         try:
             with perf_phase("py::fetchall::cpp_call"):
-                ret = ddbc_bindings.DDBCSQLFetchAll(
-                    self.hstmt,
-                    rows_data,
-                    char_enc,
-                    wchar_enc,
-                    self._cached_char_ctype,
-                    self.messages,
-                )
+                if deferred_text:
+                    ret = ddbc_bindings.DDBCSQLFetchAll(
+                        self.hstmt,
+                        rows_data,
+                        char_enc,
+                        wchar_enc,
+                        self._cached_char_ctype,
+                        self.messages,
+                        native_converters,
+                    )
+                else:
+                    ret = ddbc_bindings.DDBCSQLFetchAll(
+                        self.hstmt,
+                        rows_data,
+                        char_enc,
+                        wchar_enc,
+                        self._cached_char_ctype,
+                        self.messages,
+                    )
 
             # Check for errors
             check_error(_SQL_HANDLE_STMT, self.hstmt, ret)
@@ -3059,10 +3142,23 @@ class Cursor:
 
             # Get column and converter maps
             column_map, converter_map, column_map_lower = self._get_column_and_converter_maps()
-
+            if deferred_text and not converter_map:
+                for row_data in rows_data:
+                    ddbc_bindings.restore_output_converter_text(row_data)
+                deferred_text = False
             # Convert raw data to Row objects
             uuid_idx = self._uuid_str_indices
             with perf_phase("py::fetchall::row_wrap"):
+                if deferred_text:
+                    return _CONVERTER_ROW_BUILDER.many(
+                        rows_data,
+                        globals(),
+                        converter_map,
+                        column_map,
+                        self,
+                        uuid_idx,
+                        column_map_lower,
+                    )
                 if not converter_map and not uuid_idx:
                     return ddbc_bindings.construct_rows(
                         rows_data,
