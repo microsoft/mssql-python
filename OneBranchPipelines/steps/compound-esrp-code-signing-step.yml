@@ -67,7 +67,7 @@ steps:
   # -----------------------------------------------------------------------------
   # 1) Malware scan the native extension before signing (ESRP compliance gate).
   # -----------------------------------------------------------------------------
-  - task: EsrpMalwareScanning@5
+  - task: EsrpMalwareScanning@6
     displayName: 'ESRP MalwareScanning - Native extension'
     inputs:
       ConnectedServiceName: '${{ parameters.esrpConnectedServiceName }}'
@@ -84,7 +84,7 @@ steps:
   # -----------------------------------------------------------------------------
   # 2) Authenticode-sign the native extension with CP-230012.
   # -----------------------------------------------------------------------------
-  - task: EsrpCodeSigning@5
+  - task: EsrpCodeSigning@6
     displayName: 'ESRP CodeSigning - Native extension (.pyd)'
     inputs:
       ConnectedServiceName: '${{ parameters.esrpConnectedServiceName }}'

@@ -13,7 +13,7 @@ from pathlib import Path
 
 from eng.scripts.download_mssql_python_rs_wheels import file_sha256
 
-from . import archive, contracts, environment, verify
+from . import archive, contracts, environment, inputs, verify
 from .formats import elf, macho, pe
 
 _KNOWN_SUBDIRS = ("win-64", "win-arm64", "osx-64", "osx-arm64", "linux-64", "linux-aarch64")
@@ -167,19 +167,7 @@ def gather_wheels(
             receipt_path = Path(rs_dir, "transport.json")
             if receipt_path.exists():
                 receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
-                if not isinstance(receipt, dict) or not isinstance(
-                    receipt.get("wheel_sha256"), dict
-                ):
-                    raise ValueError("RS transport receipt must contain a wheel_sha256 mapping")
-                if receipt.get("distribution_version") != rs_ver:
-                    raise ValueError("RS transport receipt disagrees with the binding dependency")
-                if rs_version_file is not None:
-                    pin_file = Path(rs_version_file).with_name("mssql-python-rs-nuget.version")
-                    transport = pin_file.read_text(encoding="ascii").strip()
-                    if not transport or receipt.get("transport_version") != transport:
-                        raise ValueError(
-                            "RS transport receipt disagrees with the producer transport pin"
-                        )
+                inputs.validate_rs_transport(receipt, {"mssql-python-rs": rs_ver})
                 for wheel in rs:
                     if receipt["wheel_sha256"].get(Path(wheel).name) != file_sha256(Path(wheel)):
                         raise ValueError(
@@ -302,10 +290,15 @@ def build_packages(
     croot = os.path.join(os.path.dirname(os.path.abspath(bld)), "croot")
     if os.path.isdir(croot):
         shutil.rmtree(croot)
-    channels = ["microsoft", "conda-forge"]
-    if target_subdir == "win-arm64":
-        channels.insert(0, "defaults")
+    build_env = env.copy()
+    if target_subdir.startswith("win-"):
+        # CONDA_SUBDIR also changes conda-build's build machine, selecting a /machine
+        # launcher on x64 -> ARM64. Keep the native process; target only the host variant.
+        build_env.pop("CONDA_SUBDIR", None)
     for py in pyvers:
+        channels = ["microsoft", "conda-forge"]
+        if target_subdir == "win-arm64" and py != "3.15":
+            channels.insert(0, "defaults")
         environment._log(
             f"=== [py {py}] build mssql-python (self-contained: vendors the ODBC payload) ==="
         )
@@ -325,10 +318,12 @@ def build_packages(
             "--croot",
             croot,
         ]
+        if target_subdir.startswith("win-"):
+            cmd += ["--variants", json.dumps({"target_platform": target_subdir})]
         for channel in channels:
             cmd += ["-c", channel]
         cmd.append("--override-channels")
-        environment.run(cmd, env=env, what=f"conda-build mssql-python (py {py})")
+        environment.run(cmd, env=build_env, what=f"conda-build mssql-python (py {py})")
 
     # A local channel is only valid if it ALSO carries noarch/repodata.json (even empty) --
     # conda-build wrote it only for the built subdir. Create it directly (miniforge has no
@@ -471,8 +466,8 @@ def execute(args: argparse.Namespace) -> int:
     conda = environment.find_or_install_conda(output_dir)
     environment._log(f"Using conda: {conda}")
     environment.run([conda, "--version"], what="conda --version")
-    builder = environment.create_builder_env(conda)
     pyvers = detect_pythons(links, python_versions)
+    builder = environment.create_builder_env(conda, target, pyvers)
     cross_build = bool(args.conda_target_subdir)
     env = environment.build_env(mssql_ver, odbc_ver, links, args.conda_target_subdir, rs_ver)
 

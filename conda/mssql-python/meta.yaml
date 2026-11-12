@@ -36,7 +36,7 @@ requirements:
     # --python matrix here, so each build emits the matching py3XX package. A range such
     # as `python >=3.10` collapses ALL --python builds into ONE cp<newest> package (build
     # string "py>=310") whose python_abi is pinned to 3.14, so `conda create python=3.10
-    # mssql-python` can't solve. The >=3.10 floor is enforced implicitly: only py310-py314
+    # mssql-python` can't solve. The >=3.10 floor is enforced implicitly: only py310-py315
     # are built and each package's python_abi pins its exact minor.
     - python
     - pip

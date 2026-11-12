@@ -11,6 +11,15 @@ schedules:
     - main
   always: true
 
+parameters:
+  - name: rsVersionOverride
+    displayName: 'Exact mssql-python-rs test version (empty uses committed PyPI release)'
+    type: string
+    default: ''
+
+variables:
+  MSSQL_PYTHON_RS_VERSION: ${{ parameters.rsVersionOverride }}
+
 jobs:
 - job: PytestOnMssqlOdbc
   displayName: 'Complete mssql-python suite on mssql-odbc'
@@ -32,7 +41,7 @@ jobs:
     displayName: 'Checkout latest GitHub main'
 
   - script: |
-      docker run -d --name $(testContainer) \
+      docker run -e MSSQL_PYTHON_RS_VERSION -d --name $(testContainer) \
         -v $(Build.SourcesDirectory):/workspace \
         -w /workspace \
         --network bridge \
@@ -128,6 +137,7 @@ jobs:
         -e PYTHONPATH=/workspace \
         $(testContainer) bash -c '
           source /opt/venv/bin/activate
+          python eng/scripts/mssql_python_rs.py --verify || exit 2
           chmod +x eng/scripts/run-mssql-odbc-tests.sh
           eng/scripts/run-mssql-odbc-tests.sh
         ' || rc=$?
