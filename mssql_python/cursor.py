@@ -102,18 +102,18 @@ class _ArrowBatchIterator:
         self._generator = generator
         self._state = state
         self._cleanup = cleanup
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
 
     def __iter__(self):
         return self
 
     def __next__(self):
         with self._lock:
-            if self._state.closed:
-                self._generator.close()
-                self._cleanup()
-                raise StopIteration
-            return next(self._generator)
+            try:
+                return next(self._generator)
+            finally:
+                if self._state.closed:
+                    self.close()
 
     @property
     def gi_frame(self):
@@ -121,9 +121,13 @@ class _ArrowBatchIterator:
 
     def close(self):
         with self._lock:
+            if self._generator.gi_running:
+                # A signal handler on the reading thread must let __next__ unwind.
+                return False
             self._generator.close()
             # Closing a generator that has never been advanced skips its finally.
             self._cleanup()
+            return True
 
 
 class _ArrowReader:
@@ -314,7 +318,9 @@ class _ArrowReader:
 
     def close(self) -> None:
         """Synchronously stop fetching, release the server-side cursor, and
-        reset parent-cursor bookkeeping.  Idempotent **and retry-safe**:
+        reset bookkeeping for the reader's original result. A reentrant close
+        on the reading thread defers cleanup until advancement unwinds.
+        Idempotent **and retry-safe**:
         if a previous call raised before the generator was released (for
         example because another thread was still executing it and
         ``generator.close()`` raised ``ValueError: generator already
@@ -353,7 +359,10 @@ class _ArrowReader:
         gen = self._generator
         if gen is not None:
             try:
-                gen.close()
+                if gen.close() is False:
+                    self._cursor = None
+                    self._inner = None
+                    return
             except Exception as e:  # pylint: disable=broad-exception-caught
                 logger.debug("arrow_reader.close: generator.close raised: %s", e)
                 if getattr(gen, "gi_frame", None) is not None:
@@ -3305,7 +3314,9 @@ class Cursor:
         runs whether the user (a) exhausts the reader normally, (b) calls
         ``close()`` mid-iteration, (c) exits a ``with`` block, or (d) just
         lets the reader be garbage-collected.  The parent ``Cursor`` itself
-        is **not** closed and can be re-executed.  ``close()`` is idempotent.
+        is **not** closed and can be re-executed; old readers cannot consume or
+        clean up its newer result. A close called reentrantly on the reading
+        thread defers cleanup until that advancement exits. ``close()`` is idempotent.
 
         Args:
             batch_size: Size of the Record Batches produced by the reader.
@@ -3326,6 +3337,8 @@ class Cursor:
         cursor_ref = [self]
         close_requested = ddbc_bindings.module._ArrowReaderState(self.hstmt)
         exhausted = False
+        # Description identity already identifies result generations for Row metadata.
+        description = self.description
 
         def cleanup():
             # Symmetric server-side teardown — runs on exhaustion,
@@ -3335,7 +3348,7 @@ class Cursor:
             if cur is None:
                 return
             cursor_ref[0] = None
-            if not cur.closed and cur.hstmt is not None:
+            if not cur.closed and cur.hstmt is not None and cur.description is description:
                 # Natural EOF was captured natively. A close/cancel request
                 # (including a racing one) or an error still needs the drain.
                 if not exhausted or close_requested.closed:
@@ -3386,7 +3399,7 @@ class Cursor:
         def batch_generator():
             nonlocal exhausted
             try:
-                while not close_requested.closed:
+                while not close_requested.closed and cursor_ref[0].description is description:
                     batch = cursor_ref[0]._fetch_arrow_batch(batch_size, close_requested)
                     if batch is None or close_requested.closed:
                         return

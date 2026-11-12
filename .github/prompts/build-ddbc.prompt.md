@@ -94,6 +94,11 @@ cd mssql_python/pybind && ./build.sh codecov && cd ../..
 cd mssql_python\pybind && build.bat && cd ..\..
 ```
 
+For isolated Arrow cancellation-boundary tests on Windows, set
+`MSSQL_ARROW_TEST_INTERPOSITION=1` before running `build.bat`. PR validation
+enables this test-only pointer access so those cases do not skip on Windows.
+It is off by default; unset it and rebuild before producing release wheels.
+
 ### 1.2 What the Build Does
 
 1. **Cleans** existing `build/` directory

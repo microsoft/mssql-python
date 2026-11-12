@@ -2000,7 +2000,8 @@ ErrorInfo SQLCheckError_Wrap(SQLSMALLINT handleType, SqlHandlePtr handle, SQLRET
     return SQLReadError(handleType, handle ? handle->get() : nullptr, retcode);
 }
 
-ErrorInfo SQLReadError(SQLSMALLINT handleType, SQLHANDLE rawHandle, SQLRETURN retcode) {
+ErrorInfo SQLReadError(SQLSMALLINT handleType, SQLHANDLE rawHandle, SQLRETURN retcode,
+                       SQLSMALLINT record) {
     ErrorInfo errorInfo;
     if (retcode == SQL_INVALID_HANDLE || !rawHandle) {
         errorInfo.ddbcErrorMsg = "Invalid handle!";
@@ -2016,7 +2017,7 @@ ErrorInfo SQLReadError(SQLSMALLINT handleType, SQLHANDLE rawHandle, SQLRETURN re
         SQLSMALLINT messageLen;
 
         SQLRETURN diagReturn =
-            SQLGetDiagRec_ptr(handleType, rawHandle, 1, sqlState, &nativeError, message,
+            SQLGetDiagRec_ptr(handleType, rawHandle, record, sqlState, &nativeError, message,
                               SQL_MAX_MESSAGE_LENGTH_SQLSERVER, &messageLen);
 
         if (SQL_SUCCEEDED(diagReturn)) {
@@ -5417,6 +5418,8 @@ public:
 
     void requestClose() {
         closeRequested = true;
+        if (!fetching.load())
+            return;
         auto statement = handle.lock();
         if (!statement)
             return;
@@ -5445,8 +5448,8 @@ public:
 };
 
 struct ArrowFetchDiagnostics {
-    bool cancelled = false;
-    bool unrelatedError = false;
+    SQLSMALLINT cancellationRecord = 0;
+    SQLSMALLINT errorRecord = 0;
 };
 
 static ArrowFetchDiagnostics GetArrowCancellationDiagnostics(SQLHSTMT hStmt,
@@ -5462,7 +5465,8 @@ static ArrowFetchDiagnostics GetArrowCancellationDiagnostics(SQLHSTMT hStmt,
         if (ret == SQL_NO_DATA)
             return result;
         if (!SQL_SUCCEEDED(ret)) {
-            result.unrelatedError = true;
+            if (!result.errorRecord)
+                result.errorRecord = record;
             return result;
         }
         auto matches = [&](const char* expected) {
@@ -5478,12 +5482,14 @@ static ArrowFetchDiagnostics GetArrowCancellationDiagnostics(SQLHSTMT hStmt,
         if (matches("HY008") ||
             (allowClosedCursor &&
              (matches("HY007") || matches("HY010") || matches("24000")))) {
-            result.cancelled = true;
-        } else if (state[0] != '0' || state[1] != '1') {
-            result.unrelatedError = true;
+            if (!result.cancellationRecord)
+                result.cancellationRecord = record;
+        } else if ((state[0] != '0' || state[1] != '1') && !result.errorRecord) {
+            result.errorRecord = record;
         }
     }
-    result.unrelatedError = true;
+    if (!result.errorRecord)
+        result.errorRecord = 1;
     return result;
 }
 
@@ -5717,13 +5723,21 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules,
             bool closing = readerState && readerState->closed();
             auto diagnostics = GetArrowCancellationDiagnostics(
                 hStmt, closing && readerState->cancelled());
-            if (diagnostics.cancelled) {
+            if (diagnostics.cancellationRecord) {
                 CaptureFetchDiagnostics(hStmt, SQL_SUCCESS_WITH_INFO, messages);
-                if (closing && !diagnostics.unrelatedError)
+                if (closing && !diagnostics.errorRecord)
                     return SQL_NO_DATA;
                 // HY008 can accompany SQL_SUCCESS_WITH_INFO. Stop here rather
                 // than fetching again and replacing it with an invalid-cursor error.
-                CheckFetchError(StatementHandle, SQL_ERROR);
+                // Prefer an unrelated error even when cancellation is record 1.
+                auto error = SQLReadError(
+                    SQL_HANDLE_STMT, hStmt, SQL_ERROR,
+                    diagnostics.errorRecord ? diagnostics.errorRecord
+                                            : diagnostics.cancellationRecord);
+                LOG("Arrow fetch error: SQLSTATE=%s; message=%s",
+                    error.sqlState.c_str(), error.ddbcErrorMsg.c_str());
+                py::module_::import("mssql_python.exceptions")
+                    .attr("raise_exception")(error.sqlState, error.ddbcErrorMsg);
             }
         }
         fetchStateGuard.observe(ret);
@@ -6773,6 +6787,14 @@ PYBIND11_MODULE(ddbc_bindings, m) {
         .def(py::init<SqlHandlePtr>())
         .def_property_readonly("closed", &ArrowReaderState::closed)
         .def("request_close", &ArrowReaderState::requestClose);
+
+#ifdef MSSQL_ARROW_TEST_INTERPOSITION
+    py::dict arrowTestPointers;
+    arrowTestPointers["SQLFetch_ptr"] = reinterpret_cast<std::uintptr_t>(&SQLFetch_ptr);
+    arrowTestPointers["SQLCancel_ptr"] = reinterpret_cast<std::uintptr_t>(&SQLCancel_ptr);
+    arrowTestPointers["SQLGetDiagRec_ptr"] = reinterpret_cast<std::uintptr_t>(&SQLGetDiagRec_ptr);
+    m.attr("_arrow_test_pointer_addresses") = std::move(arrowTestPointers);
+#endif
 
     py::class_<ConnectionHandle>(m, "Connection")
         .def(py::init<const std::u16string&, bool, const py::dict&, const std::u16string&,
