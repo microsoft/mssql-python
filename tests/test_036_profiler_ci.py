@@ -1986,8 +1986,8 @@ def test_comment_workflow_separates_same_repo_and_fork_trust():
         "github.event.pull_request.base.sha"
     ) in workflow
     assert "persist-credentials: false" in workflow
-    assert "actions/checkout@11d5960a326750d5838078e36cf38b85af677262" in workflow
-    assert "actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065" in workflow
+    assert "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1" in workflow
+    assert "actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0" in workflow
     coverage = (ROOT / ".github/workflows/pr-code-coverage.yml").read_text(encoding="utf-8")
     assert coverage.count("extract_coverage_artifact.py") == 2
     assert coverage.count("--max-filesize 268435456") == 2
