@@ -402,7 +402,7 @@ def test_arrow_reader_pycapsule_protocol(cursor: mssql_python.Cursor):
     can't carry our extra state).
     """
     if not hasattr(pa.RecordBatchReader, "from_stream"):
-        pytest.skip("pyarrow>=14 required for RecordBatchReader.from_stream")
+        pytest.skip("pyarrow>=15 required for RecordBatchReader.from_stream")
 
     reader = cursor.execute("select top 11 1 a from sys.objects").arrow_reader(batch_size=4)
     assert hasattr(reader, "__arrow_c_stream__")
@@ -497,7 +497,19 @@ def test_arrow_reader_gc_cleanup(cursor: mssql_python.Cursor):
 
 
 @pytest.mark.stress  # timing fuzz supplements the deterministic cancellation-boundary tests
-def test_arrow_reader_cancel_from_other_thread(cursor: mssql_python.Cursor):
+def test_arrow_reader_cancel_from_other_thread():
+    _run_arrow_probe("_arrow_stress_close_probe")
+
+
+def _arrow_stress_close_probe():
+    import os
+
+    with mssql_python.connect(os.environ["DB_CONNECTION_STRING"]) as connection:
+        with connection.cursor() as cursor:
+            _arrow_cancel_from_other_thread(cursor)
+
+
+def _arrow_cancel_from_other_thread(cursor):
     """Concurrent close must stop streaming and leave the parent Cursor reusable."""
     import threading
     import time
@@ -562,7 +574,21 @@ def test_arrow_reader_cancel_from_other_thread(cursor: mssql_python.Cursor):
 
 @pytest.mark.parametrize("consumer", ["iteration", "delegated", "c_stream"])
 @pytest.mark.parametrize("fetch_error", [False, True])
-def test_arrow_reader_close_waits_for_batch(cursor, monkeypatch, consumer, fetch_error):
+def test_arrow_reader_close_waits_for_batch(consumer, fetch_error):
+    if consumer == "c_stream" and not hasattr(pa.RecordBatchReader, "from_stream"):
+        pytest.skip("RecordBatchReader.from_stream requires pyarrow>=15")
+    _run_arrow_probe("_arrow_close_waits_probe", consumer, str(int(fetch_error)))
+
+
+def _arrow_close_waits_probe(consumer, fetch_error):
+    import os
+
+    with mssql_python.connect(os.environ["DB_CONNECTION_STRING"]) as connection:
+        with connection.cursor() as cursor, pytest.MonkeyPatch.context() as monkeypatch:
+            _arrow_close_waits_for_batch(cursor, monkeypatch, consumer, bool(int(fetch_error)))
+
+
+def _arrow_close_waits_for_batch(cursor, monkeypatch, consumer, fetch_error):
     """Close must fence a batch already admitted by any Arrow consumption path."""
     import threading
 
@@ -709,6 +735,31 @@ def test_arrow_reader_does_not_close_next_result(cursor):
     assert cursor.fetchone()[0] == 2
 
 
+@pytest.mark.parametrize("action", ["close", "read"])
+def test_arrow_reader_ignores_replacement_statement(cursor, monkeypatch, action):
+    reader = cursor.execute("select 1 as value").arrow_reader()
+    with pytest.raises(mssql_python.ProgrammingError):
+        cursor.execute("select * from #arrow_missing_table")
+    handle_type = type(cursor.hstmt)
+    calls = []
+    close_cursor = handle_type._close_cursor
+
+    def observed_close(handle):
+        calls.append(handle)
+        close_cursor(handle)
+
+    monkeypatch.setattr(handle_type, "_close_cursor", observed_close)
+    try:
+        if action == "read":
+            with pytest.raises(StopIteration):
+                next(reader)
+    finally:
+        reader.close()
+    assert calls == [], "stale reader closed the replacement statement"
+    cursor.execute("select 2 as value")
+    assert cursor.fetchone()[0] == 2
+
+
 def test_arrow_reader_preserves_reexecuted_update_rowcount(cursor):
     reader = cursor.execute("select 1 as value").arrow_reader()
     cursor.execute("declare @rows table (value int); update @rows set value = 2")
@@ -718,16 +769,20 @@ def test_arrow_reader_preserves_reexecuted_update_rowcount(cursor):
 
 
 def test_arrow_reader_reentrant_close():
+    _run_arrow_probe("_arrow_reentrant_close_probe", timeout=10)
+
+
+def _run_arrow_probe(name, *args, timeout=30):
     import subprocess
     import sys
     from pathlib import Path
 
-    code = "import runpy, sys; runpy.run_path(sys.argv[1])['_arrow_reentrant_close_probe']()"
+    code = "import runpy, sys; runpy.run_path(sys.argv[1])[sys.argv[2]](*sys.argv[3:])"
     result = subprocess.run(
-        [sys.executable, "-c", code, str(Path(__file__).resolve())],
+        [sys.executable, "-c", code, str(Path(__file__).resolve()), name, *args],
         capture_output=True,
         text=True,
-        timeout=10,
+        timeout=timeout,
     )
     assert result.returncode == 0, (result.stdout, result.stderr)
 
@@ -778,10 +833,12 @@ def _arrow_reentrant_close_probe():
 )
 def test_arrow_reader_native_cancel_boundary(outcome):
     """Interpose native ODBC calls in an isolated process, never shared fixtures."""
+    _require_arrow_interposition()
+    _run_arrow_probe("_arrow_native_cancel_probe", outcome)
+
+
+def _require_arrow_interposition():
     import os
-    import subprocess
-    import sys
-    from pathlib import Path
 
     try:
         _arrow_odbc_pointers()
@@ -789,16 +846,6 @@ def test_arrow_reader_native_cancel_boundary(outcome):
         if os.environ.get("MSSQL_ARROW_TEST_INTERPOSITION", "").upper() in ("1", "ON"):
             pytest.fail("Arrow interposition was requested but native test controls are missing")
         pytest.skip("Requires exported ODBC function pointers")
-    code = (
-        "import runpy, sys; runpy.run_path(sys.argv[1])['_arrow_native_cancel_probe'](sys.argv[2])"
-    )
-    result = subprocess.run(
-        [sys.executable, "-c", code, str(Path(__file__).resolve()), outcome],
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
-    assert result.returncode == 0, (result.stdout, result.stderr)
 
 
 def _arrow_odbc_pointers():
@@ -811,6 +858,134 @@ def _arrow_odbc_pointers():
         return {name: ctypes.c_void_p.from_address(addresses[name]) for name in names}
     library = ctypes.CDLL(ddbc_bindings.module.__file__)
     return {name: ctypes.c_void_p.in_dll(library, name) for name in names}
+
+
+def test_arrow_reader_cancels_blocked_driver_fetch():
+    _require_arrow_interposition()
+    _run_arrow_probe("_arrow_blocked_driver_fetch_probe", timeout=45)
+
+
+def _arrow_blocked_driver_fetch_probe():
+    import ctypes
+    import os
+    import threading
+    import time
+    import uuid
+
+    callback = ctypes.WINFUNCTYPE if os.name == "nt" else ctypes.CFUNCTYPE
+    odbc_call = callback(ctypes.c_short, ctypes.c_void_p)
+    pointers = _arrow_odbc_pointers()
+    active = threading.Event()
+    cancelled = threading.Event()
+    finished = threading.Event()
+    errors = []
+    cancel_results = []
+    fetch_calls = []
+
+    @odbc_call
+    def fetch(handle):
+        if threading.get_ident() != worker.ident:
+            return real_fetch(handle)
+        fetch_calls.append(handle)
+        active.set()
+        try:
+            return real_fetch(handle)
+        finally:
+            active.clear()
+
+    @odbc_call
+    def cancel(handle):
+        result = real_cancel(handle)
+        cancel_results.append(result)
+        cancelled.set()
+        return result
+
+    connection_string = os.environ["DB_CONNECTION_STRING"]
+    with (
+        mssql_python.connect(connection_string, autocommit=True) as locker,
+        mssql_python.connect(connection_string, autocommit=True) as connection,
+    ):
+        with locker.cursor() as control, connection.cursor() as cursor:
+            original = {name: pointer.value for name, pointer in pointers.items()}
+            real_fetch = odbc_call(original["SQLFetch_ptr"])
+            real_cancel = odbc_call(original["SQLCancel_ptr"])
+            table = "##arrow_cancel_" + uuid.uuid4().hex
+            control.execute(f"create table {table} (value int primary key, payload char(4000))")
+            control.execute(
+                f"insert into {table} select top (4096) "
+                "row_number() over (order by (select null)), replicate('x', 4000) "
+                "from sys.all_objects a cross join sys.all_objects b"
+            )
+            locker_id = control.execute("select @@spid").fetchone()[0]
+            reader_id = cursor.execute("select @@spid").fetchone()[0]
+            locker.autocommit = False
+            control.execute(
+                f"update {table} with (rowlock) set payload = 'locked' where value = 4096"
+            )
+            cursor.execute("set lock_timeout 20000")
+            reader = cursor.execute(
+                f"select value, payload from {table} with (readcommittedlock, rowlock, index(1)) "
+                "order by value option (maxdop 1)"
+            ).arrow_reader(batch_size=64)
+
+            def consume():
+                try:
+                    for _ in reader:
+                        pass
+                except pa.ArrowInvalid as error:
+                    if not reader.closed:
+                        errors.append(error)
+                except Exception as error:
+                    errors.append(error)
+                finally:
+                    finished.set()
+
+            worker = threading.Thread(target=consume, daemon=True)
+            pointers["SQLFetch_ptr"].value = ctypes.cast(fetch, ctypes.c_void_p).value
+            pointers["SQLCancel_ptr"].value = ctypes.cast(cancel, ctypes.c_void_p).value
+            worker.start()
+            try:
+                deadline = time.monotonic() + 10
+                while time.monotonic() < deadline:
+                    fetch_count = len(fetch_calls)
+                    was_fetching = active.is_set()
+                    blocked = control.execute(
+                        "select wait_type from sys.dm_exec_requests "
+                        "where session_id = ? and blocking_session_id = ? "
+                        "and wait_type like 'LCK_M_%'",
+                        reader_id,
+                        locker_id,
+                    ).fetchone()
+                    if (
+                        blocked
+                        and was_fetching
+                        and active.is_set()
+                        and len(fetch_calls) == fetch_count
+                    ):
+                        break
+                    assert not finished.is_set(), errors
+                    time.sleep(0.01)
+                else:
+                    pytest.fail(
+                        "No outstanding blocked SQLFetch observed; DMV visibility is required: "
+                        f"fetches={len(fetch_calls)}, active={active.is_set()}, "
+                        f"finished={finished.is_set()}, blocked={blocked}, errors={errors}"
+                    )
+                assert active.is_set(), "the blocked operation was not SQLFetch"
+                reader.close()
+                assert finished.wait(5), "real driver fetch did not terminate after SQLCancel"
+                assert cancelled.is_set() and cancel_results == [0], cancel_results
+                assert not errors, errors
+                # The blocking transaction is deliberately still open.
+                cursor.execute("select 99")
+                assert cursor.fetchone()[0] == 99
+            finally:
+                locker.rollback()
+                worker.join(5)
+                assert not worker.is_alive(), "driver fetch remained blocked after rollback"
+                for name, pointer in pointers.items():
+                    pointer.value = original[name]
+                reader.close()
 
 
 def _arrow_native_cancel_probe(outcome):

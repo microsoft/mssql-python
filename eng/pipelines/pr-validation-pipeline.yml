@@ -185,6 +185,9 @@ jobs:
       }
       sqlcmd -S "(localdb)\MSSQLLocalDB" -d TestDB -Q "CREATE USER testuser FOR LOGIN testuser"
       sqlcmd -S "(localdb)\MSSQLLocalDB" -d TestDB -Q "ALTER ROLE db_owner ADD MEMBER testuser"
+      # The Arrow live-fetch probe observes the blocked reader from the lock owner's session.
+      sqlcmd -S "(localdb)\MSSQLLocalDB" -b -Q "GRANT VIEW SERVER STATE TO [testuser]; IF CAST(SERVERPROPERTY('ProductMajorVersion') AS int) >= 16 EXEC('GRANT VIEW SERVER PERFORMANCE STATE TO [testuser]');"
+      if ($LASTEXITCODE -ne 0) { throw "Failed to provision the CI test login's DMV-read permission." }
     displayName: 'Setup database and user for LocalDB'
     condition: eq(variables['sqlVersion'], 'LocalDB')
     env:

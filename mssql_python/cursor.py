@@ -17,6 +17,7 @@ import uuid
 import datetime
 import warnings
 import threading
+import weakref
 from importlib import import_module
 from typing import List, Mapping, Union, Any, Optional, Tuple, Sequence, TYPE_CHECKING, Iterable
 from mssql_python.constants import ConstantsDDBC as ddbc_sql_const, SQLTypes
@@ -3339,6 +3340,8 @@ class Cursor:
         exhausted = False
         # Description identity already identifies result generations for Row metadata.
         description = self.description
+        # A failed execute can replace the handle without replacing description.
+        statement = weakref.ref(self.hstmt)
 
         def cleanup():
             # Symmetric server-side teardown — runs on exhaustion,
@@ -3348,7 +3351,12 @@ class Cursor:
             if cur is None:
                 return
             cursor_ref[0] = None
-            if not cur.closed and cur.hstmt is not None and cur.description is description:
+            if (
+                not cur.closed
+                and cur.hstmt is not None
+                and cur.hstmt is statement()
+                and cur.description is description
+            ):
                 # Natural EOF was captured natively. A close/cancel request
                 # (including a racing one) or an error still needs the drain.
                 if not exhausted or close_requested.closed:
@@ -3399,8 +3407,16 @@ class Cursor:
         def batch_generator():
             nonlocal exhausted
             try:
-                while not close_requested.closed and cursor_ref[0].description is description:
-                    batch = cursor_ref[0]._fetch_arrow_batch(batch_size, close_requested)
+                while not close_requested.closed:
+                    cur = cursor_ref[0]
+                    cur._check_closed()
+                    if (
+                        cur.hstmt is None
+                        or cur.hstmt is not statement()
+                        or cur.description is not description
+                    ):
+                        return
+                    batch = cur._fetch_arrow_batch(batch_size, close_requested)
                     if batch is None or close_requested.closed:
                         return
                     if batch.num_rows == 0:
