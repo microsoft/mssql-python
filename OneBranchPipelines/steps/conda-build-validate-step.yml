@@ -27,7 +27,7 @@
 parameters:
   # Python version(s) to build, comma-separated X.Y (e.g. '3.13' or '3.12,3.13,3.14'); passed
   # straight to the orchestrator's --python-versions. win-64 follows the pythonVersions
-  # parameter; win-arm64 uses a fixed 3.12-3.14 set (the singular name is kept for callers).
+  # parameter; win-arm64 uses a fixed 3.12-3.15 set (the singular name is kept for callers).
   - name: pythonVersion
     type: string
   # Conda subdir for this leg's package metadata + staging: 'win-64' (native) or 'win-arm64'

@@ -194,6 +194,104 @@ def scalar_fetchval(conn, table, ctx):
             ctx.disable()
 
 
+def output_converter_fetch(conn, table, ctx, batched=False):
+    """Time fetching with a UTF-16LE converter; validate retained rows afterward."""
+    from mssql_python import SQL_WVARCHAR
+
+    texts = [f"unicode_row_{index}" for index in range(10_000)]
+    expected = [(index, text.upper()) for index, text in enumerate(texts)]
+    api = "fetchmany(1000)" if batched else "fetchall()"
+
+    def converter(raw):
+        return raw.decode("utf-16le").upper()
+
+    with conn.cursor() as cursor:
+        previous = conn.get_output_converter(SQL_WVARCHAR)
+        try:
+            conn.add_output_converter(SQL_WVARCHAR, converter)
+            cursor.execute(f"SELECT TOP (10000) int_col, nvarchar_col FROM {table} ORDER BY id")
+            rows = []
+            ctx.enable()
+            start = time.perf_counter()
+            if batched:
+                while batch := cursor.fetchmany(1000):
+                    rows.extend(batch)
+            else:
+                rows = cursor.fetchall()
+            wall_ms = (time.perf_counter() - start) * 1000
+            cpp, py = ctx.collect()
+            assert [tuple(row) for row in rows] == expected
+            assert all(type(row[0]) is int and type(row[1]) is str for row in rows)
+            assert not cursor.messages, "Clean converter fetch unexpectedly produced diagnostics"
+            return dict(
+                title=f"Output converter / {api}",
+                wall_ms=wall_ms,
+                cpp=cpp,
+                py=py,
+                detail=f"Rows: 10000; types: int,nvarchar; converter: UTF-16LE upper; API: {api}",
+            )
+        finally:
+            try:
+                ctx.disable()
+            finally:
+                if previous is None:
+                    conn.remove_output_converter(SQL_WVARCHAR)
+                else:
+                    conn.add_output_converter(SQL_WVARCHAR, previous)
+
+
+def row_to_dict(conn, table, ctx):
+    """Convert fetched rows with warm mapping metadata; fetch and validation are not timed."""
+    names = tuple(f"c{column}" for column in range(32))
+    sql = "SELECT TOP (10000) " + ", ".join(
+        f"CASE WHEN int_col % 7 = 0 THEN CAST(NULL AS INT) "
+        f"ELSE int_col + {column} END AS {name}"
+        for column, name in enumerate(names)
+    )
+    sql += f" FROM {table} ORDER BY id"
+    expected = [
+        tuple(None if value % 7 == 0 else value + column for column in range(32))
+        for value in range(10_000)
+    ]
+
+    with conn.cursor() as cursor:
+        try:
+            cursor.execute(sql)
+            rows = cursor.fetchall()
+            assert len(rows) == len(
+                expected
+            ), "Row-to-dictionary fetch returned the wrong row count"
+            for row in rows:
+                dict(row._mapping)
+
+            ctx.enable()
+            start = time.perf_counter()
+            dictionaries = [dict(row._mapping) for row in rows]
+            wall_ms = (time.perf_counter() - start) * 1000
+            cpp, py = ctx.collect()
+            assert len(dictionaries) == len(expected)
+            for dictionary, values in zip(dictionaries, expected):
+                assert tuple(dictionary) == names
+                assert all(type(key) is str for key in dictionary)
+                actual = tuple(dictionary.values())
+                assert actual == values and all(
+                    type(value) is type(wanted) for value, wanted in zip(actual, values)
+                )
+            assert not cursor.messages, "Clean row-to-dictionary conversion produced diagnostics"
+            return dict(
+                title="Warm row-to-dictionary conversion",
+                wall_ms=wall_ms,
+                cpp=cpp,
+                py=py,
+                detail=(
+                    "Rows: 10000; columns: 32; types: int/NULL; "
+                    "API: dict(row._mapping); mode: warm"
+                ),
+            )
+        finally:
+            ctx.disable()
+
+
 def registry():
     """Keep every PR #552 scenario, including its existing timing boundaries."""
     result = dict(scenarios.SCENARIOS)
@@ -208,4 +306,7 @@ def registry():
     result.update((name, (partial(query, sql=sql), False)) for name, sql in QUERIES.items())
     result["lob_varchar_256k_fetchall"] = (lob_fetch, False)
     result["scalar_fetchval"] = (scalar_fetchval, True)
+    result["output_converter_fetchall"] = (output_converter_fetch, True)
+    result["output_converter_fetchmany1000"] = (partial(output_converter_fetch, batched=True), True)
+    result["row_to_dict"] = (row_to_dict, True)
     return result

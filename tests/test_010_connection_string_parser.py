@@ -533,8 +533,8 @@ class TestSynonymFirstWins:
     # ---- reserved keys filtered regardless of order ----------------------
 
     def test_reserved_keys_always_filtered(self):
-        """Driver and APP are always stripped, even when first."""
+        """Driver is stripped, while APP is retained for name resolution."""
         result = self._normalize({"driver": "foo", "server": "host", "app": "bar"})
         assert "Driver" not in result
-        assert "APP" not in result
+        assert result["APP"] == "bar"
         assert result["Server"] == "host"
