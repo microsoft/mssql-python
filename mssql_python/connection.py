@@ -23,6 +23,7 @@ import threading
 import mssql_python
 from mssql_python.cursor import Cursor
 from mssql_python.helpers import (
+    _resolve_app_name,
     sanitize_user_input,
     validate_attribute_value,
 )
@@ -1005,7 +1006,7 @@ class Connection:
         1. Parse and validate the base connection_str (validates against allowlist)
         2. Normalize parameter names (e.g., addr/address -> Server, uid -> UID)
         3. Merge kwargs (which override connection_str params after normalization)
-        4. Add Driver and APP (always controlled by the driver)
+        4. Add Driver and resolve the driver-prefixed application name
         5. Build and return the final connection string + parameter dictionary
 
         Args:
@@ -1055,20 +1056,22 @@ class Connection:
         for key, value in kwargs.items():
             normalized_key = _ConnectionStringParser.normalize_key(key)
             if normalized_key:
-                # Driver and APP are reserved - raise error if user tries to set them
+                # Driver is reserved - raise error if the user tries to set it.
                 if normalized_key in _RESERVED_PARAMETERS:
                     raise ValueError(
                         f"Connection parameter '{key}' is reserved and controlled by the driver. "
                         f"It cannot be set by the user."
                     )
+                if normalized_key == "APP" and not isinstance(value, str):
+                    raise TypeError("Application name must be a string")
                 # kwargs override any existing values from connection string
                 normalized_params[normalized_key] = str(value)
             else:
                 logger.warning(f"Ignoring unknown connection parameter from kwargs: {key}")
 
-        # Step 4: Add Driver and APP (always controlled by the driver).
+        # Step 4: Add Driver and resolve APP before authentication or pool lookup.
         normalized_params["Driver"] = "ODBC Driver 18 for SQL Server"
-        normalized_params["APP"] = "MSSQL-Python"
+        normalized_params["APP"] = _resolve_app_name(normalized_params.get("APP"))
 
         # Step 5: Build final connection string
         conn_str = _ConnectionStringBuilder(normalized_params).build()

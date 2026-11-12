@@ -521,7 +521,10 @@ _KEY_TRUSTED_CONNECTION = _CONNECTION_STRING_TRUSTED_CONNECTION_KEY
 
 # Reserved connection string parameters that are controlled by the driver
 # and cannot be set by users
-_RESERVED_PARAMETERS = (_CONNECTION_STRING_DRIVER_KEY, _CONNECTION_STRING_APP_KEY)
+_RESERVED_PARAMETERS = (_CONNECTION_STRING_DRIVER_KEY,)
+
+_DEFAULT_APP_NAME = "MSSQL-Python"
+_MAX_APP_NAME_LENGTH = 128
 
 # Core connection parameters with synonym mapping
 # Maps lowercase parameter names to their canonical form
@@ -545,8 +548,9 @@ _ALLOWED_CONNECTION_STRING_PARAMS = {
     "database": "Database",
     # Driver (always controlled by mssql-python)
     "driver": _CONNECTION_STRING_DRIVER_KEY,
-    # Application name (always controlled by mssql-python)
+    # Application name (prefixed with the driver identifier)
     "app": _CONNECTION_STRING_APP_KEY,
+    "application name": _CONNECTION_STRING_APP_KEY,
     # Encryption and Security
     "encrypt": "Encrypt",
     "trustservercertificate": "TrustServerCertificate",
