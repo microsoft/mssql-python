@@ -60,6 +60,7 @@ using py::literals::operator""_a;
 // Include logger bridge for LOG macros
 #include "logger_bridge.hpp"
 #include "fetch_text.hpp"
+#include "output_converter.hpp"
 
 #if defined(__APPLE__) || defined(__linux__)
 #include <dlfcn.h>
@@ -289,6 +290,24 @@ struct DescribedParamInfo {
     SQLSMALLINT decimalDigits;
 };
 
+// The SQLBindParameter arguments that define a parameter (direction, C type, SQL
+// type, size, digits and data-at-execution), excluding the data pointers.
+struct ParamBindSignature {
+    SQLSMALLINT inputOutputType;
+    SQLSMALLINT cType;
+    SQLSMALLINT sqlType;
+    SQLULEN columnSize;
+    SQLSMALLINT decimalDigits;
+    bool isDAE;
+
+    bool operator==(const ParamBindSignature& other) const {
+        return inputOutputType == other.inputOutputType && cType == other.cType &&
+               sqlType == other.sqlType && columnSize == other.columnSize &&
+               decimalDigits == other.decimalDigits && isDAE == other.isDAE;
+    }
+    bool operator!=(const ParamBindSignature& other) const { return !(*this == other); }
+};
+
 struct ConnectionCleanupState {
     std::mutex mutex;
     bool disconnected = false;  // Protected by mutex, shared with every child.
@@ -338,6 +357,31 @@ class SqlHandle {
     std::unordered_map<int, DescribedParamInfo> describeCache;
     void clearDescribeCache() { describeCache.clear(); }
     ResultMetadataCache resultMetadata;
+    // Only fetch calls under the GIL access this flag. Batch bindings are
+    // invalidated before installation and become reusable only after unbinding.
+    bool fetchColumnsUnbound = false;
+
+    // Parameter bindings that execute() leaves on the statement. Drivers
+    // re-prepare (sp_prepexec instead of sp_execute) when SQL_RESET_PARAMS
+    // clears the IPD or a parameter definition changes, so a re-execution of
+    // the same prepared SQL with an identical signature rebinds over these
+    // records instead of resetting them. Same threading contract as
+    // describeCache: only the thread that owns the statement touches these.
+    //
+    // paramsBound: SQLBindParameter may have been called since the last
+    //   SQL_RESET_PARAMS issued through this handle.
+    // boundParamSignature: definitions of the last complete execute() binding;
+    //   empty when that binding must not be reused.
+    // boundParamBuffers: buffers the bound APD records point at. Kept alive
+    //   until they are rebound, reset or the statement is freed (the member
+    //   outlives SQLFreeHandle in ~SqlHandle), so the APD never references
+    //   freed memory between executions.
+    bool paramsBound = false;
+    std::vector<ParamBindSignature> boundParamSignature;
+    std::vector<std::shared_ptr<void>> boundParamBuffers;
+    // SQL_ATTR_CURSOR_TYPE / SQL_ATTR_CONCURRENCY were set to forward-only /
+    // read-only on this statement. They persist for the handle's lifetime.
+    bool cursorAttrsApplied = false;
 
   private:
     // The caller must release the GIL before waiting for native cleanup.
@@ -469,6 +513,7 @@ struct ColumnInfoExt {
     bool useWideChar;          // True when charCtype == SQL_C_WCHAR (VARCHAR fetched as UTF-16)
     std::string charEncoding;  // Effective decoding encoding for SQL_C_CHAR data
     PyObject* messages = nullptr;  // Borrowed from the enclosing native fetch call.
+    bool converterText = false;
 };
 
 // Forward declare FetchLobColumnData (defined in ddbc_bindings.cpp) - MUST be
@@ -600,6 +645,15 @@ inline void ProcessChar(PyObject* row, ColumnBuffers& buffers, const void* colIn
                         SQLUSMALLINT col, SQLULEN rowIdx, SQLHSTMT hStmt) {
     const ColumnInfoExt* colInfo = static_cast<const ColumnInfoExt*>(colInfoPtr);
     SQLLEN dataLen = buffers.indicators[col - 1][rowIdx];
+    if (colInfo->converterText && colInfo->useWideChar && !colInfo->isLob && dataLen >= 0 &&
+        static_cast<uint64_t>(dataLen / sizeof(SQLWCHAR)) < colInfo->fetchBufferSize) {
+        const auto* data = &buffers.wcharBuffers[col - 1][rowIdx * colInfo->fetchBufferSize];
+        py::object text = OutputConverters::text(reinterpret_cast<const char*>(data), dataLen);
+        if (text) {
+            PyList_SET_ITEM(row, col - 1, text.release().ptr());
+            return;
+        }
+    }
 
     // Handle empty strings
     if (dataLen == 0) {
@@ -713,6 +767,15 @@ inline void ProcessWChar(PyObject* row, ColumnBuffers& buffers, const void* colI
                          SQLUSMALLINT col, SQLULEN rowIdx, SQLHSTMT hStmt) {
     const ColumnInfoExt* colInfo = static_cast<const ColumnInfoExt*>(colInfoPtr);
     SQLLEN dataLen = buffers.indicators[col - 1][rowIdx];
+    if (colInfo->converterText && !colInfo->isLob && dataLen >= 0 &&
+        static_cast<uint64_t>(dataLen / sizeof(SQLWCHAR)) < colInfo->fetchBufferSize) {
+        const auto* data = &buffers.wcharBuffers[col - 1][rowIdx * colInfo->fetchBufferSize];
+        py::object text = OutputConverters::text(reinterpret_cast<const char*>(data), dataLen);
+        if (text) {
+            PyList_SET_ITEM(row, col - 1, text.release().ptr());
+            return;
+        }
+    }
 
     // Handle empty strings
     if (dataLen == 0) {
