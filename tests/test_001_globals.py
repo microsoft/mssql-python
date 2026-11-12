@@ -1059,3 +1059,41 @@ def test_row_string_key_case_insensitive_with_lowercase():
     # Non-existent attribute raises AttributeError
     with pytest.raises(AttributeError):
         row.nonexistent
+
+
+def test_row_mapping_lookup_agrees_with_iteration_aliases():
+    """RowMapping ignores case-insensitive names and catalog aliases (Mapping contract).
+
+    Metadata result sets store several keys per column index in _column_map (exact,
+    lowercase, and ODBC 2.x/3.x aliases). The mapping view must expose only the
+    canonical snapshot names it iterates, so lookup and membership never accept a
+    name the view does not yield.
+    """
+    from mssql_python.row import Row
+
+    # One physical column at index 0, reachable in _column_map under several names.
+    column_map = {"TABLE_NAME": 0, "table_name": 0, "TABLE_QUALIFIER": 0}
+    row = Row(
+        ["dbo"],
+        column_map,
+        cursor=None,
+        column_names=("TABLE_NAME",),
+    )
+    mapping = row._mapping
+
+    # Canonical key set == iteration == the snapshot.
+    assert list(mapping) == ["TABLE_NAME"]
+    assert dict(mapping) == {"TABLE_NAME": "dbo"}
+    assert mapping["TABLE_NAME"] == "dbo"
+    assert "TABLE_NAME" in mapping
+
+    # Row still resolves the aliases directly (unchanged behavior)...
+    assert row["table_name"] == "dbo"
+    assert row["TABLE_QUALIFIER"] == "dbo"
+    # ...but the mapping view does NOT, so its keys agree with membership/lookup.
+    assert "table_name" not in mapping
+    assert "TABLE_QUALIFIER" not in mapping
+    with pytest.raises(KeyError):
+        mapping["table_name"]
+    assert mapping.get("TABLE_QUALIFIER") is None
+    assert mapping.get("table_name", "fallback") == "fallback"

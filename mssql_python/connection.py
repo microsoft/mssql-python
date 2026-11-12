@@ -15,12 +15,15 @@ import weakref
 import re
 import codecs
 import warnings
+import struct
+from types import MappingProxyType
 from typing import Any, Dict, Optional, Union, List, Tuple, Callable, Protocol, TYPE_CHECKING
 import threading
 
 import mssql_python
 from mssql_python.cursor import Cursor
 from mssql_python.helpers import (
+    _resolve_app_name,
     sanitize_user_input,
     validate_attribute_value,
 )
@@ -87,8 +90,121 @@ class TokenProvider(Protocol):
 
 # Add SQL_WMETADATA constant for metadata decoding configuration
 SQL_WMETADATA: int = -99  # Special flag for column name decoding
-# Threshold to determine if an info type is string-based
-INFO_TYPE_STRING_THRESHOLD: int = 10000
+INFO_TYPE_STRING_THRESHOLD: int = 10000  # Legacy fallback for unlisted information types
+
+# ODBC integers have fixed widths and native byte order; handles are pointer-sized.
+_SQLUSMALLINT = struct.Struct("=H")
+_SQLUINTEGER = struct.Struct("=I")
+_SQLPOINTER = struct.Struct("P")
+
+# SQLGetInfoW return types. Only type information is shared, never connection metadata.
+_GETINFO_RETURN_TYPES = MappingProxyType(
+    {
+        GetInfoConstants.SQL_DATA_SOURCE_NAME.value: str,
+        GetInfoConstants.SQL_DATABASE_NAME.value: str,
+        GetInfoConstants.SQL_DRIVER_NAME.value: str,
+        GetInfoConstants.SQL_DRIVER_VER.value: str,
+        GetInfoConstants.SQL_SERVER_NAME.value: str,
+        GetInfoConstants.SQL_USER_NAME.value: str,
+        GetInfoConstants.SQL_DRIVER_ODBC_VER.value: str,
+        GetInfoConstants.SQL_IDENTIFIER_QUOTE_CHAR.value: str,
+        GetInfoConstants.SQL_CATALOG_NAME_SEPARATOR.value: str,
+        GetInfoConstants.SQL_CATALOG_TERM.value: str,
+        GetInfoConstants.SQL_SCHEMA_TERM.value: str,
+        GetInfoConstants.SQL_TABLE_TERM.value: str,
+        GetInfoConstants.SQL_KEYWORDS.value: str,
+        GetInfoConstants.SQL_PROCEDURE_TERM.value: str,
+        GetInfoConstants.SQL_SPECIAL_CHARACTERS.value: str,
+        GetInfoConstants.SQL_SEARCH_PATTERN_ESCAPE.value: str,
+        GetInfoConstants.SQL_ACCESSIBLE_PROCEDURES.value: str,
+        GetInfoConstants.SQL_ACCESSIBLE_TABLES.value: str,
+        GetInfoConstants.SQL_DATA_SOURCE_READ_ONLY.value: str,
+        GetInfoConstants.SQL_EXPRESSIONS_IN_ORDERBY.value: str,
+        GetInfoConstants.SQL_LIKE_ESCAPE_CLAUSE.value: str,
+        GetInfoConstants.SQL_MULTIPLE_ACTIVE_TXN.value: str,
+        GetInfoConstants.SQL_NEED_LONG_DATA_LEN.value: str,
+        GetInfoConstants.SQL_PROCEDURES.value: str,
+        GetInfoConstants.SQL_CATALOG_NAME.value: str,
+        GetInfoConstants.SQL_COLUMN_ALIAS.value: str,
+        GetInfoConstants.SQL_DESCRIBE_PARAMETER.value: str,
+        GetInfoConstants.SQL_ORDER_BY_COLUMNS_IN_SELECT.value: str,
+        GetInfoConstants.SQL_OUTER_JOINS.value: str,
+        GetInfoConstants.SQL_MULT_RESULT_SETS.value: str,
+        GetInfoConstants.SQL_DRIVER_HLIB.value: _SQLPOINTER,
+        GetInfoConstants.SQL_DRIVER_HENV.value: _SQLPOINTER,
+        GetInfoConstants.SQL_DRIVER_HDBC.value: _SQLPOINTER,
+        GetInfoConstants.SQL_SQL_CONFORMANCE.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_IDENTIFIER_CASE.value: _SQLUSMALLINT,
+        GetInfoConstants.SQL_SUBQUERIES.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_CORRELATION_NAME.value: _SQLUSMALLINT,
+        GetInfoConstants.SQL_CATALOG_USAGE.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_SCHEMA_USAGE.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_TXN_CAPABLE.value: _SQLUSMALLINT,
+        GetInfoConstants.SQL_TXN_ISOLATION_OPTION.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_DEFAULT_TXN_ISOLATION.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_NUMERIC_FUNCTIONS.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_STRING_FUNCTIONS.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_TIMEDATE_FUNCTIONS.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_SYSTEM_FUNCTIONS.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_CONVERT_FUNCTIONS.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_MAX_COLUMN_NAME_LEN.value: _SQLUSMALLINT,
+        GetInfoConstants.SQL_MAX_TABLE_NAME_LEN.value: _SQLUSMALLINT,
+        GetInfoConstants.SQL_MAX_SCHEMA_NAME_LEN.value: _SQLUSMALLINT,
+        GetInfoConstants.SQL_MAX_CATALOG_NAME_LEN.value: _SQLUSMALLINT,
+        GetInfoConstants.SQL_MAX_IDENTIFIER_LEN.value: _SQLUSMALLINT,
+        GetInfoConstants.SQL_MAX_STATEMENT_LEN.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_MAX_CHAR_LITERAL_LEN.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_MAX_BINARY_LITERAL_LEN.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_MAX_COLUMNS_IN_TABLE.value: _SQLUSMALLINT,
+        GetInfoConstants.SQL_MAX_COLUMNS_IN_SELECT.value: _SQLUSMALLINT,
+        GetInfoConstants.SQL_MAX_COLUMNS_IN_GROUP_BY.value: _SQLUSMALLINT,
+        GetInfoConstants.SQL_MAX_COLUMNS_IN_ORDER_BY.value: _SQLUSMALLINT,
+        GetInfoConstants.SQL_MAX_COLUMNS_IN_INDEX.value: _SQLUSMALLINT,
+        GetInfoConstants.SQL_MAX_TABLES_IN_SELECT.value: _SQLUSMALLINT,
+        GetInfoConstants.SQL_MAX_CONCURRENT_ACTIVITIES.value: _SQLUSMALLINT,
+        GetInfoConstants.SQL_MAX_DRIVER_CONNECTIONS.value: _SQLUSMALLINT,
+        GetInfoConstants.SQL_MAX_ROW_SIZE.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_MAX_USER_NAME_LEN.value: _SQLUSMALLINT,
+        GetInfoConstants.SQL_GETDATA_EXTENSIONS.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_CURSOR_COMMIT_BEHAVIOR.value: _SQLUSMALLINT,
+        GetInfoConstants.SQL_CURSOR_ROLLBACK_BEHAVIOR.value: _SQLUSMALLINT,
+        GetInfoConstants.SQL_CURSOR_SENSITIVITY.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_BOOKMARK_PERSISTENCE.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_DYNAMIC_CURSOR_ATTRIBUTES1.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_DYNAMIC_CURSOR_ATTRIBUTES2.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_FORWARD_ONLY_CURSOR_ATTRIBUTES1.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_FORWARD_ONLY_CURSOR_ATTRIBUTES2.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_STATIC_CURSOR_ATTRIBUTES1.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_STATIC_CURSOR_ATTRIBUTES2.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_KEYSET_CURSOR_ATTRIBUTES1.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_KEYSET_CURSOR_ATTRIBUTES2.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_SCROLL_OPTIONS.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_SCROLL_CONCURRENCY.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_FETCH_DIRECTION.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_STATIC_SENSITIVITY.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_BATCH_SUPPORT.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_BATCH_ROW_COUNT.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_PARAM_ARRAY_ROW_COUNTS.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_PARAM_ARRAY_SELECTS.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_POSITIONED_STATEMENTS.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_GROUP_BY.value: _SQLUSMALLINT,
+        GetInfoConstants.SQL_OJ_CAPABILITIES.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_QUOTED_IDENTIFIER_CASE.value: _SQLUSMALLINT,
+        GetInfoConstants.SQL_CONCAT_NULL_BEHAVIOR.value: _SQLUSMALLINT,
+        GetInfoConstants.SQL_NULL_COLLATION.value: _SQLUSMALLINT,
+        GetInfoConstants.SQL_ALTER_TABLE.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_UNION.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_DDL_INDEX.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_TIMEDATE_ADD_INTERVALS.value: _SQLUINTEGER,
+        GetInfoConstants.SQL_TIMEDATE_DIFF_INTERVALS.value: _SQLUINTEGER,
+        # Standard information types not currently exposed by GetInfoConstants.
+        17: str,  # SQL_DBMS_NAME
+        18: str,  # SQL_DBMS_VER
+        10000: str,  # SQL_XOPEN_CLI_YEAR
+        10021: _SQLUINTEGER,  # SQL_ASYNC_MODE
+        127: _SQLUINTEGER,  # SQL_CREATE_ASSERTION
+    }
+)
 
 # UTF-16 encoding variants that should use SQL_WCHAR by default
 # Note: "utf-16" with BOM is NOT included as it's problematic for SQL_WCHAR
@@ -302,7 +418,11 @@ class Connection:
                 query timeout. An explicit ``attrs_before[SQL_ATTR_LOGIN_TIMEOUT]``
                 takes precedence over this value. (pyodbc migration note: pyodbc
                 lets a positive ``timeout=`` override ``attrs_before``; here the
-                explicit ``attrs_before`` entry wins.)
+                explicit ``attrs_before`` entry wins.) Pooled candidate reset
+                also uses this positive timeout, or 15 seconds when zero/default,
+                temporarily as SQL_ATTR_CONNECTION_TIMEOUT. Driver cancellation
+                and a replacement login can add time; this is not an overall
+                connect deadline.
             native_uuid (bool, optional): Controls whether UNIQUEIDENTIFIER columns return
                 uuid.UUID objects (True) or str (False) for cursors created from this connection.
                 None (default) defers to the module-level ``mssql_python.native_uuid`` setting (True).
@@ -425,6 +545,7 @@ class Connection:
                 "ctype": ConstantsDDBC.SQL_WCHAR.value,
             },
         }
+        self._decoding_generation = 0
 
         # Auth type for acquiring fresh tokens at bulk copy time.
         # We intentionally do NOT cache the token — a fresh one is acquired
@@ -667,6 +788,7 @@ class Connection:
 
         # Initialize output converters dictionary and its lock for thread safety
         self._output_converters = {}
+        self._converters_generation = 0
         self._converters_lock = threading.Lock()
 
         # Initialize encoding/decoding settings lock for thread safety
@@ -741,17 +863,22 @@ class Connection:
         _provider = ProviderManager.ensure_available()
         ddbc_bindings._set_odbc_provider(_provider)
 
+        # Configure a reused connection's mode inside native checkout, while
+        # its temporary connection timeout still bounds attribute-setting I/O.
+        native_attrs = self._attrs_before.copy()
+        native_attrs[ConstantsDDBC.SQL_ATTR_AUTOCOMMIT.value] = int(bool(autocommit))
         try:
             self._conn = ddbc_bindings.Connection(
                 self.connection_str,
                 self._pooling,
-                self._attrs_before,
+                native_attrs,
                 self._pool_key,
                 self._token_factory,
             )
+            if self._conn.get_autocommit() != autocommit:
+                self.setautocommit(autocommit)
         except RuntimeError as e:
             _raise_connection_error(e)
-        self.setautocommit(autocommit)
 
         # Register this connection for cleanup before Python shutdown
         # This ensures ODBC handles are freed in correct order, preventing leaks
@@ -879,7 +1006,7 @@ class Connection:
         1. Parse and validate the base connection_str (validates against allowlist)
         2. Normalize parameter names (e.g., addr/address -> Server, uid -> UID)
         3. Merge kwargs (which override connection_str params after normalization)
-        4. Add Driver and APP (always controlled by the driver)
+        4. Add Driver and resolve the driver-prefixed application name
         5. Build and return the final connection string + parameter dictionary
 
         Args:
@@ -929,20 +1056,22 @@ class Connection:
         for key, value in kwargs.items():
             normalized_key = _ConnectionStringParser.normalize_key(key)
             if normalized_key:
-                # Driver and APP are reserved - raise error if user tries to set them
+                # Driver is reserved - raise error if the user tries to set it.
                 if normalized_key in _RESERVED_PARAMETERS:
                     raise ValueError(
                         f"Connection parameter '{key}' is reserved and controlled by the driver. "
                         f"It cannot be set by the user."
                     )
+                if normalized_key == "APP" and not isinstance(value, str):
+                    raise TypeError("Application name must be a string")
                 # kwargs override any existing values from connection string
                 normalized_params[normalized_key] = str(value)
             else:
                 logger.warning(f"Ignoring unknown connection parameter from kwargs: {key}")
 
-        # Step 4: Add Driver and APP (always controlled by the driver).
+        # Step 4: Add Driver and resolve APP before authentication or pool lookup.
         normalized_params["Driver"] = "ODBC Driver 18 for SQL Server"
-        normalized_params["APP"] = "MSSQL-Python"
+        normalized_params["APP"] = _resolve_app_name(normalized_params.get("APP"))
 
         # Step 5: Build final connection string
         conn_str = _ConnectionStringBuilder(normalized_params).build()
@@ -1066,15 +1195,24 @@ class Connection:
 
     def setencoding(self, encoding: Optional[str] = None, ctype: Optional[int] = None) -> None:
         """
-        Sets the text encoding for SQL statements and text parameters.
+        Records the requested text encoding settings for compatibility.
 
-        Since Python 3 only has str (which is Unicode), this method configures
-        how text is encoded when sending to the database.
+        SQL statements and str parameters are always sent as UTF-16LE; text
+        parameters are bound as SQL_C_WCHAR on every platform. This applies to
+        execute() and executemany(), with or without setinputsizes(). This method
+        does not change that behavior or enforce the requested codec.
+
+        Requests that pass validation but differ from UTF-16LE with SQL_WCHAR emit
+        UserWarning. Invalid codec names, invalid ctypes, and incompatible
+        combinations (such as UTF-8 with SQL_WCHAR) raise ProgrammingError before
+        any warning is emitted or settings are stored. Accepted settings are still
+        returned by getencoding(), not the effective binding. Use setdecoding()
+        separately to configure how results are read.
 
         Args:
-            encoding (str, optional): The encoding to use. This must be a valid Python
+            encoding (str, optional): The requested encoding. This must be a valid Python
                 encoding that converts text to bytes. If None, defaults to 'utf-16le'.
-            ctype (int, optional): The C data type to use when passing data:
+            ctype (int, optional): The requested C data type:
                 SQL_CHAR or SQL_WCHAR. If not provided, SQL_WCHAR is used for
                 UTF-16 variants (see UTF16_ENCODINGS constant). SQL_CHAR is used
                 for all other encodings.
@@ -1083,15 +1221,20 @@ class Connection:
             None
 
         Raises:
-            ProgrammingError: If the encoding is not valid or not supported.
+            ProgrammingError: If the encoding or ctype is invalid, or their
+                combination is incompatible.
             InterfaceError: If the connection is closed.
 
-        Example:
-            # For databases that only communicate with UTF-8
-            cnxn.setencoding(encoding='utf-8')
+        Warns:
+            UserWarning: If the request passes validation but its encoding or
+                ctype cannot be honored.
 
-            # For explicitly using SQL_CHAR
-            cnxn.setencoding(encoding='utf-8', ctype=mssql_python.SQL_CHAR)
+        Example:
+            # Restore the supported default.
+            cnxn.setencoding()
+
+            # Warns: parameters still use UTF-16LE / SQL_C_WCHAR.
+            cnxn.setencoding(encoding='cp1252', ctype=mssql_python.SQL_CHAR)
         """
         logger.debug(
             "setencoding: Configuring encoding=%s, ctype=%s",
@@ -1159,20 +1302,35 @@ class Connection:
         if ctype == ConstantsDDBC.SQL_WCHAR.value:
             _validate_utf16_wchar_compatibility(encoding, ctype, "SQL_WCHAR")
 
+        if encoding != "utf-16le" or ctype != ConstantsDDBC.SQL_WCHAR.value:
+            warnings.warn(
+                "setencoding() does not change SQL statement encoding or text parameter binding: "
+                "statements and str parameters always use UTF-16LE, and text parameters are "
+                "bound as SQL_C_WCHAR. The requested settings are retained by getencoding() "
+                "for compatibility but are not applied. Use setencoding() with no arguments "
+                "to restore the supported defaults.",
+                UserWarning,
+                stacklevel=2,
+            )
+
         # Store the encoding settings (thread-safe with lock)
         with self._encoding_lock:
             self._encoding_settings = {"encoding": encoding, "ctype": ctype}
 
         # Log with sanitized values for security
         logger.info(
-            "Text encoding set to %s with ctype %s",
+            "Requested text encoding stored as %s with ctype %s",
             sanitize_user_input(encoding),
             sanitize_user_input(str(ctype)),
         )
 
     def getencoding(self) -> Dict[str, Union[str, int]]:
         """
-        Gets the current text encoding settings (thread-safe).
+        Gets the requested text encoding settings (thread-safe).
+
+        These settings are retained for compatibility. They do not describe the
+        effective binding: SQL statements and str parameters always use UTF-16LE,
+        and text parameters are bound as SQL_C_WCHAR.
 
         Returns:
             dict: A dictionary containing 'encoding' and 'ctype' keys.
@@ -1204,6 +1362,9 @@ class Connection:
     ) -> None:
         """
         Sets the text decoding used when reading SQL_CHAR and SQL_WCHAR from the database.
+
+        Existing cursors refresh their cached SQL_CHAR/SQL_WCHAR decoding settings
+        before their next fetch.
 
         This method configures how text data is decoded when reading from the database.
         In Python 3, all text is Unicode (str), so this primarily affects the encoding
@@ -1328,6 +1489,7 @@ class Connection:
         # Store the decoding settings for the specified sqltype (thread-safe with lock)
         with self._encoding_lock:
             self._decoding_settings[sqltype] = {"encoding": encoding, "ctype": ctype}
+            self._decoding_generation += 1
 
         # Log with sanitized values for security
         sqltype_name = {
@@ -1532,6 +1694,8 @@ class Connection:
 
         Thread-safe implementation that protects the converters dictionary with a lock.
 
+        Changes apply on the next fetch, including for an already executed result set.
+
         ⚠️ WARNING: Registering an output converter will cause the supplied Python function
         to be executed on every matching database value. Do not register converters from
         untrusted sources, as this can result in arbitrary code execution and security
@@ -1572,6 +1736,7 @@ class Connection:
         """
         with self._converters_lock:
             self._output_converters[sqltype] = func
+            self._converters_generation += 1
             # Pass to the underlying connection if native implementation supports it
             if hasattr(self._conn, "add_output_converter"):
                 self._conn.add_output_converter(sqltype, func)
@@ -1602,6 +1767,8 @@ class Connection:
 
         Thread-safe implementation that protects the converters dictionary with a lock.
 
+        Existing cursors use the updated converters on their next fetch.
+
         Args:
             sqltype (int or type): The SQL type value to remove the converter for
 
@@ -1611,6 +1778,7 @@ class Connection:
         with self._converters_lock:
             if sqltype in self._output_converters:
                 del self._output_converters[sqltype]
+                self._converters_generation += 1
                 # Pass to the underlying connection if native implementation supports it
                 if hasattr(self._conn, "remove_output_converter"):
                     self._conn.remove_output_converter(sqltype)
@@ -1622,11 +1790,14 @@ class Connection:
 
         Thread-safe implementation that protects the converters dictionary with a lock.
 
+        Existing cursors stop applying converters on their next fetch.
+
         Returns:
             None
         """
         with self._converters_lock:
             self._output_converters.clear()
+            self._converters_generation += 1
             # Pass to the underlying connection if native implementation supports it
             if hasattr(self._conn, "clear_output_converters"):
                 self._conn.clear_output_converters()
@@ -1825,10 +1996,22 @@ class Connection:
 
         Returns:
             The requested information. The type of the returned value depends
-            on the information requested. It will be a string, integer, or boolean.
+            on the information requested. For registered ODBC types, character values (including
+            "Y"/"N") return strings; numeric values and bitmasks return unsigned
+            integers. Native retrieval failures, including unsupported types,
+            timeouts, and connection loss, are logged and return None.
+
+        Note:
+            SQL_DRIVER_HDBC, SQL_DRIVER_HENV and SQL_DRIVER_HLIB are implemented
+            by the ODBC Driver Manager, which this driver bypasses. Correct IDs
+            do not imply that the selected native provider supports these queries.
+            A native provider may return cached metadata even after connection loss;
+            getinfo() is not a connection-health check.
+            Deprecated GetInfoConstants names are retained for API compatibility,
+            not as valid requests. Their integer values may request unrelated information.
 
         Raises:
-            DatabaseError: If there is an error retrieving the information.
+            DatabaseError: If a numeric byte result does not match its ODBC type's width.
             InterfaceError: If the connection is closed.
         """
         if self._closed:
@@ -1843,17 +2026,14 @@ class Connection:
 
         # Check for invalid info_type values
         if info_type < 0:
-            logger.debug(
-                "warning",
-                f"Invalid info_type: {info_type}. Must be a positive integer.",
-            )
+            logger.debug("Invalid info_type: %d. Must be non-negative.", info_type)
             return None
 
         # Get the raw result from the C++ layer
         try:
             raw_result = self._conn.get_info(info_type)
         except Exception as e:  # pylint: disable=broad-exception-caught
-            # Log the error and return None for invalid info types
+            # Preserve the legacy logged-None contract for native retrieval failures.
             logger.warning(f"getinfo({info_type}) failed: {e}")
             return None
 
@@ -1870,70 +2050,19 @@ class Connection:
             data = raw_result["data"]
             length = raw_result["length"]
 
-            # Debug logging to understand the issue better
             logger.debug(
-                "debug",
-                f"getinfo: info_type={info_type}, length={length}, data_type={type(data)}",
+                "getinfo: info_type=%d, length=%r, data_type=%s",
+                info_type,
+                length,
+                type(data),
             )
 
-            # Define constants for different return types
-            # String types - these return strings in pyodbc
-            string_type_constants = {
-                GetInfoConstants.SQL_DATA_SOURCE_NAME.value,
-                GetInfoConstants.SQL_DATABASE_NAME.value,
-                GetInfoConstants.SQL_DRIVER_NAME.value,
-                GetInfoConstants.SQL_DRIVER_VER.value,
-                GetInfoConstants.SQL_SERVER_NAME.value,
-                GetInfoConstants.SQL_USER_NAME.value,
-                GetInfoConstants.SQL_DRIVER_ODBC_VER.value,
-                GetInfoConstants.SQL_IDENTIFIER_QUOTE_CHAR.value,
-                GetInfoConstants.SQL_CATALOG_NAME_SEPARATOR.value,
-                GetInfoConstants.SQL_CATALOG_TERM.value,
-                GetInfoConstants.SQL_SCHEMA_TERM.value,
-                GetInfoConstants.SQL_TABLE_TERM.value,
-                GetInfoConstants.SQL_KEYWORDS.value,
-                GetInfoConstants.SQL_PROCEDURE_TERM.value,
-                GetInfoConstants.SQL_SPECIAL_CHARACTERS.value,
-                GetInfoConstants.SQL_SEARCH_PATTERN_ESCAPE.value,
-            }
-
-            # Boolean 'Y'/'N' types
-            yn_type_constants = {
-                GetInfoConstants.SQL_ACCESSIBLE_PROCEDURES.value,
-                GetInfoConstants.SQL_ACCESSIBLE_TABLES.value,
-                GetInfoConstants.SQL_DATA_SOURCE_READ_ONLY.value,
-                GetInfoConstants.SQL_EXPRESSIONS_IN_ORDERBY.value,
-                GetInfoConstants.SQL_LIKE_ESCAPE_CLAUSE.value,
-                GetInfoConstants.SQL_MULTIPLE_ACTIVE_TXN.value,
-                GetInfoConstants.SQL_NEED_LONG_DATA_LEN.value,
-                GetInfoConstants.SQL_PROCEDURES.value,
-            }
-
-            # Numeric type constants that return integers
-            numeric_type_constants = {
-                GetInfoConstants.SQL_MAX_COLUMN_NAME_LEN.value,
-                GetInfoConstants.SQL_MAX_TABLE_NAME_LEN.value,
-                GetInfoConstants.SQL_MAX_SCHEMA_NAME_LEN.value,
-                GetInfoConstants.SQL_MAX_CATALOG_NAME_LEN.value,
-                GetInfoConstants.SQL_MAX_IDENTIFIER_LEN.value,
-                GetInfoConstants.SQL_MAX_STATEMENT_LEN.value,
-                GetInfoConstants.SQL_MAX_DRIVER_CONNECTIONS.value,
-                GetInfoConstants.SQL_NUMERIC_FUNCTIONS.value,
-                GetInfoConstants.SQL_STRING_FUNCTIONS.value,
-                GetInfoConstants.SQL_DATETIME_FUNCTIONS.value,
-                GetInfoConstants.SQL_TXN_CAPABLE.value,
-                GetInfoConstants.SQL_DEFAULT_TXN_ISOLATION.value,
-                GetInfoConstants.SQL_CURSOR_COMMIT_BEHAVIOR.value,
-            }
-
-            # Determine the type of information we're dealing with
-            is_string_type = (
-                info_type > INFO_TYPE_STRING_THRESHOLD or info_type in string_type_constants
+            # Explicit numeric types take precedence over the legacy high-ID
+            # string fallback (e.g. SQL_MAX_IDENTIFIER_LEN is numeric at 10005).
+            return_type = _GETINFO_RETURN_TYPES.get(info_type)
+            is_string_type = return_type is str or (
+                return_type is None and info_type > INFO_TYPE_STRING_THRESHOLD
             )
-            is_yn_type = info_type in yn_type_constants
-            is_numeric_type = info_type in numeric_type_constants
-
-            # Process the data based on type
             if is_string_type:
                 # For string data, ensure we properly handle the byte array
                 if isinstance(data, bytes):
@@ -1958,85 +2087,33 @@ class Connection:
                 else:
                     # If it's not bytes, return as is
                     return data
-            elif is_yn_type:
-                # For Y/N types, pyodbc returns a string 'Y' or 'N'
-                if isinstance(data, bytes) and length >= 1:
-                    byte_val = data[0]
-                    if byte_val in (b"Y"[0], b"y"[0], 1):
-                        return "Y"
-                    return "N"
-                # If it's not a byte or we can't determine, default to 'N'
-                return "N"
-            elif is_numeric_type:
-                # Handle numeric types based on length
+            elif isinstance(return_type, struct.Struct):
                 if isinstance(data, bytes):
-                    # Map byte length → signed int size
-                    int_sizes = {
-                        1: lambda d: int(d[0]),
-                        2: lambda d: int.from_bytes(d[:2], "little", signed=True),
-                        4: lambda d: int.from_bytes(d[:4], "little", signed=True),
-                        8: lambda d: int.from_bytes(d[:8], "little", signed=True),
-                    }
-
-                    # Direct numeric conversion if supported length
-                    if length in int_sizes:
-                        result = int_sizes[length](data)
-                        return int(result)
-
-                    # Helper: check if all chars are digits
-                    def is_digit_bytes(b: bytes) -> bool:
-                        return all(c in b"0123456789" for c in b)
-
-                    # Helper: check if bytes are ASCII-printable or NUL padded
-                    def is_printable_bytes(b: bytes) -> bool:
-                        return all(32 <= c <= 126 or c == 0 for c in b)
-
-                    chunk = data[:length]
-
-                    # Try interpret as integer string
-                    if is_digit_bytes(chunk):
-                        return int(chunk)
-
-                    # Try decode as ASCII/UTF-8 string
-                    if is_printable_bytes(chunk):
-                        str_val = chunk.decode("utf-8", errors="replace").rstrip("\0")
-                        return int(str_val) if str_val.isdigit() else str_val
-
-                    # For 16-bit values that might be returned for max lengths
-                    if length == 2:
-                        return int.from_bytes(data[:2], "little", signed=True)
-
-                    # For 32-bit values (common for bitwise flags)
-                    if length == 4:
-                        return int.from_bytes(data[:4], "little", signed=True)
-
-                    # Fallback: try to convert to int if possible
+                    if (
+                        type(length) is not int
+                        or length != return_type.size
+                        or len(data) < return_type.size
+                    ):
+                        raise DatabaseError(
+                            driver_error=f"Invalid numeric result length for getinfo({info_type})",
+                            ddbc_error=(
+                                f"Expected {return_type.size} bytes; "
+                                f"got length={length} with {len(data)} bytes of data"
+                            ),
+                        )
+                    return return_type.unpack_from(data)[0]
+                # Legacy non-byte payloads must not lose precision or change bool to int.
+                if isinstance(data, str) and data.isdecimal():
                     try:
-                        if length <= 8:
-                            return int.from_bytes(data[:length], "little", signed=True)
-                    except Exception:
-                        pass
+                        return int(data)
+                    except ValueError:
+                        logger.debug(
+                            "Numeric getinfo compatibility value exceeds the integer conversion "
+                            "limit; returning it unchanged"
+                        )
+                return data
 
-                    # Last resort: return as integer if all else fails
-                    try:
-                        return int.from_bytes(data[: min(length, 8)], "little", signed=True)
-                    except Exception:
-                        return 0
-                elif isinstance(data, (int, float)):
-                    # Already numeric
-                    return int(data)
-                else:
-                    # Try to convert to int if it's a string
-                    try:
-                        if isinstance(data, str) and data.isdigit():
-                            return int(data)
-                    except Exception:
-                        pass
-
-                    # Return as is if we can't convert
-                    return data
-
-            # For other types, try to determine the most appropriate type
+            # Preserve legacy handling for unregistered, driver-specific info types.
             if isinstance(data, bytes):
                 # Try to convert to string first
                 try:
@@ -2158,21 +2235,14 @@ class Connection:
         # Close the connection even if cursor cleanup had issues
         try:
             if self._conn:
-                if not self.autocommit:
-                    # If autocommit is disabled, rollback any uncommitted changes
-                    # This is important to ensure no partial transactions remain
-                    # For autocommit True, this is not necessary as each statement is
-                    # committed immediately
-                    logger.debug("Rolling back uncommitted changes before closing connection.")
-                    try:
-                        self._conn.rollback()
-                    except RuntimeError as e:
-                        # Handle C++ layer RuntimeError with proper DB-API exception mapping
-                        _raise_connection_error(e)
-                # TODO: Check potential race conditions in case of multithreaded scenarios
-                # Close the connection
-                self._conn.close()
-                self._conn = None
+                # Native close owns transaction cleanup and fail-closed discard.
+                # Avoid duplicate attribute probes and untrusted rollback hints.
+                try:
+                    self._conn.close(rollback_before_disconnect=True)
+                except RuntimeError as e:
+                    _raise_connection_error(e)
+                finally:
+                    self._conn = None
         except Exception as e:
             logger.error(f"Error closing database connection: {e}")
             # Re-raise the connection close error as it's more critical

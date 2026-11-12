@@ -35,20 +35,21 @@ PyBind11 provides:
 - Memory-safe bindings
 - Clean and Pythonic API, while performance-critical logic remains in robust, maintainable C++.
  
-## What's new in v1.14.0
+## What's new in v1.17.0
 
 ### Enhancements
 
-- **Faster Parameter Detection and Execution** - Parameter type detection and binding now run in a native C++ pipeline, substantially reducing per-parameter overhead and improving throughput for wide and batched `execute()` workloads (#549).
+- **Reduced Pooled Connection Return Work** - Proven-clean pooled connections avoid redundant sanitation while transaction, failure-discard, capacity, and native handle-lifetime protections remain in place (#820).
 
 ### Bug Fixes
 
-- **Bulk Copy Accepts `timeout=0`** - `bulkcopy()` now treats zero as no timeout, matching the BCP API contract, while continuing to reject negative, non-integer, and boolean values (#698).
-- **Arrow Reader Fetch Exceptions Are Preserved** - Defensive cursor cleanup no longer masks the original exception raised while fetching Arrow result batches (#718).
-- **Decimal Conversion Errors No Longer Expose Parameter Values** - `executemany()` Decimal conversion failures now report metadata only, preventing parameter rows and sensitive values from leaking through exception messages or chained tracebacks (#719).
-- **Arrow View Types Work in Bulk Copy** - Polars `string_view` columns exported through the Arrow C Data Interface now round-trip correctly through `bulkcopy_arrow()` (#717, via `mssql_py_core`).
-- **`connect(timeout=)` Sets the Login Timeout** - The constructor timeout now bounds connection attempts as documented instead of setting the per-statement query timeout; timeout validation is consistent across both APIs (#728).
-- **Windows Extension Loading Uses Interpreter Architecture** - The loader now selects the native binary using the Python interpreter architecture, fixing x64 Python on Windows ARM64 hosts and avoiding fallback warnings on stdout (#727).
+- **Reliable Bulk Copy After Upgrades** - Bulk copy and async loading import the native Rust extension directly, so they continue to work after upgrading from 1.15.0 even when the shared package initializer is missing (#860).
+- **Bounded Pooled Connection Checkout** - Validation of an unresponsive pooled socket now observes the configured login timeout and opens a replacement instead of probing stale sockets indefinitely (#859).
+- **Accurate `nextset()` Row Counts** - Moving to the next result now refreshes `rowcount` for subsequent data-modification statements and resets it for row-producing results (#864).
+- **PEP 249 `Timestamp()` Compatibility** - The `microsecond` argument is optional and defaults to zero, so the standard six-argument constructor works as specified (#872).
+- **UTF-8 Bulk Copy Encoding** - Narrow values now honor UTF-8 flags and SQL sort IDs when encoded for bulk copy, preventing multibyte data failures against UTF-8 destinations (#875, via `mssql-python-rs`).
+- **Bulk Copy Identifier Validation** - Server-qualified four-part destinations are rejected before metadata retrieval or command generation; valid targets remain limited to `database.schema.table` (#875, via `mssql-python-rs`).
+- **Preserved Bulk Copy Datetime Precision** - String values targeting `DATETIME2` and `DATETIMEOFFSET` preserve seven fractional digits, trailing `Z`, and supported ISO forms without Python-version-dependent truncation (#875, via `mssql-python-rs`).
 
 For more information, please visit the project link on Github: https://github.com/microsoft/mssql-python
  

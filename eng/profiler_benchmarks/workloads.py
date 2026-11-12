@@ -1,0 +1,312 @@
+"""Fixed workloads shared by the base and candidate profiler benchmark builds."""
+
+from functools import partial
+import time
+
+from profiler import scenarios
+
+# Preserve the AdventureWorks workloads from the previous CI benchmark.
+QUERIES = {
+    "join_aggregation": """
+        SELECT p.ProductID, p.Name AS ProductName, pc.Name AS Category,
+               psc.Name AS Subcategory, COUNT(sod.SalesOrderDetailID) AS TotalOrders,
+               SUM(sod.OrderQty) AS TotalQuantity, SUM(sod.LineTotal) AS TotalRevenue,
+               AVG(sod.UnitPrice) AS AvgPrice
+        FROM Sales.SalesOrderDetail sod
+        INNER JOIN Production.Product p ON sod.ProductID = p.ProductID
+        INNER JOIN Production.ProductSubcategory psc ON p.ProductSubcategoryID = psc.ProductSubcategoryID
+        INNER JOIN Production.ProductCategory pc ON psc.ProductCategoryID = pc.ProductCategoryID
+        GROUP BY p.ProductID, p.Name, pc.Name, psc.Name
+        HAVING SUM(sod.LineTotal) > 10000 ORDER BY TotalRevenue DESC
+    """,
+    "large_fetch": """
+        SELECT soh.SalesOrderID, soh.OrderDate, soh.DueDate, soh.ShipDate, soh.Status,
+               soh.SubTotal, soh.TaxAmt, soh.Freight, soh.TotalDue, c.CustomerID,
+               p.FirstName, p.LastName, a.AddressLine1, a.City,
+               sp.Name AS StateProvince, cr.Name AS Country
+        FROM Sales.SalesOrderHeader soh
+        INNER JOIN Sales.Customer c ON soh.CustomerID = c.CustomerID
+        INNER JOIN Person.Person p ON c.PersonID = p.BusinessEntityID
+        INNER JOIN Person.BusinessEntityAddress bea ON p.BusinessEntityID = bea.BusinessEntityID
+        INNER JOIN Person.Address a ON bea.AddressID = a.AddressID
+        INNER JOIN Person.StateProvince sp ON a.StateProvinceID = sp.StateProvinceID
+        INNER JOIN Person.CountryRegion cr ON sp.CountryRegionCode = cr.CountryRegionCode
+        WHERE soh.OrderDate >= '2013-01-01'
+    """,
+    "fetch_1_2m": """
+        SELECT sod.SalesOrderID, sod.SalesOrderDetailID, sod.ProductID,
+               sod.OrderQty, sod.UnitPrice, sod.LineTotal,
+               p.Name AS ProductName, p.ProductNumber, p.Color, p.ListPrice,
+               n1.number AS RowMultiplier1
+        FROM Sales.SalesOrderDetail sod
+        CROSS JOIN (SELECT TOP 10 ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS number
+                    FROM Sales.SalesOrderDetail) n1
+        INNER JOIN Production.Product p ON sod.ProductID = p.ProductID
+    """,
+    "cte": """
+        WITH SalesSummary AS (
+            SELECT soh.SalesPersonID, YEAR(soh.OrderDate) AS OrderYear,
+                   SUM(soh.TotalDue) AS YearlyTotal
+            FROM Sales.SalesOrderHeader soh WHERE soh.SalesPersonID IS NOT NULL
+            GROUP BY soh.SalesPersonID, YEAR(soh.OrderDate)
+        ), RankedSales AS (
+            SELECT SalesPersonID, OrderYear, YearlyTotal,
+                   RANK() OVER (PARTITION BY OrderYear ORDER BY YearlyTotal DESC) AS SalesRank
+            FROM SalesSummary
+        )
+        SELECT rs.SalesPersonID, p.FirstName, p.LastName,
+               rs.OrderYear, rs.YearlyTotal, rs.SalesRank
+        FROM RankedSales rs INNER JOIN Person.Person p ON rs.SalesPersonID = p.BusinessEntityID
+        WHERE rs.SalesRank <= 10 ORDER BY rs.OrderYear DESC, rs.SalesRank
+    """,
+}
+
+
+def query(conn, ctx, sql):
+    with conn.cursor() as cursor:
+        ctx.enable()
+        try:
+            start = time.perf_counter()
+            cursor.execute(sql)
+            rows = cursor.fetchall()
+            wall_ms = (time.perf_counter() - start) * 1000
+            cpp, py = ctx.collect()
+            return dict(
+                title="AdventureWorks query",
+                wall_ms=wall_ms,
+                cpp=cpp,
+                py=py,
+                detail=f"Rows: {len(rows)}",
+            )
+        finally:
+            ctx.disable()
+
+
+def parameter_execution(conn, ctx, named=False):
+    with conn.cursor() as cursor:
+        ctx.enable()
+        try:
+            start = time.perf_counter()
+            for value in range(100):
+                if named:
+                    cursor.execute("SELECT %(value)s", {"value": value})
+                else:
+                    cursor.execute("SELECT ?", (value,))
+                assert cursor.fetchone()[0] == value
+            wall_ms = (time.perf_counter() - start) * 1000
+            cpp, py = ctx.collect()
+            return dict(
+                title="Parameterized execution", wall_ms=wall_ms, cpp=cpp, py=py, detail="Rows: 100"
+            )
+        finally:
+            ctx.disable()
+
+
+def legacy_insertmany(conn, ctx, input_sizes=False):
+    from mssql_python import SQL_INTEGER, SQL_VARCHAR
+
+    sql = "INSERT INTO #ci_insert VALUES " + ",".join(["(?,?)"] * 1000)
+    batches = [
+        [value for i in range(start, start + 1000) for value in (i, f"value_{i}")]
+        for start in range(0, 100_000, 1000)
+    ]
+    with conn.cursor() as cursor:
+        try:
+            cursor.execute(
+                "DROP TABLE IF EXISTS #ci_insert; "
+                "CREATE TABLE #ci_insert (id INT, val VARCHAR(100))"
+            )
+            sizes = [(SQL_INTEGER, 0, 0), (SQL_VARCHAR, 100, 0)] * 1000
+            ctx.enable()
+            start = time.perf_counter()
+            for params in batches:
+                if input_sizes:
+                    cursor.setinputsizes(sizes)
+                cursor.execute(sql, params)
+            wall_ms = (time.perf_counter() - start) * 1000
+            cpp, py = ctx.collect()
+            return dict(
+                title="Batched insert", wall_ms=wall_ms, cpp=cpp, py=py, detail="Rows: 100000"
+            )
+        finally:
+            ctx.disable()
+            conn.rollback()
+
+
+def lob_fetch(conn, ctx):
+    """Fetch one multi-chunk value; setup and exact-value validation are not timed."""
+    payload_bytes = 256 * 1024
+    expression = f"REPLICATE(CAST('x' AS VARCHAR(MAX)), {payload_bytes})"
+    expected = "x" * payload_bytes
+
+    with conn.cursor() as cursor:
+        cursor.execute(f"SELECT {expression} AS payload")
+        ctx.enable()
+        try:
+            start = time.perf_counter()
+            rows = cursor.fetchall()
+            wall_ms = (time.perf_counter() - start) * 1000
+            cpp, py = ctx.collect()
+            assert len(rows) == 1
+            row = rows[0]
+            assert row is not None and len(row) == 1
+            assert type(row[0]) is type(expected) and row[0] == expected
+            assert not cursor.messages, "Clean LOB fetch unexpectedly produced diagnostics"
+            return dict(
+                title="Multi-chunk LOB fetch",
+                wall_ms=wall_ms,
+                cpp=cpp,
+                py=py,
+                detail=f"Rows: 1; type: varchar; payload bytes: {payload_bytes}; API: fetchall",
+            )
+        finally:
+            ctx.disable()
+
+
+def scalar_fetchval(conn, table, ctx):
+    """Measure scalar fetching with debug disabled, excluding setup and validation."""
+    from mssql_python.logging import logger
+
+    if logger.is_debug_enabled:
+        raise ValueError("scalar_fetchval requires debug logging to be disabled")
+
+    expected = list(range(10_000))
+    with conn.cursor() as cursor:
+        cursor.execute(f"SELECT TOP (10000) int_col FROM {table} ORDER BY id")
+        ctx.enable()
+        try:
+            start = time.perf_counter()
+            values = [cursor.fetchval() for _ in expected]
+            eof = cursor.fetchval()
+            wall_ms = (time.perf_counter() - start) * 1000
+            cpp, py = ctx.collect()
+            assert values == expected and all(type(value) is int for value in values)
+            assert eof is None, "Scalar fetch did not reach EOF"
+            assert not cursor.messages, "Clean scalar fetch unexpectedly produced diagnostics"
+            return dict(
+                title="Scalar fetchval",
+                wall_ms=wall_ms,
+                cpp=cpp,
+                py=py,
+                detail="Rows: 10000; type: int; API: fetchval; debug: disabled",
+            )
+        finally:
+            ctx.disable()
+
+
+def output_converter_fetch(conn, table, ctx, batched=False):
+    """Time fetching with a UTF-16LE converter; validate retained rows afterward."""
+    from mssql_python import SQL_WVARCHAR
+
+    texts = [f"unicode_row_{index}" for index in range(10_000)]
+    expected = [(index, text.upper()) for index, text in enumerate(texts)]
+    api = "fetchmany(1000)" if batched else "fetchall()"
+
+    def converter(raw):
+        return raw.decode("utf-16le").upper()
+
+    with conn.cursor() as cursor:
+        previous = conn.get_output_converter(SQL_WVARCHAR)
+        try:
+            conn.add_output_converter(SQL_WVARCHAR, converter)
+            cursor.execute(f"SELECT TOP (10000) int_col, nvarchar_col FROM {table} ORDER BY id")
+            rows = []
+            ctx.enable()
+            start = time.perf_counter()
+            if batched:
+                while batch := cursor.fetchmany(1000):
+                    rows.extend(batch)
+            else:
+                rows = cursor.fetchall()
+            wall_ms = (time.perf_counter() - start) * 1000
+            cpp, py = ctx.collect()
+            assert [tuple(row) for row in rows] == expected
+            assert all(type(row[0]) is int and type(row[1]) is str for row in rows)
+            assert not cursor.messages, "Clean converter fetch unexpectedly produced diagnostics"
+            return dict(
+                title=f"Output converter / {api}",
+                wall_ms=wall_ms,
+                cpp=cpp,
+                py=py,
+                detail=f"Rows: 10000; types: int,nvarchar; converter: UTF-16LE upper; API: {api}",
+            )
+        finally:
+            try:
+                ctx.disable()
+            finally:
+                if previous is None:
+                    conn.remove_output_converter(SQL_WVARCHAR)
+                else:
+                    conn.add_output_converter(SQL_WVARCHAR, previous)
+
+
+def row_to_dict(conn, table, ctx):
+    """Convert fetched rows with warm mapping metadata; fetch and validation are not timed."""
+    names = tuple(f"c{column}" for column in range(32))
+    sql = "SELECT TOP (10000) " + ", ".join(
+        f"CASE WHEN int_col % 7 = 0 THEN CAST(NULL AS INT) "
+        f"ELSE int_col + {column} END AS {name}"
+        for column, name in enumerate(names)
+    )
+    sql += f" FROM {table} ORDER BY id"
+    expected = [
+        tuple(None if value % 7 == 0 else value + column for column in range(32))
+        for value in range(10_000)
+    ]
+
+    with conn.cursor() as cursor:
+        try:
+            cursor.execute(sql)
+            rows = cursor.fetchall()
+            assert len(rows) == len(
+                expected
+            ), "Row-to-dictionary fetch returned the wrong row count"
+            for row in rows:
+                dict(row._mapping)
+
+            ctx.enable()
+            start = time.perf_counter()
+            dictionaries = [dict(row._mapping) for row in rows]
+            wall_ms = (time.perf_counter() - start) * 1000
+            cpp, py = ctx.collect()
+            assert len(dictionaries) == len(expected)
+            for dictionary, values in zip(dictionaries, expected):
+                assert tuple(dictionary) == names
+                assert all(type(key) is str for key in dictionary)
+                actual = tuple(dictionary.values())
+                assert actual == values and all(
+                    type(value) is type(wanted) for value, wanted in zip(actual, values)
+                )
+            assert not cursor.messages, "Clean row-to-dictionary conversion produced diagnostics"
+            return dict(
+                title="Warm row-to-dictionary conversion",
+                wall_ms=wall_ms,
+                cpp=cpp,
+                py=py,
+                detail=(
+                    "Rows: 10000; columns: 32; types: int/NULL; "
+                    "API: dict(row._mapping); mode: warm"
+                ),
+            )
+        finally:
+            ctx.disable()
+
+
+def registry():
+    """Keep every PR #552 scenario, including its existing timing boundaries."""
+    result = dict(scenarios.SCENARIOS)
+    result.update(
+        fetchmany_100=(partial(scenarios.fetchmany, batch_size=100), True),
+        fetchmany_10000=(partial(scenarios.fetchmany, batch_size=10000), True),
+        prepared_qmark=(parameter_execution, False),
+        prepared_named=(partial(parameter_execution, named=True), False),
+        legacy_insertmany=(legacy_insertmany, False),
+        setinputsizes=(partial(legacy_insertmany, input_sizes=True), False),
+    )
+    result.update((name, (partial(query, sql=sql), False)) for name, sql in QUERIES.items())
+    result["lob_varchar_256k_fetchall"] = (lob_fetch, False)
+    result["scalar_fetchval"] = (scalar_fetchval, True)
+    result["output_converter_fetchall"] = (output_converter_fetch, True)
+    result["output_converter_fetchmany1000"] = (partial(output_converter_fetch, batched=True), True)
+    result["row_to_dict"] = (row_to_dict, True)
+    return result

@@ -6,8 +6,81 @@ trigger:
     include:
       - main
 
+parameters:
+  - name: rsVersionOverride
+    displayName: 'Exact mssql-python-rs test version (empty uses latest published nightly)'
+    type: string
+    default: ''
+
+variables:
+  # QEMU 10.2.3, qualified against the ARM64 GCC startup crash and shutdown tests.
+  arm64QemuImage: 'tonistiigi/binfmt@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0'
+
 jobs:
+- job: SelectRsRuntime
+  displayName: 'Select one published Rust nightly for the validation run'
+  pool:
+    vmImage: 'ubuntu-latest'
+  steps:
+  - checkout: self
+  - task: UsePythonVersion@0
+    inputs:
+      versionSpec: '3.12'
+      addToPath: true
+  - script: |
+      python eng/scripts/resolve_pr_rs_runtime.py --output-dir "$(Build.ArtifactStagingDirectory)/rs-runtime"
+    name: select
+    displayName: 'Resolve nightly or exact override from the Python package index'
+    env:
+      MSSQL_PYTHON_RS_VERSION: ${{ parameters.rsVersionOverride }}
+  - task: PublishPipelineArtifact@1
+    displayName: 'Record exact runtime selection and wheel hashes'
+    inputs:
+      targetPath: '$(Build.ArtifactStagingDirectory)/rs-runtime'
+      artifact: 'rs-runtime-selection'
+
+- job: NativePoolSanitation
+  dependsOn: SelectRsRuntime
+  variables:
+    MSSQL_PYTHON_RS_VERSION: $[ dependencies.SelectRsRuntime.outputs['select.version'] ]
+  displayName: 'Native pool sanitation tests'
+  timeoutInMinutes: 20
+  pool:
+    vmImage: 'ubuntu-latest'
+
+  steps:
+  - checkout: self
+    persistCredentials: false
+
+  - task: UsePythonVersion@0
+    inputs:
+      versionSpec: '3.13'
+      addToPath: true
+    displayName: 'Use Python 3.13 for native tests'
+
+  - bash: |
+      set -euo pipefail
+      sudo apt-get update
+      sudo apt-get install -y build-essential cmake unixodbc-dev
+      python -m pip install --no-deps --require-hashes -r eng/requirements-build-linux.txt
+    displayName: 'Install native test build dependencies'
+
+  - bash: |
+      set -euo pipefail
+      cmake -S mssql_python/pybind -B mssql_python/pybind/build/native-tests \
+        -DCMAKE_BUILD_TYPE=Release -DENABLE_PROFILING=OFF \
+        -DBUILD_NATIVE_POOL_TESTS=ON -DPython3_EXECUTABLE="$(command -v python)"
+      cmake --build mssql_python/pybind/build/native-tests \
+        --config Release --target pool_sanitation_tests --parallel 2
+      ctest --test-dir mssql_python/pybind/build/native-tests \
+        -C Release --output-on-failure --no-tests=error \
+        --timeout 120 -R '^pool_sanitation$'
+    displayName: 'Build and run native pool sanitation tests'
+
 - job: CodeQLAnalysis
+  dependsOn: SelectRsRuntime
+  variables:
+    MSSQL_PYTHON_RS_VERSION: $[ dependencies.SelectRsRuntime.outputs['select.version'] ]
   displayName: 'CodeQL Security Analysis'
   pool:
     vmImage: 'ubuntu-latest'
@@ -46,7 +119,11 @@ jobs:
     displayName: 'Finalize CodeQL'
 
 - job: pytestonwindows
+  dependsOn: SelectRsRuntime
+  variables:
+    MSSQL_PYTHON_RS_VERSION: $[ dependencies.SelectRsRuntime.outputs['select.version'] ]
   displayName: 'Windows x64'
+  timeoutInMinutes: 160
   pool:
     vmImage: 'windows-latest'
   
@@ -61,12 +138,18 @@ jobs:
       LocalDB_Python314:
         sqlVersion: 'LocalDB'
         pythonVersion: '3.14'
+      LocalDB_Python315:
+        sqlVersion: 'LocalDB'
+        pythonVersion: '3.15'
 
   steps:
+  - checkout: self
+    fetchDepth: 0
   - task: UsePythonVersion@0
     inputs:
       versionSpec: '$(pythonVersion)'
       addToPath: true
+      allowUnstable: true
       githubToken: $(GITHUB_TOKEN)
     displayName: 'Use Python $(pythonVersion)'
 
@@ -85,7 +168,20 @@ jobs:
   # Create database and user for LocalDB
   - powershell: |
       sqlcmd -S "(localdb)\MSSQLLocalDB" -Q "CREATE DATABASE TestDB"
-      sqlcmd -S "(localdb)\MSSQLLocalDB" -Q "CREATE LOGIN testuser WITH PASSWORD = '$(DB_PASSWORD)'"
+      $sqlPassword = $env:DB_PASSWORD.Replace("'", "''")
+      $sqlPath = Join-Path $env:TEMP ("create-testuser-{0}.sql" -f [guid]::NewGuid())
+      $sqlBytes = (New-Object System.Text.UTF8Encoding($false)).GetBytes("CREATE LOGIN testuser WITH PASSWORD = '$sqlPassword'`n")
+      [System.IO.File]::Create($sqlPath).Dispose()
+      try {
+        $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+        icacls $sqlPath /inheritance:r /grant:r "${identity}:(F)" "SYSTEM:(R)" | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "Failed to secure temporary SQL file" }
+        [System.IO.File]::WriteAllBytes($sqlPath, $sqlBytes)
+        sqlcmd -S "(localdb)\MSSQLLocalDB" -i $sqlPath -b -x -f 65001
+        if ($LASTEXITCODE -ne 0) { throw "Failed to create the testuser login" }
+      } finally {
+        Remove-Item $sqlPath -Force -ErrorAction Stop
+      }
       sqlcmd -S "(localdb)\MSSQLLocalDB" -d TestDB -Q "CREATE USER testuser FOR LOGIN testuser"
       sqlcmd -S "(localdb)\MSSQLLocalDB" -d TestDB -Q "ALTER ROLE db_owner ADD MEMBER testuser"
     displayName: 'Setup database and user for LocalDB'
@@ -112,7 +208,30 @@ jobs:
         Start-Process -FilePath $setupFile.FullName -ArgumentList "/x:$env:TEMP\SQLSetup","/u" -Wait
         
         Write-Host "Running SQL Server setup..."
-        Start-Process -FilePath "$env:TEMP\SQLSetup\setup.exe" -ArgumentList "/Q","/ACTION=Install","/FEATURES=SQLEngine","/INSTANCENAME=MSSQLSERVER","/SQLSVCACCOUNT=`"NT AUTHORITY\SYSTEM`"","/SQLSYSADMINACCOUNTS=`"BUILTIN\Administrators`"","/TCPENABLED=1","/SECURITYMODE=SQL","/SAPWD=$(DB_PASSWORD)","/IACCEPTSQLSERVERLICENSETERMS" -Wait
+        $configPath = Join-Path $env:TEMP ("sql2022-setup-{0}.ini" -f [guid]::NewGuid())
+        $configLines = @(
+          '[OPTIONS]'
+          'QUIET="True"'
+          'ACTION="Install"'
+          'FEATURES=SQLEngine'
+          'INSTANCENAME=MSSQLSERVER'
+          'SQLSVCACCOUNT="NT AUTHORITY\SYSTEM"'
+          'SQLSYSADMINACCOUNTS="BUILTIN\Administrators"'
+          'TCPENABLED="1"'
+          'SECURITYMODE="SQL"'
+          "SAPWD=`"$env:DB_PASSWORD`""
+          'IACCEPTSQLSERVERLICENSETERMS="True"'
+        )
+        [System.IO.File]::Create($configPath).Dispose()
+        try {
+          $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+          icacls $configPath /inheritance:r /grant:r "${identity}:(F)" "SYSTEM:(R)" | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "Failed to secure SQL Server setup configuration" }
+          Set-Content -Path $configPath -Value $configLines -Encoding ASCII
+          Start-Process -FilePath "$env:TEMP\SQLSetup\setup.exe" -ArgumentList "/ConfigurationFile=`"$configPath`"" -Wait
+        } finally {
+          Remove-Item $configPath -Force -ErrorAction Stop
+        }
       } else {
         Write-Error "Failed to download SQL Server setup file"
         exit 1
@@ -126,6 +245,7 @@ jobs:
 
   # Create database for SQL Server 2022
   - powershell: |
+      $env:SQLCMDPASSWORD = $env:DB_PASSWORD
       # Wait for SQL Server to start
       $maxAttempts = 30
       $attempt = 0
@@ -133,11 +253,11 @@ jobs:
       
       Write-Host "Waiting for SQL Server 2022 to start..."
       while (-not $connected -and $attempt -lt $maxAttempts) {
-        try {
-          sqlcmd -S "localhost" -U "sa" -P "$(DB_PASSWORD)" -Q "SELECT 1" -C
+        sqlcmd -S "localhost" -U "sa" -Q "SELECT 1" -C -b
+        if ($LASTEXITCODE -eq 0) {
           $connected = $true
           Write-Host "SQL Server is ready!"
-        } catch {
+        } else {
           $attempt++
           Write-Host "Waiting... ($attempt/$maxAttempts)"
           Start-Sleep -Seconds 2
@@ -150,10 +270,26 @@ jobs:
       }
       
       # Create database and user
-      sqlcmd -S "localhost" -U "sa" -P "$(DB_PASSWORD)" -Q "CREATE DATABASE TestDB" -C
-      sqlcmd -S "localhost" -U "sa" -P "$(DB_PASSWORD)" -Q "CREATE LOGIN testuser WITH PASSWORD = '$(DB_PASSWORD)'" -C
-      sqlcmd -S "localhost" -U "sa" -P "$(DB_PASSWORD)" -d TestDB -Q "CREATE USER testuser FOR LOGIN testuser" -C
-      sqlcmd -S "localhost" -U "sa" -P "$(DB_PASSWORD)" -d TestDB -Q "ALTER ROLE db_owner ADD MEMBER testuser" -C
+      sqlcmd -S "localhost" -U "sa" -Q "CREATE DATABASE TestDB" -C
+      $sqlPassword = $env:DB_PASSWORD.Replace("'", "''")
+      $sqlPath = Join-Path $env:TEMP ("create-testuser-{0}.sql" -f [guid]::NewGuid())
+      $sqlBytes = (New-Object System.Text.UTF8Encoding($false)).GetBytes("CREATE LOGIN testuser WITH PASSWORD = '$sqlPassword'`n")
+      [System.IO.File]::Create($sqlPath).Dispose()
+      try {
+        $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+        icacls $sqlPath /inheritance:r /grant:r "${identity}:(F)" "SYSTEM:(R)" | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "Failed to secure temporary SQL file" }
+        [System.IO.File]::WriteAllBytes($sqlPath, $sqlBytes)
+        sqlcmd -S "localhost" -U "sa" -C -i $sqlPath -b -x -f 65001
+        if ($LASTEXITCODE -ne 0) { throw "Failed to create the testuser login" }
+      } finally {
+        Remove-Item $sqlPath -Force -ErrorAction Stop
+      }
+      sqlcmd -S "localhost" -U "sa" -d TestDB -Q "CREATE USER testuser FOR LOGIN testuser" -C
+      sqlcmd -S "localhost" -U "sa" -d TestDB -Q "ALTER ROLE db_owner ADD MEMBER testuser" -C
+      # Pool eviction tests observe physical connections from a second session.
+      sqlcmd -S "localhost" -U "sa" -b -Q "GRANT VIEW SERVER PERFORMANCE STATE TO [testuser]; EXECUTE AS LOGIN = 'testuser'; SELECT connection_id FROM sys.dm_exec_connections WHERE session_id = @@SPID; REVERT;" -C
+      if ($LASTEXITCODE -ne 0) { throw "Failed to provision the CI test login's DMV-read permission." }
     displayName: 'Setup database and user for SQL Server 2022'
     condition: eq(variables['sqlVersion'], 'SQL2022')
     env:
@@ -178,7 +314,30 @@ jobs:
         Start-Process -FilePath $setupFile.FullName -ArgumentList "/x:$env:TEMP\SQL2025Setup","/u" -Wait
         
         Write-Host "Running SQL Server setup..."
-        Start-Process -FilePath "$env:TEMP\SQL2025Setup\setup.exe" -ArgumentList "/Q","/ACTION=Install","/FEATURES=SQLEngine","/INSTANCENAME=MSSQLSERVER","/SQLSVCACCOUNT=`"NT AUTHORITY\SYSTEM`"","/SQLSYSADMINACCOUNTS=`"BUILTIN\Administrators`"","/TCPENABLED=1","/SECURITYMODE=SQL","/SAPWD=$(DB_PASSWORD)","/IACCEPTSQLSERVERLICENSETERMS" -Wait
+        $configPath = Join-Path $env:TEMP ("sql2025-setup-{0}.ini" -f [guid]::NewGuid())
+        $configLines = @(
+          '[OPTIONS]'
+          'QUIET="True"'
+          'ACTION="Install"'
+          'FEATURES=SQLEngine'
+          'INSTANCENAME=MSSQLSERVER'
+          'SQLSVCACCOUNT="NT AUTHORITY\SYSTEM"'
+          'SQLSYSADMINACCOUNTS="BUILTIN\Administrators"'
+          'TCPENABLED="1"'
+          'SECURITYMODE="SQL"'
+          "SAPWD=`"$env:DB_PASSWORD`""
+          'IACCEPTSQLSERVERLICENSETERMS="True"'
+        )
+        [System.IO.File]::Create($configPath).Dispose()
+        try {
+          $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+          icacls $configPath /inheritance:r /grant:r "${identity}:(F)" "SYSTEM:(R)" | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "Failed to secure SQL Server setup configuration" }
+          Set-Content -Path $configPath -Value $configLines -Encoding ASCII
+          Start-Process -FilePath "$env:TEMP\SQL2025Setup\setup.exe" -ArgumentList "/ConfigurationFile=`"$configPath`"" -Wait
+        } finally {
+          Remove-Item $configPath -Force -ErrorAction Stop
+        }
       } else {
         Write-Error "Failed to download SQL Server setup file"
         exit 1
@@ -192,6 +351,7 @@ jobs:
 
   # Create database for SQL Server 2025
   - powershell: |
+      $env:SQLCMDPASSWORD = $env:DB_PASSWORD
       # Wait for SQL Server to start
       $maxAttempts = 30
       $attempt = 0
@@ -199,11 +359,11 @@ jobs:
       
       Write-Host "Waiting for SQL Server 2025 to start..."
       while (-not $connected -and $attempt -lt $maxAttempts) {
-        try {
-          sqlcmd -S "localhost" -U "sa" -P "$(DB_PASSWORD)" -Q "SELECT 1" -C
+        sqlcmd -S "localhost" -U "sa" -Q "SELECT 1" -C -b
+        if ($LASTEXITCODE -eq 0) {
           $connected = $true
           Write-Host "SQL Server is ready!"
-        } catch {
+        } else {
           $attempt++
           Write-Host "Waiting... ($attempt/$maxAttempts)"
           Start-Sleep -Seconds 2
@@ -216,10 +376,26 @@ jobs:
       }
       
       # Create database and user
-      sqlcmd -S "localhost" -U "sa" -P "$(DB_PASSWORD)" -Q "CREATE DATABASE TestDB" -C
-      sqlcmd -S "localhost" -U "sa" -P "$(DB_PASSWORD)" -Q "CREATE LOGIN testuser WITH PASSWORD = '$(DB_PASSWORD)'" -C
-      sqlcmd -S "localhost" -U "sa" -P "$(DB_PASSWORD)" -d TestDB -Q "CREATE USER testuser FOR LOGIN testuser" -C
-      sqlcmd -S "localhost" -U "sa" -P "$(DB_PASSWORD)" -d TestDB -Q "ALTER ROLE db_owner ADD MEMBER testuser" -C
+      sqlcmd -S "localhost" -U "sa" -Q "CREATE DATABASE TestDB" -C
+      $sqlPassword = $env:DB_PASSWORD.Replace("'", "''")
+      $sqlPath = Join-Path $env:TEMP ("create-testuser-{0}.sql" -f [guid]::NewGuid())
+      $sqlBytes = (New-Object System.Text.UTF8Encoding($false)).GetBytes("CREATE LOGIN testuser WITH PASSWORD = '$sqlPassword'`n")
+      [System.IO.File]::Create($sqlPath).Dispose()
+      try {
+        $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+        icacls $sqlPath /inheritance:r /grant:r "${identity}:(F)" "SYSTEM:(R)" | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "Failed to secure temporary SQL file" }
+        [System.IO.File]::WriteAllBytes($sqlPath, $sqlBytes)
+        sqlcmd -S "localhost" -U "sa" -C -i $sqlPath -b -x -f 65001
+        if ($LASTEXITCODE -ne 0) { throw "Failed to create the testuser login" }
+      } finally {
+        Remove-Item $sqlPath -Force -ErrorAction Stop
+      }
+      sqlcmd -S "localhost" -U "sa" -d TestDB -Q "CREATE USER testuser FOR LOGIN testuser" -C
+      sqlcmd -S "localhost" -U "sa" -d TestDB -Q "ALTER ROLE db_owner ADD MEMBER testuser" -C
+      # Pool eviction tests observe physical connections from a second session.
+      sqlcmd -S "localhost" -U "sa" -b -Q "GRANT VIEW SERVER PERFORMANCE STATE TO [testuser]; EXECUTE AS LOGIN = 'testuser'; SELECT connection_id FROM sys.dm_exec_connections WHERE session_id = @@SPID; REVERT;" -C
+      if ($LASTEXITCODE -ne 0) { throw "Failed to provision the CI test login's DMV-read permission." }
     displayName: 'Setup database and user for SQL Server 2025'
     condition: eq(variables['sqlVersion'], 'SQL2025')
     env:
@@ -228,7 +404,22 @@ jobs:
   - script: |
       cd mssql_python\pybind
       build.bat x64
+    displayName: 'Build profiling .pyd file'
+    # Hosted Windows timings varied more than the regression threshold on neutral
+    # PRs. Keep functional Windows CI, but exclude it from routine PR profiling.
+    condition: false
+    env:
+      ENABLE_PROFILING: 1
+
+  - script: |
+      cd mssql_python\pybind
+      build.bat x64
     displayName: 'Build .pyd file'
+    condition: succeeded()
+
+  - script: python -m eng.profiler_benchmarks.controller --check-build on
+    displayName: 'Verify native configuration and recording OFF before pytest'
+    condition: false
 
   - template: steps/install-mssql-py-core.yml
     parameters:
@@ -236,7 +427,7 @@ jobs:
 
   # Run tests for LocalDB
   - script: |
-      python -m pytest -v --junitxml=test-results-localdb.xml --cov=. --cov-report=xml:coverage-localdb.xml --capture=tee-sys --cache-clear
+      python eng/scripts/mssql_python_rs.py --verify && python -m pytest -v --junitxml=test-results-localdb.xml --cov=. --cov-report=xml:coverage-localdb.xml --capture=tee-sys --cache-clear
     displayName: 'Run tests with coverage on LocalDB'
     condition: and(succeeded(), eq(variables['sqlVersion'], 'LocalDB'))
     env:
@@ -244,7 +435,7 @@ jobs:
 
   # Run tests for SQL Server 2022
   - script: |
-      python -m pytest -v --junitxml=test-results-sql2022.xml --cov=. --cov-report=xml:coverage-sql2022.xml --capture=tee-sys --cache-clear
+      python eng/scripts/mssql_python_rs.py --verify && python -m pytest -v --junitxml=test-results-sql2022.xml --cov=. --cov-report=xml:coverage-sql2022.xml --capture=tee-sys --cache-clear
     displayName: 'Run tests with coverage on SQL Server 2022'
     condition: and(succeeded(), eq(variables['sqlVersion'], 'SQL2022'))
     env:
@@ -252,7 +443,7 @@ jobs:
 
   # Run tests for SQL Server 2025
   - script: |
-      python -m pytest -v --junitxml=test-results-sql2025.xml --cov=. --cov-report=xml:coverage-sql2025.xml --capture=tee-sys --cache-clear
+      python eng/scripts/mssql_python_rs.py --verify && python -m pytest -v --junitxml=test-results-sql2025.xml --cov=. --cov-report=xml:coverage-sql2025.xml --capture=tee-sys --cache-clear
     displayName: 'Run tests with coverage on SQL Server 2025'
     condition: and(succeeded(), eq(variables['sqlVersion'], 'SQL2025'))
     env:
@@ -260,14 +451,15 @@ jobs:
 
   # Download and restore AdventureWorks2022 database for benchmarking
   - powershell: |
+      $env:SQLCMDPASSWORD = $env:DB_PASSWORD
       Write-Host "Downloading AdventureWorks2022.bak..."
       $ProgressPreference = 'SilentlyContinue'
       Invoke-WebRequest -Uri "https://github.com/Microsoft/sql-server-samples/releases/download/adventureworks/AdventureWorks2022.bak" -OutFile "$env:TEMP\AdventureWorks2022.bak"
       
       Write-Host "Restoring AdventureWorks2022 database..."
       # Get the default data and log paths
-      $dataPath = sqlcmd -S "localhost" -U "sa" -P "$(DB_PASSWORD)" -Q "SET NOCOUNT ON; SELECT SERVERPROPERTY('InstanceDefaultDataPath') AS DataPath" -h -1 -C | Out-String
-      $logPath = sqlcmd -S "localhost" -U "sa" -P "$(DB_PASSWORD)" -Q "SET NOCOUNT ON; SELECT SERVERPROPERTY('InstanceDefaultLogPath') AS LogPath" -h -1 -C | Out-String
+      $dataPath = sqlcmd -S "localhost" -U "sa" -Q "SET NOCOUNT ON; SELECT SERVERPROPERTY('InstanceDefaultDataPath') AS DataPath" -h -1 -C | Out-String
+      $logPath = sqlcmd -S "localhost" -U "sa" -Q "SET NOCOUNT ON; SELECT SERVERPROPERTY('InstanceDefaultLogPath') AS LogPath" -h -1 -C | Out-String
       
       $dataPath = $dataPath.Trim()
       $logPath = $logPath.Trim()
@@ -276,7 +468,7 @@ jobs:
       Write-Host "Log path: $logPath"
       
       # Restore the database
-      sqlcmd -S "localhost" -U "sa" -P "$(DB_PASSWORD)" -C -Q @"
+      sqlcmd -S "localhost" -U "sa" -C -Q @"
         RESTORE DATABASE AdventureWorks2022
         FROM DISK = '$env:TEMP\AdventureWorks2022.bak'
         WITH 
@@ -292,36 +484,9 @@ jobs:
         exit 1
       }
     displayName: 'Download and restore AdventureWorks2022 database'
-    condition: and(succeeded(), or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025')))
+    condition: false
     env:
       DB_PASSWORD: $(DB_PASSWORD)
-
-  # Download baseline from latest main run (for PR comparison)
-  - task: DownloadPipelineArtifact@2
-    inputs:
-      source: specific
-      project: $(System.TeamProjectId)
-      pipeline: $(System.DefinitionId)
-      runVersion: latestFromBranch
-      runBranch: refs/heads/main
-      artifact: 'perf-baseline-$(sqlVersion)'
-      path: $(Build.SourcesDirectory)
-    displayName: 'Download baseline from main'
-    condition: and(succeeded(), ne(variables['Build.SourceBranch'], 'refs/heads/main'), or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025')))
-    continueOnError: true
-
-  # Rename downloaded baseline so the script finds it (artifact may be in a subfolder)
-  - powershell: |
-      $found = Get-ChildItem -Path "$(Build.SourcesDirectory)" -Filter "benchmark_results.json" -Recurse -File -ErrorAction SilentlyContinue | Select-Object -First 1
-      if ($null -ne $found) {
-        Copy-Item $found.FullName "benchmark_baseline.json" -Force
-        Write-Host "Baseline file ready: benchmark_baseline.json (from $($found.FullName))"
-      } else {
-        Write-Host "No baseline file downloaded (first run or artifact missing)"
-      }
-    displayName: 'Prepare baseline file'
-    condition: and(succeeded(), ne(variables['Build.SourceBranch'], 'refs/heads/main'), or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025')))
-    continueOnError: true
 
   # Run performance benchmarks on SQL Server 2022
   - powershell: |
@@ -406,24 +571,23 @@ jobs:
         exit 1
       }
       
-      Write-Host "`nInstalling pyodbc..."
-      pip install pyodbc
-      
-      Write-Host "`nRunning performance benchmarks..."
-      python benchmarks/perf-benchmarking.py --baseline benchmark_baseline.json --json benchmark_results.json
-    displayName: 'Run performance benchmarks on SQL Server 2022/2025'
-    condition: and(succeeded(), or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025')))
+      python -m eng.profiler_benchmarks.controller --reuse-candidate --leg "Windows-$(sqlVersion)" --output profiler-results
+      if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    displayName: 'Compare profiling builds on SQL Server 2022/2025'
+    condition: false
     continueOnError: true
+    timeoutInMinutes: 100
     env:
+      SYSTEM_PULLREQUEST_SOURCECOMMITID: $(System.PullRequest.SourceCommitId)
       DB_CONNECTION_STRING: 'Server=localhost;Database=AdventureWorks2022;Uid=sa;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
 
-  # Publish benchmark results as artifact (consumed as baseline by future PR runs)
+  # Publish partial reports and failure logs for PR assessment.
   - task: PublishPipelineArtifact@1
     inputs:
-      targetPath: benchmark_results.json
-      artifact: 'perf-baseline-$(sqlVersion)'
-    displayName: 'Publish benchmark baseline'
-    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'), or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025')))
+      targetPath: profiler-results
+      artifact: 'profiler-Windows-$(sqlVersion)'
+    displayName: 'Publish paired profiler measurements'
+    condition: false
     continueOnError: true
 
   - task: CopyFiles@2
@@ -443,9 +607,18 @@ jobs:
   - task: PublishBuildArtifacts@1
     inputs:
       PathtoPublish: '$(Build.ArtifactStagingDirectory)'
+      ArtifactName: 'ddbc_bindings-profiling-$(sqlVersion)'
+      publishLocation: 'Container'
+    displayName: 'Publish profiling build artifacts'
+    condition: false
+
+  - task: PublishBuildArtifacts@1
+    inputs:
+      PathtoPublish: '$(Build.ArtifactStagingDirectory)'
       ArtifactName: 'ddbc_bindings'
       publishLocation: 'Container'
     displayName: 'Publish build artifacts'
+    condition: succeeded()
 
   - task: PublishTestResults@2
     condition: succeededOrFailed()
@@ -460,16 +633,17 @@ jobs:
   #   displayName: 'Publish code coverage results'
 
 - job: PytestOnMacOS
+  dependsOn: SelectRsRuntime
   displayName: 'macOS x86_64'
-  # Colima + SQL Server container setup averages ~12.5 min but has a long tail
-  # (setup has been observed at 17-39 min). The ADO default job timeout is 60 min,
-  # which the setup tail plus tests plus the 20-min benchmark step can exceed,
-  # getting the job killed mid-step. Give the job enough headroom for the tail.
   timeoutInMinutes: 90
   pool:
     vmImage: 'macos-latest'
 
   variables:
+    MSSQL_PYTHON_RS_VERSION: $[ dependencies.SelectRsRuntime.outputs['select.version'] ]
+    # Apply to setup, benchmark consumers and final cleanup without changing
+    # the Docker client's global context.
+    DOCKER_CONTEXT: colima
     # pip's on-disk download/wheel cache. Persisted across runs by the Cache@2
     # task below so `pip install -r requirements.txt` reuses wheels instead of
     # re-downloading them on every run. Exposed to script steps as the
@@ -486,12 +660,20 @@ jobs:
         sqlServerImage: 'mcr.microsoft.com/mssql/server:2025-latest'
         sqlVersion: 'SQL2025'
         pythonVersion: '3.14'
+      SQL2025_Python315:
+        sqlServerImage: 'mcr.microsoft.com/mssql/server:2025-latest'
+        sqlVersion: 'SQL2025'
+        pythonVersion: '3.15'
 
   steps:
+  - checkout: self
+    fetchDepth: 0
+
   - task: UsePythonVersion@0
     inputs:
       versionSpec: '$(pythonVersion)'
       addToPath: true
+      allowUnstable: true
     displayName: 'Use Python $(pythonVersion) on macOS'
 
   - task: Cache@2
@@ -517,70 +699,39 @@ jobs:
 
   - script: |
       set -e
-      # Overlap the ENTIRE container-side setup (Colima VM boot -> image pull ->
-      # container start -> SQL readiness) with the CPU-bound Python setup (pip
-      # install + pybind build). The two chains are independent until pytest, so
-      # we run the container chain in the background and the build in the
-      # foreground, then wait for the container before continuing.
-      #
-      # On the Intel macOS-15 hosted runner the linux/amd64 SQL Server image runs
-      # natively (no emulation); the dominant container costs are the Colima VM
-      # boot (~2-4 min) and the ~2 GB image pull, both of which are hidden behind
-      # the build here.
-      #
-      # NOTE: this deliberately merges what used to be separate steps (start
-      # Colima, pull+start SQL, install Python deps, build pybind). Splitting them
-      # back out restores the previous per-step timing breakdown.
-      setup_sql() {
-        echo "[sql] Starting Colima VM..."
-        colima start --cpu 4 --memory 8 --disk 50
-        docker context use colima >/dev/null || true
-        docker version
-
-        echo "[sql] Pulling SQL Server image..."
-        docker pull "$(sqlServerImage)"
-
-        echo "[sql] Starting SQL Server container..."
-        docker run \
-          --name sqlserver \
-          -e ACCEPT_EULA=Y \
-          -e MSSQL_SA_PASSWORD="${DB_PASSWORD}" \
-          -p 1433:1433 \
-          -d "$(sqlServerImage)"
-
-        echo "[sql] Waiting for SQL Server to accept connections..."
-        for i in {1..30}; do
-          if docker exec sqlserver \
-            /opt/mssql-tools18/bin/sqlcmd \
-            -S localhost -U SA -P "$DB_PASSWORD" \
-            -C -Q "SELECT 1"; then
-            echo "[sql] SQL Server is ready."
-            return 0
+      # Only SQL lifecycle is retried. Colima starts once, overlapped with the
+      # unchanged dependency/native build chain. The helper bounds SQL work
+      # and redacts output before it reaches this job-private log.
+      SQL_LOG="$(Agent.TempDirectory)/sql-setup-$(System.JobId).log"
+      SQL_HELPER="$(Build.SourcesDirectory)/eng/scripts/setup_sql_container.py"
+      SQL_OWNER="$(Build.BuildId).$(System.JobId)"
+      SQL_PID=
+      finish_setup() {
+        status=$?
+        trap - EXIT INT TERM
+        if [ -n "$SQL_PID" ]; then
+          if kill -0 "$SQL_PID" 2>/dev/null; then
+            kill -TERM "$SQL_PID" || echo "[sql] Background setup already stopped"
           fi
-          sleep 2
-        done
-
-        # One last probe: the loop sleeps after its final attempt, so SQL can
-        # become reachable in that window and would otherwise be missed.
-        if docker exec sqlserver \
-          /opt/mssql-tools18/bin/sqlcmd \
-          -S localhost -U SA -P "$DB_PASSWORD" \
-          -C -Q "SELECT 1"; then
-          echo "[sql] SQL Server is ready."
-          return 0
+          wait "$SQL_PID" || echo "[sql] Background setup stopped or failed"
         fi
-
-        # sqlcmd only reports that the client could not connect. When the
-        # container itself exited (bad password policy, EULA, OOM, port clash)
-        # the reason is in the container's own log, so surface it here.
-        echo "[sql] SQL Server did not become ready in time." >&2
-        echo "[sql] ---- docker logs sqlserver (last 200 lines) ----" >&2
-        docker logs --tail 200 sqlserver >&2 || true
-        return 1
+        if [ -f "$SQL_LOG" ]; then
+          cat "$SQL_LOG"
+          rm -f "$SQL_LOG"
+        fi
+        if [ "$status" -ne 0 ]; then
+          python3 "$SQL_HELPER" --name sqlserver --owner "$SQL_OWNER" --colima --cleanup \
+            || echo "[sql] Cleanup failed; final job cleanup will also run"
+        fi
+        exit "$status"
       }
+      trap finish_setup EXIT
+      trap 'exit 130' INT
+      trap 'exit 143' TERM
 
       echo "Starting container setup (Colima + SQL Server) in the background..."
-      setup_sql > /tmp/sql_setup.log 2>&1 &
+      python3 "$SQL_HELPER" --name sqlserver --owner "$SQL_OWNER" \
+        --image "$(sqlServerImage)" --colima > "$SQL_LOG" 2>&1 &
       SQL_PID=$!
 
       echo "Installing Python dependencies (overlapped with container setup)..."
@@ -591,15 +742,17 @@ jobs:
       ( cd mssql_python/pybind && ./build.sh )
 
       echo "Waiting for container setup (Colima + SQL Server) to finish..."
-      if ! wait "$SQL_PID"; then
-        echo "Container setup failed:"
-        cat /tmp/sql_setup.log
-        exit 1
+      SQL_STATUS=0
+      wait "$SQL_PID" || SQL_STATUS=$?
+      SQL_PID=
+      if [ "$SQL_STATUS" -ne 0 ]; then
+        exit "$SQL_STATUS"
       fi
-      cat /tmp/sql_setup.log
     displayName: 'Build + start SQL Server (Colima boot & SQL setup overlapped with build)'
     env:
       DB_PASSWORD: $(DB_PASSWORD)
+      MSSQL_SA_PASSWORD: $(DB_PASSWORD)
+      SQLCMDPASSWORD: $(DB_PASSWORD)
 
   - template: steps/install-mssql-py-core.yml
     parameters:
@@ -637,7 +790,7 @@ jobs:
 
   - script: |
       echo "Build successful, running tests now"
-      python -m pytest -v --junitxml=test-results.xml --cov=. --cov-report=xml --capture=tee-sys --cache-clear
+      python eng/scripts/mssql_python_rs.py --verify && python -m pytest -v --junitxml=test-results.xml --cov=. --cov-report=xml --capture=tee-sys --cache-clear
     displayName: 'Run pytest with coverage'
     env:
       DB_CONNECTION_STRING: 'Server=tcp:127.0.0.1,1433;Database=master;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
@@ -649,88 +802,25 @@ jobs:
       testResultsFiles: '**/test-results.xml'
       testRunTitle: 'Publish pytest results on macOS $(sqlVersion)'
 
-  # Download and restore AdventureWorks2022 database for benchmarking
+  # Routine PR profiling excludes hosted macOS because Colima-backed control
+  # runs produced regressions with no product-code change. Functional macOS
+  # coverage remains above; Unix performance signal comes from Ubuntu.
+
   - script: |
-      echo "Downloading AdventureWorks2022.bak..."
-      curl -sSL -o /tmp/AdventureWorks2022.bak \
-        https://github.com/Microsoft/sql-server-samples/releases/download/adventureworks/AdventureWorks2022.bak
-
-      echo "Copying backup into SQL Server container..."
-      docker cp /tmp/AdventureWorks2022.bak sqlserver:/tmp/AdventureWorks2022.bak
-
-      echo "Restoring AdventureWorks2022 database..."
-      docker exec sqlserver /opt/mssql-tools18/bin/sqlcmd \
-        -S localhost -U SA -P "$DB_PASSWORD" -C \
-        -Q "RESTORE DATABASE AdventureWorks2022 FROM DISK = '/tmp/AdventureWorks2022.bak' WITH MOVE 'AdventureWorks2022' TO '/var/opt/mssql/data/AdventureWorks2022.mdf', MOVE 'AdventureWorks2022_log' TO '/var/opt/mssql/data/AdventureWorks2022_log.ldf', REPLACE"
-
-      if [ $? -eq 0 ]; then
-        echo "AdventureWorks2022 database restored successfully"
-      else
-        echo "Failed to restore AdventureWorks2022 database"
-      fi
-
-      rm -f /tmp/AdventureWorks2022.bak
-      docker exec sqlserver rm -f /tmp/AdventureWorks2022.bak || true
-    displayName: 'Download and restore AdventureWorks2022 database on macOS'
-    condition: and(succeeded(), or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025')))
-    continueOnError: true
+      python3 eng/scripts/setup_sql_container.py --cleanup --colima \
+        --name sqlserver --owner "$(Build.BuildId).$(System.JobId)"
+    displayName: 'Clean up macOS SQL container'
+    condition: always()
+    timeoutInMinutes: 3
     env:
       DB_PASSWORD: $(DB_PASSWORD)
 
-  # Download macOS baseline from latest main run (for PR comparison)
-  - task: DownloadPipelineArtifact@2
-    inputs:
-      source: specific
-      project: $(System.TeamProjectId)
-      pipeline: $(System.DefinitionId)
-      runVersion: latestFromBranch
-      runBranch: refs/heads/main
-      artifact: 'perf-baseline-macOS-$(sqlVersion)'
-      path: $(Build.SourcesDirectory)
-    displayName: 'Download macOS baseline from main'
-    condition: and(succeeded(), ne(variables['Build.SourceBranch'], 'refs/heads/main'), or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025')))
-    continueOnError: true
-
-  - script: |
-      found=$(find "$(Build.SourcesDirectory)" -name benchmark_results.json -type f 2>/dev/null | head -1)
-      if [ -n "$found" ]; then
-        cp "$found" benchmark_baseline.json
-        echo "Baseline file ready: benchmark_baseline.json (from $found)"
-      else
-        echo "No baseline file downloaded (first run or artifact missing)"
-      fi
-    displayName: 'Prepare macOS baseline file'
-    condition: and(succeeded(), ne(variables['Build.SourceBranch'], 'refs/heads/main'), or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025')))
-    continueOnError: true
-
-  # Run performance benchmarks on macOS
-  - script: |
-      echo "Installing ODBC Driver 18 for pyodbc..."
-      brew tap microsoft/mssql-release https://github.com/Microsoft/homebrew-mssql-release
-      # Newer Homebrew refuses to load formulae from third-party taps unless the tap is trusted
-      brew trust microsoft/mssql-release || echo "brew trust failed; attempting install anyway"
-      HOMEBREW_ACCEPT_EULA=Y brew install msodbcsql18 || echo "ODBC Driver 18 install failed — pyodbc benchmarks will be skipped"
-      pip install pyodbc
-      echo "Running performance benchmarks..."
-      python benchmarks/perf-benchmarking.py --baseline benchmark_baseline.json --json benchmark_results.json
-    displayName: 'Run performance benchmarks on macOS $(sqlVersion)'
-    condition: and(succeeded(), or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025')))
-    timeoutInMinutes: 20
-    continueOnError: true
-    env:
-      DB_CONNECTION_STRING: 'Server=tcp:127.0.0.1,1433;Database=AdventureWorks2022;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
-
-  # Publish benchmark results as artifact on main merges
-  - task: PublishPipelineArtifact@1
-    inputs:
-      targetPath: benchmark_results.json
-      artifact: 'perf-baseline-macOS-$(sqlVersion)'
-    displayName: 'Publish macOS benchmark baseline'
-    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'), or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025')))
-    continueOnError: true
-
 - job: PytestOnLinux
+  dependsOn: SelectRsRuntime
+  variables:
+    MSSQL_PYTHON_RS_VERSION: $[ dependencies.SelectRsRuntime.outputs['select.version'] ]
   displayName: 'Linux x86_64'
+  timeoutInMinutes: 160
   pool:
     vmImage: 'ubuntu-latest'
 
@@ -741,11 +831,13 @@ jobs:
         distroName: 'Ubuntu'
         sqlServerImage: 'mcr.microsoft.com/mssql/server:2022-latest'
         useAzureSQL: 'false'
+        profilerLeg: 'Linux-SQL2022'
       Ubuntu_SQL2025:
         dockerImage: 'ubuntu:24.04'
         distroName: 'Ubuntu-SQL2025'
         sqlServerImage: 'mcr.microsoft.com/mssql/server:2025-latest'
         useAzureSQL: 'false'
+        profilerLeg: 'Linux-SQL2025'
       ${{ if ne(variables['AZURE_CONNECTION_STRING'], '') }}:
         Ubuntu_AzureSQL:
           dockerImage: 'ubuntu:24.04'
@@ -762,11 +854,19 @@ jobs:
         distroName: 'Debian-SQL2025'
         sqlServerImage: 'mcr.microsoft.com/mssql/server:2025-latest'
         useAzureSQL: 'false'
+      Debian_Python315:
+        dockerImage: 'python:3.15.0rc3-bookworm'
+        distroName: 'Debian-Python315'
+        sqlServerImage: 'mcr.microsoft.com/mssql/server:2025-latest'
+        useAzureSQL: 'false'
 
   steps:
+  - checkout: self
+    fetchDepth: 0
+
   - script: |
       # Create a Docker container for testing
-      docker run -d --name test-container-$(distroName) \
+      docker run -e MSSQL_PYTHON_RS_VERSION -d --name test-container-$(distroName) \
         -v $(Build.SourcesDirectory):/workspace \
         -w /workspace \
         --network bridge \
@@ -775,62 +875,30 @@ jobs:
     displayName: 'Create $(distroName) container'
 
   - script: |
-      # Start SQL Server container
-      docker run -d --name sqlserver-$(distroName) \
-        -e ACCEPT_EULA=Y \
-        -e MSSQL_SA_PASSWORD="$(DB_PASSWORD)" \
-        -p 1433:1433 \
-        $(sqlServerImage)
-      
-      # Wait for SQL Server to be ready
-      echo "Waiting for SQL Server to start..."
-      sql_ready=false
-      for i in {1..60}; do
-        if docker exec sqlserver-$(distroName) \
-          /opt/mssql-tools18/bin/sqlcmd \
-          -S localhost \
-          -U SA \
-          -P "$(DB_PASSWORD)" \
-          -C -Q "SELECT 1" >/dev/null 2>&1; then
-          echo "SQL Server is ready!"
-          sql_ready=true
-          break
-        fi
-        echo "Waiting... ($i/60)"
-        sleep 2
-      done
-      if [ "$sql_ready" != true ]; then
-        # the loop sleeps after its final attempt, so probe once more
-        if docker exec sqlserver-$(distroName) \
-          /opt/mssql-tools18/bin/sqlcmd \
-          -S localhost \
-          -U SA \
-          -P "$(DB_PASSWORD)" \
-          -C -Q "SELECT 1" >/dev/null 2>&1; then
-          echo "SQL Server is ready!"
-        else
-          echo "SQL Server did not become ready after 60 attempts"
-          echo "---- docker logs sqlserver-$(distroName) (last 200 lines) ----"
-          docker logs --tail 200 sqlserver-$(distroName) || true
-          exit 1
-        fi
-      fi
-      
-      # Create test database
-      docker exec sqlserver-$(distroName) \
-        /opt/mssql-tools18/bin/sqlcmd \
-        -S localhost \
-        -U SA \
-        -P "$(DB_PASSWORD)" \
-        -C -Q "CREATE DATABASE TestDB"
+      python3 eng/scripts/setup_sql_container.py \
+        --name "sqlserver-$(distroName)" --owner "$(Build.BuildId).$(System.JobId)" \
+        --image "$(sqlServerImage)" --database TestDB
     displayName: 'Start SQL Server container for $(distroName)'
-    condition: eq(variables['useAzureSQL'], 'false')
+    condition: and(succeeded(), eq(variables['useAzureSQL'], 'false'))
+    timeoutInMinutes: 22
     env:
       DB_PASSWORD: $(DB_PASSWORD)
+      MSSQL_SA_PASSWORD: $(DB_PASSWORD)
+      SQLCMDPASSWORD: $(DB_PASSWORD)
 
   - script: |
       # Install dependencies in the container
-      if [ "$(distroName)" = "Ubuntu" ]; then
+      if [ "$(distroName)" = "Debian-Python315" ]; then
+        docker exec test-container-$(distroName) bash -c "
+          set -e
+          export DEBIAN_FRONTEND=noninteractive
+          export TZ=UTC
+          ln -snf /usr/share/zoneinfo/\$TZ /etc/localtime && echo \$TZ > /etc/timezone
+          apt-get update &&
+          apt-get install -y cmake curl wget gnupg build-essential &&
+          python3 --version
+        "
+      elif [ "$(distroName)" = "Ubuntu" ]; then
         docker exec test-container-$(distroName) bash -c "
           export DEBIAN_FRONTEND=noninteractive
           export TZ=UTC
@@ -899,13 +967,28 @@ jobs:
     displayName: 'Install Python dependencies in $(distroName) container'
 
   - script: |
+      set -e
       # Build pybind bindings in the container
-      docker exec test-container-$(distroName) bash -c "
+      PROFILER_BUILD=0
+      if [ "$(Build.Reason)" = "PullRequest" ] &&
+        [[ "$(distroName)" =~ ^Ubuntu(-SQL2025)?$ ]]; then
+        PROFILER_BUILD=1
+      fi
+      docker exec -e ENABLE_PROFILING="$PROFILER_BUILD" test-container-$(distroName) bash -c "
+        set -e
         source /opt/venv/bin/activate
         cd mssql_python/pybind
         chmod +x build.sh
         ./build.sh
       "
+      if [ "$PROFILER_BUILD" = "1" ]; then
+        docker exec test-container-$(distroName) bash -c "
+          set -e
+          source /opt/venv/bin/activate
+          cd /workspace
+          python -m eng.profiler_benchmarks.controller --check-build on
+        "
+      fi
     displayName: 'Build pybind bindings (.so) in $(distroName) container'
 
   - template: steps/install-mssql-py-core.yml
@@ -940,36 +1023,38 @@ jobs:
         echo "Testing against Azure SQL Database"
         
         docker exec \
-          -e DB_CONNECTION_STRING="$(AZURE_CONNECTION_STRING)" \
+          -e DB_CONNECTION_STRING \
           test-container-$(distroName) bash -c "
           source /opt/venv/bin/activate
           echo 'Build successful, running tests now on $(distroName) with Azure SQL'
           echo 'Using Azure SQL connection string'
-          python -m pytest -v --junitxml=test-results-$(distroName).xml --cov=. --cov-report=xml:coverage-$(distroName).xml --capture=tee-sys --cache-clear
+          python eng/scripts/mssql_python_rs.py --verify && python -m pytest -v --junitxml=test-results-$(distroName).xml --cov=. --cov-report=xml:coverage-$(distroName).xml --capture=tee-sys --cache-clear
         "
       else
         # Local SQL Server testing
-        SQLSERVER_IP=$(docker inspect sqlserver-$(distroName) --format='{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
+        export SQLSERVER_IP=$(docker inspect sqlserver-$(distroName) --format='{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
         echo "SQL Server IP: $SQLSERVER_IP"
+        export DB_CONNECTION_STRING="Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=$DB_PASSWORD;TrustServerCertificate=yes"
         
         docker exec \
-          -e DB_CONNECTION_STRING="Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes" \
-          -e DB_PASSWORD="$(DB_PASSWORD)" \
+          -e DB_CONNECTION_STRING \
+          -e DB_PASSWORD \
           test-container-$(distroName) bash -c "
           source /opt/venv/bin/activate
           echo 'Build successful, running tests now on $(distroName)'
           echo 'Using connection string: Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=***;TrustServerCertificate=yes'
-          python -m pytest -v --junitxml=test-results-$(distroName).xml --cov=. --cov-report=xml:coverage-$(distroName).xml --capture=tee-sys --cache-clear
+          python eng/scripts/mssql_python_rs.py --verify && python -m pytest -v --junitxml=test-results-$(distroName).xml --cov=. --cov-report=xml:coverage-$(distroName).xml --capture=tee-sys --cache-clear
         "
       fi
     displayName: 'Run pytest with coverage in $(distroName) container'
     condition: and(succeeded(), or(eq(variables['useAzureSQL'], 'false'), and(eq(variables['useAzureSQL'], 'true'), ne(variables['AZURE_CONNECTION_STRING'], ''))))
     env:
       DB_PASSWORD: $(DB_PASSWORD)
+      DB_CONNECTION_STRING: $(AZURE_CONNECTION_STRING)
 
   - script: |
-      # Download and restore AdventureWorks2022 database for benchmarking on Ubuntu only
-      if [ "$(distroName)" = "Ubuntu" ] && [ "$(useAzureSQL)" = "false" ]; then
+      # Download and restore AdventureWorks2022 for both Unix profiler legs.
+      if [[ "$(distroName)" =~ ^Ubuntu(-SQL2025)?$ ]] && [ "$(useAzureSQL)" = "false" ]; then
         echo "Downloading AdventureWorks2022.bak..."
         wget -q https://github.com/Microsoft/sql-server-samples/releases/download/adventureworks/AdventureWorks2022.bak -O /tmp/AdventureWorks2022.bak
         
@@ -977,10 +1062,9 @@ jobs:
         docker cp /tmp/AdventureWorks2022.bak sqlserver-$(distroName):/tmp/AdventureWorks2022.bak
         
         echo "Restoring AdventureWorks2022 database..."
-        docker exec sqlserver-$(distroName) /opt/mssql-tools18/bin/sqlcmd \
+        docker exec -e SQLCMDPASSWORD sqlserver-$(distroName) /opt/mssql-tools18/bin/sqlcmd \
           -S localhost \
           -U SA \
-          -P "$(DB_PASSWORD)" \
           -C \
           -Q "RESTORE DATABASE AdventureWorks2022 FROM DISK = '/tmp/AdventureWorks2022.bak' WITH MOVE 'AdventureWorks2022' TO '/var/opt/mssql/data/AdventureWorks2022.mdf', MOVE 'AdventureWorks2022_log' TO '/var/opt/mssql/data/AdventureWorks2022_log.ldf', REPLACE"
         
@@ -995,67 +1079,59 @@ jobs:
         docker exec sqlserver-$(distroName) rm -f /tmp/AdventureWorks2022.bak || true
       fi
     displayName: 'Download and restore AdventureWorks2022 database in $(distroName)'
-    condition: and(succeeded(), eq(variables['distroName'], 'Ubuntu'), eq(variables['useAzureSQL'], 'false'))
+    condition: and(succeeded(), eq(variables['useAzureSQL'], 'false'), or(eq(variables['distroName'], 'Ubuntu'), eq(variables['distroName'], 'Ubuntu-SQL2025')))
     continueOnError: true
     env:
       DB_PASSWORD: $(DB_PASSWORD)
+      SQLCMDPASSWORD: $(DB_PASSWORD)
 
+  # Unix profiling uses Ubuntu because it covers the shared Unix hot paths while
+  # producing stable paired measurements on hosted agents.
   - script: |
-      # Run performance benchmarks on Ubuntu with SQL Server 2022 only
-      if [ "$(distroName)" = "Ubuntu" ] && [ "$(useAzureSQL)" = "false" ]; then
-        SQLSERVER_IP=$(docker inspect sqlserver-$(distroName) --format='{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
+      # Run Unix performance benchmarks on Ubuntu with SQL Server 2022 and 2025.
+      if [[ "$(distroName)" =~ ^Ubuntu(-SQL2025)?$ ]] && [ "$(useAzureSQL)" = "false" ]; then
+        export SQLSERVER_IP=$(docker inspect sqlserver-$(distroName) --format='{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
         echo "Running performance benchmarks on Ubuntu with SQL Server IP: $SQLSERVER_IP"
+        export DB_CONNECTION_STRING="Server=$SQLSERVER_IP;Database=AdventureWorks2022;Uid=SA;Pwd=$DB_PASSWORD;TrustServerCertificate=yes"
         
         docker exec \
-          -e DB_CONNECTION_STRING="Server=$SQLSERVER_IP;Database=AdventureWorks2022;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes" \
-          test-container-$(distroName) bash -c "
+          -e BUILD_BUILDID \
+          -e SYSTEM_PULLREQUEST_SOURCECOMMITID \
+          -e DB_PASSWORD \
+          -e SQLSERVER_IP \
+          test-container-$(distroName) bash -c '
+          set -euo pipefail
           source /opt/venv/bin/activate
-          
-          echo 'Reinstalling ODBC Driver for benchmarking...'
+          export DB_CONNECTION_STRING="Server=$SQLSERVER_IP;Database=AdventureWorks2022;Uid=SA;Pwd=$DB_PASSWORD;Encrypt=no;TrustServerCertificate=yes"
           export DEBIAN_FRONTEND=noninteractive
-          
-          # Remove duplicate repository sources if they exist
-          rm -f /etc/apt/sources.list.d/microsoft-prod.list
-          
-          # Add Microsoft repository
-          curl -sSL https://packages.microsoft.com/keys/microsoft.asc | apt-key add -
-          curl -sSL https://packages.microsoft.com/config/ubuntu/24.04/prod.list > /etc/apt/sources.list.d/mssql-release.list
-          
-          # Update package lists
+          # The Microsoft repository was configured by the earlier build step.
+          # Restore the ODBC headers and library link removed before pytest.
           apt-get update -qq
-          
-          # Install unixodbc and its dependencies first (provides libodbcinst.so.2 needed by msodbcsql18)
-          echo 'Installing unixODBC dependencies...'
-          apt-get install -y --no-install-recommends unixodbc unixodbc-dev libodbc1 odbcinst odbcinst1debian2
-          
-          # Verify libodbcinst.so.2 is available
-          ldconfig
-          ls -la /usr/lib/x86_64-linux-gnu/libodbcinst.so.2 || echo 'Warning: libodbcinst.so.2 not found'
-          
-          # Install ODBC Driver 18
-          echo 'Installing msodbcsql18...'
-          ACCEPT_EULA=Y apt-get install -y msodbcsql18
-          
-          # Verify ODBC driver installation
-          odbcinst -q -d -n 'ODBC Driver 18 for SQL Server' || echo 'Warning: ODBC Driver 18 not registered'
-          
-          echo 'Installing pyodbc for benchmarking...'
-          pip install pyodbc
-          echo 'Running performance benchmarks on $(distroName)'
-          if [ -f benchmark_baseline.json ]; then
-            python benchmarks/perf-benchmarking.py --baseline benchmark_baseline.json --json benchmark_results.json || echo 'Performance benchmark failed or database not available'
-          else
-            python benchmarks/perf-benchmarking.py --json benchmark_results.json || echo 'Performance benchmark failed or database not available'
-          fi
-        "
+          apt-get install -y --reinstall libodbcinst2
+          ACCEPT_EULA=Y apt-get install -y --no-install-recommends git unixodbc unixodbc-dev libodbc2 libodbcinst2 odbcinst msodbcsql18
+          git config --global --add safe.directory /workspace
+          odbcinst -q -d -n "ODBC Driver 18 for SQL Server"
+          python -m eng.profiler_benchmarks.controller --reuse-candidate --leg "$(profilerLeg)" --output profiler-results
+        '
       else
         echo "Skipping performance benchmarks on $(distroName) (only runs on Ubuntu with local SQL Server)"
       fi
-    displayName: 'Run performance benchmarks in $(distroName) container'
-    condition: and(succeeded(), eq(variables['distroName'], 'Ubuntu'), eq(variables['useAzureSQL'], 'false'))
+    displayName: 'Compare profiling builds on Unix in $(distroName) container'
+    condition: and(succeeded(), eq(variables['Build.Reason'], 'PullRequest'), eq(variables['useAzureSQL'], 'false'), or(eq(variables['distroName'], 'Ubuntu'), eq(variables['distroName'], 'Ubuntu-SQL2025')))
     continueOnError: true
+    timeoutInMinutes: 100
     env:
       DB_PASSWORD: $(DB_PASSWORD)
+      BUILD_BUILDID: $(Build.BuildId)
+      SYSTEM_PULLREQUEST_SOURCECOMMITID: $(System.PullRequest.SourceCommitId)
+
+  - task: PublishPipelineArtifact@1
+    inputs:
+      targetPath: profiler-results
+      artifact: profiler-$(profilerLeg)
+    displayName: 'Publish paired profiler measurements'
+    condition: and(succeededOrFailed(), eq(variables['Build.Reason'], 'PullRequest'), eq(variables['useAzureSQL'], 'false'), or(eq(variables['distroName'], 'Ubuntu'), eq(variables['distroName'], 'Ubuntu-SQL2025')))
+    continueOnError: true
 
   - script: |
       # Copy test results from container to host
@@ -1065,13 +1141,17 @@ jobs:
     condition: always()
 
   - script: |
-      # Clean up containers
+      python3 eng/scripts/setup_sql_container.py --cleanup \
+        --name "sqlserver-$(distroName)" --owner "$(Build.BuildId).$(System.JobId)"
+    displayName: 'Clean up sqlserver-$(distroName) SQL container'
+    condition: and(always(), eq(variables['useAzureSQL'], 'false'))
+    timeoutInMinutes: 3
+    env:
+      DB_PASSWORD: $(DB_PASSWORD)
+
+  - script: |
       docker stop test-container-$(distroName) || true
       docker rm test-container-$(distroName) || true
-      if [ "$(useAzureSQL)" = "false" ]; then
-        docker stop sqlserver-$(distroName) || true
-        docker rm sqlserver-$(distroName) || true
-      fi
     displayName: 'Clean up $(distroName) containers'
     condition: always()
 
@@ -1082,6 +1162,9 @@ jobs:
       testRunTitle: 'Publish pytest results on $(distroName)'
 
 - job: PytestOnLinux_ARM64
+  dependsOn: SelectRsRuntime
+  variables:
+    MSSQL_PYTHON_RS_VERSION: $[ dependencies.SelectRsRuntime.outputs['select.version'] ]
   displayName: 'Linux ARM64'
   pool:
     vmImage: 'ubuntu-latest'
@@ -1100,18 +1183,26 @@ jobs:
         dockerImage: 'python:3.11-bookworm'
         distroName: 'Debian'
         archName: 'arm64'
+      Debian_Python315_ARM64:
+        dockerImage: 'python:3.15.0rc3-bookworm'
+        distroName: 'Debian-Python315'
+        archName: 'arm64'
 
   steps:
   - script: |
+      set -euo pipefail
       # Set up Docker buildx for multi-architecture support
-      docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
+      if [ -e /proc/sys/fs/binfmt_misc/qemu-aarch64 ]; then
+        docker run --rm --privileged --platform linux/amd64 "$(arm64QemuImage)" --uninstall qemu-aarch64
+      fi
+      docker run --rm --privileged --platform linux/amd64 "$(arm64QemuImage)" --install arm64
       docker buildx create --name multiarch --driver docker-container --use
       docker buildx inspect --bootstrap
     displayName: 'Setup Docker buildx for ARM64 emulation'
 
   - script: |
       # Create a Docker container for testing on ARM64
-      docker run -d --name test-container-$(distroName)-$(archName) \
+      docker run -e MSSQL_PYTHON_RS_VERSION -d --name test-container-$(distroName)-$(archName) \
         --platform linux/arm64 \
         -v $(Build.SourcesDirectory):/workspace \
         -w /workspace \
@@ -1121,58 +1212,15 @@ jobs:
     displayName: 'Create $(distroName) ARM64 container'
 
   - script: |
-      # Start SQL Server container (x86_64 - SQL Server doesn't support ARM64)
-      docker run -d --name sqlserver-$(distroName)-$(archName) \
-        --platform linux/amd64 \
-        -e ACCEPT_EULA=Y \
-        -e MSSQL_SA_PASSWORD="$(DB_PASSWORD)" \
-        -p 1433:1433 \
-        mcr.microsoft.com/mssql/server:2022-latest
-      
-      # Wait for SQL Server to be ready
-      echo "Waiting for SQL Server to start..."
-      sql_ready=false
-      for i in {1..60}; do
-        if docker exec sqlserver-$(distroName)-$(archName) \
-          /opt/mssql-tools18/bin/sqlcmd \
-          -S localhost \
-          -U SA \
-          -P "$(DB_PASSWORD)" \
-          -C -Q "SELECT 1" >/dev/null 2>&1; then
-          echo "SQL Server is ready!"
-          sql_ready=true
-          break
-        fi
-        echo "Waiting... ($i/60)"
-        sleep 2
-      done
-      if [ "$sql_ready" != true ]; then
-        # the loop sleeps after its final attempt, so probe once more
-        if docker exec sqlserver-$(distroName)-$(archName) \
-          /opt/mssql-tools18/bin/sqlcmd \
-          -S localhost \
-          -U SA \
-          -P "$(DB_PASSWORD)" \
-          -C -Q "SELECT 1" >/dev/null 2>&1; then
-          echo "SQL Server is ready!"
-        else
-          echo "SQL Server did not become ready after 60 attempts"
-          echo "---- docker logs sqlserver-$(distroName)-$(archName) (last 200 lines) ----"
-          docker logs --tail 200 sqlserver-$(distroName)-$(archName) || true
-          exit 1
-        fi
-      fi
-      
-      # Create test database
-      docker exec sqlserver-$(distroName)-$(archName) \
-        /opt/mssql-tools18/bin/sqlcmd \
-        -S localhost \
-        -U SA \
-        -P "$(DB_PASSWORD)" \
-        -C -Q "CREATE DATABASE TestDB"
+      python3 eng/scripts/setup_sql_container.py \
+        --name "sqlserver-$(distroName)-$(archName)" --owner "$(Build.BuildId).$(System.JobId)" \
+        --image "mcr.microsoft.com/mssql/server:2022-latest" --database TestDB
     displayName: 'Start SQL Server container for $(distroName) ARM64'
+    timeoutInMinutes: 22
     env:
       DB_PASSWORD: $(DB_PASSWORD)
+      MSSQL_SA_PASSWORD: $(DB_PASSWORD)
+      SQLCMDPASSWORD: $(DB_PASSWORD)
 
   - script: |
       # Install dependencies in the ARM64 container
@@ -1283,7 +1331,6 @@ jobs:
         ./build.sh
       "
     displayName: 'Build pybind bindings (.so) in $(distroName) ARM64 container'
-    retryCountOnTaskFailure: 2
 
   - template: steps/install-mssql-py-core.yml
     parameters:
@@ -1315,17 +1362,18 @@ jobs:
       # Get SQL Server container IP
       SQLSERVER_IP=$(docker inspect sqlserver-$(distroName)-$(archName) --format='{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
       echo "SQL Server IP: $SQLSERVER_IP"
+      export DB_CONNECTION_STRING="Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=$DB_PASSWORD;TrustServerCertificate=yes"
       
       docker exec \
-        -e DB_CONNECTION_STRING="Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes" \
-        -e DB_PASSWORD="$(DB_PASSWORD)" \
+        -e DB_CONNECTION_STRING \
+        -e DB_PASSWORD \
         test-container-$(distroName)-$(archName) bash -c "
         source /opt/venv/bin/activate
         echo 'Build successful, running tests now on $(distroName) ARM64'
         echo 'Architecture:' \$(uname -m)
         echo 'Using connection string: Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=***;TrustServerCertificate=yes'
         python main.py
-        python -m pytest -v --junitxml=test-results-$(distroName)-$(archName).xml --cov=. --cov-report=xml:coverage-$(distroName)-$(archName).xml --capture=tee-sys --cache-clear
+        python eng/scripts/mssql_python_rs.py --verify && python -m pytest -v --junitxml=test-results-$(distroName)-$(archName).xml --cov=. --cov-report=xml:coverage-$(distroName)-$(archName).xml --capture=tee-sys --cache-clear
       "
     displayName: 'Run pytest with coverage in $(distroName) ARM64 container'
     env:
@@ -1339,11 +1387,17 @@ jobs:
     condition: always()
 
   - script: |
-      # Clean up containers
+      python3 eng/scripts/setup_sql_container.py --cleanup \
+        --name "sqlserver-$(distroName)-$(archName)" --owner "$(Build.BuildId).$(System.JobId)"
+    displayName: 'Clean up sqlserver-$(distroName)-$(archName) SQL container'
+    condition: always()
+    timeoutInMinutes: 3
+    env:
+      DB_PASSWORD: $(DB_PASSWORD)
+
+  - script: |
       docker stop test-container-$(distroName)-$(archName) || true
       docker rm test-container-$(distroName)-$(archName) || true
-      docker stop sqlserver-$(distroName)-$(archName) || true
-      docker rm sqlserver-$(distroName)-$(archName) || true
     displayName: 'Clean up $(distroName) ARM64 containers'
     condition: always()
 
@@ -1354,6 +1408,9 @@ jobs:
       testRunTitle: 'Publish pytest results on $(distroName) ARM64'
 
 - job: PytestOnLinux_RHEL9
+  dependsOn: SelectRsRuntime
+  variables:
+    MSSQL_PYTHON_RS_VERSION: $[ dependencies.SelectRsRuntime.outputs['select.version'] ]
   displayName: 'Linux RedHat x86_64'
   pool:
     vmImage: 'ubuntu-latest'
@@ -1361,7 +1418,7 @@ jobs:
   steps:
   - script: |
       # Create a Docker container for testing
-      docker run -d --name test-container-rhel9 \
+      docker run -e MSSQL_PYTHON_RS_VERSION -d --name test-container-rhel9 \
         -v $(Build.SourcesDirectory):/workspace \
         -w /workspace \
         --network bridge \
@@ -1370,57 +1427,15 @@ jobs:
     displayName: 'Create RHEL 9 container'
 
   - script: |
-      # Start SQL Server container
-      docker run -d --name sqlserver-rhel9 \
-        -e ACCEPT_EULA=Y \
-        -e MSSQL_SA_PASSWORD="$(DB_PASSWORD)" \
-        -p 1433:1433 \
-        mcr.microsoft.com/mssql/server:2022-latest
-      
-      # Wait for SQL Server to be ready
-      echo "Waiting for SQL Server to start..."
-      sql_ready=false
-      for i in {1..60}; do
-        if docker exec sqlserver-rhel9 \
-          /opt/mssql-tools18/bin/sqlcmd \
-          -S localhost \
-          -U SA \
-          -P "$(DB_PASSWORD)" \
-          -C -Q "SELECT 1" >/dev/null 2>&1; then
-          echo "SQL Server is ready!"
-          sql_ready=true
-          break
-        fi
-        echo "Waiting... ($i/60)"
-        sleep 2
-      done
-      if [ "$sql_ready" != true ]; then
-        # the loop sleeps after its final attempt, so probe once more
-        if docker exec sqlserver-rhel9 \
-          /opt/mssql-tools18/bin/sqlcmd \
-          -S localhost \
-          -U SA \
-          -P "$(DB_PASSWORD)" \
-          -C -Q "SELECT 1" >/dev/null 2>&1; then
-          echo "SQL Server is ready!"
-        else
-          echo "SQL Server did not become ready after 60 attempts"
-          echo "---- docker logs sqlserver-rhel9 (last 200 lines) ----"
-          docker logs --tail 200 sqlserver-rhel9 || true
-          exit 1
-        fi
-      fi
-      
-      # Create test database
-      docker exec sqlserver-rhel9 \
-        /opt/mssql-tools18/bin/sqlcmd \
-        -S localhost \
-        -U SA \
-        -P "$(DB_PASSWORD)" \
-        -C -Q "CREATE DATABASE TestDB"
+      python3 eng/scripts/setup_sql_container.py \
+        --name "sqlserver-rhel9" --owner "$(Build.BuildId).$(System.JobId)" \
+        --image "mcr.microsoft.com/mssql/server:2022-latest" --database TestDB
     displayName: 'Start SQL Server container for RHEL 9'
+    timeoutInMinutes: 22
     env:
       DB_PASSWORD: $(DB_PASSWORD)
+      MSSQL_SA_PASSWORD: $(DB_PASSWORD)
+      SQLCMDPASSWORD: $(DB_PASSWORD)
 
   - script: |
       # Install dependencies in the RHEL 9 container
@@ -1435,7 +1450,8 @@ jobs:
         
         # Install Python 3.12 (available in RHEL 9.4+) and development tools
         # Note: curl and wget omitted to avoid conflicts with curl-minimal
-        dnf install -y python3.12 python3.12-pip python3.12-devel python3.12-libs gnupg2 glibc-devel kernel-headers
+        # ODBC needs the extra iconv modules for legacy code pages such as Korean CP949.
+        dnf install -y python3.12 python3.12-pip python3.12-devel python3.12-libs gnupg2 glibc-devel glibc-gconv-extra kernel-headers
         dnf install -y gcc gcc-c++ make binutils cmake
         # If that doesn't work, try installing from different repositories
         if ! which gcc; then
@@ -1552,16 +1568,17 @@ jobs:
       # Get SQL Server container IP
       SQLSERVER_IP=$(docker inspect sqlserver-rhel9 --format='{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
       echo "SQL Server IP: $SQLSERVER_IP"
+      export DB_CONNECTION_STRING="Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=$DB_PASSWORD;TrustServerCertificate=yes"
       
       docker exec \
-        -e DB_CONNECTION_STRING="Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes" \
-        -e DB_PASSWORD="$(DB_PASSWORD)" \
+        -e DB_CONNECTION_STRING \
+        -e DB_PASSWORD \
         test-container-rhel9 bash -c "
         source myvenv/bin/activate
         echo 'Build successful, running tests now on RHEL 9'
         echo 'Using connection string: Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=***;TrustServerCertificate=yes'
         python main.py
-        python -m pytest -v --junitxml=test-results-rhel9.xml --cov=. --cov-report=xml:coverage-rhel9.xml --capture=tee-sys --cache-clear
+        python eng/scripts/mssql_python_rs.py --verify && python -m pytest -v --junitxml=test-results-rhel9.xml --cov=. --cov-report=xml:coverage-rhel9.xml --capture=tee-sys --cache-clear
       "
     displayName: 'Run pytest with coverage in RHEL 9 container'
     env:
@@ -1575,11 +1592,17 @@ jobs:
     condition: always()
 
   - script: |
-      # Clean up containers
+      python3 eng/scripts/setup_sql_container.py --cleanup \
+        --name "sqlserver-rhel9" --owner "$(Build.BuildId).$(System.JobId)"
+    displayName: 'Clean up sqlserver-rhel9 SQL container'
+    condition: always()
+    timeoutInMinutes: 3
+    env:
+      DB_PASSWORD: $(DB_PASSWORD)
+
+  - script: |
       docker stop test-container-rhel9 || true
       docker rm test-container-rhel9 || true
-      docker stop sqlserver-rhel9 || true
-      docker rm sqlserver-rhel9 || true
     displayName: 'Clean up RHEL 9 containers'
     condition: always()
 
@@ -1590,21 +1613,28 @@ jobs:
       testRunTitle: 'Publish pytest results on RHEL 9'
 
 - job: PytestOnLinux_RHEL9_ARM64
+  dependsOn: SelectRsRuntime
+  variables:
+    MSSQL_PYTHON_RS_VERSION: $[ dependencies.SelectRsRuntime.outputs['select.version'] ]
   displayName: 'Linux RedHat ARM64'
   pool:
     vmImage: 'ubuntu-latest'
 
   steps:
   - script: |
+      set -euo pipefail
       # Set up Docker buildx for multi-architecture support
-      docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
+      if [ -e /proc/sys/fs/binfmt_misc/qemu-aarch64 ]; then
+        docker run --rm --privileged --platform linux/amd64 "$(arm64QemuImage)" --uninstall qemu-aarch64
+      fi
+      docker run --rm --privileged --platform linux/amd64 "$(arm64QemuImage)" --install arm64
       docker buildx create --name multiarch --driver docker-container --use
       docker buildx inspect --bootstrap
     displayName: 'Setup Docker buildx for ARM64 emulation'
 
   - script: |
       # Create a Docker container for testing on ARM64
-      docker run -d --name test-container-rhel9-arm64 \
+      docker run -e MSSQL_PYTHON_RS_VERSION -d --name test-container-rhel9-arm64 \
         --platform linux/arm64 \
         -v $(Build.SourcesDirectory):/workspace \
         -w /workspace \
@@ -1614,58 +1644,15 @@ jobs:
     displayName: 'Create RHEL 9 ARM64 container'
 
   - script: |
-      # Start SQL Server container (x86_64 - SQL Server doesn't support ARM64)
-      docker run -d --name sqlserver-rhel9-arm64 \
-        --platform linux/amd64 \
-        -e ACCEPT_EULA=Y \
-        -e MSSQL_SA_PASSWORD="$(DB_PASSWORD)" \
-        -p 1433:1433 \
-        mcr.microsoft.com/mssql/server:2022-latest
-      
-      # Wait for SQL Server to be ready
-      echo "Waiting for SQL Server to start..."
-      sql_ready=false
-      for i in {1..60}; do
-        if docker exec sqlserver-rhel9-arm64 \
-          /opt/mssql-tools18/bin/sqlcmd \
-          -S localhost \
-          -U SA \
-          -P "$(DB_PASSWORD)" \
-          -C -Q "SELECT 1" >/dev/null 2>&1; then
-          echo "SQL Server is ready!"
-          sql_ready=true
-          break
-        fi
-        echo "Waiting... ($i/60)"
-        sleep 2
-      done
-      if [ "$sql_ready" != true ]; then
-        # the loop sleeps after its final attempt, so probe once more
-        if docker exec sqlserver-rhel9-arm64 \
-          /opt/mssql-tools18/bin/sqlcmd \
-          -S localhost \
-          -U SA \
-          -P "$(DB_PASSWORD)" \
-          -C -Q "SELECT 1" >/dev/null 2>&1; then
-          echo "SQL Server is ready!"
-        else
-          echo "SQL Server did not become ready after 60 attempts"
-          echo "---- docker logs sqlserver-rhel9-arm64 (last 200 lines) ----"
-          docker logs --tail 200 sqlserver-rhel9-arm64 || true
-          exit 1
-        fi
-      fi
-      
-      # Create test database
-      docker exec sqlserver-rhel9-arm64 \
-        /opt/mssql-tools18/bin/sqlcmd \
-        -S localhost \
-        -U SA \
-        -P "$(DB_PASSWORD)" \
-        -C -Q "CREATE DATABASE TestDB"
+      python3 eng/scripts/setup_sql_container.py \
+        --name "sqlserver-rhel9-arm64" --owner "$(Build.BuildId).$(System.JobId)" \
+        --image "mcr.microsoft.com/mssql/server:2022-latest" --database TestDB
     displayName: 'Start SQL Server container for RHEL 9 ARM64'
+    timeoutInMinutes: 22
     env:
       DB_PASSWORD: $(DB_PASSWORD)
+      MSSQL_SA_PASSWORD: $(DB_PASSWORD)
+      SQLCMDPASSWORD: $(DB_PASSWORD)
 
   - script: |
       # Install dependencies in the RHEL 9 ARM64 container
@@ -1680,7 +1667,8 @@ jobs:
         
         # Install Python 3.12 (available in RHEL 9.4+) and development tools
         # Note: curl and wget omitted to avoid conflicts with curl-minimal
-        dnf install -y python3.12 python3.12-pip python3.12-devel python3.12-libs gnupg2 glibc-devel kernel-headers
+        # ODBC needs the extra iconv modules for legacy code pages such as Korean CP949.
+        dnf install -y python3.12 python3.12-pip python3.12-devel python3.12-libs gnupg2 glibc-devel glibc-gconv-extra kernel-headers
         dnf install -y gcc gcc-c++ make binutils cmake
         # If that doesn't work, try installing from different repositories
         if ! which gcc; then
@@ -1770,7 +1758,6 @@ jobs:
         ./build.sh
       "
     displayName: 'Build pybind bindings (.so) in RHEL 9 ARM64 container'
-    retryCountOnTaskFailure: 2
 
   - template: steps/install-mssql-py-core.yml
     parameters:
@@ -1801,16 +1788,17 @@ jobs:
       # Get SQL Server container IP
       SQLSERVER_IP=$(docker inspect sqlserver-rhel9-arm64 --format='{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
       echo "SQL Server IP: $SQLSERVER_IP"
+      export DB_CONNECTION_STRING="Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=$DB_PASSWORD;TrustServerCertificate=yes"
       
       docker exec \
-        -e DB_CONNECTION_STRING="Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes" \
-        -e DB_PASSWORD="$(DB_PASSWORD)" \
+        -e DB_CONNECTION_STRING \
+        -e DB_PASSWORD \
         test-container-rhel9-arm64 bash -c "
         source myvenv/bin/activate
         echo 'Build successful, running tests now on RHEL 9 ARM64'
         echo 'Architecture:' \$(uname -m)
         echo 'Using connection string: Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=***;TrustServerCertificate=yes'
-        python -m pytest -v --junitxml=test-results-rhel9-arm64.xml --cov=. --cov-report=xml:coverage-rhel9-arm64.xml --capture=tee-sys --cache-clear
+        python eng/scripts/mssql_python_rs.py --verify && python -m pytest -v --junitxml=test-results-rhel9-arm64.xml --cov=. --cov-report=xml:coverage-rhel9-arm64.xml --capture=tee-sys --cache-clear
       "
     displayName: 'Run pytest with coverage in RHEL 9 ARM64 container'
     env:
@@ -1824,11 +1812,17 @@ jobs:
     condition: always()
 
   - script: |
-      # Clean up containers
+      python3 eng/scripts/setup_sql_container.py --cleanup \
+        --name "sqlserver-rhel9-arm64" --owner "$(Build.BuildId).$(System.JobId)"
+    displayName: 'Clean up sqlserver-rhel9-arm64 SQL container'
+    condition: always()
+    timeoutInMinutes: 3
+    env:
+      DB_PASSWORD: $(DB_PASSWORD)
+
+  - script: |
       docker stop test-container-rhel9-arm64 || true
       docker rm test-container-rhel9-arm64 || true
-      docker stop sqlserver-rhel9-arm64 || true
-      docker rm sqlserver-rhel9-arm64 || true
     displayName: 'Clean up RHEL 9 ARM64 containers'
     condition: always()
 
@@ -1839,6 +1833,9 @@ jobs:
       testRunTitle: 'Publish pytest results on RHEL 9 ARM64'
 
 - job: PytestOnLinux_Alpine
+  dependsOn: SelectRsRuntime
+  variables:
+    MSSQL_PYTHON_RS_VERSION: $[ dependencies.SelectRsRuntime.outputs['select.version'] ]
   displayName: 'Linux Alpine x86_64'
   pool:
     vmImage: 'ubuntu-latest'
@@ -1853,7 +1850,7 @@ jobs:
 
   - script: |
       # Create a Docker container for testing on x86_64
-      docker run -d --name test-container-alpine \
+      docker run -e MSSQL_PYTHON_RS_VERSION -d --name test-container-alpine \
         --platform linux/amd64 \
         -v $(Build.SourcesDirectory):/workspace \
         -w /workspace \
@@ -1863,58 +1860,15 @@ jobs:
     displayName: 'Create Alpine x86_64 container'
 
   - script: |
-      # Start SQL Server container (x86_64)
-      docker run -d --name sqlserver-alpine \
-        --platform linux/amd64 \
-        -e ACCEPT_EULA=Y \
-        -e MSSQL_SA_PASSWORD="$(DB_PASSWORD)" \
-        -p 1433:1433 \
-        mcr.microsoft.com/mssql/server:2022-latest
-      
-      # Wait for SQL Server to be ready
-      echo "Waiting for SQL Server to start..."
-      sql_ready=false
-      for i in {1..60}; do
-        if docker exec sqlserver-alpine \
-          /opt/mssql-tools18/bin/sqlcmd \
-          -S localhost \
-          -U SA \
-          -P "$(DB_PASSWORD)" \
-          -C -Q "SELECT 1" >/dev/null 2>&1; then
-          echo "SQL Server is ready!"
-          sql_ready=true
-          break
-        fi
-        echo "Waiting... ($i/60)"
-        sleep 2
-      done
-      if [ "$sql_ready" != true ]; then
-        # the loop sleeps after its final attempt, so probe once more
-        if docker exec sqlserver-alpine \
-          /opt/mssql-tools18/bin/sqlcmd \
-          -S localhost \
-          -U SA \
-          -P "$(DB_PASSWORD)" \
-          -C -Q "SELECT 1" >/dev/null 2>&1; then
-          echo "SQL Server is ready!"
-        else
-          echo "SQL Server did not become ready after 60 attempts"
-          echo "---- docker logs sqlserver-alpine (last 200 lines) ----"
-          docker logs --tail 200 sqlserver-alpine || true
-          exit 1
-        fi
-      fi
-      
-      # Create test database
-      docker exec sqlserver-alpine \
-        /opt/mssql-tools18/bin/sqlcmd \
-        -S localhost \
-        -U SA \
-        -P "$(DB_PASSWORD)" \
-        -C -Q "CREATE DATABASE TestDB"
+      python3 eng/scripts/setup_sql_container.py \
+        --name "sqlserver-alpine" --owner "$(Build.BuildId).$(System.JobId)" \
+        --image "mcr.microsoft.com/mssql/server:2022-latest" --database TestDB
     displayName: 'Start SQL Server container for Alpine x86_64'
+    timeoutInMinutes: 22
     env:
       DB_PASSWORD: $(DB_PASSWORD)
+      MSSQL_SA_PASSWORD: $(DB_PASSWORD)
+      SQLCMDPASSWORD: $(DB_PASSWORD)
 
   - script: |
       # Install dependencies in the Alpine x86_64 container
@@ -2059,10 +2013,11 @@ jobs:
       # Get SQL Server container IP
       SQLSERVER_IP=$(docker inspect sqlserver-alpine --format='{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
       echo "SQL Server IP: $SQLSERVER_IP"
+      export DB_CONNECTION_STRING="Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=$DB_PASSWORD;TrustServerCertificate=yes"
       
       docker exec \
-        -e DB_CONNECTION_STRING="Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes" \
-        -e DB_PASSWORD="$(DB_PASSWORD)" \
+        -e DB_CONNECTION_STRING \
+        -e DB_PASSWORD \
         test-container-alpine bash -c "
         echo 'Build successful, running tests now on Alpine x86_64'
         echo 'Architecture:' \$(uname -m)
@@ -2082,7 +2037,7 @@ jobs:
         fi
         
         # Run pytest
-        python -m pytest -v --junitxml=test-results-alpine.xml --cov=. --cov-report=xml:coverage-alpine.xml --capture=tee-sys --cache-clear
+        python eng/scripts/mssql_python_rs.py --verify && python -m pytest -v --junitxml=test-results-alpine.xml --cov=. --cov-report=xml:coverage-alpine.xml --capture=tee-sys --cache-clear
       "
     displayName: 'Run pytest with coverage in Alpine x86_64 container'
     env:
@@ -2096,11 +2051,17 @@ jobs:
     condition: always()
 
   - script: |
-      # Clean up containers
+      python3 eng/scripts/setup_sql_container.py --cleanup \
+        --name "sqlserver-alpine" --owner "$(Build.BuildId).$(System.JobId)"
+    displayName: 'Clean up sqlserver-alpine SQL container'
+    condition: always()
+    timeoutInMinutes: 3
+    env:
+      DB_PASSWORD: $(DB_PASSWORD)
+
+  - script: |
       docker stop test-container-alpine || true
       docker rm test-container-alpine || true
-      docker stop sqlserver-alpine || true
-      docker rm sqlserver-alpine || true
     displayName: 'Clean up Alpine x86_64 containers'
     condition: always()
 
@@ -2111,14 +2072,21 @@ jobs:
       testRunTitle: 'Publish pytest results on Alpine x86_64'
 
 - job: PytestOnLinux_Alpine_ARM64
+  dependsOn: SelectRsRuntime
+  variables:
+    MSSQL_PYTHON_RS_VERSION: $[ dependencies.SelectRsRuntime.outputs['select.version'] ]
   displayName: 'Linux Alpine ARM64'
   pool:
     vmImage: 'ubuntu-latest'
 
   steps:
   - script: |
+      set -euo pipefail
       # Set up Docker buildx for multi-architecture support
-      docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
+      if [ -e /proc/sys/fs/binfmt_misc/qemu-aarch64 ]; then
+        docker run --rm --privileged --platform linux/amd64 "$(arm64QemuImage)" --uninstall qemu-aarch64
+      fi
+      docker run --rm --privileged --platform linux/amd64 "$(arm64QemuImage)" --install arm64
       docker buildx create --name multiarch --driver docker-container --use
       docker buildx inspect --bootstrap
     displayName: 'Setup Docker buildx for ARM64 emulation'
@@ -2127,7 +2095,7 @@ jobs:
       # Create a Docker container for testing on ARM64
       # TODO(AB#40901): Temporary pin to 3.22 due to msodbcsql ARM64 package arch mismatch
       # Revert to alpine:latest once ODBC team releases fixed ARM64 package
-      docker run -d --name test-container-alpine-arm64 \
+      docker run -e MSSQL_PYTHON_RS_VERSION -d --name test-container-alpine-arm64 \
         --platform linux/arm64 \
         -v $(Build.SourcesDirectory):/workspace \
         -w /workspace \
@@ -2137,58 +2105,15 @@ jobs:
     displayName: 'Create Alpine ARM64 container'
 
   - script: |
-      # Start SQL Server container (x86_64 - SQL Server doesn't support ARM64)
-      docker run -d --name sqlserver-alpine-arm64 \
-        --platform linux/amd64 \
-        -e ACCEPT_EULA=Y \
-        -e MSSQL_SA_PASSWORD="$(DB_PASSWORD)" \
-        -p 1433:1433 \
-        mcr.microsoft.com/mssql/server:2022-latest
-      
-      # Wait for SQL Server to be ready
-      echo "Waiting for SQL Server to start..."
-      sql_ready=false
-      for i in {1..60}; do
-        if docker exec sqlserver-alpine-arm64 \
-          /opt/mssql-tools18/bin/sqlcmd \
-          -S localhost \
-          -U SA \
-          -P "$(DB_PASSWORD)" \
-          -C -Q "SELECT 1" >/dev/null 2>&1; then
-          echo "SQL Server is ready!"
-          sql_ready=true
-          break
-        fi
-        echo "Waiting... ($i/60)"
-        sleep 2
-      done
-      if [ "$sql_ready" != true ]; then
-        # the loop sleeps after its final attempt, so probe once more
-        if docker exec sqlserver-alpine-arm64 \
-          /opt/mssql-tools18/bin/sqlcmd \
-          -S localhost \
-          -U SA \
-          -P "$(DB_PASSWORD)" \
-          -C -Q "SELECT 1" >/dev/null 2>&1; then
-          echo "SQL Server is ready!"
-        else
-          echo "SQL Server did not become ready after 60 attempts"
-          echo "---- docker logs sqlserver-alpine-arm64 (last 200 lines) ----"
-          docker logs --tail 200 sqlserver-alpine-arm64 || true
-          exit 1
-        fi
-      fi
-      
-      # Create test database
-      docker exec sqlserver-alpine-arm64 \
-        /opt/mssql-tools18/bin/sqlcmd \
-        -S localhost \
-        -U SA \
-        -P "$(DB_PASSWORD)" \
-        -C -Q "CREATE DATABASE TestDB"
+      python3 eng/scripts/setup_sql_container.py \
+        --name "sqlserver-alpine-arm64" --owner "$(Build.BuildId).$(System.JobId)" \
+        --image "mcr.microsoft.com/mssql/server:2022-latest" --database TestDB
     displayName: 'Start SQL Server container for Alpine ARM64'
+    timeoutInMinutes: 22
     env:
       DB_PASSWORD: $(DB_PASSWORD)
+      MSSQL_SA_PASSWORD: $(DB_PASSWORD)
+      SQLCMDPASSWORD: $(DB_PASSWORD)
 
   - script: |
       # Install dependencies in the Alpine ARM64 container
@@ -2302,7 +2227,6 @@ jobs:
         ./build.sh
       "
     displayName: 'Build pybind bindings (.so) in Alpine ARM64 container'
-    retryCountOnTaskFailure: 2
 
   - template: steps/install-mssql-py-core.yml
     parameters:
@@ -2334,10 +2258,11 @@ jobs:
       # Get SQL Server container IP
       SQLSERVER_IP=$(docker inspect sqlserver-alpine-arm64 --format='{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
       echo "SQL Server IP: $SQLSERVER_IP"
+      export DB_CONNECTION_STRING="Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=$DB_PASSWORD;TrustServerCertificate=yes"
       
       docker exec \
-        -e DB_CONNECTION_STRING="Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes" \
-        -e DB_PASSWORD="$(DB_PASSWORD)" \
+        -e DB_CONNECTION_STRING \
+        -e DB_PASSWORD \
         test-container-alpine-arm64 bash -c "
         echo 'Build successful, running tests now on Alpine ARM64'
         echo 'Architecture:' \$(uname -m)
@@ -2357,7 +2282,7 @@ jobs:
         fi
         
         # Run pytest
-        python -m pytest -v --junitxml=test-results-alpine-arm64.xml --cov=. --cov-report=xml:coverage-alpine-arm64.xml --capture=tee-sys --cache-clear
+        python eng/scripts/mssql_python_rs.py --verify && python -m pytest -v --junitxml=test-results-alpine-arm64.xml --cov=. --cov-report=xml:coverage-alpine-arm64.xml --capture=tee-sys --cache-clear
       "
     displayName: 'Run pytest with coverage in Alpine ARM64 container'
     env:
@@ -2371,11 +2296,17 @@ jobs:
     condition: always()
 
   - script: |
-      # Clean up containers
+      python3 eng/scripts/setup_sql_container.py --cleanup \
+        --name "sqlserver-alpine-arm64" --owner "$(Build.BuildId).$(System.JobId)"
+    displayName: 'Clean up sqlserver-alpine-arm64 SQL container'
+    condition: always()
+    timeoutInMinutes: 3
+    env:
+      DB_PASSWORD: $(DB_PASSWORD)
+
+  - script: |
       docker stop test-container-alpine-arm64 || true
       docker rm test-container-alpine-arm64 || true
-      docker stop sqlserver-alpine-arm64 || true
-      docker rm sqlserver-alpine-arm64 || true
     displayName: 'Clean up Alpine ARM64 containers'
     condition: always()
 
@@ -2583,7 +2514,7 @@ jobs:
 # 
 #   - script: |
 #       docker exec \
-#         -e DB_CONNECTION_STRING="$(AZURE_CONNECTION_STRING)" \
+#         -e DB_CONNECTION_STRING \
 #         test-container-ubuntu-azuresql bash -c "
 #         source /opt/venv/bin/activate
 #         echo 'Running tests on Ubuntu against Azure SQL Database'
@@ -2612,11 +2543,20 @@ jobs:
 #       testRunTitle: 'Publish pytest results on Ubuntu AzureSQL'
 
 - job: CodeCoverageReport
+  dependsOn: SelectRsRuntime
+  variables:
+    MSSQL_PYTHON_RS_VERSION: $[ dependencies.SelectRsRuntime.outputs['select.version'] ]
   displayName: 'Full Code Coverage Report in Ubuntu x86_64'
   pool:
     vmImage: 'ubuntu-latest'
 
   steps:
+  - task: UsePythonVersion@0
+    inputs:
+      versionSpec: '3.12'
+      addToPath: true
+    displayName: 'Use Python 3.12 for coverage build and tests'
+
   - script: |
       # Install build dependencies
       sudo apt-get update
@@ -2624,46 +2564,15 @@ jobs:
     displayName: 'Install build dependencies'
 
   - script: |
-      # Start SQL Server container
-      docker pull mcr.microsoft.com/mssql/server:2022-latest
-      docker run \
-        --name sqlserver \
-        -e ACCEPT_EULA=Y \
-        -e MSSQL_SA_PASSWORD="$(DB_PASSWORD)" \
-        -p 1433:1433 \
-        -d mcr.microsoft.com/mssql/server:2022-latest
-
-      # Wait until SQL Server is ready
-      sql_ready=false
-      for i in {1..30}; do
-        if docker exec sqlserver \
-          /opt/mssql-tools18/bin/sqlcmd \
-          -S localhost \
-          -U SA \
-          -P "$(DB_PASSWORD)" \
-          -C -Q "SELECT 1"; then
-          sql_ready=true
-          break
-        fi
-        sleep 2
-      done
-      if [ "$sql_ready" != true ]; then
-        # the loop sleeps after its final attempt, so probe once more
-        if ! docker exec sqlserver \
-          /opt/mssql-tools18/bin/sqlcmd \
-          -S localhost \
-          -U SA \
-          -P "$(DB_PASSWORD)" \
-          -C -Q "SELECT 1"; then
-          echo "SQL Server did not become ready after 30 attempts"
-          echo "---- docker logs sqlserver (last 200 lines) ----"
-          docker logs --tail 200 sqlserver || true
-          exit 1
-        fi
-      fi
+      python3 eng/scripts/setup_sql_container.py \
+        --name "sqlserver" --owner "$(Build.BuildId).$(System.JobId)" \
+        --image "mcr.microsoft.com/mssql/server:2022-latest"
     displayName: 'Start SQL Server container'
+    timeoutInMinutes: 22
     env:
       DB_PASSWORD: $(DB_PASSWORD)
+      MSSQL_SA_PASSWORD: $(DB_PASSWORD)
+      SQLCMDPASSWORD: $(DB_PASSWORD)
 
   - script: |
       # Install Python dependencies
@@ -2708,3 +2617,12 @@ jobs:
       reportDirectory: 'unified-coverage'
       failIfCoverageEmpty: true
     displayName: 'Publish unified code coverage results'
+
+  - script: |
+      python3 eng/scripts/setup_sql_container.py --cleanup \
+        --name sqlserver --owner "$(Build.BuildId).$(System.JobId)"
+    displayName: 'Clean up coverage SQL container'
+    condition: always()
+    timeoutInMinutes: 3
+    env:
+      DB_PASSWORD: $(DB_PASSWORD)

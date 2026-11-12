@@ -7,6 +7,11 @@ This package ships the platform-specific **Microsoft ODBC Driver 18 for SQL Serv
 (and the supporting runtime libraries they depend on) as a standalone, pure-data wheel, so that
 `mssql-python` does not have to bundle them inside its own wheel.
 
+Linux wheels are specific to both CPU architecture and libc family: `manylinux` wheels
+include the glibc-based Debian/Ubuntu, RHEL, and available SUSE driver variants, while
+`musllinux` wheels include only the Alpine/musl variant. Each retains the supporting
+libraries and resources for its included drivers.
+
 ## Not intended for direct use
 
 Do **not** install this package directly. Install

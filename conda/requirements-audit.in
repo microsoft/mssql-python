@@ -1,0 +1,23 @@
+# Audit tests only: CPython 3.11, Linux x64; not publisher or driver runtime dependencies.
+# Regenerate from the repo root with uv 0.12.6 and pip in PowerShell:
+# $work = Join-Path $env:TEMP ([guid]::NewGuid().ToString()); New-Item -ItemType Directory $work | Out-Null
+# $target = @('--python-version', '3.11', '--python-platform', 'x86_64-manylinux_2_17', '--only-binary', ':all:')
+# $hashes = @('--no-config', '--no-cache', '--generate-hashes', '--no-emit-index-url', '--no-header', '--no-annotate', '--strip-extras')
+# uv pip compile @hashes @target --default-index https://pypi.org/simple `
+#   --constraint conda\requirements-audit.txt --output-file "$work\resolved.txt" conda\requirements-audit.in
+# python -m pip --isolated download --require-hashes --only-binary=:all: --no-deps `
+#   --platform manylinux_2_17_x86_64 --python-version 3.11 --implementation cp --abi cp311 `
+#   --index-url https://pypi.org/simple --dest "$work\wheels" -r "$work\resolved.txt"
+# uv pip compile @hashes @target --no-index --find-links "$work\wheels" `
+#   --output-file "$work\target.txt" conda\requirements-audit.in
+# if ($LASTEXITCODE -eq 0) { Move-Item "$work\target.txt" conda\requirements-audit.txt -Force }
+# Run each command only after the preceding command succeeds.
+# The first compile resolves the complete Linux closure; --no-deps avoids host marker
+# evaluation during cross-platform pip download. The offline compile rechecks the closure.
+# Keep reviewed versions via the constraint; remove it only for intentional dependency updates.
+# A fresh output avoids retaining unrelated platform hashes. Only target wheels are accepted.
+pytest==9.1.1
+# setup.py bdist_wheel is exercised by test_030's binding-wheel ownership regression.
+setuptools==84.0.0
+wheel==0.48.0
+zstandard==0.23.0

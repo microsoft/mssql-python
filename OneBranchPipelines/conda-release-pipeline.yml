@@ -1,0 +1,186 @@
+# =========================================================================================
+# OneBranch STANDALONE Conda Release Pipeline (mssql-python)
+# =========================================================================================
+# Decoupled from the wheel/PyPI release. Downloads the consolidated conda packages produced
+# by the STANDALONE conda-build pipeline (conda-build-pipeline.yml, artifact
+# drop_ConsolidateConda_ConsolidateArtifacts) -- NOT the wheel pipeline (def 2199), which no
+# longer produces any conda artifact -- enforces the release-readiness gate (conda-release-
+# step: required subdirs + full Python matrix + one version), and -- when publishToConda=true -- publishes the SELF-CONTAINED
+# mssql-python conda package to Anaconda.org via anaconda-client (conda-publish-step; ESRP
+# has no Conda ContentType). There is a single self-contained package (it vendors the ODBC
+# Driver 18 payload); no companion. When publishToConda=false (the default), the same
+# official container runs publisher provisioning and audits without publishing secrets,
+# then deliberately fails at a read-only Anaconda authentication probe with a random
+# invalid token. Only a confirmed HTTP 401 is the expected rehearsal outcome.
+# No upload, promotion or cleanup is attempted in rehearsal, even if authentication succeeds.
+# An administrator must enable the native Exclusive lock check on 'Anaconda Publishing'.
+# The production stage uses that shared resource throughout publication and recovery.
+# Keep its credentials, pipeline authorizations and other checks restricted.
+# The OneBranch YAML needs an actual ADO run to fully validate.
+# =========================================================================================
+name: $(Year:YY)$(DayOfYear)$(Rev:.r)-CondaRelease
+
+trigger: none
+pr: none
+
+parameters:
+  - name: publishToConda
+    displayName: 'Publish Conda Packages to Anaconda.org (PRODUCTION)'
+    type: boolean
+    default: false  # Safety: default to a secretless, invalid-token publisher rehearsal.
+  - name: condaChannel
+    displayName: 'Anaconda.org channel/org to publish to'
+    type: string
+    default: 'microsoft'
+    values:
+      - 'microsoft'
+  - name: condaLabel
+    displayName: 'Anaconda.org channel label'
+    type: string
+    default: 'main'
+    values:
+      - 'main'
+  # Automatically resolve the exact version from the recorded wheel producer's source.
+  # An optional override is an additional assertion, never a replacement for that source.
+  - name: mssqlPythonVersion
+    displayName: 'Optional expected mssql-python version (empty = resolve from wheel producer)'
+    type: string
+    default: ''
+
+variables:
+  - template: /OneBranchPipelines/variables/common-variables.yml@self
+  - template: /OneBranchPipelines/variables/onebranch-variables.yml@self
+
+resources:
+  repositories:
+    - repository: templates
+      type: git
+      name: 'OneBranch.Pipelines/GovernedTemplates'
+      ref: 'refs/heads/main'
+  # The build pipeline whose consolidated conda artifact this pipeline validates + publishes.
+  pipelines:
+    - pipeline: buildPipeline
+      # Registered ADO definition Conda-Build-Pipeline, backed by conda-build-pipeline.yml. Its
+      # ConsolidateConda stage publishes drop_ConsolidateConda_ConsolidateArtifacts.
+      # This is not the wheel pipeline (definition 2199), which no longer builds Conda.
+      source: 'Conda-Build-Pipeline'
+      branch: main
+      trigger: none
+
+extends:
+  # Rehearse the actual managed container/network path, not a NonOfficial substitute.
+  template: 'v2/OneBranch.Official.CrossPlat.yml@templates'
+  parameters:
+    featureFlags:
+      WindowsHostVersion:
+        Version: '2022'
+    globalSdl:
+      baseline:
+        baselineFile: $(Build.SourcesDirectory)/.gdn/.gdnbaselines
+        suppressionSet: default
+      suppression:
+        suppressionFile: $(Build.SourcesDirectory)/.gdn/.gdnsuppress
+        suppressionSet: default
+      credscan:
+        enabled: true
+      policheck:
+        enabled: true
+        break: true
+        exclusionFile: '$(REPO_ROOT)/.config/PolicheckExclusions.xml'
+      publishLogs:
+        enabled: true
+      # Publication-only compliance outputs; both modes retain managed container isolation.
+      ${{ if eq(parameters.publishToConda, true) }}:
+        binskim:
+          enabled: true
+          break: true
+        tsa:
+          enabled: true
+          configFile: '$(REPO_ROOT)/.config/tsaoptions.json'
+
+    stages:
+      - stage: CondaRelease
+        displayName: 'Validate & Publish Conda Release'
+        ${{ if eq(parameters.publishToConda, true) }}:
+          lockBehavior: sequential
+          variables:
+            - group: 'Anaconda Publishing'
+        jobs:
+          # Gate: prove the consolidated conda set is complete (required subdirs +
+          # full Python matrix + one version) before anything is published.
+          - job: ValidateConda
+            displayName: 'Validate consolidated conda packages'
+            pool:
+              type: windows
+              isCustom: true
+              name: Python-1ES-pool
+              demands:
+                - imageOverride -equals PYTHON-1ES-MMS2022
+            variables:
+              ob_outputDirectory: '$(Build.ArtifactStagingDirectory)'
+            steps:
+              - checkout: self
+                fetchDepth: 1
+              - task: UsePythonVersion@0
+                displayName: 'Use Python 3.12 for provenance verification'
+                inputs:
+                  versionSpec: '3.12'
+                  addToPath: true
+              - task: PowerShell@2
+                name: Provenance
+                displayName: 'Guard: recorded Conda and upstream wheel run provenance'
+                env:
+                  CONDA_BUILD_PIPELINE_ID: $(resources.pipeline.buildPipeline.pipelineID)
+                  CONDA_BUILD_RUN_ID: $(resources.pipeline.buildPipeline.runID)
+                  CONDA_BUILD_SOURCE_BRANCH: $(resources.pipeline.buildPipeline.sourceBranch)
+                  CONDA_BUILD_SOURCE_COMMIT: $(resources.pipeline.buildPipeline.sourceCommit)
+                  RELEASE_SOURCE_BRANCH: $(Build.SourceBranch)
+                  PUBLISH_TO_CONDA: '${{ parameters.publishToConda }}'
+                  MSSQL_PYTHON_VERSION: '${{ parameters.mssqlPythonVersion }}'
+                  SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+                  SYSTEM_COLLECTIONURI: $(System.CollectionUri)
+                  SYSTEM_TEAMPROJECTID: $(System.TeamProjectId)
+                inputs:
+                  targetType: 'inline'
+                  workingDirectory: '$(Build.SourcesDirectory)'
+                  script: |
+                    $ErrorActionPreference = 'Stop'
+                    python -m eng.conda_tools provenance
+                    if ($LASTEXITCODE -ne 0) {
+                      Write-Error "Recorded producer/wheel provenance verification failed."
+                      exit 1
+                    }
+
+              - template: /OneBranchPipelines/steps/conda-release-step.yml@self
+                parameters:
+                  mssqlPythonVersion: '$(Provenance.mssqlPythonVersion)'
+                  releaseVersions: '$(Provenance.releaseVersions)'
+
+          # Both modes share provisioning and audits; only production receives the group.
+          - job: PublishConda
+            displayName: 'Publish or rehearse conda packages at Anaconda.org'
+            dependsOn: ValidateConda
+            timeoutInMinutes: 60
+            cancelTimeoutInMinutes: 5
+            templateContext:
+              type: releaseJob
+              isProduction: ${{ parameters.publishToConda }}
+            pool:
+              type: windows
+            variables:
+              ob_outputDirectory: '$(Build.ArtifactStagingDirectory)'
+              WindowsContainerImage: 'onebranch.azurecr.io/windows/ltsc2022/vse2022@sha256:d627cfbe15f21c34cfde8db6131c39adcc6577fc3b9d504cb4b43bfcef5de87a'
+              mssqlPythonVersion: $[ dependencies.ValidateConda.outputs['Provenance.mssqlPythonVersion'] ]
+              releaseVersions: $[ dependencies.ValidateConda.outputs['Provenance.releaseVersions'] ]
+            steps:
+              - checkout: self
+                # Match OneBranch's injected checkout; restricted commands cannot relocate it.
+                path: s
+                fetchDepth: 1
+              - template: /OneBranchPipelines/steps/conda-publish-step.yml@self
+                parameters:
+                  publishToConda: ${{ parameters.publishToConda }}
+                  condaChannel: '${{ parameters.condaChannel }}'
+                  condaLabel: '${{ parameters.condaLabel }}'
+                  mssqlPythonVersion: '$(mssqlPythonVersion)'
+                  releaseVersions: '$(releaseVersions)'

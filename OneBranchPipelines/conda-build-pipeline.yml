@@ -1,11 +1,12 @@
 # =========================================================================================
 # OneBranch STANDALONE Conda Build Pipeline (mssql-python)
 # =========================================================================================
-# Builds the SELF-CONTAINED mssql-python conda package (which vendors the ODBC Driver 18
-# payload -- there is NO separate companion package) for every conda subdir, WITHOUT
+# Builds the SELF-CONTAINED mssql-python conda package (binding + ODBC Driver 18 + RS,
+# with NO separate Conda companion packages) for every conda subdir, WITHOUT
 # rebuilding the wheels. It consumes the wheels already produced by the wheel build
-# pipeline (definition 2199): the mssql-python wheels (drop_Consolidate_ConsolidateArtifacts)
-# and the mssql-python-odbc wheels (drop_ConsolidateOdbc_ConsolidateArtifacts), then
+# pipeline (definition 2199): binding wheels plus source-pinned RS wheels/manifests/receipt
+# (drop_Consolidate_ConsolidateArtifacts) and the mssql-python-odbc wheels
+# (drop_ConsolidateOdbc_ConsolidateArtifacts), then
 # repackages + validates them into conda packages on the matching platform agent.
 #
 # WHY PER-OS (not one job for all OSs): unlike the odbc wheels (a pure data re-tag),
@@ -34,12 +35,11 @@ parameters:
       - 'Official'
       - 'NonOfficial'
     default: 'NonOfficial'
-  # Python versions to build conda packages for (Windows loops these; the POSIX legs
-  # auto-detect the same set from the downloaded wheels).
+  # Ordinary CPython versions passed explicitly to the Windows and POSIX build legs.
   - name: pythonVersions
     displayName: 'Python versions (comma-separated)'
     type: string
-    default: '3.10,3.11,3.12,3.13,3.14'
+    default: '3.10,3.11,3.12,3.13,3.14,3.15'
   # H1: enable the minimal-base ldd reachability gate (CONDA_ASSERT_PREFIX_REACHABLE).
   # It fails CLOSED if the driver binds a system (or absent) krb5/gssapi/libltdl, so it
   # is only valid on a leg with NO system copies of those libs -- set true ONLY when
@@ -197,14 +197,14 @@ extends:
               # internally (so a broken/wrong-arch package is never staged), AND win-arm64 is in
               # the release gate's requiredSubdirs -- so a MISSING win-arm64 blocks the RELEASE.
               # Net: a win-arm64 failure isolates to win-arm64 (win-64 still ships) yet still
-              # blocks the publish via the gate. DELIBERATELY a FIXED set (3.12-3.14), INDEPENDENT
+              # blocks the publish via the gate. DELIBERATELY a FIXED set (3.12-3.15), INDEPENDENT
               # of the pythonVersions parameter: neither defaults nor conda-forge ships a
               # win-arm64 python for 3.10/3.11, so following the param would queue an unbuildable
               # 3.10/3.11 arm leg. Its own bld tree + subdir-scoped verify env keep it from
               # colliding with win-64 on this shared agent.
               - template: /OneBranchPipelines/steps/conda-build-validate-step.yml@self
                 parameters:
-                  pythonVersion: '3.12,3.13,3.14'
+                  pythonVersion: '3.12,3.13,3.14,3.15'
                   condaSubdir: 'win-arm64'
                   condaTargetSubdir: 'win-arm64'
                   odbcWheelDir: '$(Pipeline.Workspace)/odbc_wheels'
@@ -306,7 +306,7 @@ extends:
               ob_outputDirectory: '$(Build.ArtifactStagingDirectory)'
               # The live Encrypt=yes TLS gate is NOT run in the build pipeline: it needs a
               # reachable SQL Server + a secret connection string (release/integration infra),
-              # and the masking-immune static RUNPATH audit (audit_bundled_binaries.py) already
+              # and the masking-immune static RUNPATH audit (eng.conda_tools elf) already
               # guards the OpenSSL layout here. It moves to the release pipeline, where the
               # secret is always present so the gate is unconditional -- no queue-time toggle.
               # The minimal-base ldd reachability gate stays opt-in because it is only VALID on

@@ -77,6 +77,15 @@ stages:
           # fetchDepth: 0 = full git history (needed for version tagging)
           - checkout: self
             fetchDepth: 0
+
+          - ${{ if eq(parameters.oneBranchType, 'Official') }}:
+              - task: PowerShell@2
+                displayName: 'Reject test overrides and prereleases before Official build'
+                inputs:
+                  pwsh: true
+                  targetType: filePath
+                  filePath: OneBranchPipelines/scripts/validate-release-versions.ps1
+                  arguments: '-BuildOnly'
           
           # =========================
           # PYTHON INSTALLATION
@@ -91,13 +100,13 @@ stages:
           # =========================
           # BUILD TOOLS
           # =========================
-          # CMake = cross-platform build system generator (needed for C++ compilation)
-          # Uninstall first to ensure clean version (avoid conflicts with pre-installed CMake)
+          # Install all Homebrew tooling in one transaction, matching PR validation.
+          # Do not run brew update: hosted runners already provide bottle metadata,
+          # while updating can select formulae that compile Go and Lima from source.
           - script: |
-              brew update
               brew uninstall cmake --ignore-dependencies || echo "CMake not installed"
-              brew install cmake
-            displayName: 'Install CMake'
+              brew install cmake docker colima
+            displayName: 'Install build & container tooling (Homebrew)'
           
           # =========================
           # PYTHON DEPENDENCIES
@@ -133,22 +142,15 @@ stages:
               TargetFolder: '$(ob_outputDirectory)/bindings/macOS'
             displayName: 'Copy .so files'
           
-          # Install Docker CLI and Colima (macOS Docker runtime)
+          # Start Colima (macOS Docker runtime). Tooling is installed above so the
+          # 15-minute timeout covers only VM startup, not Homebrew compilation.
           # Colima = lightweight Docker Desktop alternative using macOS virtualization
-          # vz = native macOS virtualization (faster, only works on M1+)
-          # qemu = cross-platform emulator (slower, works on Intel Macs)
           # 4 CPU cores + 8GB RAM needed for SQL Server container
           - script: |
-              brew update
-              brew install docker colima
-              colima start --vm-type vz --cpu 4 --memory 8 || {
-                echo "vz VM failed, trying qemu..."
-                colima start --vm-type qemu --cpu 4 --memory 8
-              }
-              sleep 30
+              colima start --cpu 4 --memory 8 --disk 50
               docker context use colima >/dev/null || true
               docker version
-            displayName: 'Install and start Docker (Colima)'
+            displayName: 'Start Docker (Colima)'
             timeoutInMinutes: 15
           
           # =========================
@@ -161,29 +163,30 @@ stages:
               docker pull mcr.microsoft.com/mssql/server:2022-latest
               docker run --name sqlserver \
                 -e ACCEPT_EULA=Y \
-                -e MSSQL_SA_PASSWORD="${DB_PASSWORD}" \
+                -e MSSQL_SA_PASSWORD \
                 -p 1433:1433 -d \
                 mcr.microsoft.com/mssql/server:2022-latest
               
               # Wait for SQL Server to accept connections (up to 60 seconds)
               # sqlcmd -C flag = trust server certificate (for TLS connection)
               for i in {1..30}; do
-                docker exec sqlserver /opt/mssql-tools18/bin/sqlcmd \
-                  -S localhost -U SA -P "$DB_PASSWORD" -C -Q "SELECT 1" && break
+                docker exec -e SQLCMDPASSWORD sqlserver /opt/mssql-tools18/bin/sqlcmd \
+                  -S localhost -U SA -C -Q "SELECT 1" && break
                 sleep 2
               done
             displayName: 'Start SQL Server (Docker)'
             env:
               DB_PASSWORD: $(DB_PASSWORD)
+              MSSQL_SA_PASSWORD: $(DB_PASSWORD)
+              SQLCMDPASSWORD: $(DB_PASSWORD)
           
           # =========================
-          # MSSQL_PY_CORE INSTALLATION
+          # MSSQL-PYTHON-RS INSTALLATION
           # =========================
-          # Extract mssql_py_core from NuGet into repo root BEFORE testing
-          # Required for bulkcopy tests which use mssql_py_core native bindings
+          # Install the separately owned runtime before bulk-copy tests.
           - script: |
               bash $(Build.SourcesDirectory)/eng/scripts/install-mssql-py-core.sh
-            displayName: 'Install mssql_py_core from NuGet'
+            displayName: 'Install mssql-python-rs'
           
           # =========================
           # PHASE 2: EXTERNAL ODBC DRIVER PACKAGE
@@ -223,7 +226,7 @@ stages:
           # Tests use localhost:1433 connection (SA user with password from variable)
           # -v = verbose output (show test names and results)
           - script: |
-              python -m pytest -v
+              python eng/scripts/mssql_python_rs.py --verify && python -m pytest -v
             displayName: 'Run pytests'
             env:
               # Connection string uses localhost (SQL Server container exposed on port 1433)
@@ -291,7 +294,7 @@ stages:
           # Scans wheel files for malware using Microsoft Defender and custom signatures
           # Only runs for Official builds (production compliance requirement)
           - ${{ if eq(parameters.oneBranchType, 'Official') }}:
-              - task: EsrpMalwareScanning@5
+              - task: EsrpMalwareScanning@6
                 displayName: 'ESRP MalwareScanning - Python Wheels (Official)'
                 inputs:
                   ConnectedServiceName: '$(SigningEsrpConnectedServiceName)'

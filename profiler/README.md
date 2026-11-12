@@ -21,14 +21,23 @@ context manager whose end-to-end cost is within run-to-run noise.
 
 Runtime-instrumentation tests remain part of the driver test suite. Tests that
 require the dev-only `profiler/` package skip when it is absent from an installed
-wheel. Broader profiler testing and profiling-enabled CI builds are deferred to
-follow-up work.
+wheel. The [profiler benchmark guide](../eng/profiler_benchmarks/README.md) describes
+isolated profiling builds, scenario coverage and advisory PR regression comments.
+Broader profiler testing remains follow-up work.
 
 Use controlled diagnostic workloads with one owner of the process-wide profiling
 state: enable, run the workload, wait for worker threads to finish, then collect.
 Recording supports worker threads; independent concurrent profiling sessions are
 not supported. Enabled instrumentation adds bookkeeping overhead, so compare runs
 using the same profiling configuration.
+
+Profiling does not disable native row-fetch dispatch. Eligible one-row fetches
+keep the same native path used without profiling and appear under
+`ddbc::NativeCursor::fetch` and `ddbc::FetchSingleRow`. Python fetch phases appear
+only when the Python fallback actually runs; their absence on a native fetch is
+not missing coverage or zero-cost Python work. Use a profiling-enabled native
+build to observe that path, and a separate uninstrumented build for release
+latency comparisons.
 
 ## How the timers are named
 

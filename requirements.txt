@@ -1,11 +1,14 @@
 # Testing dependencies
 pytest
 pytest-cov
+pytest-asyncio
+PyYAML
 zstandard
 coverage
 unittest-xml-reporting
 psutil
-pyarrow
+pyarrow==25.0.1; python_version < "3.15"
+pyarrow==26.0.0; python_version >= "3.15"
 polars
 
 # Runtime dependencies needed for tests
@@ -14,6 +17,7 @@ azure-identity
 # Build dependencies
 pybind11
 setuptools
+wheel
 
 # Code formatting and linting
 black

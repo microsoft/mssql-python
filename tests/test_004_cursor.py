@@ -21,7 +21,7 @@ import threading
 import mssql_python
 import uuid
 import re
-from unittest.mock import patch
+from unittest.mock import call, patch
 from conftest import is_azure_sql_connection
 
 # Setup test table
@@ -1358,43 +1358,6 @@ def test_parametrized_insert(cursor, db_connection, data):
         db_connection.commit()
     except Exception as e:
         pytest.fail(f"Parameterized data insertion/fetch failed: {e}")
-
-
-def test_rowcount(cursor, db_connection):
-    """Test rowcount after insert operations"""
-    try:
-        cursor.execute(
-            "CREATE TABLE #pytest_test_rowcount (id INT IDENTITY(1,1) PRIMARY KEY, name NVARCHAR(100))"
-        )
-        db_connection.commit()
-
-        cursor.execute("INSERT INTO #pytest_test_rowcount (name) VALUES ('JohnDoe1');")
-        assert cursor.rowcount == 1, "Rowcount should be 1 after first insert"
-
-        cursor.execute("INSERT INTO #pytest_test_rowcount (name) VALUES ('JohnDoe2');")
-        assert cursor.rowcount == 1, "Rowcount should be 1 after second insert"
-
-        cursor.execute("INSERT INTO #pytest_test_rowcount (name) VALUES ('JohnDoe3');")
-        assert cursor.rowcount == 1, "Rowcount should be 1 after third insert"
-
-        cursor.execute("""
-            INSERT INTO #pytest_test_rowcount (name) 
-            VALUES 
-            ('JohnDoe4'), 
-            ('JohnDoe5'), 
-            ('JohnDoe6');
-        """)
-        assert cursor.rowcount == 3, "Rowcount should be 3 after inserting multiple rows"
-
-        cursor.execute("SELECT * FROM #pytest_test_rowcount;")
-        assert cursor.rowcount == -1, "Rowcount should be -1 after a SELECT statement"
-
-        db_connection.commit()
-    except Exception as e:
-        pytest.fail(f"Rowcount test failed: {e}")
-    finally:
-        cursor.execute("DROP TABLE #pytest_test_rowcount")
-        db_connection.commit()
 
 
 def test_rowcount_executemany(cursor, db_connection):
@@ -2961,13 +2924,26 @@ def test_executemany_DecimalMix_List(cursor, db_connection):
 
 
 def test_nextset(cursor):
-    """Test nextset"""
-    cursor.execute("SELECT * FROM #pytest_all_data_types WHERE id = 1;")
-    assert cursor.nextset() is False, "Nextset should return False"
+    """Test metadata invalidation when re-executing and skipping unread results."""
     cursor.execute(
-        "SELECT * FROM #pytest_all_data_types WHERE id = 2; SELECT * FROM #pytest_all_data_types WHERE id = 3;"
+        "SELECT id AS first_id FROM #pytest_all_data_types WHERE id IN (1, 2) ORDER BY id;"
     )
+    first_row = cursor.fetchmany(1)[0]
+    assert first_row.first_id == 1
+    # Equal column counts must not hide changed types or names.
+    cursor.execute(
+        "SELECT CAST(id AS NVARCHAR(10)) AS second_id FROM #pytest_all_data_types "
+        "WHERE id IN (2, 3) ORDER BY id; "
+        "SELECT id AS third_id FROM #pytest_all_data_types WHERE id = 3;"
+    )
+    second_row = cursor.fetchmany(1)[0]
+    assert second_row.second_id == "2"
     assert cursor.nextset() is True, "Nextset should return True"
+    assert cursor.fetchmany(1)[0].third_id == 3
+    assert cursor.description[0][0] == "third_id"
+    assert first_row.first_id == 1
+    assert second_row.second_id == "2"
+    assert cursor.nextset() is False, "Nextset should return False"
 
 
 def test_delete_table(cursor, db_connection):
@@ -3443,6 +3419,533 @@ def test_row_string_key_indexing(cursor, db_connection):
             db_connection.commit()
         except Exception:
             pass
+
+
+def test_row_mapping_to_dict(cursor, db_connection):
+    """Test dict(row._mapping) returns a plain dict from a real cursor row."""
+    try:
+        cursor.execute(
+            "CREATE TABLE #pytest_row_todict (id INT PRIMARY KEY, name VARCHAR(50), price FLOAT)"
+        )
+        db_connection.commit()
+
+        cursor.execute("INSERT INTO #pytest_row_todict VALUES (1, 'Widget', 9.99)")
+        db_connection.commit()
+
+        cursor.execute("SELECT * FROM #pytest_row_todict")
+        row = cursor.fetchone()
+
+        d = dict(row._mapping)
+        assert isinstance(d, dict)
+        assert d["id"] == 1
+        assert d["name"] == "Widget"
+        assert d["price"] == 9.99
+        assert len(d) == len(row)
+
+    except Exception as e:
+        pytest.fail(f"Row _mapping to-dict test failed: {e}")
+    finally:
+        try:
+            cursor.execute("DROP TABLE IF EXISTS #pytest_row_todict")
+            db_connection.commit()
+        except Exception:
+            pass
+
+
+def test_row_mapping_keys_values_items(cursor, db_connection):
+    """Test row._mapping keys/values/items from a real cursor row."""
+    try:
+        cursor.execute("CREATE TABLE #pytest_row_kvi (id INT PRIMARY KEY, name VARCHAR(50))")
+        db_connection.commit()
+
+        cursor.execute("INSERT INTO #pytest_row_kvi VALUES (42, 'Alice')")
+        db_connection.commit()
+
+        cursor.execute("SELECT * FROM #pytest_row_kvi")
+        row = cursor.fetchone()
+
+        mapping = row._mapping
+
+        # keys() returns column names matching description
+        keys = list(mapping.keys())
+        assert len(keys) == 2
+        assert keys == [desc[0] for desc in cursor.description]
+
+        # values() matches positional access
+        vals = list(mapping.values())
+        assert vals == [row[0], row[1]]
+
+        # items() returns (name, value) pairs
+        items = list(mapping.items())
+        assert len(items) == 2
+        assert items[0] == (keys[0], row[0])
+        assert items[1] == (keys[1], row[1])
+
+        # The mapping is a repeatable view, not a one-shot iterator
+        assert list(mapping.items()) == list(mapping.items())
+
+        # len consistency
+        assert len(keys) == len(row)
+        assert len(vals) == len(row)
+        assert len(items) == len(row)
+        assert len(mapping) == len(row)
+
+    except Exception as e:
+        pytest.fail(f"Row _mapping keys/values/items test failed: {e}")
+    finally:
+        try:
+            cursor.execute("DROP TABLE IF EXISTS #pytest_row_kvi")
+            db_connection.commit()
+        except Exception:
+            pass
+
+
+def test_row_mapping_no_duplicate_keys(cursor, db_connection):
+    """Test that row._mapping doesn't produce duplicate keys from cursor rows.
+
+    The cursor may inject lowercase aliases into _column_map, but the mapping
+    must expose exactly N entries with original casing.
+    """
+    try:
+        cursor.execute("CREATE TABLE #pytest_row_nodup (ProductID INT, MixedCase VARCHAR(20))")
+        db_connection.commit()
+
+        cursor.execute("INSERT INTO #pytest_row_nodup VALUES (1, 'test')")
+        db_connection.commit()
+
+        cursor.execute("SELECT * FROM #pytest_row_nodup")
+        row = cursor.fetchone()
+
+        mapping = row._mapping
+        keys = list(mapping.keys())
+        items = list(mapping.items())
+        d = dict(mapping)
+
+        # Exactly 2 columns, no duplicates, original casing preserved
+        assert len(keys) == 2
+        assert len(items) == 2
+        assert len(d) == 2
+        assert len(keys) == len(row)
+        assert keys == ["ProductID", "MixedCase"]
+
+    except Exception as e:
+        pytest.fail(f"Row _mapping no-duplicate-keys test failed: {e}")
+    finally:
+        try:
+            cursor.execute("DROP TABLE IF EXISTS #pytest_row_nodup")
+            db_connection.commit()
+        except Exception:
+            pass
+
+
+def test_row_getitem_type_guard(cursor, db_connection):
+    """Test Row.__getitem__ raises TypeError for unsupported index types."""
+    try:
+        cursor.execute("CREATE TABLE #pytest_row_typeguard (id INT)")
+        db_connection.commit()
+        cursor.execute("INSERT INTO #pytest_row_typeguard VALUES (1)")
+        db_connection.commit()
+
+        cursor.execute("SELECT * FROM #pytest_row_typeguard")
+        row = cursor.fetchone()
+
+        with pytest.raises(TypeError):
+            row[3.5]
+        with pytest.raises(TypeError):
+            row[None]
+    finally:
+        try:
+            cursor.execute("DROP TABLE IF EXISTS #pytest_row_typeguard")
+            db_connection.commit()
+        except Exception:
+            pass
+
+
+def test_row_case_sensitive_access(cursor, db_connection):
+    """Test exact-case access via cursor rows.
+
+    Normal SELECT uses _cached_column_map (original casing only, no lowercase
+    aliases). Case-insensitive access only works when the global lowercase
+    setting is enabled or when rows come from metadata methods.
+    """
+    try:
+        cursor.execute("CREATE TABLE #pytest_row_ci (ProductID INT, Name VARCHAR(50))")
+        db_connection.commit()
+        cursor.execute("INSERT INTO #pytest_row_ci VALUES (1, 'bar')")
+        db_connection.commit()
+
+        cursor.execute("SELECT * FROM #pytest_row_ci")
+        row = cursor.fetchone()
+
+        # Original casing works via all access methods
+        assert row["ProductID"] == 1
+        assert row.ProductID == 1
+
+        assert row["Name"] == "bar"
+        assert row.Name == "bar"
+
+        # Non-existent
+        with pytest.raises(KeyError):
+            row["nonexistent"]
+        with pytest.raises(AttributeError):
+            row.nonexistent
+
+    except Exception as e:
+        pytest.fail(f"Row case-insensitive access test failed: {e}")
+    finally:
+        try:
+            cursor.execute("DROP TABLE IF EXISTS #pytest_row_ci")
+            db_connection.commit()
+        except Exception:
+            pass
+
+
+def test_row_mapping_none_column_map():
+    """Test row._mapping edge case with column_map=None (empty mapping)."""
+    from mssql_python.row import Row
+
+    row = Row([], None, cursor=None)
+    mapping = row._mapping
+    assert list(mapping.keys()) == []
+    assert list(mapping.values()) == []
+    assert list(mapping.items()) == []
+    assert dict(mapping) == {}
+    assert len(mapping) == 0
+
+    # An absent column map has no named columns, so a string key must be treated
+    # as missing (KeyError / get-default / not-in), never surface a TypeError.
+    with pytest.raises(KeyError):
+        mapping["missing"]
+    assert mapping.get("missing", "fallback") == "fallback"
+    assert mapping.get("missing") is None
+    assert ("missing" in mapping) is False
+
+
+def test_row_mapping_dedup_fallback():
+    """Test row._mapping reconstructs names from _column_map when cursor is None."""
+    from mssql_python.row import Row
+
+    column_map = {"ProductID": 0, "Name": 1}
+    row = Row([1, "foo"], column_map, cursor=None)
+
+    mapping = row._mapping
+    assert list(mapping.keys()) == ["ProductID", "Name"]
+    assert dict(mapping) == {"ProductID": 1, "Name": "foo"}
+
+
+def test_row_mapping_is_reusable(cursor, db_connection):
+    """Test row._mapping is a repeatable view, not a one-shot iterator."""
+    try:
+        cursor.execute("CREATE TABLE #pytest_row_reuse (id INT, name VARCHAR(50))")
+        db_connection.commit()
+        cursor.execute("INSERT INTO #pytest_row_reuse VALUES (1, 'foo')")
+        db_connection.commit()
+
+        cursor.execute("SELECT * FROM #pytest_row_reuse")
+        row = cursor.fetchone()
+
+        mapping = row._mapping
+        first = list(mapping.items())
+        second = list(mapping.items())
+        assert first == second
+        assert len(first) > 0
+    finally:
+        try:
+            cursor.execute("DROP TABLE IF EXISTS #pytest_row_reuse")
+            db_connection.commit()
+        except Exception:
+            pass
+
+
+def test_row_mapping_stable_after_cursor_reuse(cursor, db_connection):
+    """row._mapping reflects the row's own result set, not a later reused query.
+
+    Regression: an already-fetched row must not pick up column names from a
+    subsequent, differently-shaped query executed on the same cursor.
+    """
+    cursor.execute("SELECT 1 AS alpha, 2 AS beta")
+    row_a = cursor.fetchone()
+
+    # Reuse the same cursor for a different-shaped query.
+    cursor.execute("SELECT 10 AS gamma")
+    cursor.fetchone()
+
+    # row_a's mapping must still describe the FIRST result set.
+    assert list(row_a._mapping.keys()) == ["alpha", "beta"]
+    assert dict(row_a._mapping) == {"alpha": 1, "beta": 2}
+
+
+def test_row_mapping_column_named_mapping(cursor, db_connection):
+    """A column literally named '_mapping' is reachable via subscript/the view.
+
+    row._mapping is a property, so it always returns the mapping view; the column
+    value is reached with row['_mapping'] (and via the view itself).
+    """
+    from mssql_python.row import RowMapping
+
+    cursor.execute("SELECT 7 AS _mapping")
+    row = cursor.fetchone()
+
+    # The property still returns the mapping view, not the column value.
+    assert isinstance(row._mapping, RowMapping)
+    # The column value is reachable by subscript and through the view.
+    assert row["_mapping"] == 7
+    assert row._mapping["_mapping"] == 7
+
+
+def test_row_mapping_getitem_get_contains(cursor, db_connection):
+    """RowMapping supports __getitem__, get(), and 'in' with dict semantics."""
+    cursor.execute("SELECT 1 AS id, 'Alice' AS name")
+    row = cursor.fetchone()
+    mapping = row._mapping
+
+    # __getitem__ for a present string key
+    assert mapping["id"] == 1
+    assert mapping["name"] == "Alice"
+
+    # __getitem__ for a missing string key raises KeyError (not IndexError/TypeError)
+    with pytest.raises(KeyError):
+        mapping["missing"]
+
+    # __getitem__ for a non-string key raises KeyError (the mapping is name-keyed)
+    with pytest.raises(KeyError):
+        mapping[0]
+    with pytest.raises(KeyError):
+        mapping[None]
+
+    # get() returns the value or the default
+    assert mapping.get("id") == 1
+    assert mapping.get("missing") is None
+    assert mapping.get("missing", "fallback") == "fallback"
+
+    # 'in' membership: only existing string names are members
+    assert "id" in mapping
+    assert "missing" not in mapping
+    assert 0 not in mapping
+
+
+def test_row_mapping_repr_and_equality(cursor, db_connection):
+    """RowMapping compares equal to an equivalent dict and has a dict-like repr."""
+    cursor.execute("SELECT 1 AS id, 'Bob' AS name")
+    row = cursor.fetchone()
+    mapping = row._mapping
+
+    # Equality against a plain dict and another mapping (Mapping.__eq__).
+    assert mapping == {"id": 1, "name": "Bob"}
+    assert mapping == dict(mapping)
+    assert mapping != {"id": 1, "name": "DIFFERENT"}
+    assert mapping != {"id": 1}
+
+    # repr round-trips through the underlying dict representation.
+    assert repr(mapping) == f"RowMapping({dict(mapping)!r})"
+
+    # The property returns a fresh view each access, but views compare equal.
+    assert row._mapping is not row._mapping
+    assert row._mapping == row._mapping
+
+
+def test_row_mapping_is_read_only(cursor, db_connection):
+    """RowMapping is a read-only view: no item assignment or deletion."""
+    cursor.execute("SELECT 1 AS id")
+    row = cursor.fetchone()
+    mapping = row._mapping
+
+    with pytest.raises(TypeError):
+        mapping["id"] = 99
+    with pytest.raises(TypeError):
+        del mapping["id"]
+
+
+def test_row_mapping_duplicate_column_names(cursor, db_connection):
+    """Duplicate column labels collapse last-wins by name; values stay positional.
+
+    Design §6.4: a mapping holds one entry per name (last column wins), but every
+    value remains reachable via positional indexing.
+    """
+    cursor.execute("SELECT 1 AS dup, 2 AS dup")
+    row = cursor.fetchone()
+
+    # The name view is de-duplicated; the last column wins for the value.
+    assert list(row._mapping) == ["dup"]
+    assert dict(row._mapping) == {"dup": 2}
+    assert len(row._mapping) == 1
+
+    # Both values are still reachable positionally.
+    assert len(row) == 2
+    assert row[0] == 1
+    assert row[1] == 2
+
+
+def test_row_mapping_from_fetchall_and_fetchmany(cursor, db_connection):
+    """Rows from fetchall() and fetchmany() carry a correct _mapping.
+
+    Exercises the canonical-name snapshot on all three fetch paths, not just
+    fetchone().
+    """
+    try:
+        cursor.execute("CREATE TABLE #pytest_row_map_many (id INT, name VARCHAR(20))")
+        db_connection.commit()
+        cursor.execute("INSERT INTO #pytest_row_map_many VALUES (1, 'a'), (2, 'b'), (3, 'c')")
+        db_connection.commit()
+
+        # fetchall: every row maps correctly.
+        cursor.execute("SELECT id, name FROM #pytest_row_map_many ORDER BY id")
+        rows = cursor.fetchall()
+        assert [dict(r._mapping) for r in rows] == [
+            {"id": 1, "name": "a"},
+            {"id": 2, "name": "b"},
+            {"id": 3, "name": "c"},
+        ]
+        for r in rows:
+            assert list(r._mapping.keys()) == ["id", "name"]
+
+        # fetchmany: the first batch maps correctly.
+        cursor.execute("SELECT id, name FROM #pytest_row_map_many ORDER BY id")
+        batch = cursor.fetchmany(2)
+        assert [dict(r._mapping) for r in batch] == [
+            {"id": 1, "name": "a"},
+            {"id": 2, "name": "b"},
+        ]
+        for r in batch:
+            assert list(r._mapping.keys()) == ["id", "name"]
+    finally:
+        try:
+            cursor.execute("DROP TABLE IF EXISTS #pytest_row_map_many")
+            db_connection.commit()
+        except Exception:
+            pass
+
+
+def test_row_mapping_reflects_converted_values(cursor, db_connection):
+    """_mapping values equal the positional (already type-converted) values.
+
+    Design §7: decimal, GUID, datetime, unicode and NULL flow through the row's
+    normal conversion; the mapping copies nothing and must reflect them exactly.
+    """
+    try:
+        cursor.execute(
+            "CREATE TABLE #pytest_row_map_types ("
+            "amount DECIMAL(10,2), guid UNIQUEIDENTIFIER, "
+            "ts DATETIME2, note NVARCHAR(50), maybe INT)"
+        )
+        db_connection.commit()
+        cursor.execute(
+            "INSERT INTO #pytest_row_map_types VALUES "
+            "(123.45, '6F9619FF-8B86-D011-B42D-00CF4FC964FF', "
+            "'2024-01-02T03:04:05', N'café', NULL)"
+        )
+        db_connection.commit()
+
+        cursor.execute("SELECT amount, guid, ts, note, maybe FROM #pytest_row_map_types")
+        row = cursor.fetchone()
+        mapping = row._mapping
+
+        # Mapping values are identical to positional (post-conversion) values.
+        assert list(mapping.values()) == [row[0], row[1], row[2], row[3], row[4]]
+
+        # Spot-check that converted types are preserved, not stringified by the view.
+        assert isinstance(mapping["amount"], decimal.Decimal)
+        assert mapping["amount"] == decimal.Decimal("123.45")
+        assert mapping["note"] == "café"
+        assert mapping["maybe"] is None  # SQL NULL -> None
+    finally:
+        try:
+            cursor.execute("DROP TABLE IF EXISTS #pytest_row_map_types")
+            db_connection.commit()
+        except Exception:
+            pass
+
+
+def test_row_mapping_output_converter_reflected(db_connection):
+    """A registered output converter is reflected in _mapping values.
+
+    Design §7: output converters run at row construction, so the mapping must
+    expose the converted value, identical to positional access.
+    """
+    from mssql_python.constants import ConstantsDDBC
+
+    cursor = db_connection.cursor()
+    try:
+        db_connection.add_output_converter(
+            ConstantsDDBC.SQL_WVARCHAR.value,
+            lambda raw: "CONV:" + raw.decode("utf-16-le"),
+        )
+        cursor.execute("SELECT CAST(N'hello' AS NVARCHAR(20)) AS greeting")
+        row = cursor.fetchone()
+
+        assert row[0] == "CONV:hello"
+        assert row._mapping["greeting"] == "CONV:hello"
+        assert dict(row._mapping) == {"greeting": "CONV:hello"}
+    finally:
+        db_connection.clear_output_converters()
+        cursor.close()
+
+
+def test_row_mapping_lowercase_setting(db_connection):
+    """With lowercase=True, _mapping keys are lowercased (design §6.4).
+
+    lowercase is captured per result set at execute time, so a result fetched
+    under lowercase=True yields lowercased mapping keys.
+    """
+    original = mssql_python.lowercase
+    cursor = None
+    try:
+        mssql_python.lowercase = True
+        cursor = db_connection.cursor()
+        cursor.execute("SELECT 1 AS MixedCase, 2 AS UPPER")
+        row = cursor.fetchone()
+
+        assert list(row._mapping.keys()) == ["mixedcase", "upper"]
+        assert dict(row._mapping) == {"mixedcase": 1, "upper": 2}
+        assert row._mapping["mixedcase"] == 1
+        assert row._mapping["upper"] == 2
+    finally:
+        mssql_python.lowercase = original
+        if cursor is not None:
+            cursor.close()
+
+
+def test_row_mapping_lookup_agrees_with_iteration_lowercase(db_connection):
+    """_mapping lookup/membership must agree with iteration (Mapping contract).
+
+    With lowercase=True the canonical keys are lowercased. Row itself still
+    resolves the original mixed-case name (case-insensitive), but the mapping
+    view must NOT: its keys, ``in`` and ``[]`` are restricted to the iterated
+    canonical names, so it can never accept a name it does not yield.
+    """
+    original = mssql_python.lowercase
+    cursor = None
+    try:
+        mssql_python.lowercase = True
+        cursor = db_connection.cursor()
+        cursor.execute("SELECT 1 AS MixedCase")
+        row = cursor.fetchone()
+        mapping = row._mapping
+
+        # Row-level access is unchanged: case-insensitive name still resolves.
+        assert row["MixedCase"] == 1
+        assert row.MixedCase == 1
+
+        # The mapping view yields only the canonical lowercased key.
+        assert list(mapping) == ["mixedcase"]
+        assert mapping["mixedcase"] == 1
+
+        # The non-canonical mixed-case name is NOT a member and NOT subscriptable,
+        # so the key set agrees with membership and lookup.
+        assert "MixedCase" not in mapping
+        with pytest.raises(KeyError):
+            mapping["MixedCase"]
+        assert mapping.get("MixedCase") is None
+        assert mapping.get("MixedCase", "fallback") == "fallback"
+
+        # Every iterated key is a member and is subscriptable (contract holds).
+        for name in mapping:
+            assert name in mapping
+            assert mapping[name] == mapping.get(name)
+    finally:
+        mssql_python.lowercase = original
+        if cursor is not None:
+            cursor.close()
 
 
 def test_row_comparison_with_list(cursor, db_connection):
@@ -5157,26 +5660,57 @@ def test_nextset_diagnostics(cursor, db_connection):
 
 
 def test_fetchval_basic_functionality(cursor, db_connection):
-    """Test basic fetchval functionality with simple queries"""
-    try:
+    """Test basic fetchval functionality and per-call debug logging guards."""
+    with patch("mssql_python.cursor.logger") as mock_logger:
+        entry = call("fetchval: Fetching single value from first column")
+        debug = mock_logger.debug
+        mock_logger.is_debug_enabled = False
         # Test with COUNT query
         cursor.execute("SELECT COUNT(*) FROM sys.databases")
+        debug.reset_mock()
         count = cursor.fetchval()
         assert isinstance(count, int), "fetchval should return integer for COUNT(*)"
         assert count > 0, "COUNT(*) should return positive number"
+        assert cursor.fetchval() is None
+        debug.assert_not_called()
 
         # Test with literal value
+        mock_logger.is_debug_enabled = True
         cursor.execute("SELECT 42")
+        debug.reset_mock()
         value = cursor.fetchval()
         assert value == 42, "fetchval should return the literal value"
+        assert debug.call_args_list == [entry, call("fetchval: Value retrieved successfully")]
+        debug.reset_mock()
+        assert cursor.fetchval() is None
+        assert debug.call_args_list == [entry, call("fetchval: No value available (no rows)")]
 
         # Test with string literal
         cursor.execute("SELECT 'Hello World'")
-        text = cursor.fetchval()
-        assert text == "Hello World", "fetchval should return string literal"
+        mock_logger.is_debug_enabled = False
+        debug.reset_mock()
+        fetchone = cursor.fetchone
 
-    except Exception as e:
-        pytest.fail(f"Basic fetchval functionality test failed: {e}")
+        def fetchone_with_logging_change():
+            row = fetchone()
+            mock_logger.is_debug_enabled = not mock_logger.is_debug_enabled
+            return row
+
+        with patch.object(cursor, "fetchone", side_effect=fetchone_with_logging_change):
+            text = cursor.fetchval()
+            assert text == "Hello World", "fetchval should return string literal"
+            debug.assert_called_once_with("fetchval: Value retrieved successfully")
+            debug.reset_mock()
+            assert cursor.fetchval() is None
+            assert debug.call_args_list == [entry]
+
+        cursor.execute("DECLARE @value int")
+        non_result = call("fetchval: No result set available (non-SELECT statement)")
+        for enabled in (False, True):
+            mock_logger.is_debug_enabled = enabled
+            debug.reset_mock()
+            assert cursor.fetchval() is None
+            assert debug.call_args_list == ([entry, non_result] if enabled else [])
 
 
 def test_fetchval_different_data_types(cursor, db_connection):
@@ -6898,29 +7432,71 @@ def test_cursor_messages_format(cursor):
 
 
 def test_cursor_messages_with_warnings(cursor, db_connection):
-    """Test that warning messages are captured correctly"""
+    """Fetch warnings, including EOF diagnostics, survive batch cleanup exactly once."""
+    original_ansi_warnings = cursor.execute("SELECT SESSIONPROPERTY('ANSI_WARNINGS')").fetchval()
     try:
-        # Create a test case that might generate a warning
-        cursor.execute("CREATE TABLE #test_messages_warnings (id INT, value DECIMAL(5,2))")
-        db_connection.commit()
+        cursor.execute("SET ANSI_WARNINGS ON")
+        expected_messages = None
+        for method in ("fetchone", "fetchmany", "fetchall"):
+            # Stream beyond the driver's initial packet before evaluating the aggregate.
+            cursor.execute("""
+                SELECT TOP (8192) 1 AS id, CAST(REPLICATE('x', 128) AS VARCHAR(128)) AS txt
+                FROM sys.all_objects AS a CROSS JOIN sys.all_objects AS b
+                UNION ALL
+                SELECT SUM(v), CAST('aggregate' AS VARCHAR(128))
+                FROM (VALUES (2), (NULL)) AS warning_source(v)
+                UNION ALL
+                SELECT 3, CAST('after warning' AS VARCHAR(128))
+                OPTION (MAXDOP 1)
+                """)
+            fetched = []
+            warning_snapshot = list(cursor.messages) if cursor.messages else None
+            first_warning_phase = "execute" if warning_snapshot is not None else None
+            while True:
+                if method == "fetchone":
+                    row = cursor.fetchone()
+                    rows = [] if row is None else [row]
+                elif method == "fetchmany":
+                    rows = cursor.fetchmany(1)
+                else:
+                    rows = cursor.fetchall()
+                if cursor.messages:
+                    assert len(cursor.messages) == 1, "Warning must not be duplicated"
+                    assert cursor.messages[0][0] == "[01003] (8153)"
+                    if warning_snapshot is None:
+                        warning_snapshot = list(cursor.messages)
+                        first_warning_phase = "fetch returned rows" if rows else "exhaustion"
+                if warning_snapshot is not None:
+                    assert cursor.messages == warning_snapshot
+                if not rows:
+                    break
+                fetched.extend(tuple(row) for row in rows)
 
-        # Clear messages
-        del cursor.messages[:]
-
-        # Try to insert a value that might cause truncation warning
-        cursor.execute("INSERT INTO #test_messages_warnings VALUES (1, 123.456)")
-
-        # Check if any warning was captured
-        # Note: This might be implementation-dependent
-        # Some drivers might not report this as a warning
-        if len(cursor.messages) > 0:
+            # SQL Server can defer 8153 until EOF; this verifies that terminal
+            # warning, not an intermediate SQLFetch/SQLGetData warning.
+            print(f"{method}: warning first observed at {first_warning_phase}")
+            assert len(fetched) == 8194
+            assert fetched.count((1, "x" * 128)) == 8192
+            assert fetched.count((2, "aggregate")) == 1
+            assert fetched.count((3, "after warning")) == 1
+            assert len(cursor.messages) == 1
+            assert cursor.messages[0][0] == "[01003] (8153)"
             assert (
-                "truncat" in cursor.messages[0][1].lower()
-                or "convert" in cursor.messages[0][1].lower()
-            ), "Warning message should mention truncation or conversion"
-
+                "null value is eliminated by an aggregate or other set operation"
+                in cursor.messages[0][1].lower()
+            )
+            if expected_messages is None:
+                expected_messages = list(cursor.messages)
+            assert cursor.messages == expected_messages, "Warning identity/order must be stable"
+            if method == "fetchone":
+                assert cursor.fetchone() is None
+            elif method == "fetchmany":
+                assert cursor.fetchmany(1) == []
+            else:
+                assert cursor.fetchall() == []
+            assert cursor.messages == expected_messages, "Repeated EOF must not replay the warning"
     finally:
-        cursor.execute("DROP TABLE IF EXISTS #test_messages_warnings")
+        cursor.execute("SET ANSI_WARNINGS " + ("ON" if original_ansi_warnings else "OFF"))
         db_connection.commit()
 
 
@@ -7113,6 +7689,78 @@ def test_cursor_messages_nextset_trailing_print(cursor):
 
     # No more result sets
     assert not cursor.nextset()
+
+
+def test_nextset_updates_rowcount(cursor, db_connection):
+    """Test that nextset() refreshes rowcount for each statement of a batch.
+
+    execute() sets rowcount from the first statement only; each later
+    INSERT/UPDATE/DELETE result must report its own count after nextset(),
+    and a result set must report -1, as after execute().
+    """
+    try:
+        cursor.execute("CREATE TABLE #nextset_rowcount (id INT)")
+        db_connection.commit()
+
+        cursor.execute("""
+            INSERT INTO #nextset_rowcount VALUES (1);
+            INSERT INTO #nextset_rowcount VALUES (2), (3);
+            SELECT id FROM #nextset_rowcount;
+            UPDATE #nextset_rowcount SET id = id + 10;
+            DELETE FROM #nextset_rowcount WHERE id = 99;
+            """)
+        assert cursor.rowcount == 1, "execute() should report the first INSERT"
+
+        assert cursor.nextset()
+        assert cursor.rowcount == 2, "nextset() should report the second INSERT"
+
+        assert cursor.nextset()
+        assert cursor.description is not None
+        assert cursor.rowcount == -1, "A result set should report -1 before fetching"
+        assert len(cursor.fetchall()) == 3
+
+        assert cursor.nextset()
+        assert cursor.rowcount == 3, "nextset() should report the UPDATE"
+
+        assert cursor.nextset()
+        assert cursor.rowcount == 0, "nextset() should report a DELETE matching no rows"
+
+        assert not cursor.nextset()
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #nextset_rowcount")
+        db_connection.commit()
+
+
+def test_nextset_rowcount_in_loop_batch(cursor, db_connection):
+    """Test that the per-statement counts of a T-SQL loop can be summed.
+
+    A WHILE loop sends one result per INSERT; summing rowcount over
+    nextset() must give the number of rows the batch inserted. Each
+    iteration inserts a different number of rows (1, 2, 3), so a stale
+    rowcount cannot add up to the right total by accident.
+    """
+    try:
+        cursor.execute("CREATE TABLE #nextset_loop (id INT)")
+        db_connection.commit()
+
+        cursor.execute("""
+            DECLARE @i INT = 1;
+            WHILE @i <= 3
+            BEGIN
+                INSERT INTO #nextset_loop
+                SELECT TOP (@i) n FROM (VALUES (1), (2), (3)) AS v(n);
+                SET @i = @i + 1;
+            END;
+            """)
+        counts = [cursor.rowcount]
+        while cursor.nextset():
+            counts.append(cursor.rowcount)
+
+        assert counts == [1, 2, 3], f"Per-statement rowcounts should be [1, 2, 3], got {counts}"
+        assert sum(counts) == 6
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #nextset_loop")
+        db_connection.commit()
 
 
 def test_tables_setup(cursor, db_connection):
@@ -9099,455 +9747,6 @@ def test_executemany_uuid_roundtrip_fixed_value(cursor, db_connection):
         db_connection.commit()
 
 
-def test_decimal_separator_with_multiple_values(cursor, db_connection):
-    """Test decimal separator with multiple different decimal values"""
-    original_separator = mssql_python.getDecimalSeparator()
-
-    try:
-        # Create test table
-        cursor.execute("""
-        CREATE TABLE #pytest_decimal_multi_test (
-            id INT PRIMARY KEY,
-            positive_value DECIMAL(10, 2),
-            negative_value DECIMAL(10, 2),
-            zero_value DECIMAL(10, 2),
-            small_value DECIMAL(10, 4)
-        )
-        """)
-        db_connection.commit()
-
-        # Insert test data
-        cursor.execute("""
-        INSERT INTO #pytest_decimal_multi_test VALUES (1, 123.45, -67.89, 0.00, 0.0001)
-        """)
-        db_connection.commit()
-
-        # Test with default separator first
-        cursor.execute("SELECT * FROM #pytest_decimal_multi_test")
-        row = cursor.fetchone()
-        default_str = str(row)
-        assert "123.45" in default_str, "Default positive value formatting incorrect"
-        assert "-67.89" in default_str, "Default negative value formatting incorrect"
-
-        # Change to comma separator
-        mssql_python.setDecimalSeparator(",")
-        cursor.execute("SELECT * FROM #pytest_decimal_multi_test")
-        row = cursor.fetchone()
-        comma_str = str(row)
-
-        # Verify comma is used in all decimal values
-        assert "123,45" in comma_str, "Positive value not formatted with comma"
-        assert "-67,89" in comma_str, "Negative value not formatted with comma"
-        assert "0,00" in comma_str, "Zero value not formatted with comma"
-        assert "0,0001" in comma_str, "Small value not formatted with comma"
-
-    finally:
-        # Restore original separator
-        mssql_python.setDecimalSeparator(original_separator)
-
-        # Cleanup
-        cursor.execute("DROP TABLE IF EXISTS #pytest_decimal_multi_test")
-        db_connection.commit()
-
-
-def test_decimal_separator_calculations(cursor, db_connection):
-    """Test that decimal separator doesn't affect calculations"""
-    original_separator = mssql_python.getDecimalSeparator()
-
-    try:
-        # Create test table
-        cursor.execute("""
-        CREATE TABLE #pytest_decimal_calc_test (
-            id INT PRIMARY KEY,
-            value1 DECIMAL(10, 2),
-            value2 DECIMAL(10, 2)
-        )
-        """)
-        db_connection.commit()
-
-        # Insert test data
-        cursor.execute("""
-        INSERT INTO #pytest_decimal_calc_test VALUES (1, 10.25, 5.75)
-        """)
-        db_connection.commit()
-
-        # Test with default separator
-        cursor.execute("SELECT value1 + value2 AS sum_result FROM #pytest_decimal_calc_test")
-        row = cursor.fetchone()
-        assert row.sum_result == decimal.Decimal(
-            "16.00"
-        ), "Sum calculation incorrect with default separator"
-
-        # Change to comma separator
-        mssql_python.setDecimalSeparator(",")
-
-        # Calculations should still work correctly
-        cursor.execute("SELECT value1 + value2 AS sum_result FROM #pytest_decimal_calc_test")
-        row = cursor.fetchone()
-        assert row.sum_result == decimal.Decimal(
-            "16.00"
-        ), "Sum calculation affected by separator change"
-
-        # But string representation should use comma
-        assert "16,00" in str(row), "Sum result not formatted with comma in string representation"
-
-    finally:
-        # Restore original separator
-        mssql_python.setDecimalSeparator(original_separator)
-
-        # Cleanup
-        cursor.execute("DROP TABLE IF EXISTS #pytest_decimal_calc_test")
-        db_connection.commit()
-
-
-def test_decimal_separator_function(cursor, db_connection):
-    """Test decimal separator functionality with database operations"""
-    # Store original value to restore after test
-    original_separator = mssql_python.getDecimalSeparator()
-
-    try:
-        # Create test table
-        cursor.execute("""
-        CREATE TABLE #pytest_decimal_separator_test (
-            id INT PRIMARY KEY,
-            decimal_value DECIMAL(10, 2)
-        )
-        """)
-        db_connection.commit()
-
-        # Insert test values with default separator (.)
-        test_value = decimal.Decimal("123.45")
-        cursor.execute(
-            """
-        INSERT INTO #pytest_decimal_separator_test (id, decimal_value)
-        VALUES (1, ?)
-        """,
-            [test_value],
-        )
-        db_connection.commit()
-
-        # First test with default decimal separator (.)
-        cursor.execute("SELECT id, decimal_value FROM #pytest_decimal_separator_test")
-        row = cursor.fetchone()
-        default_str = str(row)
-        assert "123.45" in default_str, "Default separator not found in string representation"
-
-        # Now change to comma separator and test string representation
-        mssql_python.setDecimalSeparator(",")
-        cursor.execute("SELECT id, decimal_value FROM #pytest_decimal_separator_test")
-        row = cursor.fetchone()
-
-        # This should format the decimal with a comma in the string representation
-        comma_str = str(row)
-        assert (
-            "123,45" in comma_str
-        ), f"Expected comma in string representation but got: {comma_str}"
-
-    finally:
-        # Restore original decimal separator
-        mssql_python.setDecimalSeparator(original_separator)
-
-        # Cleanup
-        cursor.execute("DROP TABLE IF EXISTS #pytest_decimal_separator_test")
-        db_connection.commit()
-
-
-def test_decimal_separator_basic_functionality():
-    """Test basic decimal separator functionality without database operations"""
-    # Store original value to restore after test
-    original_separator = mssql_python.getDecimalSeparator()
-
-    try:
-        # Test default value
-        assert mssql_python.getDecimalSeparator() == ".", "Default decimal separator should be '.'"
-
-        # Test setting to comma
-        mssql_python.setDecimalSeparator(",")
-        assert (
-            mssql_python.getDecimalSeparator() == ","
-        ), "Decimal separator should be ',' after setting"
-
-        # Test setting to other valid separators
-        mssql_python.setDecimalSeparator(":")
-        assert (
-            mssql_python.getDecimalSeparator() == ":"
-        ), "Decimal separator should be ':' after setting"
-
-        # Test invalid inputs
-        with pytest.raises(ValueError):
-            mssql_python.setDecimalSeparator("")  # Empty string
-
-        with pytest.raises(ValueError):
-            mssql_python.setDecimalSeparator("too_long")  # More than one character
-
-        with pytest.raises(ValueError):
-            mssql_python.setDecimalSeparator(123)  # Not a string
-
-    finally:
-        # Restore original separator
-        mssql_python.setDecimalSeparator(original_separator)
-
-
-def test_lowercase_attribute(cursor, db_connection):
-    """Test that the lowercase attribute properly converts column names to lowercase"""
-
-    # Store original value to restore after test
-    original_lowercase = mssql_python.lowercase
-    drop_cursor = None
-
-    try:
-        # Create a test table with mixed-case column names
-        cursor.execute("""
-        CREATE TABLE #pytest_lowercase_test (
-            ID INT PRIMARY KEY,
-            UserName VARCHAR(50),
-            EMAIL_ADDRESS VARCHAR(100),
-            PhoneNumber VARCHAR(20)
-        )
-        """)
-        db_connection.commit()
-
-        # Insert test data
-        cursor.execute("""
-        INSERT INTO #pytest_lowercase_test (ID, UserName, EMAIL_ADDRESS, PhoneNumber)
-        VALUES (1, 'JohnDoe', 'john@example.com', '555-1234')
-        """)
-        db_connection.commit()
-
-        # First test with lowercase=False (default)
-        mssql_python.lowercase = False
-        cursor1 = db_connection.cursor()
-        cursor1.execute("SELECT * FROM #pytest_lowercase_test")
-
-        # Description column names should preserve original case
-        column_names1 = [desc[0] for desc in cursor1.description]
-        assert "ID" in column_names1, "Column 'ID' should be present with original case"
-        assert "UserName" in column_names1, "Column 'UserName' should be present with original case"
-
-        # Make sure to consume all results and close the cursor
-        cursor1.fetchall()
-        cursor1.close()
-
-        # Now test with lowercase=True
-        mssql_python.lowercase = True
-        cursor2 = db_connection.cursor()
-        cursor2.execute("SELECT * FROM #pytest_lowercase_test")
-
-        # Description column names should be lowercase
-        column_names2 = [desc[0] for desc in cursor2.description]
-        assert "id" in column_names2, "Column names should be lowercase when lowercase=True"
-        assert "username" in column_names2, "Column names should be lowercase when lowercase=True"
-
-        # Make sure to consume all results and close the cursor
-        cursor2.fetchall()
-        cursor2.close()
-
-        # Create a fresh cursor for cleanup
-        drop_cursor = db_connection.cursor()
-
-    finally:
-        # Restore original value
-        mssql_python.lowercase = original_lowercase
-
-        try:
-            # Use a separate cursor for cleanup
-            if drop_cursor:
-                drop_cursor.execute("DROP TABLE IF EXISTS #pytest_lowercase_test")
-                db_connection.commit()
-                drop_cursor.close()
-        except Exception as e:
-            print(f"Warning: Failed to drop test table: {e}")
-
-
-def test_decimal_separator_function(cursor, db_connection):
-    """Test decimal separator functionality with database operations"""
-    # Store original value to restore after test
-    original_separator = mssql_python.getDecimalSeparator()
-
-    try:
-        # Create test table
-        cursor.execute("""
-        CREATE TABLE #pytest_decimal_separator_test (
-            id INT PRIMARY KEY,
-            decimal_value DECIMAL(10, 2)
-        )
-        """)
-        db_connection.commit()
-
-        # Insert test values with default separator (.)
-        test_value = decimal.Decimal("123.45")
-        cursor.execute(
-            """
-        INSERT INTO #pytest_decimal_separator_test (id, decimal_value)
-        VALUES (1, ?)
-        """,
-            [test_value],
-        )
-        db_connection.commit()
-
-        # First test with default decimal separator (.)
-        cursor.execute("SELECT id, decimal_value FROM #pytest_decimal_separator_test")
-        row = cursor.fetchone()
-        default_str = str(row)
-        assert "123.45" in default_str, "Default separator not found in string representation"
-
-        # Now change to comma separator and test string representation
-        mssql_python.setDecimalSeparator(",")
-        cursor.execute("SELECT id, decimal_value FROM #pytest_decimal_separator_test")
-        row = cursor.fetchone()
-
-        # This should format the decimal with a comma in the string representation
-        comma_str = str(row)
-        assert (
-            "123,45" in comma_str
-        ), f"Expected comma in string representation but got: {comma_str}"
-
-    finally:
-        # Restore original decimal separator
-        mssql_python.setDecimalSeparator(original_separator)
-
-        # Cleanup
-        cursor.execute("DROP TABLE IF EXISTS #pytest_decimal_separator_test")
-        db_connection.commit()
-
-
-def test_decimal_separator_basic_functionality():
-    """Test basic decimal separator functionality without database operations"""
-    # Store original value to restore after test
-    original_separator = mssql_python.getDecimalSeparator()
-
-    try:
-        # Test default value
-        assert mssql_python.getDecimalSeparator() == ".", "Default decimal separator should be '.'"
-
-        # Test setting to comma
-        mssql_python.setDecimalSeparator(",")
-        assert (
-            mssql_python.getDecimalSeparator() == ","
-        ), "Decimal separator should be ',' after setting"
-
-        # Test setting to other valid separators
-        mssql_python.setDecimalSeparator(":")
-        assert (
-            mssql_python.getDecimalSeparator() == ":"
-        ), "Decimal separator should be ':' after setting"
-
-        # Test invalid inputs
-        with pytest.raises(ValueError):
-            mssql_python.setDecimalSeparator("")  # Empty string
-
-        with pytest.raises(ValueError):
-            mssql_python.setDecimalSeparator("too_long")  # More than one character
-
-        with pytest.raises(ValueError):
-            mssql_python.setDecimalSeparator(123)  # Not a string
-
-    finally:
-        # Restore original separator
-        mssql_python.setDecimalSeparator(original_separator)
-
-
-def test_decimal_separator_with_multiple_values(cursor, db_connection):
-    """Test decimal separator with multiple different decimal values"""
-    original_separator = mssql_python.getDecimalSeparator()
-
-    try:
-        # Create test table
-        cursor.execute("""
-        CREATE TABLE #pytest_decimal_multi_test (
-            id INT PRIMARY KEY,
-            positive_value DECIMAL(10, 2),
-            negative_value DECIMAL(10, 2),
-            zero_value DECIMAL(10, 2),
-            small_value DECIMAL(10, 4)
-        )
-        """)
-        db_connection.commit()
-
-        # Insert test data
-        cursor.execute("""
-        INSERT INTO #pytest_decimal_multi_test VALUES (1, 123.45, -67.89, 0.00, 0.0001)
-        """)
-        db_connection.commit()
-
-        # Test with default separator first
-        cursor.execute("SELECT * FROM #pytest_decimal_multi_test")
-        row = cursor.fetchone()
-        default_str = str(row)
-        assert "123.45" in default_str, "Default positive value formatting incorrect"
-        assert "-67.89" in default_str, "Default negative value formatting incorrect"
-
-        # Change to comma separator
-        mssql_python.setDecimalSeparator(",")
-        cursor.execute("SELECT * FROM #pytest_decimal_multi_test")
-        row = cursor.fetchone()
-        comma_str = str(row)
-
-        # Verify comma is used in all decimal values
-        assert "123,45" in comma_str, "Positive value not formatted with comma"
-        assert "-67,89" in comma_str, "Negative value not formatted with comma"
-        assert "0,00" in comma_str, "Zero value not formatted with comma"
-        assert "0,0001" in comma_str, "Small value not formatted with comma"
-
-    finally:
-        # Restore original separator
-        mssql_python.setDecimalSeparator(original_separator)
-
-        # Cleanup
-        cursor.execute("DROP TABLE IF EXISTS #pytest_decimal_multi_test")
-        db_connection.commit()
-
-
-def test_decimal_separator_calculations(cursor, db_connection):
-    """Test that decimal separator doesn't affect calculations"""
-    original_separator = mssql_python.getDecimalSeparator()
-
-    try:
-        # Create test table
-        cursor.execute("""
-        CREATE TABLE #pytest_decimal_calc_test (
-            id INT PRIMARY KEY,
-            value1 DECIMAL(10, 2),
-            value2 DECIMAL(10, 2)
-        )
-        """)
-        db_connection.commit()
-
-        # Insert test data
-        cursor.execute("""
-        INSERT INTO #pytest_decimal_calc_test VALUES (1, 10.25, 5.75)
-        """)
-        db_connection.commit()
-
-        # Test with default separator
-        cursor.execute("SELECT value1 + value2 AS sum_result FROM #pytest_decimal_calc_test")
-        row = cursor.fetchone()
-        assert row.sum_result == decimal.Decimal(
-            "16.00"
-        ), "Sum calculation incorrect with default separator"
-
-        # Change to comma separator
-        mssql_python.setDecimalSeparator(",")
-
-        # Calculations should still work correctly
-        cursor.execute("SELECT value1 + value2 AS sum_result FROM #pytest_decimal_calc_test")
-        row = cursor.fetchone()
-        assert row.sum_result == decimal.Decimal(
-            "16.00"
-        ), "Sum calculation affected by separator change"
-
-        # But string representation should use comma
-        assert "16,00" in str(row), "Sum result not formatted with comma in string representation"
-
-    finally:
-        # Restore original separator
-        mssql_python.setDecimalSeparator(original_separator)
-
-        # Cleanup
-        cursor.execute("DROP TABLE IF EXISTS #pytest_decimal_calc_test")
-        db_connection.commit()
-
-
 @pytest.mark.skipif(not os.getenv("DB_CONNECTION_STRING"), reason="Requires DB_CONNECTION_STRING")
 def test_decimal_separator_fetch_regression(cursor, db_connection):
     """
@@ -10020,266 +10219,6 @@ def test_datetimeoffset_native_vs_string_simple(cursor, db_connection):
         db_connection.commit()
 
 
-def test_lowercase_attribute(cursor, db_connection):
-    """Test that the lowercase attribute properly converts column names to lowercase"""
-
-    # Store original value to restore after test
-    original_lowercase = mssql_python.lowercase
-    drop_cursor = None
-
-    try:
-        # Create a test table with mixed-case column names
-        cursor.execute("""
-        CREATE TABLE #pytest_lowercase_test (
-            ID INT PRIMARY KEY,
-            UserName VARCHAR(50),
-            EMAIL_ADDRESS VARCHAR(100),
-            PhoneNumber VARCHAR(20)
-        )
-        """)
-        db_connection.commit()
-
-        # Insert test data
-        cursor.execute("""
-        INSERT INTO #pytest_lowercase_test (ID, UserName, EMAIL_ADDRESS, PhoneNumber)
-        VALUES (1, 'JohnDoe', 'john@example.com', '555-1234')
-        """)
-        db_connection.commit()
-
-        # First test with lowercase=False (default)
-        mssql_python.lowercase = False
-        cursor1 = db_connection.cursor()
-        cursor1.execute("SELECT * FROM #pytest_lowercase_test")
-
-        # Description column names should preserve original case
-        column_names1 = [desc[0] for desc in cursor1.description]
-        assert "ID" in column_names1, "Column 'ID' should be present with original case"
-        assert "UserName" in column_names1, "Column 'UserName' should be present with original case"
-
-        # Make sure to consume all results and close the cursor
-        cursor1.fetchall()
-        cursor1.close()
-
-        # Now test with lowercase=True
-        mssql_python.lowercase = True
-        cursor2 = db_connection.cursor()
-        cursor2.execute("SELECT * FROM #pytest_lowercase_test")
-
-        # Description column names should be lowercase
-        column_names2 = [desc[0] for desc in cursor2.description]
-        assert "id" in column_names2, "Column names should be lowercase when lowercase=True"
-        assert "username" in column_names2, "Column names should be lowercase when lowercase=True"
-
-        # Make sure to consume all results and close the cursor
-        cursor2.fetchall()
-        cursor2.close()
-
-        # Create a fresh cursor for cleanup
-        drop_cursor = db_connection.cursor()
-
-    finally:
-        # Restore original value
-        mssql_python.lowercase = original_lowercase
-
-        try:
-            # Use a separate cursor for cleanup
-            if drop_cursor:
-                drop_cursor.execute("DROP TABLE IF EXISTS #pytest_lowercase_test")
-                db_connection.commit()
-                drop_cursor.close()
-        except Exception as e:
-            print(f"Warning: Failed to drop test table: {e}")
-
-
-def test_decimal_separator_function(cursor, db_connection):
-    """Test decimal separator functionality with database operations"""
-    # Store original value to restore after test
-    original_separator = mssql_python.getDecimalSeparator()
-
-    try:
-        # Create test table
-        cursor.execute("""
-        CREATE TABLE #pytest_decimal_separator_test (
-            id INT PRIMARY KEY,
-            decimal_value DECIMAL(10, 2)
-        )
-        """)
-        db_connection.commit()
-
-        # Insert test values with default separator (.)
-        test_value = decimal.Decimal("123.45")
-        cursor.execute(
-            """
-        INSERT INTO #pytest_decimal_separator_test (id, decimal_value)
-        VALUES (1, ?)
-        """,
-            [test_value],
-        )
-        db_connection.commit()
-
-        # First test with default decimal separator (.)
-        cursor.execute("SELECT id, decimal_value FROM #pytest_decimal_separator_test")
-        row = cursor.fetchone()
-        default_str = str(row)
-        assert "123.45" in default_str, "Default separator not found in string representation"
-
-        # Now change to comma separator and test string representation
-        mssql_python.setDecimalSeparator(",")
-        cursor.execute("SELECT id, decimal_value FROM #pytest_decimal_separator_test")
-        row = cursor.fetchone()
-
-        # This should format the decimal with a comma in the string representation
-        comma_str = str(row)
-        assert (
-            "123,45" in comma_str
-        ), f"Expected comma in string representation but got: {comma_str}"
-
-    finally:
-        # Restore original decimal separator
-        mssql_python.setDecimalSeparator(original_separator)
-
-        # Cleanup
-        cursor.execute("DROP TABLE IF EXISTS #pytest_decimal_separator_test")
-        db_connection.commit()
-
-
-def test_decimal_separator_basic_functionality():
-    """Test basic decimal separator functionality without database operations"""
-    # Store original value to restore after test
-    original_separator = mssql_python.getDecimalSeparator()
-
-    try:
-        # Test default value
-        assert mssql_python.getDecimalSeparator() == ".", "Default decimal separator should be '.'"
-
-        # Test setting to comma
-        mssql_python.setDecimalSeparator(",")
-        assert (
-            mssql_python.getDecimalSeparator() == ","
-        ), "Decimal separator should be ',' after setting"
-
-        # Test setting to other valid separators
-        mssql_python.setDecimalSeparator(":")
-        assert (
-            mssql_python.getDecimalSeparator() == ":"
-        ), "Decimal separator should be ':' after setting"
-
-        # Test invalid inputs
-        with pytest.raises(ValueError):
-            mssql_python.setDecimalSeparator("")  # Empty string
-
-        with pytest.raises(ValueError):
-            mssql_python.setDecimalSeparator("too_long")  # More than one character
-
-        with pytest.raises(ValueError):
-            mssql_python.setDecimalSeparator(123)  # Not a string
-
-    finally:
-        # Restore original separator
-        mssql_python.setDecimalSeparator(original_separator)
-
-
-def test_decimal_separator_with_multiple_values(cursor, db_connection):
-    """Test decimal separator with multiple different decimal values"""
-    original_separator = mssql_python.getDecimalSeparator()
-
-    try:
-        # Create test table
-        cursor.execute("""
-        CREATE TABLE #pytest_decimal_multi_test (
-            id INT PRIMARY KEY,
-            positive_value DECIMAL(10, 2),
-            negative_value DECIMAL(10, 2),
-            zero_value DECIMAL(10, 2),
-            small_value DECIMAL(10, 4)
-        )
-        """)
-        db_connection.commit()
-
-        # Insert test data
-        cursor.execute("""
-        INSERT INTO #pytest_decimal_multi_test VALUES (1, 123.45, -67.89, 0.00, 0.0001)
-        """)
-        db_connection.commit()
-
-        # Test with default separator first
-        cursor.execute("SELECT * FROM #pytest_decimal_multi_test")
-        row = cursor.fetchone()
-        default_str = str(row)
-        assert "123.45" in default_str, "Default positive value formatting incorrect"
-        assert "-67.89" in default_str, "Default negative value formatting incorrect"
-
-        # Change to comma separator
-        mssql_python.setDecimalSeparator(",")
-        cursor.execute("SELECT * FROM #pytest_decimal_multi_test")
-        row = cursor.fetchone()
-        comma_str = str(row)
-
-        # Verify comma is used in all decimal values
-        assert "123,45" in comma_str, "Positive value not formatted with comma"
-        assert "-67,89" in comma_str, "Negative value not formatted with comma"
-        assert "0,00" in comma_str, "Zero value not formatted with comma"
-        assert "0,0001" in comma_str, "Small value not formatted with comma"
-
-    finally:
-        # Restore original separator
-        mssql_python.setDecimalSeparator(original_separator)
-
-        # Cleanup
-        cursor.execute("DROP TABLE IF EXISTS #pytest_decimal_multi_test")
-        db_connection.commit()
-
-
-def test_decimal_separator_calculations(cursor, db_connection):
-    """Test that decimal separator doesn't affect calculations"""
-    original_separator = mssql_python.getDecimalSeparator()
-
-    try:
-        # Create test table
-        cursor.execute("""
-        CREATE TABLE #pytest_decimal_calc_test (
-            id INT PRIMARY KEY,
-            value1 DECIMAL(10, 2),
-            value2 DECIMAL(10, 2)
-        )
-        """)
-        db_connection.commit()
-
-        # Insert test data
-        cursor.execute("""
-        INSERT INTO #pytest_decimal_calc_test VALUES (1, 10.25, 5.75)
-        """)
-        db_connection.commit()
-
-        # Test with default separator
-        cursor.execute("SELECT value1 + value2 AS sum_result FROM #pytest_decimal_calc_test")
-        row = cursor.fetchone()
-        assert row.sum_result == decimal.Decimal(
-            "16.00"
-        ), "Sum calculation incorrect with default separator"
-
-        # Change to comma separator
-        mssql_python.setDecimalSeparator(",")
-
-        # Calculations should still work correctly
-        cursor.execute("SELECT value1 + value2 AS sum_result FROM #pytest_decimal_calc_test")
-        row = cursor.fetchone()
-        assert row.sum_result == decimal.Decimal(
-            "16.00"
-        ), "Sum calculation affected by separator change"
-
-        # But string representation should use comma
-        assert "16,00" in str(row), "Sum result not formatted with comma in string representation"
-
-    finally:
-        # Restore original separator
-        mssql_python.setDecimalSeparator(original_separator)
-
-        # Cleanup
-        cursor.execute("DROP TABLE IF EXISTS #pytest_decimal_calc_test")
-        db_connection.commit()
-
-
 def test_cursor_setinputsizes_basic(db_connection):
     """Test the basic functionality of setinputsizes"""
 
@@ -10545,6 +10484,8 @@ def test_setinputsizes_sql_decimal_unconvertible_value(db_connection):
         # ...and the sensitive value / raw row is NOT leaked into the message.
         assert sensitive_value not in message
         assert repr((sensitive_value,)) not in message  # no repr of the parameter tuple
+        assert exc_info.value.__cause__ is None
+        assert exc_info.value.__context__ is None
         # ...nor into the chained cause or the fully formatted traceback, which
         # is what tracebacks and APM/log shippers actually capture.
         formatted = "".join(
@@ -10590,6 +10531,7 @@ def test_setinputsizes_sql_decimal_str_raises_no_leak(db_connection):
         # exposes it.
         assert secret not in str(exc_info.value)
         assert exc_info.value.__cause__ is None
+        assert exc_info.value.__context__ is None
         formatted = "".join(
             traceback.format_exception(
                 type(exc_info.value), exc_info.value, exc_info.value.__traceback__
@@ -10634,6 +10576,7 @@ def test_setinputsizes_sql_decimal_non_decimal_exception_no_leak(db_connection):
         assert "column 0" in message
         # ...no chained cause (the non-DecimalException branch suppresses it)...
         assert exc_info.value.__cause__ is None
+        assert exc_info.value.__context__ is None
         # ...and the input is absent from the message and formatted traceback.
         assert sensitive_value not in message
         formatted = "".join(
@@ -13319,27 +13262,6 @@ def test_columns_with_underscore_pattern(cursor):
         pass
 
 
-def test_columns_nonexistent(cursor):
-    """Test columns with non-existent table or column"""
-    # Test with non-existent table
-    table_cols = cursor.columns(table="nonexistent_table_xyz123")
-    assert len(table_cols) == 0, "Should return empty list for non-existent table"
-
-    # Test with non-existent column in existing table
-    col_cols = cursor.columns(
-        table="columns_test",
-        schema="pytest_cols_schema",
-        column="nonexistent_column_xyz123",
-    ).fetchall()
-    assert len(col_cols) == 0, "Should return empty list for non-existent column"
-
-    # Test with non-existent schema
-    schema_cols = cursor.columns(
-        table="columns_test", schema="nonexistent_schema_xyz123"
-    ).fetchall()
-    assert len(schema_cols) == 0, "Should return empty list for non-existent schema"
-
-
 def test_columns_data_types(cursor):
     """Test columns returns correct data type information"""
     try:
@@ -15220,419 +15142,6 @@ def test_row_cursor_log_method_availability(cursor, db_connection):
 
         # The hasattr check should complete without error
         # This covers the conditional log method availability checks
-
-    except Exception as e:
-        pytest.fail(f"Cursor log method availability test failed: {e}")
-    finally:
-        drop_table_if_exists(cursor, "#pytest_log_check")
-        db_connection.commit()
-
-
-def test_all_numeric_types_with_nulls(cursor, db_connection):
-    """Test NULL handling for all numeric types to ensure processor functions handle NULLs correctly"""
-    try:
-        drop_table_if_exists(cursor, "#pytest_all_numeric_nulls")
-        cursor.execute("""
-            CREATE TABLE #pytest_all_numeric_nulls (
-                int_col INT,
-                bigint_col BIGINT,
-                smallint_col SMALLINT,
-                tinyint_col TINYINT,
-                bit_col BIT,
-                real_col REAL,
-                float_col FLOAT
-            )
-            """)
-        db_connection.commit()
-
-        # Insert row with all NULLs
-        cursor.execute(
-            "INSERT INTO #pytest_all_numeric_nulls VALUES (NULL, NULL, NULL, NULL, NULL, NULL, NULL)"
-        )
-        # Insert row with actual values
-        cursor.execute(
-            "INSERT INTO #pytest_all_numeric_nulls VALUES (42, 9223372036854775807, 32767, 255, 1, 3.14, 2.718281828)"
-        )
-        db_connection.commit()
-
-        cursor.execute("SELECT * FROM #pytest_all_numeric_nulls ORDER BY int_col ASC")
-        rows = cursor.fetchall()
-
-        # First row should be all NULLs
-        assert len(rows) == 2, "Should have exactly 2 rows"
-        assert all(val is None for val in rows[0]), "First row should be all NULLs"
-
-        # Second row should have actual values
-        assert rows[1][0] == 42, "INT column should be 42"
-        assert rows[1][1] == 9223372036854775807, "BIGINT column should match"
-        assert rows[1][2] == 32767, "SMALLINT column should be 32767"
-        assert rows[1][3] == 255, "TINYINT column should be 255"
-        assert rows[1][4] == True, "BIT column should be True"
-        assert abs(rows[1][5] - 3.14) < 0.01, "REAL column should be approximately 3.14"
-        assert (
-            abs(rows[1][6] - 2.718281828) < 0.0001
-        ), "FLOAT column should be approximately 2.718281828"
-
-    except Exception as e:
-        pytest.fail(f"All numeric types NULL test failed: {e}")
-    finally:
-        drop_table_if_exists(cursor, "#pytest_all_numeric_nulls")
-        db_connection.commit()
-
-
-def test_lob_data_types(cursor, db_connection):
-    """Test LOB (Large Object) data types to ensure LOB fallback paths are exercised"""
-    try:
-        drop_table_if_exists(cursor, "#pytest_lob_test")
-        cursor.execute("""
-            CREATE TABLE #pytest_lob_test (
-                id INT,
-                text_lob VARCHAR(MAX),
-                ntext_lob NVARCHAR(MAX),
-                binary_lob VARBINARY(MAX)
-            )
-            """)
-        db_connection.commit()
-
-        # Create large data that will trigger LOB handling
-        large_text = "A" * 10000  # 10KB text
-        large_ntext = "B" * 10000  # 10KB unicode text
-        large_binary = b"\x01\x02\x03\x04" * 2500  # 10KB binary
-
-        cursor.execute(
-            "INSERT INTO #pytest_lob_test VALUES (?, ?, ?, ?)",
-            (1, large_text, large_ntext, large_binary),
-        )
-        db_connection.commit()
-
-        cursor.execute("SELECT id, text_lob, ntext_lob, binary_lob FROM #pytest_lob_test")
-        row = cursor.fetchone()
-
-        assert row[0] == 1, "ID should be 1"
-        assert row[1] == large_text, "VARCHAR(MAX) LOB data should match"
-        assert row[2] == large_ntext, "NVARCHAR(MAX) LOB data should match"
-        assert row[3] == large_binary, "VARBINARY(MAX) LOB data should match"
-
-    except Exception as e:
-        pytest.fail(f"LOB data types test failed: {e}")
-    finally:
-        drop_table_if_exists(cursor, "#pytest_lob_test")
-        db_connection.commit()
-
-
-def test_lob_char_column_types(cursor, db_connection):
-    """Test LOB fetching specifically for CHAR/VARCHAR columns (covers lines 3313-3314)"""
-    try:
-        drop_table_if_exists(cursor, "#pytest_lob_char")
-        cursor.execute("""
-            CREATE TABLE #pytest_lob_char (
-                id INT,
-                char_lob VARCHAR(MAX)
-            )
-            """)
-        db_connection.commit()
-
-        # Create data large enough to trigger LOB path (>8000 bytes)
-        large_char_data = "X" * 20000  # 20KB text
-
-        cursor.execute("INSERT INTO #pytest_lob_char VALUES (?, ?)", (1, large_char_data))
-        db_connection.commit()
-
-        cursor.execute("SELECT id, char_lob FROM #pytest_lob_char")
-        row = cursor.fetchone()
-
-        assert row[0] == 1, "ID should be 1"
-        assert row[1] == large_char_data, "VARCHAR(MAX) LOB data should match"
-        assert len(row[1]) == 20000, "VARCHAR(MAX) should be 20000 chars"
-
-    except Exception as e:
-        pytest.fail(f"LOB CHAR column test failed: {e}")
-    finally:
-        drop_table_if_exists(cursor, "#pytest_lob_char")
-        db_connection.commit()
-
-
-def test_lob_wchar_column_types(cursor, db_connection):
-    """Test LOB fetching specifically for WCHAR/NVARCHAR columns (covers lines 3358-3359)"""
-    try:
-        drop_table_if_exists(cursor, "#pytest_lob_wchar")
-        cursor.execute("""
-            CREATE TABLE #pytest_lob_wchar (
-                id INT,
-                wchar_lob NVARCHAR(MAX)
-            )
-            """)
-        db_connection.commit()
-
-        # Create unicode data large enough to trigger LOB path (>4000 characters for NVARCHAR)
-        large_wchar_data = "🔥" * 5000 + "Unicode™" * 1000  # Mix of emoji and special chars
-
-        cursor.execute("INSERT INTO #pytest_lob_wchar VALUES (?, ?)", (1, large_wchar_data))
-        db_connection.commit()
-
-        cursor.execute("SELECT id, wchar_lob FROM #pytest_lob_wchar")
-        row = cursor.fetchone()
-
-        assert row[0] == 1, "ID should be 1"
-        assert row[1] == large_wchar_data, "NVARCHAR(MAX) LOB data should match"
-        assert "🔥" in row[1], "Should contain emoji characters"
-
-    except Exception as e:
-        pytest.fail(f"LOB WCHAR column test failed: {e}")
-    finally:
-        drop_table_if_exists(cursor, "#pytest_lob_wchar")
-        db_connection.commit()
-
-
-def test_lob_binary_column_types(cursor, db_connection):
-    """Test LOB fetching specifically for BINARY/VARBINARY columns (covers lines 3384-3385)"""
-    try:
-        drop_table_if_exists(cursor, "#pytest_lob_binary")
-        cursor.execute("""
-            CREATE TABLE #pytest_lob_binary (
-                id INT,
-                binary_lob VARBINARY(MAX)
-            )
-            """)
-        db_connection.commit()
-
-        # Create binary data large enough to trigger LOB path (>8000 bytes)
-        large_binary_data = bytes(range(256)) * 100  # 25.6KB of varied binary data
-
-        cursor.execute("INSERT INTO #pytest_lob_binary VALUES (?, ?)", (1, large_binary_data))
-        db_connection.commit()
-
-        cursor.execute("SELECT id, binary_lob FROM #pytest_lob_binary")
-        row = cursor.fetchone()
-
-        assert row[0] == 1, "ID should be 1"
-        assert row[1] == large_binary_data, "VARBINARY(MAX) LOB data should match"
-        assert len(row[1]) == 25600, "VARBINARY(MAX) should be 25600 bytes"
-
-    except Exception as e:
-        pytest.fail(f"LOB BINARY column test failed: {e}")
-    finally:
-        drop_table_if_exists(cursor, "#pytest_lob_binary")
-        db_connection.commit()
-
-
-def test_zero_length_complex_types(cursor, db_connection):
-    """Test zero-length data for complex types (covers lines 3531-3533)"""
-    try:
-        drop_table_if_exists(cursor, "#pytest_zero_length")
-        cursor.execute("""
-            CREATE TABLE #pytest_zero_length (
-                id INT,
-                empty_varchar VARCHAR(100),
-                empty_nvarchar NVARCHAR(100),
-                empty_binary VARBINARY(100)
-            )
-            """)
-        db_connection.commit()
-
-        # Insert empty (non-NULL) values
-        cursor.execute("INSERT INTO #pytest_zero_length VALUES (?, ?, ?, ?)", (1, "", "", b""))
-        db_connection.commit()
-
-        cursor.execute(
-            "SELECT id, empty_varchar, empty_nvarchar, empty_binary FROM #pytest_zero_length"
-        )
-        row = cursor.fetchone()
-
-        assert row[0] == 1, "ID should be 1"
-        assert row[1] == "", "Empty VARCHAR should be empty string"
-        assert row[2] == "", "Empty NVARCHAR should be empty string"
-        assert row[3] == b"", "Empty VARBINARY should be empty bytes"
-
-    except Exception as e:
-        pytest.fail(f"Zero-length complex types test failed: {e}")
-    finally:
-        drop_table_if_exists(cursor, "#pytest_zero_length")
-        db_connection.commit()
-
-
-def test_guid_with_nulls(cursor, db_connection):
-    """Test GUID type with NULL values"""
-    try:
-        drop_table_if_exists(cursor, "#pytest_guid_nulls")
-        cursor.execute("""
-            CREATE TABLE #pytest_guid_nulls (
-                id INT,
-                guid_col UNIQUEIDENTIFIER
-            )
-            """)
-        db_connection.commit()
-
-        # Insert NULL GUID
-        cursor.execute("INSERT INTO #pytest_guid_nulls VALUES (1, NULL)")
-        # Insert actual GUID
-        cursor.execute("INSERT INTO #pytest_guid_nulls VALUES (2, NEWID())")
-        db_connection.commit()
-
-        cursor.execute("SELECT id, guid_col FROM #pytest_guid_nulls ORDER BY id")
-        rows = cursor.fetchall()
-
-        assert len(rows) == 2, "Should have exactly 2 rows"
-        assert rows[0][1] is None, "First GUID should be NULL"
-        assert rows[1][1] is not None, "Second GUID should not be NULL"
-
-    except Exception as e:
-        pytest.fail(f"GUID with NULLs test failed: {e}")
-    finally:
-        drop_table_if_exists(cursor, "#pytest_guid_nulls")
-        db_connection.commit()
-
-
-def test_datetimeoffset_with_nulls(cursor, db_connection):
-    """Test DATETIMEOFFSET type with NULL values"""
-    try:
-        drop_table_if_exists(cursor, "#pytest_dto_nulls")
-        cursor.execute("""
-            CREATE TABLE #pytest_dto_nulls (
-                id INT,
-                dto_col DATETIMEOFFSET
-            )
-            """)
-        db_connection.commit()
-
-        # Insert NULL DATETIMEOFFSET
-        cursor.execute("INSERT INTO #pytest_dto_nulls VALUES (1, NULL)")
-        # Insert actual DATETIMEOFFSET
-        cursor.execute("INSERT INTO #pytest_dto_nulls VALUES (2, SYSDATETIMEOFFSET())")
-        db_connection.commit()
-
-        cursor.execute("SELECT id, dto_col FROM #pytest_dto_nulls ORDER BY id")
-        rows = cursor.fetchall()
-
-        assert len(rows) == 2, "Should have exactly 2 rows"
-        assert rows[0][1] is None, "First DATETIMEOFFSET should be NULL"
-        assert rows[1][1] is not None, "Second DATETIMEOFFSET should not be NULL"
-
-    except Exception as e:
-        pytest.fail(f"DATETIMEOFFSET with NULLs test failed: {e}")
-    finally:
-        drop_table_if_exists(cursor, "#pytest_dto_nulls")
-        db_connection.commit()
-
-
-def test_decimal_conversion_edge_cases(cursor, db_connection):
-    """Test DECIMAL/NUMERIC type conversion including edge cases"""
-    try:
-        drop_table_if_exists(cursor, "#pytest_decimal_edge")
-        cursor.execute("""
-            CREATE TABLE #pytest_decimal_edge (
-                id INT,
-                dec_col DECIMAL(18, 4)
-            )
-            """)
-        db_connection.commit()
-
-        # Insert various decimal values including edge cases
-        test_values = [
-            (1, "123.4567"),
-            (2, "0.0001"),
-            (3, "-999999999999.9999"),
-            (4, "999999999999.9999"),
-            (5, "0.0000"),
-        ]
-
-        for id_val, dec_val in test_values:
-            cursor.execute(
-                "INSERT INTO #pytest_decimal_edge VALUES (?, ?)", (id_val, decimal.Decimal(dec_val))
-            )
-
-        # Also insert NULL
-        cursor.execute("INSERT INTO #pytest_decimal_edge VALUES (6, NULL)")
-        db_connection.commit()
-
-        cursor.execute("SELECT id, dec_col FROM #pytest_decimal_edge ORDER BY id")
-        rows = cursor.fetchall()
-
-        assert len(rows) == 6, "Should have exactly 6 rows"
-
-        # Verify the values
-        for i, (id_val, expected_str) in enumerate(test_values):
-            assert rows[i][0] == id_val, f"Row {i} ID should be {id_val}"
-            assert rows[i][1] == decimal.Decimal(
-                expected_str
-            ), f"Row {i} decimal should match {expected_str}"
-
-        # Verify NULL
-        assert rows[5][0] == 6, "Last row ID should be 6"
-        assert rows[5][1] is None, "Last decimal should be NULL"
-
-    except Exception as e:
-        pytest.fail(f"Decimal conversion edge cases test failed: {e}")
-    finally:
-        drop_table_if_exists(cursor, "#pytest_decimal_edge")
-        db_connection.commit()
-
-
-def test_fixed_length_char_type(cursor, db_connection):
-    """Test SQL_CHAR (fixed-length CHAR) column processor path (Lines 3464-3467)"""
-    try:
-        cursor.execute("CREATE TABLE #pytest_char_test (id INT, char_col CHAR(10))")
-        cursor.execute("INSERT INTO #pytest_char_test VALUES (1, 'hello')")
-        cursor.execute("INSERT INTO #pytest_char_test VALUES (2, 'world')")
-
-        cursor.execute("SELECT char_col FROM #pytest_char_test ORDER BY id")
-        rows = cursor.fetchall()
-
-        # CHAR pads with spaces to fixed length
-        assert len(rows) == 2, "Should fetch 2 rows"
-        assert rows[0][0].rstrip() == "hello", "First CHAR value should be 'hello'"
-        assert rows[1][0].rstrip() == "world", "Second CHAR value should be 'world'"
-
-        cursor.execute("DROP TABLE #pytest_char_test")
-    except Exception as e:
-        pytest.fail(f"Fixed-length CHAR test failed: {e}")
-
-
-def test_fixed_length_nchar_type(cursor, db_connection):
-    """Test SQL_WCHAR (fixed-length NCHAR) column processor path (Lines 3469-3472)"""
-    try:
-        cursor.execute("CREATE TABLE #pytest_nchar_test (id INT, nchar_col NCHAR(10))")
-        cursor.execute("INSERT INTO #pytest_nchar_test VALUES (1, N'hello')")
-        cursor.execute("INSERT INTO #pytest_nchar_test VALUES (2, N'世界')")  # Unicode test
-
-        cursor.execute("SELECT nchar_col FROM #pytest_nchar_test ORDER BY id")
-        rows = cursor.fetchall()
-
-        # NCHAR pads with spaces to fixed length
-        assert len(rows) == 2, "Should fetch 2 rows"
-        assert rows[0][0].rstrip() == "hello", "First NCHAR value should be 'hello'"
-        assert rows[1][0].rstrip() == "世界", "Second NCHAR value should be '世界'"
-
-        cursor.execute("DROP TABLE #pytest_nchar_test")
-    except Exception as e:
-        pytest.fail(f"Fixed-length NCHAR test failed: {e}")
-
-
-def test_fixed_length_binary_type(cursor, db_connection):
-    """Test SQL_BINARY (fixed-length BINARY) column processor path (Lines 3474-3477)"""
-    try:
-        cursor.execute("CREATE TABLE #pytest_binary_test (id INT, binary_col BINARY(8))")
-        cursor.execute("INSERT INTO #pytest_binary_test VALUES (1, 0x0102030405)")
-        cursor.execute("INSERT INTO #pytest_binary_test VALUES (2, 0xAABBCCDD)")
-
-        cursor.execute("SELECT binary_col FROM #pytest_binary_test ORDER BY id")
-        rows = cursor.fetchall()
-
-        # BINARY pads with zeros to fixed length (8 bytes)
-        assert len(rows) == 2, "Should fetch 2 rows"
-        assert len(rows[0][0]) == 8, "BINARY(8) should be 8 bytes"
-        assert len(rows[1][0]) == 8, "BINARY(8) should be 8 bytes"
-        # First 5 bytes should match, rest padded with zeros
-        assert (
-            rows[0][0][:5] == b"\x01\x02\x03\x04\x05"
-        ), "First BINARY value should start with inserted bytes"
-        assert rows[0][0][5:] == b"\x00\x00\x00", "BINARY should be zero-padded"
-
-        cursor.execute("DROP TABLE #pytest_binary_test")
-    except Exception as e:
-        pytest.fail(f"Fixed-length BINARY test failed: {e}")
-    # The hasattr check should complete without error
-    # This covers the conditional log method availability checks
 
     except Exception as e:
         pytest.fail(f"Cursor log method availability test failed: {e}")

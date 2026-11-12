@@ -1,6 +1,6 @@
-"""Fail-closed classification tests for ``conda/driver_load_probe.py``.
+"""Fail-closed classification tests for ``eng.conda_tools.driver_load_probe``.
 
-The conda test-before-publish gate runs ``conda/driver_load_probe.py`` to prove
+The conda test-before-publish gate runs the probe's source file directly to prove
 the repackaged native ODBC driver actually loads (not just the tiny
 ``mssql_python_odbc`` shim). The probe MUST fail closed: a broken / missing /
 mis-architecture driver -- whose failure surfaces as the C++
@@ -15,33 +15,27 @@ stubbed connector without the compiled extension or a live SQL Server.
 """
 
 import builtins
-import importlib.util
 import os
+import subprocess
 import sys
 import types
 from pathlib import Path
 
 import pytest
 
-_PROBE_PATH = Path(__file__).resolve().parent.parent / "conda" / "driver_load_probe.py"
+_TOOLS_DIR = Path(__file__).resolve().parent.parent / "eng" / "conda_tools"
+_PROBE_PATH = _TOOLS_DIR / "driver_load_probe.py"
 
-# The conda/ sources are not shipped inside the built wheel, so the installed-wheel
+# The engineering sources are not shipped inside the built wheel, so the installed-wheel
 # test leg copies only tests/ into an isolated dir. Skip the whole module (rather than
-# erroring at collection/run) when the conda source it exercises is absent.
-if not _PROBE_PATH.is_file():
+# erroring at collection/run) only when the source tree is absent, not when it is broken.
+if not _TOOLS_DIR.is_dir():
     pytest.skip(
-        f"conda source not present ({_PROBE_PATH}); skipping conda driver-load probe tests",
+        f"Conda tooling source not present ({_TOOLS_DIR}); skipping driver-load probe tests",
         allow_module_level=True,
     )
 
-
-def _load_probe():
-    """Import ``conda/driver_load_probe.py`` as a standalone module."""
-    spec = importlib.util.spec_from_file_location("driver_load_probe_under_test", _PROBE_PATH)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
+from eng.conda_tools import driver_load_probe as probe
 
 # Messages the loaded msodbcsql driver emits once it has reached the network /
 # TLS / auth stage. Every one of these MUST classify as "driver loaded" (PASS).
@@ -81,28 +75,76 @@ _LOAD_FAILURE_MESSAGES = [
 
 @pytest.mark.parametrize("msg", _LOADED_MESSAGES)
 def test_driver_loaded_true_for_connection_stage_errors(msg):
-    probe = _load_probe()
     assert probe.driver_loaded(RuntimeError(msg)) is True
 
 
 @pytest.mark.parametrize("msg", _LOAD_FAILURE_MESSAGES)
 def test_driver_loaded_false_for_load_failures(msg):
-    probe = _load_probe()
     assert probe.driver_loaded(RuntimeError(msg)) is False
 
 
 def test_driver_loaded_true_for_clean_connect():
-    probe = _load_probe()
     assert probe.driver_loaded(None) is True
 
 
-def _run_main_with_stub(monkeypatch, connect):
-    """Run ``probe.main()`` with a stubbed ``mssql_python`` module."""
-    probe = _load_probe()
+def _stub_connector(monkeypatch, connect):
+    """Replace only the connector and restore the probe's environment after each test."""
     stub = types.ModuleType("mssql_python")
     stub.connect = connect
     monkeypatch.setitem(sys.modules, "mssql_python", stub)
-    return probe
+    monkeypatch.setenv(
+        probe._NATIVE_PROVIDER_ENV_VAR,
+        os.environ.get(probe._NATIVE_PROVIDER_ENV_VAR, probe._REQUIRED_NATIVE_PROVIDER),
+    )
+
+
+def test_connection_outcome_returns_error_without_reporting(monkeypatch, capsys):
+    error = RuntimeError("connection refused")
+
+    def connect(**_kwargs):
+        raise error
+
+    _stub_connector(monkeypatch, connect)
+    assert probe._connection_outcome() is error
+    captured = capsys.readouterr()
+    assert (captured.out, captured.err) == ("", "")
+
+
+@pytest.mark.parametrize(
+    ("message", "returncode", "marker"),
+    [
+        ("ODBC Driver 18 for SQL Server: connection refused", 0, "DRIVER_LOADED"),
+        ("Failed to load required function pointers from driver.", 1, "DRIVER DID NOT LOAD"),
+    ],
+)
+def test_probe_file_runs_in_target_interpreter_without_eng(tmp_path, message, returncode, marker):
+    script = """
+import builtins, os, runpy, sys, types
+original_import = builtins.__import__
+def guarded_import(name, *args, **kwargs):
+    assert name != "eng" and not name.startswith("eng."), "target imported engineering tooling"
+    if name == "mssql_python":
+        assert os.environ["MSSQL_PYTHON_NATIVE_PROVIDER"] == "msodbcsql18"
+    return original_import(name, *args, **kwargs)
+builtins.__import__ = guarded_import
+driver = types.ModuleType("mssql_python")
+def connect(**kwargs):
+    assert kwargs["Server"] == "127.0.0.1,1"
+    raise RuntimeError(sys.argv[2])
+driver.connect = connect
+sys.modules["mssql_python"] = driver
+os.environ["MSSQL_PYTHON_NATIVE_PROVIDER"] = "mssql-odbc"
+runpy.run_path(sys.argv[1], run_name="__main__")
+"""
+    result = subprocess.run(
+        [sys.executable, "-I", "-c", script, str(_PROBE_PATH), message],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == returncode, result.stdout + result.stderr
+    assert marker in result.stdout + result.stderr
 
 
 def test_main_exits_nonzero_on_simulated_load_failure(monkeypatch):
@@ -112,7 +154,7 @@ def test_main_exits_nonzero_on_simulated_load_failure(monkeypatch):
             "required dependencies."
         )
 
-    probe = _run_main_with_stub(monkeypatch, connect)
+    _stub_connector(monkeypatch, connect)
     with pytest.raises(SystemExit) as excinfo:
         probe.main()
     # sys.exit(<str>) -> non-zero (truthy) exit code carrying the reason.
@@ -127,7 +169,7 @@ def test_main_passes_on_simulated_network_failure(monkeypatch):
             "made because the target machine actively refused it."
         )
 
-    probe = _run_main_with_stub(monkeypatch, connect)
+    _stub_connector(monkeypatch, connect)
     # A genuine connection-stage failure must NOT raise SystemExit (exit 0).
     probe.main()
 
@@ -151,7 +193,7 @@ def test_main_overrides_inherited_alternative_provider(monkeypatch):
             "[Microsoft][ODBC Driver 18 for SQL Server]TCP Provider: connection refused"
         )
 
-    probe = _run_main_with_stub(monkeypatch, connect)
+    _stub_connector(monkeypatch, connect)
     probe.main()
     assert imported["mssql_python"] is True
 
@@ -166,9 +208,34 @@ def test_main_passes_on_clean_connect(monkeypatch):
     def connect(**_kwargs):
         return _Conn()
 
-    probe = _run_main_with_stub(monkeypatch, connect)
+    _stub_connector(monkeypatch, connect)
     probe.main()
     assert closed["value"] is True
+
+
+def test_cleanup_failure_preserves_successful_driver_load(monkeypatch, capsys):
+    class Connection:
+        def close(self):
+            raise RuntimeError("cleanup failed after a successful connection")
+
+    _stub_connector(monkeypatch, lambda **_kwargs: Connection())
+    probe.main()
+    captured = capsys.readouterr()
+    assert (captured.out, captured.err) == ("DRIVER_LOADED (clean connect)\n", "")
+
+
+def test_native_import_failure_is_not_hidden(monkeypatch):
+    _stub_connector(monkeypatch, lambda **_kwargs: None)
+    original_import = builtins.__import__
+
+    def fail_native_import(name, *args, **kwargs):
+        if name == "mssql_python":
+            raise ImportError("native extension unavailable")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fail_native_import)
+    with pytest.raises(ImportError, match="native extension unavailable"):
+        probe.main()
 
 
 def test_main_passes_complete_structured_connection_parameters(monkeypatch):
@@ -181,7 +248,7 @@ def test_main_passes_complete_structured_connection_parameters(monkeypatch):
             "[Microsoft][ODBC Driver 18 for SQL Server]TCP Provider: connection refused"
         )
 
-    probe = _run_main_with_stub(monkeypatch, connect)
+    _stub_connector(monkeypatch, connect)
     probe.main()
 
     assert captured == {

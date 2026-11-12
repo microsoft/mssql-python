@@ -328,14 +328,16 @@ class TestConnectionStringParserErrors:
         assert "Empty value for keyword 'database'" in errors_str
         assert "Empty keyword" in errors_str
 
-    def test_error_unknown_keyword_with_allowlist(self):
+    @pytest.mark.parametrize("keyword", ["UnknownParam", "UnsupportedParam", "MadeUpKeyword"])
+    def test_error_unknown_keyword_with_allowlist(self, keyword):
         """Test that unknown keywords are flagged when validation is enabled."""
         parser = _ConnectionStringParser(validate_keywords=True)
 
         with pytest.raises(ConnectionStringParseError) as exc_info:
-            parser._parse("Server=localhost;UnknownParam=value")
+            # Parser-only input: no connection is opened.
+            parser._parse(f"Server=localhost;{keyword}=value")  # DevSkim: ignore DS162092
 
-        assert "Unknown keyword 'unknownparam'" in str(exc_info.value)
+        assert f"Unknown keyword '{keyword.lower()}'" in str(exc_info.value)
 
     def test_error_multiple_unknown_keywords(self):
         """Test that multiple unknown keywords are all flagged."""
@@ -531,8 +533,8 @@ class TestSynonymFirstWins:
     # ---- reserved keys filtered regardless of order ----------------------
 
     def test_reserved_keys_always_filtered(self):
-        """Driver and APP are always stripped, even when first."""
+        """Driver is stripped, while APP is retained for name resolution."""
         result = self._normalize({"driver": "foo", "server": "host", "app": "bar"})
         assert "Driver" not in result
-        assert "APP" not in result
+        assert result["APP"] == "bar"
         assert result["Server"] == "host"

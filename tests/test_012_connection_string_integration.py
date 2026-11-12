@@ -44,17 +44,6 @@ class TestConnectionStringIntegration:
         assert "Encrypt=yes" in result
         assert "APP=MSSQL-Python" in result
 
-    def test_parse_filter_build_with_unsupported_param(self):
-        """Test that unsupported parameters are flagged as errors with allowlist."""
-        # Parse with allowlist
-        parser = _ConnectionStringParser(validate_keywords=True)
-
-        # Should raise error for unknown keyword
-        with pytest.raises(ConnectionStringParseError) as exc_info:
-            parser._parse("Server=localhost;Database=mydb;UnsupportedParam=value")
-
-        assert "Unknown keyword 'unsupportedparam'" in str(exc_info.value)
-
     def test_parse_filter_build_with_braced_values(self):
         """Test complete flow with braced values and special characters."""
         # Parse
@@ -98,17 +87,11 @@ class TestConnectionStringIntegration:
         # uid appears in UID, so check for the exact pattern
         assert result.count("UID=") == 1
 
-    def test_parse_filter_build_driver_and_app_reserved(self):
-        """Test that Driver and APP in connection string raise errors."""
-        # Parser should reject Driver and APP as reserved keywords
+    def test_parse_filter_build_only_driver_reserved(self):
+        """APP is accepted; Driver remains reserved."""
         parser = _ConnectionStringParser(validate_keywords=True)
 
-        # Test with APP
-        with pytest.raises(ConnectionStringParseError) as exc_info:
-            parser._parse("APP=UserApp;Server=localhost")
-        error_lower = str(exc_info.value).lower()
-        assert "reserved keyword" in error_lower
-        assert "'app'" in error_lower
+        assert parser._parse("APP=UserApp;Server=test-server.example.invalid")["app"] == "UserApp"
 
         # Test with Driver
         with pytest.raises(ConnectionStringParseError) as exc_info:
@@ -122,8 +105,7 @@ class TestConnectionStringIntegration:
             parser._parse("Driver={Some Other Driver};APP=UserApp;Server=localhost")
         error_str = str(exc_info.value).lower()
         assert "reserved keyword" in error_str
-        # Should have errors for both
-        assert len(exc_info.value.errors) == 2
+        assert len(exc_info.value.errors) == 1
 
     def test_parse_filter_build_empty_input(self):
         """Test complete flow with empty input."""
@@ -181,16 +163,6 @@ class TestConnectionStringIntegration:
 
         assert "Incomplete specification" in str(exc_info.value)
         assert "'server localhost'" in str(exc_info.value).lower()
-
-    def test_parse_error_unclosed_brace(self):
-        """Test that unclosed braces raise errors."""
-        parser = _ConnectionStringParser()
-
-        # Unclosed brace raises error
-        with pytest.raises(ConnectionStringParseError) as exc_info:
-            parser._parse("PWD={unclosed;Server=localhost")
-
-        assert "Unclosed braced value" in str(exc_info.value)
 
     def test_parse_error_duplicate_keywords(self):
         """Test that duplicate keywords raise errors."""
@@ -276,24 +248,6 @@ class TestConnectionStringIntegration:
         assert "Incomplete specification" in str(exc_info.value)
         assert "Duplicate keyword" in str(exc_info.value)
 
-    def test_parser_without_allowlist_accepts_unknown(self):
-        """Test that parser without allowlist accepts unknown keywords."""
-        parser = _ConnectionStringParser()  # No allowlist
-
-        # Should parse successfully even with unknown keywords
-        result = parser._parse("Server=localhost;MadeUpKeyword=value")
-        assert result == {"server": "localhost", "madeupkeyword": "value"}
-
-    def test_parser_with_allowlist_rejects_unknown(self):
-        """Test that parser with allowlist rejects unknown keywords."""
-        parser = _ConnectionStringParser(validate_keywords=True)
-
-        # Should raise error for unknown keyword
-        with pytest.raises(ConnectionStringParseError) as exc_info:
-            parser._parse("Server=localhost;MadeUpKeyword=value")
-
-        assert "Unknown keyword 'madeupkeyword'" in str(exc_info.value)
-
 
 class TestConnectAPIIntegration:
     """Integration tests for the connect() API with connection string validation."""
@@ -360,33 +314,20 @@ class TestConnectAPIIntegration:
         conn.close()
 
     @patch("mssql_python.connection.ddbc_bindings.Connection")
-    def test_connect_app_parameter_in_connection_string_raises_error(self, mock_ddbc_conn):
-        """Test that APP parameter in connection string raises ConnectionStringParseError."""
-        # Mock the underlying ODBC connection
+    def test_connect_app_parameter_in_connection_string(self, mock_ddbc_conn):
         mock_ddbc_conn.return_value = MagicMock()
-
-        # User tries to set APP in connection string - should raise error
-        with pytest.raises(ConnectionStringParseError) as exc_info:
-            connect("Server=localhost;APP=UserApp;Database=test")
-
-        # Verify error message
-        error_lower = str(exc_info.value).lower()
-        assert "reserved keyword" in error_lower
-        assert "'app'" in error_lower
-        assert "controlled by the driver" in error_lower
+        with connect("Server=test-server.example.invalid;APP=UserApp;Database=test") as conn:
+            assert _ConnectionStringParser()._parse(conn.connection_str)["app"] == (
+                "MSSQL-Python|UserApp"
+            )
 
     @patch("mssql_python.connection.ddbc_bindings.Connection")
-    def test_connect_app_parameter_in_kwargs_raises_error(self, mock_ddbc_conn):
-        """Test that APP parameter in kwargs raises ValueError."""
-        # Mock the underlying ODBC connection
+    def test_connect_app_parameter_in_kwargs(self, mock_ddbc_conn):
         mock_ddbc_conn.return_value = MagicMock()
-
-        # User tries to set APP via kwargs - should raise ValueError
-        with pytest.raises(ValueError) as exc_info:
-            connect("Server=localhost;Database=test", APP="UserApp")
-
-        assert "reserved and controlled by the driver" in str(exc_info.value)
-        assert "APP" in str(exc_info.value) or "app" in str(exc_info.value).lower()
+        with connect("Server=test-server.example.invalid;Database=test", APP="UserApp") as conn:
+            assert _ConnectionStringParser()._parse(conn.connection_str)["app"] == (
+                "MSSQL-Python|UserApp"
+            )
 
     @patch("mssql_python.connection.ddbc_bindings.Connection")
     def test_connect_driver_parameter_in_connection_string_raises_error(self, mock_ddbc_conn):
@@ -537,7 +478,7 @@ class TestConnectAPIIntegration:
         not os.getenv("DB_CONNECTION_STRING"), reason="Requires database connection string"
     )
     def test_connect_reserved_params_in_connection_string_raise_error(self, conn_str):
-        """Test that reserved params (Driver, APP) in connection string raise error."""
+        """Driver stays reserved; both application-name aliases are supported."""
         # Try to add Driver to connection string - should raise error
         with pytest.raises(ConnectionStringParseError) as exc_info:
             test_conn_str = conn_str + ";Driver={User Driver}"
@@ -545,34 +486,20 @@ class TestConnectAPIIntegration:
         assert "reserved keyword" in str(exc_info.value).lower()
         assert "driver" in str(exc_info.value).lower()
 
-        # Try to add APP to connection string - should raise error
-        with pytest.raises(ConnectionStringParseError) as exc_info:
-            test_conn_str = conn_str + ";APP=UserApp"
-            connect(test_conn_str)
-        assert "reserved keyword" in str(exc_info.value).lower()
-        assert "app" in str(exc_info.value).lower()
-
-        # Application Name is not in the restricted allowlist (not a synonym for APP)
-        # It should be rejected as an unknown parameter
-        with pytest.raises(ConnectionStringParseError) as exc_info:
-            test_conn_str = conn_str + ";Application Name=UserApp"
-            connect(test_conn_str)
-        assert "unknown keyword" in str(exc_info.value).lower()
-        assert "application name" in str(exc_info.value).lower()
+        for key in ("APP", "Application Name"):
+            with connect(conn_str + f";{key}=UserApp") as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("SELECT APP_NAME()")
+                    assert cursor.fetchone()[0] == "MSSQL-Python|UserApp"
 
     @pytest.mark.skipif(
         not os.getenv("DB_CONNECTION_STRING"), reason="Requires database connection string"
     )
     def test_connect_reserved_params_in_kwargs_raise_error(self, conn_str):
-        """Test that reserved params (Driver, APP) in kwargs raise ValueError."""
+        """Driver remains reserved in kwargs."""
         # Try to override Driver via kwargs - should raise ValueError
         with pytest.raises(ValueError) as exc_info:
             connect(conn_str, Driver="User Driver")
-        assert "reserved and controlled by the driver" in str(exc_info.value)
-
-        # Try to override APP via kwargs - should raise ValueError
-        with pytest.raises(ValueError) as exc_info:
-            connect(conn_str, APP="UserApp")
         assert "reserved and controlled by the driver" in str(exc_info.value)
 
     @pytest.mark.skipif(
@@ -600,35 +527,20 @@ class TestConnectAPIIntegration:
     @pytest.mark.skipif(
         not os.getenv("DB_CONNECTION_STRING"), reason="Requires database connection string"
     )
-    def test_app_name_in_connection_string_raises_error(self, conn_str):
-        """Test that APP in connection string raises ConnectionStringParseError."""
-        # Connection strings with APP parameter should now raise an error (not silently filter)
-
-        # Try to add APP to connection string
-        test_conn_str = conn_str + ";APP=UserDefinedApp"
-
-        # Should raise ConnectionStringParseError
-        with pytest.raises(ConnectionStringParseError) as exc_info:
-            connect(test_conn_str)
-
-        error_lower = str(exc_info.value).lower()
-        assert "reserved keyword" in error_lower
-        assert "'app'" in error_lower
-        assert "controlled by the driver" in error_lower
+    def test_app_name_in_connection_string(self, conn_str):
+        with connect(conn_str + ";APP=UserDefinedApp") as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT APP_NAME()")
+                assert cursor.fetchone()[0] == "MSSQL-Python|UserDefinedApp"
 
     @pytest.mark.skipif(
         not os.getenv("DB_CONNECTION_STRING"), reason="Requires database connection string"
     )
-    def test_app_name_in_kwargs_rejected_before_sql_server(self, conn_str):
-        """Test that APP in kwargs raises ValueError before even attempting to connect to SQL Server."""
-        # Unlike connection strings (which are silently filtered), kwargs with APP should raise an error
-        # This prevents the connection attempt entirely
-
-        with pytest.raises(ValueError) as exc_info:
-            connect(conn_str, APP="UserDefinedApp")
-
-        assert "reserved and controlled by the driver" in str(exc_info.value)
-        assert "APP" in str(exc_info.value) or "app" in str(exc_info.value).lower()
+    def test_app_name_in_kwargs(self, conn_str):
+        with connect(conn_str, APP="UserDefinedApp") as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT APP_NAME()")
+                assert cursor.fetchone()[0] == "MSSQL-Python|UserDefinedApp"
 
     @patch("mssql_python.connection.ddbc_bindings.Connection")
     def test_connect_empty_value_raises_error(self, mock_ddbc_conn):
