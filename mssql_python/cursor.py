@@ -1108,10 +1108,13 @@ class Cursor:
         self.is_stmt_prepared = [False]
 
     def _soft_reset_cursor(self) -> None:
-        """Lightweight reset: close cursor and unbind params without freeing the HSTMT.
+        """Lightweight reset: close the cursor without freeing the HSTMT.
 
         Preserves the prepared statement plan on the server so repeated
-        executions of the same SQL skip SQLPrepare entirely.
+        executions of the same SQL skip SQLPrepare entirely. Parameter bindings
+        are left in place; the native execute path rebinds over them when the
+        parameter definitions are unchanged (so the driver keeps its prepared
+        handle and sends sp_execute) and resets them otherwise.
         """
         if self.hstmt:
             ret = ddbc_bindings.DDBCSQLResetStmt(self.hstmt)
