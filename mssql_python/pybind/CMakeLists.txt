@@ -8,6 +8,10 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # Performance profiling instrumentation. OFF by default so released wheels ship
 # with zero profiler code. Turn on with -DENABLE_PROFILING=ON (dev/internal builds).
 option(ENABLE_PROFILING "Build with performance profiling instrumentation" OFF)
+option(MSSQL_NATIVE_FETCH_TEST_FAULTS "Build isolated native-fetch failure-contract controls" OFF)
+if(MSSQL_NATIVE_FETCH_TEST_FAULTS AND NOT ENABLE_PROFILING)
+    message(FATAL_ERROR "Native-fetch fault controls require a separate ENABLE_PROFILING=ON build")
+endif()
 
 # Enable verbose output to see actual compiler/linker commands
 set(CMAKE_VERBOSE_MAKEFILE ON CACHE BOOL "Verbose output" FORCE)
@@ -362,6 +366,9 @@ target_compile_definitions(ddbc_bindings PRIVATE
 if(ENABLE_PROFILING)
     message(STATUS "Building WITH performance profiling instrumentation")
     target_compile_definitions(ddbc_bindings PRIVATE ENABLE_PROFILING)
+endif()
+if(MSSQL_NATIVE_FETCH_TEST_FAULTS)
+    target_compile_definitions(ddbc_bindings PRIVATE MSSQL_NATIVE_FETCH_TEST_FAULTS)
 endif()
 
 # Add warning level flags for MSVC
