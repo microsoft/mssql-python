@@ -27,6 +27,7 @@ struct Handle {
     bool pendingWork = false;
     bool resetPending = false;
     SQLULEN loginTimeout = 0;
+    SQLULEN connectionTimeout = 0;
 };
 
 std::unordered_map<SQLHANDLE, std::unique_ptr<Handle>> handles;
@@ -35,6 +36,8 @@ std::string failNext;
 int commits = 0;
 int logins = 0;
 std::vector<SQLULEN> loginTimeouts;
+std::vector<SQLULEN> connectionTimeouts;
+std::vector<SQLULEN> validationTimeouts;
 std::function<void()> duringFree;
 std::function<void()> duringRollbackBatch;
 std::function<void()> duringReset;
@@ -96,6 +99,8 @@ SQLRETURN SQL_API login(SQLHDBC dbc, SQLHWND, SQLWCHAR*, SQLSMALLINT,
 
 SQLRETURN SQL_API setAttr(SQLHDBC dbc, SQLINTEGER attribute, SQLPOINTER value, SQLINTEGER length) {
     if (attribute == SQL_ATTR_CONNECTION_TIMEOUT) {
+        handles.at(dbc)->connectionTimeout = reinterpret_cast<SQLULEN>(value);
+        connectionTimeouts.push_back(handles.at(dbc)->connectionTimeout);
         return SQL_SUCCESS;
     }
     std::string operation = "attribute";
@@ -104,6 +109,7 @@ SQLRETURN SQL_API setAttr(SQLHDBC dbc, SQLINTEGER attribute, SQLPOINTER value, S
     } else if (attribute == SQL_ATTR_RESET_CONNECTION) {
         operation = "reset";
     } else if (attribute == SQL_ATTR_TXN_ISOLATION) {
+        validationTimeouts.push_back(handles.at(dbc)->connectionTimeout);
         operation = "isolation";
     }
     auto ret = record(operation);
@@ -132,7 +138,7 @@ SQLRETURN SQL_API setAttr(SQLHDBC dbc, SQLINTEGER attribute, SQLPOINTER value, S
 SQLRETURN SQL_API getAttr(SQLHDBC dbc, SQLINTEGER attribute, SQLPOINTER value,
                          SQLINTEGER, SQLINTEGER*) {
     if (attribute == SQL_ATTR_CONNECTION_TIMEOUT) {
-        *static_cast<SQLULEN*>(value) = 0;
+        *static_cast<SQLULEN*>(value) = handles.at(dbc)->connectionTimeout;
         return SQL_SUCCESS;
     }
     auto ret = record(attribute == SQL_ATTR_AUTOCOMMIT ? "get" : "alive");
@@ -396,6 +402,8 @@ void resetScenario() {
     calls.clear();
     commits = logins = 0;
     loginTimeouts.clear();
+    connectionTimeouts.clear();
+    validationTimeouts.clear();
     rejectReadCommitted = false;
 }
 }  // namespace
@@ -690,6 +698,27 @@ int main() {
             require(logins == 1 && loginTimeouts == std::vector<SQLULEN>{30},
                     "Timed leases did not reuse the physical connection with timeout 30");
         });
+        for (const auto& timeouts : std::vector<std::array<SQLULEN, 3>>{
+                 {15, 1, 1}, {3, 7, 3}, {0, 1, 1},
+                 {15, 0, 15}, {0, 0, 15}, {15, 15, 15}}) {
+            run("checkout uses the shorter positive timeout and restores the original", [&timeouts] {
+                py::dict attrs;
+                attrs[py::int_(SQL_ATTR_LOGIN_TIMEOUT)] = py::int_(timeouts[0]);
+                attrs[py::int_(SQL_ATTR_CONNECTION_TIMEOUT)] = py::int_(timeouts[1]);
+                auto connection = acquire(true, attrs);
+                connection->close();
+                connectionTimeouts.clear();
+                connection = acquire(true, attrs);
+                require(logins == 1, "Timeout configuration prevented physical connection reuse");
+                require(validationTimeouts == std::vector<SQLULEN>{timeouts[2]},
+                        "Checkout validation ignored the shorter positive timeout");
+                require(connectionTimeouts == std::vector<SQLULEN>{timeouts[2], timeouts[1]},
+                        "Checkout did not set and restore the connection timeout");
+                require(connection->getConnectionTimeout() == timeouts[1],
+                        "Checkout changed the lease's connection timeout");
+                connection->close();
+            });
+        }
         run("valid scalar timeout cannot make dirty work clean", [] {
             warm();
             auto connection = acquire();
