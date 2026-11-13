@@ -6,7 +6,7 @@ This module provides a way to create a new connection object to interact with th
 
 from typing import Any, Dict, Optional, Union
 
-from mssql_python.connection import Connection, TokenProvider
+from mssql_python.connection import Connection as Connection, TokenProvider
 
 
 def connect(

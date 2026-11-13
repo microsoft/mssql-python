@@ -439,7 +439,15 @@ def test_runtime_is_verified_after_dependency_setup_before_testing():
         if not line.lstrip().startswith("#") and "python -m pytest " in line
     ]
     assert test_commands
-    assert all("mssql_python_rs.py --verify && python -m pytest " in line for line in test_commands)
+    typing_command = (
+        "python -m pytest tests/test_typing.py -m typing -v --junitxml=typing-test-results.xml"
+    )
+    assert sum(line.strip() == typing_command for line in test_commands) == 1
+    runtime_test_commands = [line for line in test_commands if line.strip() != typing_command]
+    assert runtime_test_commands
+    assert all(
+        "mssql_python_rs.py --verify && python -m pytest " in line for line in runtime_test_commands
+    )
     daily = (ROOT / ENTRY_POINTS[1]).read_text(encoding="utf-8")
     assert "python eng/scripts/mssql_python_rs.py --verify || exit 2" in daily
     linux = (PIPELINES / "stages/build-linux-single-stage.yml").read_text(encoding="utf-8")

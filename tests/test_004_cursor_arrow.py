@@ -7,6 +7,8 @@ These tests require pyarrow to be installed; they are skipped otherwise.
 import pytest
 import decimal
 import io
+from typing import Generator
+from unittest.mock import Mock
 from datetime import datetime, date, time, timezone
 
 import mssql_python
@@ -20,6 +22,37 @@ except ImportError:
 
 # Skip the entire module if pyarrow is not available
 pytestmark = pytest.mark.skipif(pa is None, reason="pyarrow is not installed")
+
+
+def test_arrow_reader_optional_state_after_close() -> None:
+    from mssql_python.cursor import _ArrowReader
+
+    cursor = Mock(spec=mssql_python.Cursor)
+    cursor.closed = False
+    cursor.hstmt = Mock()
+    batch = pa.record_batch({"value": [1]})
+    released = []
+
+    def batches() -> Generator[pa.RecordBatch, None, None]:
+        try:
+            yield batch
+        finally:
+            released.append(True)
+
+    generator = batches()
+    inner = pa.RecordBatchReader.from_batches(batch.schema, generator)
+    reader = _ArrowReader(cursor, inner, generator, pa.ArrowInvalid, [False])
+    assert next(reader).equals(batch)
+    reader.close()
+    reader.close()
+    assert reader.closed
+    assert released == [True]
+    assert reader._cursor is None
+    assert reader._inner is None
+    assert reader._generator is None
+    cursor.hstmt._cancel.assert_called_once()
+    with pytest.raises(pa.ArrowInvalid, match="Reader is closed"):
+        next(reader)
 
 
 def get_arrow_test_data(include_lobs: bool, batch_length: int):
