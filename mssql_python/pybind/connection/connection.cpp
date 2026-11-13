@@ -682,11 +682,14 @@ bool Connection::reset(unsigned int timeoutSeconds, bool autocommit) {
         LOG("Failed to read pooled connection timeout (ret=%d). Marking as dead.", ret);
         return false;
     }
+    const SQLULEN validationTimeout = originalTimeout > 0
+        ? std::min(originalTimeout, static_cast<SQLULEN>(timeoutSeconds))
+        : static_cast<SQLULEN>(timeoutSeconds);
     {
         py::gil_scoped_release release;
         ret = SQLSetConnectAttr_ptr(
             _dbcHandle->get(), SQL_ATTR_CONNECTION_TIMEOUT,
-            reinterpret_cast<SQLPOINTER>(static_cast<SQLULEN>(timeoutSeconds)), SQL_IS_UINTEGER);
+            reinterpret_cast<SQLPOINTER>(validationTimeout), SQL_IS_UINTEGER);
     }
     if (!SQL_SUCCEEDED(ret)) {
         LOG("Failed to set pooled connection timeout (ret=%d). Marking as dead.", ret);
