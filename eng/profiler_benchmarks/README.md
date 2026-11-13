@@ -12,7 +12,7 @@ python -m eng.profiler_benchmarks.controller --base main --candidate HEAD \
 python -m eng.profiler_benchmarks.report profiler-results/report.json
 ```
 
-The fixed registry has 25 tasks. `--scenarios` runs a local subset, but subset
+The fixed registry has 26 tasks. `--scenarios` runs a local subset, but subset
 reports remain incomplete and cannot produce a verdict.
 
 `lob_varchar_256k_fetchall` fetches one 256 KiB `VARCHAR(MAX)` value to exercise
@@ -25,6 +25,17 @@ be disabled without changing logger configuration. Query setup, exact-value/type
 validation (including zero), EOF validation, and diagnostic checks are outside
 the timed fetch window. Both revisions run the same workload; the report's
 improvement thresholds are unchanged.
+
+`fetchmany_one_text` collects 10,000 ordered INT/NVARCHAR rows from the existing
+fixture using explicit `fetchmany(1)`, without output converters. It retains all
+rows through the timer boundary and includes the terminal empty batch and list
+accumulation. Query execution, expected-value construction, exact value/type/count
+and order checks, diagnostics validation, and cursor cleanup are outside timing.
+This single workload targets repeated text-fetch dispatch preparation; it uses
+the fixture's `unicode_row_{i}` values, not the standalone study's fixed-width
+text. Both revisions run the same profiling-enabled workload with the existing
+report thresholds. It measures a fresh main-relative change, not a guaranteed
+improvement or a comparison against pyodbc.
 
 `output_converter_fetchall` and `output_converter_fetchmany1000` measure separate
 fetch APIs over 10,000 ordered integer/NVARCHAR rows from the existing fixture.
@@ -58,7 +69,7 @@ width matrix.
 
 This conversion has no guaranteed instrumented native phase, so **only**
 `row_to_dict` permits an empty native diagnostics dictionary. Skipped results,
-malformed counters, and missing native samples from the other 24 tasks remain
+malformed counters, and missing native samples from the other 25 tasks remain
 invalid in both the worker and report validation. The row uses the existing
 paired wall-time comparison and unchanged thresholds: it can demonstrate an
 observed main-relative improvement, not assert a speedup in advance or establish
