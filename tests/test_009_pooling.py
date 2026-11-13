@@ -491,6 +491,34 @@ def test_connection_pooling_isolation_level_reset(conn_str, use_sql):
     conn2.close()
 
 
+def test_pooled_autocommit_close_after_query(conn_str):
+    """Closing a used pooled connection must also work on dedicated SQL pools."""
+    _run_in_subprocess(
+        """
+        import os
+        import mssql_python
+
+        mssql_python.pooling(enabled=True, max_size=1, idle_timeout=30)
+        try:
+            for _ in range(2):
+                conn = mssql_python.connect(
+                    os.environ["DB_CONNECTION_STRING"], autocommit=True
+                )
+                try:
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT 1")
+                    assert cursor.fetchone()[0] == 1
+                    cursor.close()
+                finally:
+                    conn.close()
+                assert conn.closed
+        finally:
+            mssql_python.pooling(enabled=False)
+        """,
+        conn_str,
+    )
+
+
 def test_connection_pooling_speed(conn_str):
     """Test that connection pooling provides performance benefits over multiple iterations."""
     # Warm up to eliminate cold start effects
