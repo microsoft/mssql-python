@@ -18,6 +18,8 @@ from mssql_python import (
     TableValuedParameter,
     connect,
     SQL_INTEGER,
+    SQL_CHAR,
+    SQL_VARCHAR,
     SQL_WVARCHAR,
     SQL_VARBINARY,
     SQL_DECIMAL,
@@ -256,6 +258,36 @@ def test_typed_cells(cursor, db_connection):
         assert source == [list(row), [None] * len(row)]
     finally:
         cursor.execute(f"DROP PROCEDURE dbo.[{proc}]")
+        cursor.execute(f"DROP TYPE dbo.[{name}]")
+        db_connection.commit()
+
+
+def test_varchar_cells_bind_wide_independent_of_requested_encoding(cursor, db_connection):
+    suffix = uuid.uuid4().hex
+    name, proc = f"Narrow_{suffix}", f"NarrowProc_{suffix}"
+    cursor.execute(
+        f"CREATE TYPE dbo.[{name}] AS TABLE "
+        "(value varchar(100) COLLATE SQL_Latin1_General_CP1_CI_AS)"
+    )
+    cursor.execute(
+        f"CREATE PROC dbo.[{proc}] @items dbo.[{name}] READONLY AS "
+        "SELECT CONVERT(varbinary(100), value) FROM @items"
+    )
+    db_connection.commit()
+    value = "café €"
+    try:
+        with pytest.warns(UserWarning, match=r"setencoding\(\) does not change"):
+            db_connection.setencoding("ascii", SQL_CHAR)
+        parameter = TableValuedParameter(name, [("value", SQL_VARCHAR, 100)], [(value,)])
+        assert parameter._odbc_columns()[0][1] == ConstantsDDBC.SQL_C_WCHAR.value
+        cursor.execute(
+            f"EXEC dbo.[{proc}] ?",
+            parameter,
+        )
+        assert cursor.fetchone()[0] == value.encode("cp1252")
+    finally:
+        db_connection.setencoding()
+        cursor.execute(f"DROP PROC dbo.[{proc}]")
         cursor.execute(f"DROP TYPE dbo.[{name}]")
         db_connection.commit()
 
