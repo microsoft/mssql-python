@@ -1007,6 +1007,21 @@ def test_checked_out_pool_is_not_evicted(conn_str):
     + [pytest.param(3, False, {"timeout": 0}, False, False, id="finite-default")]
     + [
         pytest.param(
+            1,
+            autocommit,
+            {
+                "timeout": login_timeout,
+                "attrs_before": {mssql_python.SQL_ATTR_CONNECTION_TIMEOUT: 1},
+            },
+            False,
+            False,
+            id=f"connection-timeout-{login_timeout}-{autocommit}",
+        )
+        for login_timeout in (15, 0)
+        for autocommit in (False, True)
+    ]
+    + [
+        pytest.param(
             size,
             autocommit,
             {"timeout": 1},
@@ -1021,7 +1036,7 @@ def test_checked_out_pool_is_not_evicted(conn_str):
 def test_pool_checkout_validation_timeout(
     conn_str, autocommit, pool_size, options, replacement_fails, mixed_pool
 ):
-    """GH #854: stalled checkout validation must time out and open a fresh socket."""
+    """GH #854/#893: bound stalled checkout, respecting a shorter connection timeout."""
     _run_in_subprocess(
         """
         import os
@@ -1029,7 +1044,7 @@ def test_pool_checkout_validation_timeout(
         import sys
         import threading
         import time
-        from mssql_python import connect, pooling
+        from mssql_python import connect, pooling, SQL_ATTR_CONNECTION_TIMEOUT
         from mssql_python.connection_string_parser import _ConnectionStringParser
         from mssql_python.connection_string_builder import _ConnectionStringBuilder
 
@@ -1052,7 +1067,10 @@ def test_pool_checkout_validation_timeout(
         if REPLACEMENT_FAILS:
             reject_login.set()
         rejected = []
-        use_default = options.get("timeout") == 0
+        use_default = (
+            options.get("timeout") == 0
+            and not options.get("attrs_before", {}).get(SQL_ATTR_CONNECTION_TIMEOUT)
+        )
         gate = threading.Event()
         gate.set()
         probed = set()
