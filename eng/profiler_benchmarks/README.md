@@ -12,7 +12,7 @@ python -m eng.profiler_benchmarks.controller --base main --candidate HEAD \
 python -m eng.profiler_benchmarks.report profiler-results/report.json
 ```
 
-The fixed registry has 23 tasks. `--scenarios` runs a local subset, but subset
+The fixed registry has 25 tasks. `--scenarios` runs a local subset, but subset
 reports remain incomplete and cannot produce a verdict.
 
 `lob_varchar_256k_fetchall` fetches one 256 KiB `VARCHAR(MAX)` value to exercise
@@ -25,6 +25,25 @@ be disabled without changing logger configuration. Query setup, exact-value/type
 validation (including zero), EOF validation, and diagnostic checks are outside
 the timed fetch window. Both revisions run the same workload; the report's
 improvement thresholds are unchanged.
+
+`output_converter_fetchall` and `output_converter_fetchmany1000` measure separate
+fetch APIs over 10,000 ordered integer/NVARCHAR rows from the existing fixture.
+An `SQL_WVARCHAR` converter decodes UTF-16LE bytes and uppercases the text.
+Both retain all converted rows through the timer boundary; the batched case
+includes the terminal empty `fetchmany(1000)` call and accumulating its batches.
+Callback execution is included in the fetch timer; the callback only performs
+UTF-16LE decode and uppercase conversion.
+Exact output values/types, count/order, and diagnostics are checked after
+collection; focused contract tests check callback bytes using a fake cursor.
+Registration, query execution, expected-value construction, validation, cursor
+cleanup, and restoring/removing the converter are outside the fetch timer.
+Converter state is restored even if setup, fetching, or validation fails.
+
+These CI workloads use the fixture's `unicode_row_{i}` text rather than the
+separate profiling-OFF study's fixed-width text.
+Reports calculate fresh paired changes from profiling-ON measurements;
+they do not embed historical speedups or promise to reproduce production-latency
+results. The two API rows use the existing comparison policy below.
 
 `row_to_dict` measures **warm-only** conversion of 10,000 real cursor-fetched rows
 with 32 unique integer columns and deterministic NULLs using `dict(row._mapping)`.
@@ -39,7 +58,7 @@ width matrix.
 
 This conversion has no guaranteed instrumented native phase, so **only**
 `row_to_dict` permits an empty native diagnostics dictionary. Skipped results,
-malformed counters, and missing native samples from the other 22 tasks remain
+malformed counters, and missing native samples from the other 24 tasks remain
 invalid in both the worker and report validation. The row uses the existing
 paired wall-time comparison and unchanged thresholds: it can demonstrate an
 observed main-relative improvement, not assert a speedup in advance or establish
