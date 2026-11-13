@@ -803,9 +803,10 @@ void Connection::prepareForPool() {
                 SQLHANDLE statement = nullptr;
                 ret = SQLAllocHandle_ptr(SQL_HANDLE_STMT, _dbcHandle->get(), &statement);
                 if (SQL_SUCCEEDED(ret)) {
+                    // Checkout restores isolation. Doing so here is redundant
+                    // and rejects dedicated SQL pools that do not support READ COMMITTED.
                     const std::u16string rollbackQuery =
-                        u"IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION; "
-                        u"SET TRANSACTION ISOLATION LEVEL READ COMMITTED";
+                        u"IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION";
                     ret = SQLExecDirect_ptr(statement,
                                             reinterpretU16stringAsSqlWChar(rollbackQuery), SQL_NTS);
                     if (!SQL_SUCCEEDED(ret)) {
