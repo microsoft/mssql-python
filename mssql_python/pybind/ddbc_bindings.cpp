@@ -3553,15 +3553,11 @@ static inline bool IsLobOrVariantColumn(SQLSMALLINT dataType, SQLULEN columnSize
 }
 
 static inline bool CanUseSingleRowForFetchMany(SQLSMALLINT dataType, SQLULEN columnSize) {
-    // Bound text conversion has platform/codec-specific fallbacks that GetRowData
-    // does not share. Keep that contract even when the requested batch size is one.
+    // Narrow text still needs the batch's platform/codec-specific conversion.
     switch (dataType) {
         case SQL_CHAR:
         case SQL_VARCHAR:
         case SQL_LONGVARCHAR:
-        case SQL_WCHAR:
-        case SQL_WVARCHAR:
-        case SQL_WLONGVARCHAR:
             return false;
         default:
             return !IsLobOrVariantColumn(dataType, columnSize);
@@ -3572,7 +3568,8 @@ static SQLRETURN GetRowData(const SqlHandlePtr& StatementHandle, SQLUSMALLINT co
                             py::list& row, const std::string& charEncoding,
                             const std::string& wcharEncoding, int charCtype,
                             py::handle messages, const ResultMetadataCache::Snapshot& snapshot,
-                            bool completeResult = false, py::handle converters = {}) {
+                            bool completeResult = false, py::handle converters = {},
+                            bool batchText = false) {
     PERF_TIMER("SQLGetData_wrap");
     // Note: wcharEncoding parameter is reserved for future use
     // Currently WCHAR data always uses UTF-16LE for Windows compatibility
@@ -3941,7 +3938,11 @@ static SQLRETURN GetRowData(const SqlHandlePtr& StatementHandle, SQLUSMALLINT co
                                     OutputConverters::enabled(converters, i - 1))
                                     text = OutputConverters::text(textData, textSize);
                                 row.append(text ? text
-                                                : FetchText::from_utf16_native(textData, textSize));
+                                                : batchText
+                                                      ? steal(FetchText::decode_batch_utf16_native(
+                                                            textData, textSize))
+                                                      : FetchText::from_utf16_native(textData,
+                                                                                     textSize));
                                 LOG("SQLGetData: Appended NVARCHAR string "
                                     "length=%lu for column %d",
                                     (unsigned long)numCharsInData, i);
@@ -4407,7 +4408,8 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
 static SQLRETURN FetchSingleRow(const SqlHandlePtr& handle, py::list& row,
                                 const std::string& charEncoding,
                                 const std::string& wcharEncoding, int charCtype,
-                                py::handle messages, py::handle converters = {}) {
+                                py::handle messages, py::handle converters = {},
+                                bool batchText = false) {
     PERF_TIMER("FetchSingleRow");
     SQLRETURN ret = SQL_ERROR;
     ResultMetadataFailureGuard metadataFailure(handle->resultMetadata, ret);
@@ -4433,7 +4435,7 @@ static SQLRETURN FetchSingleRow(const SqlHandlePtr& handle, py::list& row,
                                   ? static_cast<SQLSMALLINT>(snapshot.metadata->columns.size())
                                   : SQLNumResultCols_wrap(handle, messages);
         ret = GetRowData(handle, colCount, row, charEncoding, wcharEncoding, charCtype, messages,
-                          snapshot, true, converters);
+                          snapshot, true, converters, batchText);
     }
     return ret;
 }
@@ -5236,7 +5238,7 @@ SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetch
     if (singleRowEligible) {
         py::list row;
         ret = FetchSingleRow(StatementHandle, row, charEncoding, wcharEncoding, charCtype, messages,
-                              converters);
+                              converters, true);
         if (SQL_SUCCEEDED(ret))
             rows.append(row);
         return ret;
