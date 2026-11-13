@@ -717,7 +717,7 @@ inline py::object fetch(PyObject* self, Context* context, Mode mode,
         return fallback(self, rt, mode, args, nargs, keywords);
 
     if (mode == Mode::Many) {
-        if (!single_size(*plan, args, nargs, keywords) || !plan->manyEligible)
+        if (!single_size(*plan, args, nargs, keywords))
             return fallback(self, rt, mode, args, nargs, keywords);
         auto metadata = plan->handle->resultMetadata.snapshot();
         if (metadata.generation != plan->metadata.generation ||
@@ -729,8 +729,25 @@ inline py::object fetch(PyObject* self, Context* context, Mode mode,
 
     PERF_TIMER("NativeCursor::fetch");
     py::list values;
-    SQLRETURN ret = FetchSingleRow(plan->handle, values, plan->charEncoding,
-                                   plan->wideEncoding, plan->charCtype, plan->at(Messages));
+    SQLRETURN ret;
+    if (mode == Mode::Many && !plan->manyEligible) {
+        // Keep batch decoding (including malformed-text handling), but complete
+        // size-one reads here so ordinary counter writes do not invalidate the plan.
+        py::list rows;
+        ret = FetchMany_wrap(plan->handle, rows, 1, plan->charEncoding,
+                             plan->wideEncoding, plan->charCtype, plan->at(Messages));
+        if (!current(self, context, state, *plan, rt) ||
+            (!SQL_SUCCEEDED(ret) && ret != SQL_NO_DATA))
+            return py::reinterpret_borrow<py::object>(self).attr("_complete_fetchmany")(rows, ret);
+        if (PyList_GET_SIZE(rows.ptr()))
+            values = py::reinterpret_borrow<py::list>(PyList_GET_ITEM(rows.ptr(), 0));
+        else
+            ret = SQL_NO_DATA;
+    } else {
+        ret = FetchSingleRow(plan->handle, values, plan->charEncoding,
+                              plan->wideEncoding, plan->charCtype, plan->at(Messages),
+                              {}, mode == Mode::Many);
+    }
     // A codec, finalizer, another thread or reentrant callback can mutate state
     // while SQLFetch releases the GIL. Complete the consumed row, never refetch it.
     if (!current(self, context, state, *plan, rt) ||
