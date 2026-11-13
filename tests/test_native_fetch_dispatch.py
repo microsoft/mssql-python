@@ -243,12 +243,13 @@ def test_native_names_accept_plain_tuple_but_not_custom_subclass(connection):
 
 
 @pytest.mark.parametrize("cycle", ("plain", "cursor"))
-def test_names_plan_gc_invalidation_completes_once(conn_str, cycle):
+@pytest.mark.parametrize("preparation", ("names", "converter"))
+def test_plan_gc_invalidation_completes_once(conn_str, cycle, preparation):
     _redesign_runtime()
-    _redesign_subprocess("_names_plan_gc_invalidation", cycle)
+    _redesign_subprocess("_plan_gc_invalidation", cycle, preparation)
 
 
-def _names_plan_gc_invalidation(cycle):
+def _plan_gc_invalidation(cycle, preparation):
     import os
     from mssql_python.cursor import _NATIVE_FETCH_RUNTIME
 
@@ -270,8 +271,27 @@ def _names_plan_gc_invalidation(cycle):
 
         with _native_fetch_counters() as profiling, connection.cursor() as cursor:
             warm(cursor, "fetchone")
-            names = tuple(cursor._cached_result_columns)
-            cursor._cached_result_columns = names
+            calls = []
+
+            def convert(raw):
+                calls.append(raw)
+                connection.remove_output_converter(mssql_python.SQL_INTEGER)
+                return raw * 10
+
+            if preparation == "converter":
+                connection.add_output_converter(mssql_python.SQL_INTEGER, convert)
+                assert cursor.fetchone()[0] == 30
+                assert calls == [3]
+                with _fetchone_window(profiling) as refresh:
+                    assert cursor.fetchone()[0] == 4
+                _assert_fetchone_counts(refresh, prepare=0, native=0, fallback=1, sql=1)
+                assert cursor._cached_converter_map == ()
+                assert cursor._cached_converters_generation == connection._converters_generation
+                expected = 5
+            else:
+                cursor._cached_result_columns = tuple(cursor._cached_result_columns)
+                expected = 3
+            names = cursor._cached_result_columns
             collections = []
 
             def collect_during_policy(frame, event, argument):
@@ -290,16 +310,20 @@ def _names_plan_gc_invalidation(cycle):
             assert collections and collections[0] > 0
             if cycle == "cursor":
                 assert reference() is None
-            assert row[0] == 3 and row._column_names is names
-            assert cursor.rowcount == 3 and cursor.rownumber == 2
+            assert row[0] == expected and row._column_names is names
+            assert cursor.rowcount == expected and cursor.rownumber == expected - 1
             fallback = int(cycle == "cursor")
             _assert_fetchone_counts(
                 observation, prepare=1, native=1 - fallback, fallback=fallback, sql=1
             )
-            assert cursor.fetchone()[0] == 4
-            assert cursor.fetchone()[0] == 5
+            assert observation["python"].get(convert.__code__, 0) == 0
+            if preparation == "converter":
+                assert calls == [3]
+            for remaining in range(expected + 1, 6):
+                assert cursor.fetchone()[0] == remaining
             assert cursor.fetchone() is None
-        assert row[0] == 3 and row._column_names is names
+        assert row[0] == expected and row._column_names is names
+        assert dict(row._mapping) == {"n": expected}
 
 
 @pytest.mark.parametrize("sql_type", ("CHAR", "VARCHAR", "NCHAR", "NVARCHAR"))
@@ -752,6 +776,9 @@ def test_converter_callback_mutation_retains_row_stage(connection, method):
             _assert_fetchone_counts(refresh, prepare=0, native=0, fallback=1, sql=1)
             assert cursor._cached_converter_map == ()
             assert cursor._cached_converters_generation == connection._converters_generation
+            # Prior watched cursor cycles can invalidate a cold plan during GC.
+            # Measure stable reenable here; the GC test covers that safe fallback.
+            gc.collect()
         with _fetchone_window(profiling, tracked) as reenabled:
             assert value(read(cursor, method), method) == 5
         if tracked:
