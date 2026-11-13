@@ -7,7 +7,7 @@ This module provides helper functions for the mssql_python package.
 import re
 import threading
 import locale
-from typing import Any, Union, Tuple, Optional
+from typing import Any, Mapping, Union, Tuple, Optional
 from mssql_python import ddbc_bindings
 from mssql_python.exceptions import raise_exception
 from mssql_python.logging import logger
@@ -251,7 +251,7 @@ def validate_attribute_value(
     return True, None, sanitized_attr, sanitized_val
 
 
-def _resolve_app_name(user_app_name: Optional[str]) -> str:
+def _resolve_app_name(user_app_name: object) -> str:
     """Resolve a raw application name once, before transport serialization."""
     if user_app_name is None:
         return _DEFAULT_APP_NAME
@@ -326,7 +326,9 @@ _PYCORE_SECONDS_TO_MILLISECONDS_KEYS = {
 _PYCORE_UINT32_MAX = 2**32 - 1
 
 
-def connstr_to_pycore_params(params: dict, *, strict: bool = False) -> dict:
+def connstr_to_pycore_params(
+    params: Mapping[str, str | int | None], *, strict: bool = False
+) -> dict[str, str | int]:
     """Translate parsed ODBC connection-string parameters for mssql-py-core.
 
     Used by async connection setup and by bulk copy when it opens a separate
@@ -344,7 +346,7 @@ def connstr_to_pycore_params(params: dict, *, strict: bool = False) -> dict:
     # path the parser validates keywords first (validate_keywords=True),
     # but bulkcopy parses with validation off, so this mapping is the
     # authoritative filter in that path.
-    pycore_params: dict = {}
+    pycore_params: dict[str, str | int] = {}
     seen_pycore_keys = set()
 
     for connstr_key, raw_value in params.items():

@@ -17,14 +17,28 @@ Size-one fetchmany keeps text-bearing results on the batch path, whose
 platform-specific decoding and malformed-text fallbacks differ from fetchone.
 """
 
+from __future__ import annotations
+
 import sys
-from types import FunctionType, GetSetDescriptorType
+from collections.abc import Callable, Mapping, Sequence
+from types import CodeType, FunctionType, GetSetDescriptorType
+from typing import Any, TYPE_CHECKING
 
 from mssql_python import ddbc_bindings, perf_timer
 
+if TYPE_CHECKING:
+    from mssql_python.cursor import Cursor
+    from mssql_python.row import Row
+
 
 class _Policy:
-    def __init__(self, cursor_type, row_type, namespace, fallbacks):
+    def __init__(
+        self,
+        cursor_type: type[Cursor],
+        row_type: type[Row],
+        namespace: dict[str, Any],
+        fallbacks: Sequence[Callable[..., Any]],
+    ) -> None:
         self.cursor_type = cursor_type
         self.row_type = row_type
         self.column_names_type = namespace["_ColumnNames"]
@@ -39,7 +53,15 @@ class _Policy:
             dict.fromkeys((*cursor_type.__mro__, *row_type.__mro__, *type(self.logger).__mro__))
         )
         self.class_state = [(cls, dict(vars(cls))) for cls in self.classes]
-        self.functions = []
+        self.functions: list[
+            tuple[
+                FunctionType,
+                CodeType,
+                tuple[Any, ...] | None,
+                dict[str, Any] | None,
+                dict[str, Any],
+            ]
+        ] = []
         functions = [*fallbacks, namespace["check_error"]]
         for _, attributes in self.class_state:
             for value in attributes.values():
@@ -95,7 +117,7 @@ class _Policy:
             self.observer, self.dicts, self.classes + (type(self.logger),)
         )
 
-    def __call__(self, cursor, data):
+    def __call__(self, cursor: Cursor, data: dict[str, Any]) -> tuple[object, ...] | None:
         # Watch even an ineligible cursor so restoring its state can re-enable it.
         connection = data.get("_connection")
         if type(cursor) is not self.cursor_type or connection is None:
@@ -126,7 +148,7 @@ class _Policy:
         if self._conversion_ineligible(data):
             return None
         for cls, original in self.class_state:
-            current = vars(cls)
+            current: Mapping[str, Any] = vars(cls)
             if len(current) != len(original) or any(
                 name not in current or current[name] is not value
                 for name, value in original.items()
@@ -245,7 +267,11 @@ class _Policy:
 
 
 class _InstallRollbackError(RuntimeError):
-    def __init__(self, installation_error, cleanup_errors):
+    def __init__(
+        self,
+        installation_error: BaseException,
+        cleanup_errors: Sequence[tuple[str, BaseException]],
+    ) -> None:
         self.installation_error = installation_error
         self.cleanup_errors = tuple(cleanup_errors)
         super().__init__(
@@ -255,7 +281,9 @@ class _InstallRollbackError(RuntimeError):
         )
 
 
-def install(cursor_type, row_type, namespace):
+def install(
+    cursor_type: type[Cursor], row_type: type[Row], namespace: dict[str, Any]
+) -> tuple[object, ...] | None:
     observer = ddbc_bindings._fetch_observer
     if observer is None or not isinstance(getattr(row_type, "_fast_create", None), FunctionType):
         return None

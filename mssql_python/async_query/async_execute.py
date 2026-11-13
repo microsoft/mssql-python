@@ -1,7 +1,7 @@
 """Asynchronous statement execution through mssql-py-core."""
 
 import asyncio
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
 from ..exceptions import OperationalError, ProgrammingError
@@ -10,10 +10,11 @@ from ..row import Row
 from .exception_translator import translate_py_core_exceptions
 
 if TYPE_CHECKING:
+    from .._pycore_types import AsyncCoreCursor
     from .async_cursor import _AsyncCursor  # pyright: ignore[reportPrivateUsage]
 
 
-def _get_py_core_async_cursor(cursor: "_AsyncCursor") -> Any:
+def _get_py_core_async_cursor(cursor: "_AsyncCursor") -> "AsyncCoreCursor":
     return cursor._py_core_async_cursor  # pyright: ignore[reportPrivateUsage]
 
 
@@ -98,7 +99,7 @@ async def executemany(
     cursor._check_closed()  # pyright: ignore[reportPrivateUsage]
     iteration_error: BaseException | None = None
 
-    def parameter_rows():
+    def parameter_rows() -> Iterator[Sequence[Any] | Mapping[str, Any]]:
         nonlocal iteration_error
         try:
             iterator = iter(seq_of_parameters)

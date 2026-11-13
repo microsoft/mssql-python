@@ -27,6 +27,24 @@ import sys
 from mssql_python import connect, InterfaceError
 
 
+def test_closed_native_connection_typing_guards() -> None:
+    from mssql_python import Connection, Cursor, SQL_ATTR_ACCESS_MODE, SQL_DRIVER_NAME
+
+    connection = Connection.__new__(Connection)
+    connection._closed = True
+    connection._conn = None
+    with pytest.raises(InterfaceError, match="closed"):
+        _ = connection.autocommit
+    with pytest.raises(InterfaceError, match="closed"):
+        connection.setautocommit(True)
+    with pytest.raises(InterfaceError, match="closed"):
+        connection.set_attr(SQL_ATTR_ACCESS_MODE, 0)
+    with pytest.raises(InterfaceError, match="closed"):
+        connection.getinfo(SQL_DRIVER_NAME)
+    with pytest.raises(InterfaceError, match="closed"):
+        Cursor(connection)
+
+
 def drop_table_if_exists(cursor, table_name):
     """Drop the table if it exists"""
     try:

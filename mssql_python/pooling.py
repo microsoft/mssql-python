@@ -133,7 +133,7 @@ class PoolingManager:
 
 
 @atexit.register
-def shutdown_pooling():
+def shutdown_pooling() -> None:
     """
     Shutdown pooling during application exit.
 

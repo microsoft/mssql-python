@@ -80,7 +80,7 @@ from .pooling import PoolingManager
 from .odbc_provider import ProviderManager
 
 
-def get_native_provider_info() -> dict:
+def get_native_provider_info() -> dict[str, object]:
     """Return the selected native provider for diagnostics.
 
     Reports the provider ``id``, package ``version``, resolved ``driver_path``,
@@ -91,17 +91,17 @@ def get_native_provider_info() -> dict:
 
 
 # Global registry for tracking active connections (using weak references)
-_active_connections = weakref.WeakSet()
+_active_connections: weakref.WeakSet[Connection] = weakref.WeakSet()
 _connections_lock = threading.Lock()
 
 
-def _register_connection(conn):
+def _register_connection(conn: Connection) -> None:
     """Register a connection for cleanup before shutdown."""
     with _connections_lock:
         _active_connections.add(conn)
 
 
-def _cleanup_connections():
+def _cleanup_connections() -> None:
     """
     Cleanup function called by atexit to close all active connections.
 
@@ -579,7 +579,7 @@ def pooling(max_size: int = 100, idle_timeout: int = 600, enabled: bool = True) 
 _original_module_setattr = sys.modules[__name__].__setattr__
 
 
-def _custom_setattr(name, value):
+def _custom_setattr(name: str, value: object) -> None:
     if name == "lowercase":
         with _settings_lock:
             _settings.lowercase = bool(value)
@@ -590,7 +590,7 @@ def _custom_setattr(name, value):
 
 
 # Replace the module's __setattr__ with our custom version
-sys.modules[__name__].__setattr__ = _custom_setattr
+setattr(sys.modules[__name__], "__setattr__", _custom_setattr)
 
 
 # Create a custom module class that uses properties instead of __setattr__

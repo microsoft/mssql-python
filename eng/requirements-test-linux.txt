@@ -1149,7 +1149,9 @@ pyarrow==25.0.1 ; python_full_version < '3.15' \
     --hash=sha256:eb6203482ff3746a5632303a7279ae0b5a304c46985b49ed1378cb350ea6728d \
     --hash=sha256:f3831aaa25c67a99f99dc8b05873cb9d64560390372e2aa197ce9dd4a3f06a44 \
     --hash=sha256:f729cfdbd36fd99d543b67a914d2de044c84ebe45be8b34902b299b608c15c8f
-    # via -r eng/../requirements.txt
+    # via
+    #   -r eng/../requirements.txt
+    #   pyarrow-stubs
 pyarrow==26.0.0 ; python_full_version >= '3.15' \
     --hash=sha256:01c863a18bd9c8412453dd0d92de6d0ee7b2b3d6fb079d9734a4b2a3c8bd4453 \
     --hash=sha256:0cccd36e00ea3afeb52ded61f2721ce71f604853d70c45365c58324eb773d6ae \
@@ -1201,6 +1203,12 @@ pyarrow==26.0.0 ; python_full_version >= '3.15' \
     --hash=sha256:f800e9e722c145ccd18012d82a864cb21bfee4ba4ceffde77100d25eced511a9 \
     --hash=sha256:fcdd1e04982637c6042337d3e24d472f938f01fdc502e2b994844b726d12c3f4 \
     --hash=sha256:ff1e816af7abff71f289242e109217036723ce36aca74ad6691e52d964a74afa
+    # via
+    #   -r eng/../requirements.txt
+    #   pyarrow-stubs
+pyarrow-stubs==20.0.0.20260819 \
+    --hash=sha256:150710a72248bc834bf048d3092713f070904a4af76d40289c43afb3ee189823 \
+    --hash=sha256:297e60b6e5314739c082b4757d090d8be6047465510eb0684ca954ef7ea58be3
     # via -r eng/../requirements.txt
 pybind11==3.1.0 \
     --hash=sha256:a1cc06b524ab3edca51f8ad3895f9c4fa20b8b19283173dff4ae781449dc9639 \
