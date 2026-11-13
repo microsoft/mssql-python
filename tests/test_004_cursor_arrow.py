@@ -1445,43 +1445,46 @@ def test_arrow_reader_cleanup_survives_diag_drain_failure(conn_str, monkeypatch)
         conn.close()
 
 
-def test_arrow_reader_cleanup_survives_close_cursor_failure(conn_str, monkeypatch):
+def test_arrow_reader_cleanup_survives_close_cursor_failure(cursor, monkeypatch):
     """If ``hstmt._close_cursor()`` raises inside the cleanup generator, the
     handler swallows and continues to the bookkeeping-reset step.  A
     ``SQLFreeStmt(SQL_CLOSE)`` failure must be a WARNING, not a crash."""
+    from unittest.mock import Mock
     from mssql_python import cursor as cursor_mod
 
-    conn = mssql_python.connect(conn_str)
-    try:
-        tmp = conn.cursor()
-        reader = tmp.execute("select top 5 1 a from sys.objects").arrow_reader(batch_size=2)
-        _ = reader.read_next_batch()
+    reader = cursor.execute("select top 5 1 a from sys.objects").arrow_reader(batch_size=2)
+    assert reader.read_next_batch().num_rows == 2
+    original_handle = cursor.hstmt
+    failure = RuntimeError("simulated SQLFreeStmt failure")
+    close_attempts = []
+    warning = Mock()
+    cursor.rowcount = 5
+    assert cursor._has_result_set
 
-        real_hstmt = tmp.hstmt
+    def fail_close(handle):
+        close_attempts.append(handle)
+        raise failure
 
-        class FakeHstmt:
-            # reader.close() invokes SQLCancel via hstmt._cancel() before it
-            # closes the generator; provide a no-op so we exercise the SQL_CLOSE
-            # path specifically.
-            def _cancel(self_inner):
-                pass
+    with monkeypatch.context() as patch:
+        patch.setattr(type(original_handle), "_close_cursor", fail_close)
+        patch.setattr(cursor_mod.logger, "warning", warning)
+        reader.close()
+        reader.close()
 
-            def _close_cursor(self_inner):
-                raise RuntimeError("simulated SQLFreeStmt failure")
-
-        tmp.hstmt = FakeHstmt()
-        # Neutralize the diag drain — it would crash on our fake hstmt.
-        monkeypatch.setattr(cursor_mod.ddbc_bindings, "DDBCSQLGetAllDiagRecords", lambda _h: [])
-        try:
-            reader.close()
-            assert reader.closed is True
-        finally:
-            # Restore the real hstmt before closing tmp so ODBC teardown is clean.
-            tmp.hstmt = real_hstmt
-            monkeypatch.undo()
-            tmp.close()
-    finally:
-        conn.close()
+    assert cursor.hstmt is original_handle
+    assert close_attempts == [original_handle]
+    warning.assert_called_once()
+    message, error = warning.call_args.args
+    assert "arrow_reader cleanup: _close_cursor failed" in message
+    assert "server-side cursor may remain open" in message
+    assert error is failure
+    assert reader.closed
+    assert reader._generator is None
+    assert cursor.rowcount == -1
+    assert cursor._rownumber == -1
+    assert not cursor._has_result_set
+    cursor.execute("select 99")
+    assert cursor.fetchone()[0] == 99
 
 
 def test_arrow_reader_cleanup_survives_bookkeeping_reset_failure(conn_str, monkeypatch):
