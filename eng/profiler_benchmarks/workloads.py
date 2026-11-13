@@ -194,6 +194,33 @@ def scalar_fetchval(conn, table, ctx):
             ctx.disable()
 
 
+def fetchmany_one_text(conn, table, ctx):
+    """Collect mixed rows one at a time; setup and validation are not timed."""
+    expected = [(index, f"unicode_row_{index}") for index in range(10_000)]
+    with conn.cursor() as cursor:
+        try:
+            cursor.execute(f"SELECT TOP (10000) int_col, nvarchar_col FROM {table} ORDER BY id")
+            rows = []
+            ctx.enable()
+            start = time.perf_counter()
+            while batch := cursor.fetchmany(1):
+                rows.extend(batch)
+            wall_ms = (time.perf_counter() - start) * 1000
+            cpp, py = ctx.collect()
+            assert [tuple(row) for row in rows] == expected
+            assert all(type(row[0]) is int and type(row[1]) is str for row in rows)
+            assert not cursor.messages, "Clean size-one fetch unexpectedly produced diagnostics"
+            return dict(
+                title="Mixed text / fetchmany(1)",
+                wall_ms=wall_ms,
+                cpp=cpp,
+                py=py,
+                detail="Rows: 10000; types: int,nvarchar; API: fetchmany(1)",
+            )
+        finally:
+            ctx.disable()
+
+
 def output_converter_fetch(conn, table, ctx, batched=False):
     """Time fetching with a UTF-16LE converter; validate retained rows afterward."""
     from mssql_python import SQL_WVARCHAR
@@ -308,5 +335,6 @@ def registry():
     result["scalar_fetchval"] = (scalar_fetchval, True)
     result["output_converter_fetchall"] = (output_converter_fetch, True)
     result["output_converter_fetchmany1000"] = (partial(output_converter_fetch, batched=True), True)
+    result["fetchmany_one_text"] = (fetchmany_one_text, True)
     result["row_to_dict"] = (row_to_dict, True)
     return result
