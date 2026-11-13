@@ -837,35 +837,52 @@ def test_arrow_reader_native_cancel_boundary(outcome):
     _run_arrow_probe("_arrow_native_cancel_probe", outcome)
 
 
+@pytest.mark.parametrize("requested", [False, True])
+def test_arrow_interposition_requires_compiled_controls(monkeypatch, requested):
+    import ctypes
+    from mssql_python import ddbc_bindings
+
+    monkeypatch.delattr(ddbc_bindings.module, "_arrow_test_pointer_addresses", raising=False)
+    if requested:
+        monkeypatch.setenv("MSSQL_ARROW_TEST_INTERPOSITION", "1")
+    else:
+        monkeypatch.delenv("MSSQL_ARROW_TEST_INTERPOSITION", raising=False)
+
+    def unexpected_library_lookup(*args):
+        pytest.fail("Exported ODBC globals must not bypass compiled test controls")
+
+    monkeypatch.setattr(ctypes, "CDLL", unexpected_library_lookup)
+    expected = pytest.fail.Exception if requested else pytest.skip.Exception
+    with pytest.raises(expected, match="native test controls"):
+        _require_arrow_interposition()
+
+
 def _require_arrow_interposition():
     import os
+    from mssql_python import ddbc_bindings
 
-    try:
-        _arrow_odbc_pointers()
-    except ValueError:
+    if not hasattr(ddbc_bindings.module, "_arrow_test_pointer_addresses"):
         if os.environ.get("MSSQL_ARROW_TEST_INTERPOSITION", "").upper() in ("1", "ON"):
             pytest.fail("Arrow interposition was requested but native test controls are missing")
-        pytest.skip("Requires exported ODBC function pointers")
+        pytest.skip("Requires compiled Arrow native test controls")
 
 
 def _arrow_odbc_pointers():
     import ctypes
     from mssql_python import ddbc_bindings
 
-    addresses = getattr(ddbc_bindings.module, "_arrow_test_pointer_addresses", None)
+    addresses = ddbc_bindings.module._arrow_test_pointer_addresses
     names = ("SQLFetch_ptr", "SQLCancel_ptr", "SQLGetDiagRec_ptr")
-    if addresses is not None:
-        return {name: ctypes.c_void_p.from_address(addresses[name]) for name in names}
-    library = ctypes.CDLL(ddbc_bindings.module.__file__)
-    return {name: ctypes.c_void_p.in_dll(library, name) for name in names}
+    return {name: ctypes.c_void_p.from_address(addresses[name]) for name in names}
 
 
-def test_arrow_reader_cancels_blocked_driver_fetch():
+@pytest.mark.parametrize("cancel_result", ["driver", "success_with_info"])
+def test_arrow_reader_cancels_blocked_driver_fetch(cancel_result):
     _require_arrow_interposition()
-    _run_arrow_probe("_arrow_blocked_driver_fetch_probe", timeout=45)
+    _run_arrow_probe("_arrow_blocked_driver_fetch_probe", cancel_result, timeout=45)
 
 
-def _arrow_blocked_driver_fetch_probe():
+def _arrow_blocked_driver_fetch_probe(cancel_result):
     import ctypes
     import os
     import threading
@@ -896,6 +913,8 @@ def _arrow_blocked_driver_fetch_probe():
     @odbc_call
     def cancel(handle):
         result = real_cancel(handle)
+        if cancel_result == "success_with_info" and result in (0, 1):
+            result = 1
         cancel_results.append(result)
         cancelled.set()
         return result
@@ -974,7 +993,8 @@ def _arrow_blocked_driver_fetch_probe():
                 assert active.is_set(), "the blocked operation was not SQLFetch"
                 reader.close()
                 assert finished.wait(5), "real driver fetch did not terminate after SQLCancel"
-                assert cancelled.is_set() and cancel_results == [0], cancel_results
+                assert cancelled.is_set() and len(cancel_results) == 1, cancel_results
+                assert cancel_results[0] in (0, 1), cancel_results
                 assert not errors, errors
                 # The blocking transaction is deliberately still open.
                 cursor.execute("select 99")

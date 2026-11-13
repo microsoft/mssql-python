@@ -98,6 +98,9 @@ For isolated Arrow cancellation-boundary tests on Windows, set
 `MSSQL_ARROW_TEST_INTERPOSITION=1` before running `build.bat`. PR validation
 enables this test-only pointer access so those cases do not skip on Windows.
 It is off by default; unset it and rebuild before producing release wheels.
+Tests require the compiled `_arrow_test_pointer_addresses` API; exported ODBC
+globals alone never enable interposition. Missing controls skip normally and
+fail when `MSSQL_ARROW_TEST_INTERPOSITION=1` or `ON` was explicitly requested.
 The live-fetch probe observes a lock-blocked request through
 `sys.dm_exec_requests`; its test login needs `VIEW SERVER PERFORMANCE STATE`
 on SQL Server 2022+ (`VIEW SERVER STATE` on older versions). Windows PR CI
