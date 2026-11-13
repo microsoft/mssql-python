@@ -154,6 +154,25 @@ def test_fetchmany_one_decimal_null_preserves_decimal_context(connection):
 
 
 @pytest.mark.parametrize("method", ("fetchone", "fetchmany_one"))
+@pytest.mark.parametrize("width", (255, 256))
+def test_single_row_wide_text_buffer_boundary(connection, method, width):
+    text = "\ufeff\U0001f600\x00" + "x" * (width - 4)
+    with connection.cursor() as cursor:
+        cursor.execute(
+            f"SELECT n, CAST(CASE WHEN n = 2 THEN NULL ELSE ? END AS NVARCHAR({width})) AS text "
+            "FROM (VALUES (1), (2), (3)) AS v(n) ORDER BY n",
+            text,
+        )
+        rows = [read_one(cursor, method) for _ in range(3)]
+        assert [tuple(row) for row in rows] == [(1, text), (2, None), (3, text)]
+        assert type(rows[0][1]) is str
+        assert rows[0]._values is not rows[2]._values
+        assert read_one(cursor, method) is None
+        assert cursor.rowcount == 3
+        assert cursor.rownumber == 2
+
+
+@pytest.mark.parametrize("method", ("fetchone", "fetchmany_one"))
 def test_partial_native_metadata_is_not_a_result_column_count(connection, method):
     with connection.cursor() as cursor:
         cursor.execute(
@@ -316,9 +335,19 @@ def test_fetchmany_one_text_keeps_batch_conversion(connection, sql_type):
         finally:
             profiling.disable()
         counts = {name: stats["calls"] for name, stats in profiling.get_stats().items()}
-        assert counts.get("ddbc::NativeCursor::fetch", 0) == 0
-        assert counts.get("ddbc::FetchSingleRow", 0) == 0
-        assert counts["ddbc::FetchMany_wrap"] == 3
-        assert counts["ddbc::FetchBatchData"] == 3
+        if ddbc_bindings._fetch_observer is not None:
+            assert counts["ddbc::NativeCursor::fetch"] == 3
+            assert counts.get("ddbc::NativeCursor::prepare", 0) == 0
+            assert counts.get("ddbc::NativeCursor::fallback", 0) == 0
+        if sql_type in ("NCHAR", "NVARCHAR"):
+            assert counts["ddbc::FetchSingleRow"] == 3
+            assert counts.get("ddbc::FetchMany_wrap", 0) == (
+                3 if ddbc_bindings._fetch_observer is None else 0
+            )
+            assert counts.get("ddbc::FetchBatchData", 0) == 0
+        else:
+            assert counts.get("ddbc::FetchSingleRow", 0) == 0
+            assert counts["ddbc::FetchMany_wrap"] == 3
+            assert counts["ddbc::FetchBatchData"] == 3
         assert cursor.rowcount == 4
         assert cursor.rownumber == 3
