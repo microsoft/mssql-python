@@ -68,7 +68,7 @@ struct TableParamState {
             lengths[i] = 0;
             SQLLEN* lengthOrIndicator = nullptr;
             PrepareParamBuffer(row[i], converted, rowBuffers, "utf-8", static_cast<int>(i),
-                               data[i], lengths[i], lengthOrIndicator);
+                               data[i], lengths[i], lengthOrIndicator, /*tableCell=*/true);
             if (lengthOrIndicator) lengths[i] = *lengthOrIndicator;
             switch (declared.paramCType) {
                 case SQL_C_BIT: case SQL_C_TINYINT: case SQL_C_UTINYINT:

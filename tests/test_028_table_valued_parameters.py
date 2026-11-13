@@ -149,6 +149,22 @@ def test_reuse_with_empty_and_changing_sources(cursor, tvp_schema):
         assert [tuple(row) for row in cursor.fetchall()] == rows
 
 
+def test_tvp_rebinds_after_scalar_reuse_and_recovers(cursor, tvp_schema):
+    scalar_sql = "SELECT CAST(? AS INT)"
+    tvp_sql = f"EXEC [{tvp_schema}].Echo ?, ?, ?"
+    for seed in range(3):
+        for value in (seed, seed + 1):
+            assert cursor.execute(scalar_sql, value).fetchone()[0] == value
+        for rows in ([(seed, "value")], [], [(seed + 1, None)]):
+            cursor.execute(tvp_sql, 10, items(tvp_schema, iter(rows)), "!")
+            assert [tuple(row) for row in cursor.fetchall()] == [
+                (value + 10, None if label is None else label + "!") for value, label in rows
+            ]
+        with pytest.raises(ValueError, match="cells"):
+            cursor.execute(tvp_sql, 10, items(tvp_schema, iter([(seed,)])), "!")
+        assert cursor.execute(scalar_sql, seed).fetchone()[0] == seed
+
+
 def test_declared_text_size_failure_recovers(cursor, tvp_schema):
     value = TableValuedParameter(
         "Items",

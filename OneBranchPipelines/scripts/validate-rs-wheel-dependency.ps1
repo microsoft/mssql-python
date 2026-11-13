@@ -3,7 +3,9 @@ param(
     [string]$WheelsDir,
 
     [Parameter(Mandatory = $true)]
-    [string]$VersionFile
+    [string]$VersionFile,
+
+    [string]$ReceiptFile
 )
 
 $ErrorActionPreference = 'Stop'
@@ -11,6 +13,12 @@ $ErrorActionPreference = 'Stop'
 $expectedVersion = (Get-Content $VersionFile -Raw).Trim()
 if (-not $expectedVersion) {
     throw "Version file is empty: $VersionFile"
+}
+if ($ReceiptFile) {
+    $receipt = Get-Content -LiteralPath $ReceiptFile -Raw | ConvertFrom-Json
+    if ($receipt.distribution_version -cne $expectedVersion) {
+        throw 'The wheel dependency version and runtime receipt disagree.'
+    }
 }
 
 $wheels = @(Get-ChildItem $WheelsDir -Filter 'mssql_python-*.whl' -File)

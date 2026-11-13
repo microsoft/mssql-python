@@ -2,5 +2,6 @@
 pip
 pybind11
 pytest
+PyYAML
 setuptools
 wheel
