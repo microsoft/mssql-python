@@ -226,6 +226,9 @@ def test_native_names_accept_plain_tuple_but_not_custom_subclass(connection):
 
     with _native_fetch_counters() as profiling, connection.cursor() as cursor:
         for names_type in (tuple, CustomNames):
+            # Collect prior watched cursor cycles before asserting counts for a
+            # cold plan with no concurrent invalidation.
+            gc.collect()
             warm(cursor, "fetchone")
             names = names_type(cursor._cached_result_columns)
             cursor._cached_result_columns = names
@@ -237,6 +240,114 @@ def test_native_names_accept_plain_tuple_but_not_custom_subclass(connection):
             _assert_fetchone_counts(
                 observation, prepare=1, native=eligible, fallback=1 - eligible, sql=1
             )
+
+
+@pytest.mark.parametrize("cycle", ("plain", "cursor"))
+@pytest.mark.parametrize("preparation", ("names", "converter"))
+def test_plan_gc_invalidation_completes_once(conn_str, cycle, preparation):
+    _redesign_runtime()
+    _redesign_subprocess("_plan_gc_invalidation", cycle, preparation)
+
+
+def _plan_gc_invalidation(cycle, preparation):
+    import os
+    from mssql_python.cursor import _NATIVE_FETCH_RUNTIME
+
+    gc.collect()
+    policy_code = type(_NATIVE_FETCH_RUNTIME[2]).__call__.__code__
+    with mssql_python.connect(os.environ["DB_CONNECTION_STRING"], timeout=5) as connection:
+        held = []
+        if cycle == "cursor":
+            prior = connection.cursor()
+            warm(prior, "fetchone")
+            prior.__dict__["cycle"] = prior
+            prior.close()
+            reference = weakref.ref(prior)
+        else:
+            prior = {}
+            prior["cycle"] = prior
+        held.append(prior)
+        del prior
+
+        with _native_fetch_counters() as profiling, connection.cursor() as cursor:
+            warm(cursor, "fetchone")
+            calls = []
+
+            def convert(raw):
+                calls.append(raw)
+                connection.remove_output_converter(mssql_python.SQL_INTEGER)
+                return raw * 10
+
+            if preparation == "converter":
+                connection.add_output_converter(mssql_python.SQL_INTEGER, convert)
+                assert cursor.fetchone()[0] == 30
+                assert calls == [3]
+                with _fetchone_window(profiling) as refresh:
+                    assert cursor.fetchone()[0] == 4
+                _assert_fetchone_counts(refresh, prepare=0, native=0, fallback=1, sql=1)
+                assert cursor._cached_converter_map == ()
+                assert cursor._cached_converters_generation == connection._converters_generation
+                expected = 5
+            else:
+                cursor._cached_result_columns = tuple(cursor._cached_result_columns)
+                expected = 3
+            names = cursor._cached_result_columns
+            collections = []
+
+            def collect_during_policy(frame, event, argument):
+                if event == "call" and frame.f_code is policy_code and not collections:
+                    held.clear()
+                    collections.append(gc.collect())
+                return collect_during_policy
+
+            previous = sys.gettrace()
+            sys.settrace(collect_during_policy)
+            try:
+                with _fetchone_window(profiling) as observation:
+                    row = cursor.fetchone()
+            finally:
+                sys.settrace(previous)
+            assert collections and collections[0] > 0
+            if cycle == "cursor":
+                assert reference() is None
+            assert row[0] == expected and row._column_names is names
+            assert cursor.rowcount == expected and cursor.rownumber == expected - 1
+            fallback = int(cycle == "cursor")
+            _assert_fetchone_counts(
+                observation, prepare=1, native=1 - fallback, fallback=fallback, sql=1
+            )
+            assert observation["python"].get(convert.__code__, 0) == 0
+            if preparation == "converter":
+                assert calls == [3]
+            for remaining in range(expected + 1, 6):
+                assert cursor.fetchone()[0] == remaining
+            assert cursor.fetchone() is None
+        assert row[0] == expected and row._column_names is names
+        assert dict(row._mapping) == {"n": expected}
+
+
+@pytest.mark.parametrize("sql_type", ("CHAR", "VARCHAR", "NCHAR", "NVARCHAR"))
+def test_warm_text_fetchmany_does_not_repeat_policy(connection, sql_type):
+    if ddbc_bindings._fetch_observer is None:
+        pytest.skip("Direct native dispatch requires supported CPython watchers")
+    from mssql_python.cursor import _NATIVE_FETCH_RUNTIME
+
+    with connection.cursor() as cursor:
+        cursor.execute(
+            f"SELECT n, CAST(N'x' AS {sql_type}(1)) AS payload "
+            "FROM (VALUES (1), (2), (3), (4)) AS v(n) ORDER BY n"
+        )
+        for n in (1, 2):
+            assert tuple(cursor.fetchmany(1)[0]) == (n, "x")
+        with _fetchone_window(None) as observation:
+            rows = cursor.fetchmany(1) + cursor.fetchmany(1)
+            assert cursor.fetchmany(1) == []
+        assert [tuple(row) for row in rows] == [(3, "x"), (4, "x")]
+        calls = observation["python"]
+        assert calls.get(type(_NATIVE_FETCH_RUNTIME[2]).__call__.__code__, 0) == 0
+        assert calls.get(_NATIVE_FETCH_RUNTIME[3][1].__code__, 0) == 0
+        assert cursor.rowcount == 4
+        assert cursor.rownumber == 3
 
 
 @pytest.mark.parametrize("method", METHODS)
@@ -665,6 +776,9 @@ def test_converter_callback_mutation_retains_row_stage(connection, method):
             _assert_fetchone_counts(refresh, prepare=0, native=0, fallback=1, sql=1)
             assert cursor._cached_converter_map == ()
             assert cursor._cached_converters_generation == connection._converters_generation
+            # Prior watched cursor cycles can invalidate a cold plan during GC.
+            # Measure stable reenable here; the GC test covers that safe fallback.
+            gc.collect()
         with _fetchone_window(profiling, tracked) as reenabled:
             assert value(read(cursor, method), method) == 5
         if tracked:
