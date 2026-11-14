@@ -51,6 +51,13 @@ struct ParamInfo {
     SQLSMALLINT paramCType = SQL_C_DEFAULT;
     SQLSMALLINT paramSQLType = SQL_UNKNOWN_TYPE;
     SQLULEN columnSize = 0;
+    // Character/binary array element width for BindParameterArray (bytes for
+    // SQL_C_CHAR/BINARY, code units for SQL_C_WCHAR). Distinct from columnSize:
+    // for SQL_NUMERIC/SQL_DECIMAL, columnSize is SQL precision (digit count)
+    // while the SQL_C_CHAR buffer must also fit sign, decimal point, leading
+    // zero, and the encoded digits (e.g. Decimal("1E-38") -> 40 chars).
+    // 0 means "derive from columnSize" (with a NUMERIC/DECIMAL fallback).
+    SQLULEN bufferSize = 0;
     SQLSMALLINT decimalDigits = 0;
     SQLLEN strLenOrInd = 0;  // Required for DAE
     bool isDAE = false;      // Indicates if we need to stream
