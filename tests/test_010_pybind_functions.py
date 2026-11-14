@@ -706,6 +706,100 @@ class TestPybindErrorScenarios:
                 pass
 
 
+@pytest.mark.skipif(not DDBC_AVAILABLE, reason="ddbc_bindings not available")
+class TestDetectParamTypesUtf16Len:
+    """utf16Len must equal the number of UTF-16 code units the wide-char binder will
+    write for each string-valued parameter, computed AFTER any in-place normalization
+    (time -> isoformat string, Decimal -> formatted string). A future arena binder sizes
+    each wide slice from utf16Len, so a wrong value here is a heap-overflow landmine.
+    Nothing consumes utf16Len yet, so these assert the detection contract directly via
+    the DetectParamTypesForTesting hook.
+
+    ODBC constants used (avoids importing the whole constants module):
+      SQL_DECIMAL = 3, SQL_C_CHAR = 1, SQL_WVARCHAR = -9, SQL_C_WCHAR = -8.
+    """
+
+    @staticmethod
+    def _detect(params, sizes=None):
+        return ddbc.DetectParamTypesForTesting(params, sizes)
+
+    def test_ascii_string_counts_each_char_once(self):
+        (info,) = self._detect(["hello"])
+        assert info.utf16Len == 5
+
+    def test_bmp_non_ascii_counts_each_codepoint_once(self):
+        # Latin-1 'é' and Greek letters are all in the BMP: one UTF-16 unit each.
+        cafe, greek = self._detect(["café", "αβγ"])
+        assert cafe.utf16Len == 4
+        assert greek.utf16Len == 3
+
+    def test_astral_char_counts_as_surrogate_pair(self):
+        # U+1F600 is astral: two UTF-16 code units (a surrogate pair).
+        two_emoji, mixed = self._detect(["😀😀", "a😀b"])
+        assert two_emoji.utf16Len == 4  # 2 astral chars -> 2 pairs
+        assert mixed.utf16Len == 4  # 'a' + pair + 'b'
+
+    def test_empty_string(self):
+        (info,) = self._detect([""])
+        assert info.utf16Len == 0
+
+    def test_time_uses_isoformat_length_after_normalization(self):
+        import datetime
+
+        # datetime.time is not a str, so a naive utf16Len would be 0. After
+        # normalization it becomes "01:02:03.000004" (15 ASCII chars).
+        (info,) = self._detect([datetime.time(1, 2, 3, 4)])
+        assert info.utf16Len == 15
+
+    def test_large_string_takes_dae_and_reports_full_utf16_len(self):
+        (info,) = self._detect(["x" * 5000])
+        assert info.isDAE is True
+        assert info.utf16Len == 5000
+
+    def test_non_string_param_has_zero_utf16_len(self):
+        # Ints/None never bind wide; utf16Len stays at its 0 default.
+        i, n = self._detect([42, None])
+        assert i.utf16Len == 0
+        assert n.utf16Len == 0
+
+    def test_setinputsizes_decimal_override_formats_then_measures(self):
+        import decimal
+
+        # Internal _inputsizes 4-tuple form: (sql_type, c_type, column_size, decimal_digits).
+        sizes = [(3, 1, 18, 2)]  # SQL_DECIMAL, SQL_C_CHAR
+        (info,) = self._detect([decimal.Decimal("12.5")], sizes)
+        assert info.utf16Len == 4  # "12.5"
+
+    def test_setinputsizes_text_override_measures_final_string(self):
+        sizes = [(-9, -8, 50, 0)]  # SQL_WVARCHAR, SQL_C_WCHAR
+        world, emoji = self._detect(["wörld", "😀"], sizes + [(-9, -8, 50, 0)])
+        assert world.utf16Len == 5
+        assert emoji.utf16Len == 2  # astral -> surrogate pair
+
+    def test_time_override_normalizes_then_measures(self):
+        import datetime
+
+        # A wide-text override on a time still routes through NormalizeTimeParam, so
+        # utf16Len must reflect the isoformat string, not the (non-str) time object.
+        sizes = [(-9, -8, 32, 0)]  # SQL_WVARCHAR, SQL_C_WCHAR
+        (info,) = self._detect([datetime.time(1, 2, 3, 4)], sizes)
+        assert info.utf16Len == 15  # "01:02:03.000004"
+
+    def test_caller_param_list_is_not_mutated(self):
+        import datetime
+
+        # DetectParamTypes mutates its list in place (time -> str); the test hook must
+        # copy, so the caller's list is untouched.
+        params = [datetime.time(1, 2, 3), "keep"]
+        snapshot = list(params)
+        self._detect(params)
+        assert params == snapshot
+
+    def test_bad_input_sizes_type_raises(self):
+        with pytest.raises(TypeError):
+            self._detect(["x"], "not-a-list")
+
+
 if __name__ == "__main__":
     # Run tests when executed directly
     pytest.main([__file__, "-v"])

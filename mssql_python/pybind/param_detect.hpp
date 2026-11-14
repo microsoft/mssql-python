@@ -190,6 +190,26 @@ inline bool PyLongGreaterThan(PyObject* value, long long threshold) {
     return overflow > 0 || (overflow == 0 && result > threshold);
 }
 
+// Number of UTF-16 code units a Python str occupies, with astral code points
+// (> 0xFFFF) counted as the two units of their surrogate pair. This is exactly what
+// the SQL_C_WCHAR binder writes for the string, so any wide-char buffer must be sized
+// from this, not from PyUnicode_GET_LENGTH (code points) or the UTF-8 byte length.
+// Caller guarantees obj is a str.
+inline Py_ssize_t Utf16CodeUnitLen(PyObject* obj) {
+    const Py_ssize_t length = PyUnicode_GET_LENGTH(obj);
+    if (PyUnicode_KIND(obj) <= PyUnicode_2BYTE_KIND) {
+        // UCS-1 / UCS-2 storage: every code point is a single UTF-16 code unit.
+        return length;
+    }
+    // UCS-4 storage: astral code points expand to a surrogate pair.
+    Py_ssize_t utf16_len = 0;
+    const Py_UCS4* data = PyUnicode_4BYTE_DATA(obj);
+    for (Py_ssize_t j = 0; j < length; ++j) {
+        utf16_len += (data[j] > 0xFFFF) ? 2 : 1;
+    }
+    return utf16_len;
+}
+
 inline PyObject* FormatDecimalParam(PyObject* params, Py_ssize_t index, PyObject* value) {
     py::object formatted = steal(PyObject_CallMethod(value, "__format__", "s", "f"));
     if (!formatted) throw py::error_already_set();
@@ -265,6 +285,13 @@ inline void ApplyInputSizeOverride(PyObject* params, PyObject* inputSize, Py_ssi
     if (PyTime_Check(obj) && info.paramCType == PARAM_C_TYPE_TEXT) {
         NormalizeTimeParam(params, index, info.columnSize);
         obj = PyList_GET_ITEM(params, index);
+    }
+
+    // Record the post-mutation UTF-16 length for any string-valued param so a wide-char
+    // binder can size its buffer from the final string, not the pre-mutation object.
+    // Harmless for narrow/non-string binds, which do not read it.
+    if (PyUnicode_Check(obj)) {
+        info.utf16Len = Utf16CodeUnitLen(obj);
     }
 
     if (info.isDAE) {
@@ -398,16 +425,7 @@ inline std::vector<ParamInfo> DetectParamTypes(PyObject* params, PyObject* input
             unsigned int kind = PyUnicode_KIND(obj);
             const void* udata = PyUnicode_DATA(obj);
 
-            Py_ssize_t utf16_len;
-            if (kind <= PyUnicode_2BYTE_KIND) {
-                utf16_len = length;
-            } else {
-                utf16_len = 0;
-                const Py_UCS4* data = PyUnicode_4BYTE_DATA(obj);
-                for (Py_ssize_t j = 0; j < length; ++j) {
-                    utf16_len += (data[j] > 0xFFFF) ? 2 : 1;
-                }
-            }
+            Py_ssize_t utf16_len = Utf16CodeUnitLen(obj);
 
             // Detect whether the string needs wide-char (NVARCHAR) or narrow (VARCHAR) binding.
             // PyUnicode_IS_COMPACT_ASCII is a struct field check (O(1)), not a content scan.
@@ -452,6 +470,7 @@ inline std::vector<ParamInfo> DetectParamTypes(PyObject* params, PyObject* input
                 info.paramCType = is_unicode ? SQL_C_WCHAR : PARAM_C_TYPE_TEXT;
             } else {
                 info.columnSize = is_unicode ? utf16_len : length;
+                info.utf16Len = utf16_len;
                 info.paramSQLType = is_unicode ? SQL_WVARCHAR : SQL_VARCHAR;
                 info.paramCType = is_unicode ? SQL_C_WCHAR : PARAM_C_TYPE_TEXT;
             }
@@ -517,6 +536,7 @@ inline std::vector<ParamInfo> DetectParamTypes(PyObject* params, PyObject* input
             // isoformat(timespec="microseconds") via _normalize_time_param in cursor.py,
             // so calling the same method is what keeps the two paths in agreement.
             NormalizeTimeParam(params, i, info.columnSize);
+            info.utf16Len = Utf16CodeUnitLen(PyList_GET_ITEM(params, i));
             continue;
         }
 
