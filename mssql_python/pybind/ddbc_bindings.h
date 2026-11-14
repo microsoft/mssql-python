@@ -55,7 +55,11 @@ using py::literals::operator""_a;
 #define SQL_SS_XML (-152)
 #define SQL_SS_UDT (-151)
 #define SQL_SS_VARIANT (-150)
+#define SQL_SS_TABLE (-153)
 #define SQL_CA_SS_VARIANT_TYPE (1215)
+#define SQL_SOPT_SS_PARAM_FOCUS (1236)
+#define SQL_CA_SS_SCHEMA_NAME (1226)
+#define SQL_CA_SS_TYPE_NAME (1227)
 
 // Include logger bridge for LOG macros
 #include "logger_bridge.hpp"
@@ -290,6 +294,16 @@ struct DescribedParamInfo {
     SQLSMALLINT decimalDigits;
 };
 
+class FailedParameterBuffers {
+  public:
+    explicit FailedParameterBuffers(std::vector<std::shared_ptr<void>> buffers);
+    ~FailedParameterBuffers();
+    void release() { _buffers.reset(); }
+
+  private:
+    std::unique_ptr<std::vector<std::shared_ptr<void>>> _buffers;
+};
+
 // The SQLBindParameter arguments that define a parameter (direction, C type, SQL
 // type, size, digits and data-at-execution), excluding the data pointers.
 struct ParamBindSignature {
@@ -311,6 +325,7 @@ struct ParamBindSignature {
 struct ConnectionCleanupState {
     std::mutex mutex;
     bool disconnected = false;  // Protected by mutex, shared with every child.
+    std::vector<std::shared_ptr<FailedParameterBuffers>> failedParameterBuffers;
     // Unlike weak_ptr expiration, this count includes destructors still freeing handles.
     std::atomic<size_t> childStatementCount{0};
     std::atomic<bool> childFreeFailed{false};  // Sticky for this physical connection.
@@ -334,6 +349,7 @@ class SqlHandle {
     // unavailable.
     void cancel();
     bool isImplicitlyFreed() const { return _implicitly_freed; }
+    void retainFailedParameters(std::vector<std::shared_ptr<void>> buffers);
 
     // Mark this handle as implicitly freed (freed by parent handle)
     // This prevents double-free attempts when the ODBC driver automatically
@@ -390,6 +406,9 @@ class SqlHandle {
     SQLHANDLE _handle;
     bool _implicitly_freed = false;  // Tracks if handle was freed by parent
     std::shared_ptr<ConnectionCleanupState> _cleanupState;
+    // Only populated if both parameter reset and handle release fail.
+    // The connection also retains this native storage if the wrapper is dropped.
+    std::shared_ptr<FailedParameterBuffers> _failedParameterBuffers;
 };
 using SqlHandlePtr = std::shared_ptr<SqlHandle>;
 
