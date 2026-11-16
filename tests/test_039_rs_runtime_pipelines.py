@@ -37,10 +37,15 @@ ENTRY_POINTS = (
     "OneBranchPipelines/build-release-package-pipeline.yml",
     "OneBranchPipelines/stress-test-pipeline.yml",
 )
+EMPTY_OVERRIDE_ENTRY_POINTS = (
+    "eng/pipelines/pr-validation-pipeline.yml",
+    "eng/pipelines/mssql-odbc-daily-validation-pipeline.yml",
+    "OneBranchPipelines/stress-test-pipeline.yml",
+)
 
 
-@pytest.mark.parametrize("filename", ENTRY_POINTS)
-def test_pipeline_override_is_explicit_and_defaults_to_empty(filename):
+@pytest.mark.parametrize("filename", EMPTY_OVERRIDE_ENTRY_POINTS)
+def test_nonofficial_pipeline_override_is_explicit_and_defaults_to_empty(filename):
     source = (ROOT / filename).read_text(encoding="utf-8")
     assert re.search(r"name: rsVersionOverride[\s\S]*?default: ''", source)
     assert VERSION_ENV in source
@@ -102,7 +107,13 @@ def test_official_entry_points_keep_stable_defaults_without_nightly_resolution()
         (PIPELINES / "build-release-package-pipeline.yml").read_text(encoding="utf-8")
     )
     override = next(p for p in pipeline["parameters"] if p["name"] == "rsVersionOverride")
-    assert override["default"] == ""
+    assert override["default"] == "committed"
+    runtime = next(v for v in pipeline["variables"] if v["name"] == VERSION_ENV)
+    assert runtime == {
+        "name": VERSION_ENV,
+        "${{ if eq(parameters.rsVersionOverride, 'committed') }}": {"value": ""},
+        "${{ else }}": {"value": "${{ parameters.rsVersionOverride }}"},
+    }
 
 
 def test_modified_pipeline_yaml_parses():
