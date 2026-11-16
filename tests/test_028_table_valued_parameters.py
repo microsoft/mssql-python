@@ -138,6 +138,27 @@ def test_explicit_type_in_parameterized_batch(cursor, tvp_schema):
     assert tuple(cursor.fetchone()) == (1, "one")
 
 
+def test_same_sql_rebinds_different_tvp_types(cursor, db_connection):
+    suffix = uuid.uuid4().hex
+    int_type, text_type = f"IntValues_{suffix}", f"TextValues_{suffix}"
+    cursor.execute(f"CREATE TYPE dbo.[{int_type}] AS TABLE (value int)")
+    cursor.execute(f"CREATE TYPE dbo.[{text_type}] AS TABLE (value nvarchar(20))")
+    db_connection.commit()
+    try:
+        cases = [
+            (TableValuedParameter(int_type, [("value", SQL_INTEGER)], [(1,)]), 1),
+            (TableValuedParameter(text_type, [("value", SQL_WVARCHAR, 20)], [("two",)]), "two"),
+            (TableValuedParameter(int_type, [("value", SQL_INTEGER)], [(3,)]), 3),
+        ]
+        for value, expected in cases:
+            cursor.execute("SELECT value FROM ?", value)
+            assert cursor.fetchone()[0] == expected
+    finally:
+        cursor.execute(f"DROP TYPE dbo.[{int_type}]")
+        cursor.execute(f"DROP TYPE dbo.[{text_type}]")
+        db_connection.commit()
+
+
 def test_reuse_with_empty_and_changing_sources(cursor, tvp_schema):
     sql = f"EXEC [{tvp_schema}].Echo ?, ?, ?"
     for rows in ([], [(1, None)], [(2, "two"), (3, "")], []):

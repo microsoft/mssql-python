@@ -363,8 +363,9 @@ static SQLRETURN stream_dae_chunks(const void* data, size_t total_bytes, PutData
 }
 
 // Clears every parameter binding on the statement (SQL_RESET_PARAMS) and the
-// handle's record of them. Drivers drop their prepared handle after this, so
-// the next execution of a prepared statement re-prepares it.
+// handle's record of them. The ODBC statement remains prepared, so callers
+// keep their SQLPrepare state; after rebinding, drivers may transparently
+// replace the server-side prepared handle during SQLExecute.
 static SQLRETURN ResetParamBindings(SqlHandle& handle, SQLHANDLE hStmt) {
     handle.boundParamSignature.clear();
     SQLRETURN rc = SQLFreeStmt_ptr(hStmt, SQL_RESET_PARAMS);
