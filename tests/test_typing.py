@@ -44,6 +44,27 @@ def test_typing(tmp_path: Path) -> None:
     _check_typing(tmp_path, SOURCE_DIR)
 
 
+@pytest.mark.parametrize("module", ["mssql_python", "mssql_python.mssql_python"])
+def test_cursor_consumer_call_shapes(tmp_path: Path, module: str) -> None:
+    usage = tmp_path / "cursor_consumer.py"
+    usage.write_text(
+        f"""\
+from {module} import Cursor
+
+def supported_calls(cursor: Cursor) -> None:
+    cursor.setinputsizes(None)
+    cursor.executemany("INSERT INTO example VALUES (?, ?)", [(1, "one"), (2, "two")])
+    cursor.executemany("INSERT INTO example VALUES (?, ?)", [[1, "one"], [2, "two"]])
+    cursor.executemany(
+        "INSERT INTO example VALUES (%(id)s, %(name)s)",
+        [{{"id": 1, "name": "one"}}, {{"id": 2, "name": "two"}}],
+    )
+""",
+        encoding="utf-8",
+    )
+    _check_typing(tmp_path, str(usage))
+
+
 def test_native_api_call_shapes(tmp_path: Path) -> None:
     usage = tmp_path / "native_api_usage.py"
     usage.write_text(

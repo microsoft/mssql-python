@@ -2527,12 +2527,8 @@ class Cursor:
                 # For Decimal objects, prefer the one that requires higher precision or scale
                 v_tuple = v.as_tuple()
                 sample_tuple = sample_value.as_tuple()
-                v_exponent = v_tuple.exponent
-                sample_exponent = sample_tuple.exponent
-                if isinstance(v_exponent, str) or isinstance(sample_exponent, str):
-                    raise ValueError(
-                        "Cannot infer precision/scale from non-finite Decimal (NaN/Infinity)"
-                    )
+                v_exponent = cast(int, v_tuple.exponent)
+                sample_exponent = cast(int, sample_tuple.exponent)
 
                 # Calculate precision (total significant digits) and scale (decimal places)
                 # For a number like 0.000123456789, we need precision = 9, scale = 12

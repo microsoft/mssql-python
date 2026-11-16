@@ -174,8 +174,10 @@ AI helped write it; ordinary driver fixes and features keep their usual prefixes
 The typing harness checks Python source (`.py`) and stub (`.pyi`) files recursively
 under `mssql_python` only, excluding generated `build` directories and their
 downloaded third-party sources. `tests` and `mssql_python_odbc` are not targets of
-this typing gate. It does not execute the checked code or require a live database;
-the existing runtime test jobs are unchanged.
+this typing gate. Focused consumer fixtures also check supported input-size resets,
+positional tuple/list batches, and pyformat dictionary batches against the package
+exports and public stub. It does not execute the checked code or require a live
+database; the existing runtime test jobs are unchanged.
 
 After installing `requirements.txt` and building the native extension using
 `.github/prompts/build-ddbc.prompt.md`, run:
