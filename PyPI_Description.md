@@ -39,7 +39,6 @@ PyBind11 provides:
 
 ### Enhancements
 
-- **Experimental Async Table-Valued Parameters** - The experimental async API supports table-valued parameters and native SQL type hints; async APIs remain under active development and are not intended for production use (#814).
 - **Custom Application Names** - Connection strings accept `APP` and `Application Name`, sharing the effective name across synchronous, async, and bulk-copy paths. The async and bulk-copy default changes from `mssql-python` to `MSSQL-Python`; exact-name telemetry filters may need updating (#884).
 - **Faster Row-to-Dictionary Conversion** - Reuse row-mapping metadata to reduce the overhead of converting fetched rows to dictionaries (#847).
 - **Faster Single-Row Fetching** - Reuse cursor-scoped native state for eligible `fetchone()`, `fetchmany(1)`, `fetchval()`, and iteration paths while retaining Python fallbacks (#858).
@@ -47,7 +46,6 @@ PyBind11 provides:
 - **Faster Size-One Text Fetches** - Avoid repeating text-fetch preparation for `fetchmany(1)` without prefetching rows (#891).
 - **Faster Pyformat Conversion** - Convert pyformat placeholders in a single pass and cache converted statements for repeated execution (#888).
 - **Prepared Statement Reuse** - Compatible re-executions of the same parameterized SQL retain parameter bindings so drivers can reuse the prepared statement (#886).
-- **Experimental Async Entra Authentication** - The native async core adds Azure Entra ID authentication support; the async APIs remain experimental (#896) *(via `mssql-python-rs`)*.
 - **Faster Rust-Backed Execution** - Reduce SQL-text processing and RPC parameter-serialization overhead in Rust-backed execution paths (#896) *(via `mssql-python-rs`)*.
 - **macOS Strict TLS Improvements** - Rust-backed Strict connections can negotiate TLS 1.3, with post-quantum key exchange on supported macOS versions (#896) *(via `mssql-python-rs`)*.
 - **Rust ODBC Table-Valued Parameters** - Add table-valued parameter support in the opt-in Rust ODBC provider (#896) *(via `mssql-python-rs`)*.
