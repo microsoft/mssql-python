@@ -119,9 +119,14 @@ if defined PROFILING_FLAG (
     echo [MODE] Building WITH profiling instrumentation ^(ENABLE_PROFILING=%ENABLE_PROFILING%^)
 )
 
+REM Test-only ODBC pointer access; disabled in release wheels.
+set ARROW_TEST_FLAG=
+if /I "%MSSQL_ARROW_TEST_INTERPOSITION%"=="1" set "ARROW_TEST_FLAG=-DMSSQL_ARROW_TEST_INTERPOSITION=ON"
+if /I "%MSSQL_ARROW_TEST_INTERPOSITION%"=="ON" set "ARROW_TEST_FLAG=-DMSSQL_ARROW_TEST_INTERPOSITION=ON"
+
 REM Now invoke CMake with correct source path (options first, path last!)
-echo [DIAGNOSTIC] Running CMake configure with: cmake -A %PLATFORM_NAME% -DARCHITECTURE=%ARCH% %PROFILING_FLAG% "%SOURCE_DIR:~0,-1%"
-cmake -A %PLATFORM_NAME% -DARCHITECTURE=%ARCH% %PROFILING_FLAG% "%SOURCE_DIR:~0,-1%"
+echo [DIAGNOSTIC] Running CMake configure with: cmake -A %PLATFORM_NAME% -DARCHITECTURE=%ARCH% %PROFILING_FLAG% %ARROW_TEST_FLAG% "%SOURCE_DIR:~0,-1%"
+cmake -A %PLATFORM_NAME% -DARCHITECTURE=%ARCH% %PROFILING_FLAG% %ARROW_TEST_FLAG% "%SOURCE_DIR:~0,-1%"
 echo [DIAGNOSTIC] CMake configure exit code: %errorlevel%
 if errorlevel 1 (
     echo [ERROR] CMake configuration failed

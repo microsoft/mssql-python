@@ -401,7 +401,8 @@ struct ErrorInfo {
 };
 ErrorInfo SQLCheckError_Wrap(SQLSMALLINT handleType, SqlHandlePtr handle, SQLRETURN retcode);
 // Driver must be initialized; reads diagnostics without Python logging/callbacks.
-ErrorInfo SQLReadError(SQLSMALLINT handleType, SQLHANDLE handle, SQLRETURN retcode);
+ErrorInfo SQLReadError(SQLSMALLINT handleType, SQLHANDLE handle, SQLRETURN retcode,
+                       SQLSMALLINT record = 1);
 
 // Thread-safe decimal separator accessor class
 class ThreadSafeDecimalSeparator {
