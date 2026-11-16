@@ -1242,7 +1242,7 @@ class Cursor:
                 "pyarrow is required for Arrow fetch methods. Please install pyarrow."
             ) from e
 
-    def setinputsizes(self, sizes: Sequence[int | tuple[int, ...]]) -> None:
+    def setinputsizes(self, sizes: Sequence[int | tuple[int, ...]] | None) -> None:
         """
         Sets the type information to be used for parameters in execute and executemany.
 
