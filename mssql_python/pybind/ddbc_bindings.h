@@ -401,7 +401,8 @@ struct ErrorInfo {
 };
 ErrorInfo SQLCheckError_Wrap(SQLSMALLINT handleType, SqlHandlePtr handle, SQLRETURN retcode);
 // Driver must be initialized; reads diagnostics without Python logging/callbacks.
-ErrorInfo SQLReadError(SQLSMALLINT handleType, SQLHANDLE handle, SQLRETURN retcode);
+ErrorInfo SQLReadError(SQLSMALLINT handleType, SQLHANDLE handle, SQLRETURN retcode,
+                       SQLSMALLINT record = 1);
 
 // Thread-safe decimal separator accessor class
 class ThreadSafeDecimalSeparator {
@@ -794,38 +795,9 @@ inline void ProcessWChar(PyObject* row, ColumnBuffers& buffers, const void* colI
     // fetchBufferSize includes null-terminator, numCharsInData doesn't. Hence
     // '<'
     if (!colInfo->isLob && numCharsInData < colInfo->fetchBufferSize) {
-#if defined(__APPLE__) || defined(__linux__)
-        // Performance: Direct UTF-16 decode (SQLWCHAR is 2 bytes on
-        // Linux/macOS)
         SQLWCHAR* wcharData = &buffers.wcharBuffers[col - 1][rowIdx * colInfo->fetchBufferSize];
-        PyObject* pyStr = FetchText::decode_utf16_native(
-            reinterpret_cast<const char*>(wcharData), numCharsInData * sizeof(SQLWCHAR));
-        if (pyStr) {
-            PyList_SET_ITEM(row, col - 1, pyStr);
-        } else {
-            PyErr_Clear();  // Ignore decode error, return empty string
-            PyObject* emptyStr = PyUnicode_FromStringAndSize("", 0);
-            if (!emptyStr) {
-                Py_INCREF(Py_None);
-                PyList_SET_ITEM(row, col - 1, Py_None);
-            } else {
-                PyList_SET_ITEM(row, col - 1, emptyStr);
-            }
-        }
-#else
-        // Performance: Direct Python C API call (Windows where SQLWCHAR ==
-        // wchar_t)
-        PyObject* pyStr = PyUnicode_FromWideChar(
-            reinterpret_cast<wchar_t*>(
-                &buffers.wcharBuffers[col - 1][rowIdx * colInfo->fetchBufferSize]),
-            numCharsInData);
-        if (!pyStr) {
-            Py_INCREF(Py_None);
-            PyList_SET_ITEM(row, col - 1, Py_None);
-        } else {
-            PyList_SET_ITEM(row, col - 1, pyStr);
-        }
-#endif
+        PyList_SET_ITEM(row, col - 1, FetchText::decode_batch_utf16_native(
+            reinterpret_cast<const char*>(wcharData), numCharsInData * sizeof(SQLWCHAR)));
     } else {
         // Slow path: LOB data requires separate fetch call
         PyList_SET_ITEM(row, col - 1,

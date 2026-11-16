@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from ._ddbc_types import *
     from ._ddbc_types import (
+        _ArrowReaderState as _ArrowReaderState,
         _abort_native_fetch_install as _abort_native_fetch_install,
         _activate_native_fetch_install as _activate_native_fetch_install,
         _begin_native_fetch_install as _begin_native_fetch_install,

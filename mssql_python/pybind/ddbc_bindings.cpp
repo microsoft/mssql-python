@@ -24,6 +24,8 @@
 #include <cstring>  // For std::memcpy
 #include <filesystem>
 #include <iostream>
+#include <limits>
+#include <mutex>
 #include <utility>  // std::forward
 #include <datetime.h>  // CPython datetime API (PyDateTime_IMPORT, PyDateTime_GET_*, etc.)
 
@@ -1998,7 +2000,8 @@ ErrorInfo SQLCheckError_Wrap(SQLSMALLINT handleType, SqlHandlePtr handle, SQLRET
     return SQLReadError(handleType, handle ? handle->get() : nullptr, retcode);
 }
 
-ErrorInfo SQLReadError(SQLSMALLINT handleType, SQLHANDLE rawHandle, SQLRETURN retcode) {
+ErrorInfo SQLReadError(SQLSMALLINT handleType, SQLHANDLE rawHandle, SQLRETURN retcode,
+                       SQLSMALLINT record) {
     ErrorInfo errorInfo;
     if (retcode == SQL_INVALID_HANDLE || !rawHandle) {
         errorInfo.ddbcErrorMsg = "Invalid handle!";
@@ -2014,7 +2017,7 @@ ErrorInfo SQLReadError(SQLSMALLINT handleType, SQLHANDLE rawHandle, SQLRETURN re
         SQLSMALLINT messageLen;
 
         SQLRETURN diagReturn =
-            SQLGetDiagRec_ptr(handleType, rawHandle, 1, sqlState, &nativeError, message,
+            SQLGetDiagRec_ptr(handleType, rawHandle, record, sqlState, &nativeError, message,
                               SQL_MAX_MESSAGE_LENGTH_SQLSERVER, &messageLen);
 
         if (SQL_SUCCEEDED(diagReturn)) {
@@ -3553,15 +3556,11 @@ static inline bool IsLobOrVariantColumn(SQLSMALLINT dataType, SQLULEN columnSize
 }
 
 static inline bool CanUseSingleRowForFetchMany(SQLSMALLINT dataType, SQLULEN columnSize) {
-    // Bound text conversion has platform/codec-specific fallbacks that GetRowData
-    // does not share. Keep that contract even when the requested batch size is one.
+    // Narrow text still needs the batch's platform/codec-specific conversion.
     switch (dataType) {
         case SQL_CHAR:
         case SQL_VARCHAR:
         case SQL_LONGVARCHAR:
-        case SQL_WCHAR:
-        case SQL_WVARCHAR:
-        case SQL_WLONGVARCHAR:
             return false;
         default:
             return !IsLobOrVariantColumn(dataType, columnSize);
@@ -3572,7 +3571,8 @@ static SQLRETURN GetRowData(const SqlHandlePtr& StatementHandle, SQLUSMALLINT co
                             py::list& row, const std::string& charEncoding,
                             const std::string& wcharEncoding, int charCtype,
                             py::handle messages, const ResultMetadataCache::Snapshot& snapshot,
-                            bool completeResult = false, py::handle converters = {}) {
+                            bool completeResult = false, py::handle converters = {},
+                            bool batchText = false) {
     PERF_TIMER("SQLGetData_wrap");
     // Note: wcharEncoding parameter is reserved for future use
     // Currently WCHAR data always uses UTF-16LE for Windows compatibility
@@ -3941,7 +3941,11 @@ static SQLRETURN GetRowData(const SqlHandlePtr& StatementHandle, SQLUSMALLINT co
                                     OutputConverters::enabled(converters, i - 1))
                                     text = OutputConverters::text(textData, textSize);
                                 row.append(text ? text
-                                                : FetchText::from_utf16_native(textData, textSize));
+                                                : batchText
+                                                      ? steal(FetchText::decode_batch_utf16_native(
+                                                            textData, textSize))
+                                                      : FetchText::from_utf16_native(textData,
+                                                                                     textSize));
                                 LOG("SQLGetData: Appended NVARCHAR string "
                                     "length=%lu for column %d",
                                     (unsigned long)numCharsInData, i);
@@ -4407,7 +4411,8 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
 static SQLRETURN FetchSingleRow(const SqlHandlePtr& handle, py::list& row,
                                 const std::string& charEncoding,
                                 const std::string& wcharEncoding, int charCtype,
-                                py::handle messages, py::handle converters = {}) {
+                                py::handle messages, py::handle converters = {},
+                                bool batchText = false) {
     PERF_TIMER("FetchSingleRow");
     SQLRETURN ret = SQL_ERROR;
     ResultMetadataFailureGuard metadataFailure(handle->resultMetadata, ret);
@@ -4433,7 +4438,7 @@ static SQLRETURN FetchSingleRow(const SqlHandlePtr& handle, py::list& row,
                                   ? static_cast<SQLSMALLINT>(snapshot.metadata->columns.size())
                                   : SQLNumResultCols_wrap(handle, messages);
         ret = GetRowData(handle, colCount, row, charEncoding, wcharEncoding, charCtype, messages,
-                          snapshot, true, converters);
+                          snapshot, true, converters, batchText);
     }
     return ret;
 }
@@ -5236,7 +5241,7 @@ SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetch
     if (singleRowEligible) {
         py::list row;
         ret = FetchSingleRow(StatementHandle, row, charEncoding, wcharEncoding, charCtype, messages,
-                              converters);
+                              converters, true);
         if (SQL_SUCCEEDED(ret))
             rows.append(row);
         return ret;
@@ -5400,9 +5405,102 @@ int32_t days_from_civil(int y, int m, int d) {
     return era * 146097 + static_cast<int>(doe) - 719468;
 }
 
+class ArrowReaderState {
+    std::weak_ptr<SqlHandle> handle;
+    std::mutex cancelMutex;
+    std::atomic<bool> fetching{false};
+    bool closeRequested = false;  // Accessed with the GIL held.
+    bool cancelSent = false;      // Published by the fetch-completion fence.
+
+public:
+    explicit ArrowReaderState(SqlHandlePtr handle) : handle(std::move(handle)) {}
+
+    bool closed() const { return closeRequested; }
+    bool cancelled() const { return cancelSent; }
+
+    void requestClose() {
+        closeRequested = true;
+        if (!fetching.load())
+            return;
+        auto statement = handle.lock();
+        if (!statement)
+            return;
+        // An idle SQLCancel can close the result set. Do not issue it between
+        // batches (or while the fetch thread is processing a completed rowset).
+        py::gil_scoped_release release;
+        std::lock_guard<std::mutex> lock(cancelMutex);
+        if (fetching.load() && !cancelSent && SQLCancel_ptr) {
+            statement->cancel();
+            cancelSent = true;
+        }
+    }
+
+    SQLRETURN fetch(SQLHSTMT hStmt) {
+        fetching.store(true);
+        py::gil_scoped_release release;
+        SQLRETURN ret = SQLFetch_ptr(hStmt);
+        {
+            // SQLCancel may still be running after SQLFetch returns. Neither
+            // diagnostics nor another ODBC call may race that cancellation.
+            std::lock_guard<std::mutex> lock(cancelMutex);
+            fetching.store(false);
+        }
+        return ret;
+    }
+};
+
+struct ArrowFetchDiagnostics {
+    SQLSMALLINT cancellationRecord = 0;
+    SQLSMALLINT errorRecord = 0;
+};
+
+static ArrowFetchDiagnostics GetArrowCancellationDiagnostics(SQLHSTMT hStmt,
+                                                            bool allowClosedCursor) {
+    ArrowFetchDiagnostics result;
+    for (SQLSMALLINT record = 1; record < std::numeric_limits<SQLSMALLINT>::max(); ++record) {
+        SQLWCHAR state[6] = {};
+        SQLINTEGER nativeError = 0;
+        SQLWCHAR message[2] = {};
+        SQLSMALLINT length = 0;
+        SQLRETURN ret = SQLGetDiagRec_ptr(SQL_HANDLE_STMT, hStmt, record, state, &nativeError,
+                                          message, 2, &length);
+        if (ret == SQL_NO_DATA)
+            return result;
+        if (!SQL_SUCCEEDED(ret)) {
+            if (!result.errorRecord)
+                result.errorRecord = record;
+            return result;
+        }
+        auto matches = [&](const char* expected) {
+            for (int i = 0; i < 5; ++i) {
+                if (state[i] != expected[i])
+                    return false;
+            }
+            return true;
+        };
+        // A cancel can win just before entry to SQLFetch, closing the cursor.
+        // Only recognize those diagnostics after this reader issued cancellation;
+        // unrelated statement errors must retain the normal exception path.
+        if (matches("HY008") ||
+            (allowClosedCursor &&
+             (matches("HY007") || matches("HY010") || matches("24000")))) {
+            if (!result.cancellationRecord)
+                result.cancellationRecord = record;
+        } else if ((state[0] != '0' || state[1] != '1') && !result.errorRecord) {
+            result.errorRecord = record;
+        }
+    }
+    if (!result.errorRecord)
+        result.errorRecord = 1;
+    return result;
+}
+
 SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules, int arrowBatchSize,
-                               int charCtype, py::handle messages = {}) {
+                               int charCtype, py::handle messages = {},
+                               const std::shared_ptr<ArrowReaderState>& readerState = nullptr) {
     PERF_TIMER("FetchArrowBatch_wrap");
+    if (readerState && readerState->closed())
+        return SQL_NO_DATA;
     // Fetch narrow char data as SQL_C_CHAR if on Linux/macOS and configured by the user
     charCtype = EffectiveCharCtypeForFetch(charCtype, "utf-8");
 
@@ -5609,17 +5707,44 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules,
     int idxRowArrow = 0;
 
     while (idxRowArrow < arrowBatchSize) {
+        if (readerState && readerState->closed())
+            return SQL_NO_DATA;
         int spaceLeftInArrowBatch = arrowBatchSize - idxRowArrow;
         if (fetchSize > spaceLeftInArrowBatch) {
             // Adjust fetch size for final batch to avoid overfetching
             fetchStateGuard.setRowArraySize(spaceLeftInArrowBatch);
         }
-        {
+        if (readerState) {
+            ret = readerState->fetch(hStmt);
+        } else {
             // Release GIL during the blocking ODBC fetch
             py::gil_scoped_release release;
             ret = SQLFetch_ptr(hStmt);
         }
+        if (ret == SQL_SUCCESS_WITH_INFO || ret == SQL_ERROR) {
+            bool closing = readerState && readerState->closed();
+            auto diagnostics = GetArrowCancellationDiagnostics(
+                hStmt, closing && readerState->cancelled());
+            if (diagnostics.cancellationRecord) {
+                CaptureFetchDiagnostics(hStmt, SQL_SUCCESS_WITH_INFO, messages);
+                if (closing && !diagnostics.errorRecord)
+                    return SQL_NO_DATA;
+                // HY008 can accompany SQL_SUCCESS_WITH_INFO. Stop here rather
+                // than fetching again and replacing it with an invalid-cursor error.
+                // Prefer an unrelated error even when cancellation is record 1.
+                auto error = SQLReadError(
+                    SQL_HANDLE_STMT, hStmt, SQL_ERROR,
+                    diagnostics.errorRecord ? diagnostics.errorRecord
+                                            : diagnostics.cancellationRecord);
+                LOG("Arrow fetch error: SQLSTATE=%s; message=%s",
+                    error.sqlState.c_str(), error.ddbcErrorMsg.c_str());
+                py::module_::import("mssql_python.exceptions")
+                    .attr("raise_exception")(error.sqlState, error.ddbcErrorMsg);
+            }
+        }
         fetchStateGuard.observe(ret);
+        if (readerState && readerState->closed())
+            return SQL_NO_DATA;
         if (ret == SQL_NO_DATA) {
             ret = SQL_SUCCESS;  // Normal completion
             break;
@@ -6658,7 +6783,20 @@ PYBIND11_MODULE(ddbc_bindings, m) {
              "Internal: close the cursor without freeing the prepared statement")
         .def("_cancel", &SqlHandle::cancel,
              "Internal: cancel an in-progress statement (SQLCancel). "
-             "Safe to call from another thread; no-op if unsupported or idle.");
+             "Safe to call from another thread; idle cancellation may close the cursor.");
+
+    py::class_<ArrowReaderState, std::shared_ptr<ArrowReaderState>>(m, "_ArrowReaderState")
+        .def(py::init<SqlHandlePtr>())
+        .def_property_readonly("closed", &ArrowReaderState::closed)
+        .def("request_close", &ArrowReaderState::requestClose);
+
+#ifdef MSSQL_ARROW_TEST_INTERPOSITION
+    py::dict arrowTestPointers;
+    arrowTestPointers["SQLFetch_ptr"] = reinterpret_cast<std::uintptr_t>(&SQLFetch_ptr);
+    arrowTestPointers["SQLCancel_ptr"] = reinterpret_cast<std::uintptr_t>(&SQLCancel_ptr);
+    arrowTestPointers["SQLGetDiagRec_ptr"] = reinterpret_cast<std::uintptr_t>(&SQLGetDiagRec_ptr);
+    m.attr("_arrow_test_pointer_addresses") = std::move(arrowTestPointers);
+#endif
 
     py::class_<ConnectionHandle>(m, "Connection")
         .def(py::init<const std::u16string&, bool, const py::dict&, const std::u16string&,
@@ -6728,7 +6866,7 @@ PYBIND11_MODULE(ddbc_bindings, m) {
     m.def("DDBCSQLFetchArrowBatch", &FetchArrowBatch_wrap,
           "Fetch an arrow batch of given length from the result set", py::arg("StatementHandle"),
           py::arg("capsules"), py::arg("arrowBatchSize"), py::arg("charCtype"),
-          py::arg("messages") = py::none());
+          py::arg("messages") = py::none(), py::arg("readerState") = nullptr);
     m.def("DDBCSQLFreeHandle", &SQLFreeHandle_wrap, "Free a handle");
     m.def("DDBCSQLResetStmt", &SQLResetStmt_wrap,
           "Close cursor without freeing HSTMT or its parameter bindings");

@@ -217,7 +217,7 @@ class _AsyncCursor:
                     self._clear_result_metadata()
         logger.debug("AsyncCursor.close: completed")
 
-    def setinputsizes(self, sizes: Sequence[int | tuple[int, ...]]) -> None:
+    def setinputsizes(self, sizes: Sequence[int | tuple[int, ...]] | None) -> None:
         with translate_py_core_exceptions():
             self._py_core_async_cursor.setinputsizes(sizes)
 

@@ -30,7 +30,7 @@ def _fetch(cursor, method):
         while (row := cursor.fetchone()) is not None:
             rows.append(row)
     else:
-        while batch := cursor.fetchmany(1000):
+        while batch := cursor.fetchmany(1 if method == "fetchmany_one" else 1000):
             rows.extend(batch)
     return rows
 
@@ -44,7 +44,7 @@ def connection(conn_str):
         connection.close()
 
 
-@pytest.mark.parametrize("method", METHODS)
+@pytest.mark.parametrize("method", (*METHODS, "fetchmany_one"))
 @pytest.mark.parametrize("width", (1, 32))
 def test_converter_native_bytes_and_row_major_order(connection, method, width):
     inputs = []
@@ -53,6 +53,7 @@ def test_converter_native_bytes_and_row_major_order(connection, method, width):
     bridge_name = {
         "fetchone": "DDBCSQLFetchOne",
         "fetchmany": "DDBCSQLFetchMany",
+        "fetchmany_one": "DDBCSQLFetchMany",
         "fetchall": "DDBCSQLFetchAll",
     }[method]
     bridge = getattr(ddbc_bindings, bridge_name)
@@ -88,7 +89,7 @@ def test_converter_native_bytes_and_row_major_order(connection, method, width):
     assert native_apply(raw_values, [lambda raw: raw] * len(raw_values)) == inputs
 
 
-@pytest.mark.parametrize("method", METHODS)
+@pytest.mark.parametrize("method", (*METHODS, "fetchmany_one"))
 def test_converter_empty_nul_and_bom_values(connection, method):
     expected = ["", "\x00", "\x00\x00", "\ufeff", "\ufffe", "\U0001f642"]
     calls = []
@@ -617,7 +618,7 @@ def test_converter_respects_narrow_decoding_settings(connection, method):
     assert row[0] == observed[0]
 
 
-@pytest.mark.parametrize("method", METHODS)
+@pytest.mark.parametrize("method", (*METHODS, "fetchmany_one"))
 @pytest.mark.parametrize("raw_utf16", ("0x00D8", "0x00DC", "0x00D84100"))
 def test_malformed_text_retains_legacy_fetch_behavior(connection, method, raw_utf16):
     outcomes = []

@@ -721,10 +721,11 @@ def test_checkout_is_safe_and_compatible_with_python_310(tmp_path, monkeypatch, 
 def test_report_cases_match_the_executed_workload_registry():
     _, workloads = controller.load_suite()
     assert tuple(workloads.registry()) == reporting.CASES
-    assert len(reporting.CASES) == 25
+    assert len(reporting.CASES) == 26
     assert reporting.CASES[-1] == "row_to_dict"
     assert workloads.registry()["row_to_dict"] == (workloads.row_to_dict, True)
     assert workloads.registry()["scalar_fetchval"] == (workloads.scalar_fetchval, True)
+    assert workloads.registry()["fetchmany_one_text"] == (workloads.fetchmany_one_text, True)
     assert workloads.registry()["output_converter_fetchall"] == (
         workloads.output_converter_fetch,
         True,
@@ -735,6 +736,93 @@ def test_report_cases_match_the_executed_workload_registry():
     assert [name for name in reporting.CASES if name.startswith("lob_")] == [
         "lob_varchar_256k_fetchall",
     ]
+
+
+def test_fetchmany_one_text_workload_boundaries_and_report(monkeypatch, report):
+    cursor = MagicMock()
+    cursor.messages = []
+    connection = MagicMock()
+    connection.cursor.return_value.__enter__.return_value = cursor
+    context = MagicMock()
+    counters = {"ddbc::FetchSingleRow": dict(calls=10001, total_us=10001, min_us=1, max_us=1)}
+    context.collect.return_value = (counters, {})
+    references = []
+
+    class RetainedRow(list):
+        def __iter__(self):
+            context.collect.assert_called_once()
+            return super().__iter__()
+
+    def fetch(size):
+        assert size == 1 and clock.call_count == 1
+        context.collect.assert_not_called()
+        index = len(references)
+        if index == 10_000:
+            return []
+        row = RetainedRow((index, f"unicode_row_{index}"))
+        references.append(weakref.ref(row))
+        return [row]
+
+    cursor.fetchmany.side_effect = fetch
+
+    def tick():
+        cursor.execute.assert_called_once_with(
+            "SELECT TOP (10000) int_col, nvarchar_col FROM #perf_test ORDER BY id"
+        )
+        context.enable.assert_called_once()
+        context.collect.assert_not_called()
+        if clock.call_count == 1:
+            cursor.fetchmany.assert_not_called()
+        else:
+            assert cursor.fetchmany.call_count == 10_001
+            assert len(references) == 10_000 and all(ref() is not None for ref in references)
+        return 1.0 if clock.call_count == 1 else 1.1
+
+    clock = MagicMock(side_effect=tick)
+    monkeypatch.setattr(benchmark_workloads.time, "perf_counter", clock)
+    result = benchmark_workloads.fetchmany_one_text(connection, "#perf_test", context)
+    assert clock.call_count == 2
+    assert result["wall_ms"] == pytest.approx(100)
+    assert result["cpp"] is counters
+    assert result["detail"] == "Rows: 10000; types: int,nvarchar; API: fetchmany(1)"
+    cursor.fetchone.assert_not_called()
+    cursor.fetchall.assert_not_called()
+    context.collect.assert_called_once()
+    context.disable.assert_called_once()
+    connection.cursor.return_value.__exit__.assert_called_once()
+
+    # Equal-valued floats must not pass the INT contract.
+    cursor.fetchmany.side_effect = iter(
+        [[(float(index), f"unicode_row_{index}")] for index in range(10_000)] + [[]]
+    )
+    context.reset_mock()
+    connection.cursor.return_value.__exit__.reset_mock()
+    clock.side_effect = (1.0, 1.1)
+    with pytest.raises(AssertionError):
+        benchmark_workloads.fetchmany_one_text(connection, "#perf_test", context)
+    context.collect.assert_called_once()
+    context.disable.assert_called_once()
+    connection.cursor.return_value.__exit__.assert_called_once()
+
+    context.reset_mock()
+    connection.cursor.return_value.__exit__.reset_mock()
+    cursor.fetchmany.side_effect = RuntimeError("fetch failed")
+    clock.side_effect = (1.0,)
+    with pytest.raises(RuntimeError, match="fetch failed"):
+        benchmark_workloads.fetchmany_one_text(connection, "#perf_test", context)
+    context.disable.assert_called_once()
+    connection.cursor.return_value.__exit__.assert_called_once()
+
+    clear_slowdowns(report)
+    for pair in report["pairs"]:
+        pair["candidate"]["scenarios"]["fetchmany_one_text"]["wall_ms"] = 7
+    reporting.validate(report)
+    row = next(row for row in reporting.comparisons(report) if row["name"] == "fetchmany_one_text")
+    assert row["status"] == "improvement" and row["change_pct"] == pytest.approx(-30)
+    assert (
+        f"| {reporting.TASK_NAMES['fetchmany_one_text']} | 10.000 ms | 7.000 ms | -30.0% | consistent improvement |"
+        in reporting.render([report], "c" * 40, 42)
+    )
 
 
 @pytest.mark.parametrize("batched", (False, True), ids=("fetchall", "fetchmany1000"))
