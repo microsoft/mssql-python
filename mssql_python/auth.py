@@ -11,10 +11,12 @@ import struct
 import sys
 import threading
 import time
-from typing import Tuple, Dict, NamedTuple, Optional, TYPE_CHECKING
+from types import FrameType
+from typing import Callable, Tuple, Dict, NamedTuple, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from azure.core.credentials import TokenCredential
+    from mssql_python.connection import TokenProvider
 
 from mssql_python.logging import logger
 from mssql_python.constants import (
@@ -43,14 +45,15 @@ from mssql_python.exceptions import InterfaceError, OperationalError
 # within a single process. Multi-user apps must bring their own per-user token
 # provider instead of relying on interactive auth. (Documented for users in the
 # Connection Pooling section of README.md.)
-_credential_cache: Dict[object, object] = {}
+_CredentialCacheKey = str | tuple[str, tuple[tuple[str, str], ...]]
+_credential_cache: Dict[_CredentialCacheKey, "TokenCredential"] = {}
 _credential_cache_lock = threading.Lock()
 
 # Stable home_account_id captured the first time an interactive/device-code
 # credential runs authenticate(). Lets later *silent* get_token() acquisitions
 # still key the pool on the account without re-authenticating. Keyed like
 # _credential_cache and guarded by the same lock.
-_account_id_cache: Dict[object, Optional[str]] = {}
+_account_id_cache: Dict[_CredentialCacheKey, Optional[str]] = {}
 
 # Canonical keys to strip when handing an Entra-token connection to ODBC.
 _SENSITIVE_KEYS = frozenset({_KEY_UID, _KEY_PWD, _KEY_TRUSTED_CONNECTION, _KEY_AUTHENTICATION})
@@ -124,7 +127,9 @@ _AUTH_TYPE_MAP: Dict[str, str] = {
 }
 
 
-def _credential_cache_key(auth_type: str, credential_kwargs: Optional[Dict[str, str]]):
+def _credential_cache_key(
+    auth_type: str, credential_kwargs: Optional[Dict[str, str]]
+) -> _CredentialCacheKey:
     """Build a hashable cache key from auth_type and optional credential kwargs.
 
     Returns the plain auth_type string when no kwargs are provided so that
@@ -193,7 +198,7 @@ class AADAuth:
         return raw_token
 
     @staticmethod
-    def _authenticate_interactive(credential) -> Optional[str]:
+    def _authenticate_interactive(credential: "TokenCredential") -> Optional[str]:
         """Run the interactive ``authenticate()`` step and return the resulting
         ``home_account_id``.
 
@@ -250,7 +255,7 @@ class AADAuth:
             ) from e
 
         # Mapping of auth types to credential classes
-        credential_map = {
+        credential_map: dict[str, Callable[..., "TokenCredential"]] = {
             _AuthInternal.DEFAULT: DefaultAzureCredential,
             _AuthInternal.DEVICE_CODE: DeviceCodeCredential,
             _AuthInternal.INTERACTIVE: InteractiveBrowserCredential,
@@ -401,7 +406,7 @@ class ServicePrincipalAuth:
     """
 
     @staticmethod
-    def make_token_factory(client_id: str, client_secret: str):
+    def make_token_factory(client_id: str, client_secret: str) -> Callable[[str, str, str], bytes]:
         """Return a callable suitable for ``entra_id_token_factory``.
 
         Signature: ``(spn: str, sts_url: str, auth_method: str) -> bytes``.
@@ -715,7 +720,7 @@ def _user_facing_stacklevel() -> int:
     """
     # sys._getframe(1) is this helper's caller — the warnings.warn call site,
     # which corresponds to stacklevel=1.
-    frame = sys._getframe(1)
+    frame: FrameType | None = sys._getframe(1)
     level = 1
     while frame is not None:
         if not frame.f_globals.get("__name__", "").startswith("mssql_python"):
@@ -728,7 +733,7 @@ def _user_facing_stacklevel() -> int:
 
 
 def _get_token_from_credential(
-    credential: "TokenCredential",
+    credential: "TokenProvider",
 ) -> Tuple[str, Optional[int]]:
     """Internal: call credential.get_token() and return ``(raw_jwt, expires_on)``.
 
@@ -858,7 +863,7 @@ def _get_token_from_credential(
     return raw_token, expires_on
 
 
-def acquire_token_from_credential(credential: "TokenCredential") -> Tuple[bytes, Optional[int]]:
+def acquire_token_from_credential(credential: "TokenProvider") -> Tuple[bytes, Optional[int]]:
     """Acquire an ODBC token struct from a user-supplied credential object.
 
     The credential must follow the Azure ``TokenCredential`` protocol — i.e.
@@ -888,7 +893,7 @@ def acquire_token_from_credential(credential: "TokenCredential") -> Tuple[bytes,
     return AADAuth.get_token_struct(raw_token), expires_on
 
 
-def acquire_raw_token_from_credential(credential: "TokenCredential") -> Tuple[str, Optional[int]]:
+def acquire_raw_token_from_credential(credential: "TokenProvider") -> Tuple[str, Optional[int]]:
     """Acquire a raw JWT string from a user-supplied credential object.
 
     Used by bulk copy, which needs the raw JWT rather than the ODBC struct.

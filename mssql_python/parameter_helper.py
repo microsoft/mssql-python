@@ -14,7 +14,7 @@ Reference: https://www.python.org/dev/peps/pep-0249/#paramstyle
 
 import re
 from functools import lru_cache
-from typing import Dict, List, Tuple, Any, Union
+from typing import Dict, List, Tuple, Any, Union, overload
 from mssql_python.logging import logger
 
 # Number of pyformat -> qmark rewrites kept, keyed by SQL text. Caching pays off for
@@ -351,9 +351,19 @@ def convert_pyformat_to_qmark(sql: str, param_dict: Dict[str, Any]) -> Tuple[str
     return rewritten_sql, positional_params
 
 
+@overload
+def detect_and_convert_parameters(sql: str, parameters: None) -> Tuple[str, None]: ...
+
+
+@overload
 def detect_and_convert_parameters(
-    sql: str, parameters: Union[None, Tuple, List, Dict]
-) -> Tuple[str, Union[None, Tuple, List]]:
+    sql: str, parameters: Union[Tuple[Any, ...], List[Any], Dict[str, Any]]
+) -> Tuple[str, Union[Tuple[Any, ...], List[Any]]]: ...
+
+
+def detect_and_convert_parameters(
+    sql: str, parameters: Union[None, Tuple[Any, ...], List[Any], Dict[str, Any]]
+) -> Tuple[str, Union[None, Tuple[Any, ...], List[Any]]]:
     """
     Auto-detect parameter style and convert to qmark if needed.
 

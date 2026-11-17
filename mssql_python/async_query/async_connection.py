@@ -6,7 +6,11 @@ Warning:
     may change without notice.
 """
 
-from typing import Any, Optional
+from types import TracebackType
+from typing import Any, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .._pycore_types import AsyncCoreConnection
 
 from ..logging import logger
 from ._native import load_py_core
@@ -46,7 +50,7 @@ class _AsyncConnection:
     ProgrammingError = ProgrammingError
     NotSupportedError = NotSupportedError
 
-    def __init__(self, py_core_async_connection: Any) -> None:
+    def __init__(self, py_core_async_connection: "AsyncCoreConnection") -> None:
         self._py_core_async_connection = py_core_async_connection
 
     @classmethod
@@ -116,7 +120,12 @@ class _AsyncConnection:
         logger.debug("AsyncConnection.__aenter__: context entered")
         return self
 
-    async def __aexit__(self, exc_type, exc_value, traceback) -> Any:
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> bool | None:
         logger.debug(
             "AsyncConnection.__aexit__: exiting context; block_error=%s",
             exc_type is not None,
