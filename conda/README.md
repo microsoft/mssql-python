@@ -78,6 +78,15 @@ version before rendering/building. The shared orchestrator derives and supplies 
 automatically; omitted input fails recipe rendering instead of choosing a release.
 Both native installation and cross extraction require the bulk-copy initializer and
 a compatible extension filename. The separate native audits still validate binary headers.
+Linux ARM64 builds on the x64 Ubuntu agent require working QEMU emulation. The pipeline
+installs `qemu-user`, `qemu-user-binfmt` and `libc6-arm64-cross`, reloads the systemd binfmt
+registrations, and checks the enabled aarch64 handler, its emulator and the ARM64 loader.
+On Ubuntu 26.04, `qemu-user-static` is only a virtual package, not an install candidate.
+The recipe sets `QEMU_LD_PREFIX` to the cross libc directory when available; failed
+Linux interpreter execution stops with an emulation diagnostic, not a missing-wheel
+error. Interpreter-free wheel extraction remains restricted to `osx-*` targets.
+ARM64 failures still preserve native Linux artifacts, but a missing ARM64 matrix blocks release.
+
 For RS-dependent bindings, the orchestrator also supplies the derived `MSSQL_RS_VERSION`
 and a validated `rs-wheel-cp<minor>.txt` selection in `WHEELS_DIR`. Recipes install or
 extract that entire wheel, including private libraries and distribution metadata, before

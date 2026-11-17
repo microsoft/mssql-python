@@ -55,6 +55,71 @@ _MP_VER = "1.13.0"
 
 
 @pytest.mark.parametrize(
+    "state", ["ready", "missing-handler", "disabled", "wrong-interpreter", "missing-loader"]
+)
+def test_linux_qemu_setup_requires_supported_packages_and_enabled_handler(tmp_path, state):
+    import os
+    import shutil
+    import subprocess
+    import textwrap
+
+    bash = shutil.which("bash")
+    if not bash:
+        pytest.skip("QEMU setup regression requires bash")
+    source = (_ROOT / "OneBranchPipelines/conda-build-pipeline.yml").read_text()
+    setup = source.split(
+        "                displayName: 'Install libc6-arm64-cross + register QEMU binfmt (aarch64)'",
+        1,
+    )[0].rsplit("              - bash: |\n", 1)[1]
+    handler = tmp_path / "handler"
+    if state != "missing-handler":
+        handler.write_text(
+            ("disabled" if state == "disabled" else "enabled")
+            + "\ninterpreter "
+            + ("/missing/qemu-aarch64" if state == "wrong-interpreter" else "/usr/bin/qemu-aarch64")
+            + "\n",
+            newline="\n",
+        )
+    mocks = r"""
+sudo() {
+  case "$*" in
+    "apt-get update"|"apt-get install -y qemu-user qemu-user-binfmt libc6-arm64-cross"|\
+    "systemctl restart systemd-binfmt.service") printf '%s\n' "$*" ;;
+    *) echo "Unexpected privileged command: $*" >&2; return 1 ;;
+  esac
+}
+qemu-aarch64() { echo "QEMU_VERSION_CHECK"; }
+test() {
+  if [[ "$*" == "-x /usr/aarch64-linux-gnu/lib/ld-linux-aarch64.so.1" ]]; then
+    [[ "$TEST_STATE" != missing-loader ]]
+  else
+    builtin test "$@"
+  fi
+}
+grep() {
+  if [[ "${!#}" != /proc/sys/fs/binfmt_misc/qemu-aarch64 ]]; then return 1; fi
+  command grep "${@:1:$#-1}" "$TEST_HANDLER"
+}
+"""
+    result = subprocess.run(
+        [bash, "-c", mocks + textwrap.dedent(setup)],
+        env=dict(os.environ, TEST_STATE=state, TEST_HANDLER=handler.as_posix()),
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    output = result.stdout + result.stderr
+    if state == "ready":
+        assert result.returncode == 0, output
+        assert "systemctl restart systemd-binfmt.service" in output
+        assert "QEMU_VERSION_CHECK" in output
+    else:
+        assert result.returncode != 0, output
+        assert "ERROR:" in output
+        assert ("ARM64 glibc loader" if state == "missing-loader" else "aarch64 binfmt") in output
+
+
+@pytest.mark.parametrize(
     "source_present", [False, True], ids=["wheel-tests-only", "source-checkout"]
 )
 def test_collection_does_not_require_pyyaml(source_present, tmp_path, monkeypatch):

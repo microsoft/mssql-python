@@ -356,13 +356,15 @@ extends:
               - bash: |
                   set -euo pipefail
                   sudo apt-get update
-                  sudo apt-get install -y qemu-user-static binfmt-support libc6-arm64-cross
-                  # qemu-user-static + binfmt-support register the aarch64 binfmt_misc handler
-                  # on install (update-binfmts), so host-level qemu-user emulation works WITHOUT
-                  # a `docker run --privileged multiarch/qemu-user-static` (an unpinned public
-                  # image SDL would flag). Verify the handler is present and fail loudly if not,
-                  # rather than silently emulating nothing.
-                  test -e /proc/sys/fs/binfmt_misc/qemu-aarch64 || { echo "ERROR: aarch64 binfmt handler not registered after apt install" >&2; exit 1; }
+                  sudo apt-get install -y qemu-user qemu-user-binfmt libc6-arm64-cross
+                  # Ubuntu 26.04 provides static emulators in qemu-user; qemu-user-binfmt
+                  # supplies systemd registration files, not update-binfmts entries.
+                  sudo systemctl restart systemd-binfmt.service
+                  qemu-aarch64 --version
+                  test -x /usr/aarch64-linux-gnu/lib/ld-linux-aarch64.so.1 || { echo "ERROR: ARM64 glibc loader is missing after apt install" >&2; exit 1; }
+                  handler=/proc/sys/fs/binfmt_misc/qemu-aarch64
+                  grep -qx enabled "$handler" || { echo "ERROR: aarch64 binfmt handler is missing or disabled after systemd-binfmt restart" >&2; exit 1; }
+                  grep -qx 'interpreter /usr/bin/qemu-aarch64' "$handler" || { echo "ERROR: aarch64 binfmt handler does not use the installed qemu-user emulator" >&2; exit 1; }
                 displayName: 'Install libc6-arm64-cross + register QEMU binfmt (aarch64)'
                 # continueOnError so a transient apt/binfmt flake fails ONLY the best-effort
                 # aarch64 leg (which is itself continueOnError), never the shared Linux job -- a
