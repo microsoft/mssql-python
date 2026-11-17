@@ -3401,6 +3401,8 @@ class Cursor:
 
         Returns:
             A pyarrow RecordBatch object containing up to batch_size rows.
+            Vector columns use fixed-size float32 lists with
+            ``mssql.vector.base_type`` field metadata preserving SQL storage.
         """
         batch = self._fetch_arrow_batch(batch_size)
         assert batch is not None
@@ -3410,12 +3412,10 @@ class Cursor:
         self, batch_size: int, reader_state: ddbc_bindings._ArrowReaderState | None = None
     ) -> Optional["pyarrow.RecordBatch"]:
         self._check_closed()  # Check if the cursor is closed
-        if getattr(self, "_procedure_rows", None) is not None or any(
-            column[1] is Vector for column in (self.description or ())
-        ):
+        if getattr(self, "_procedure_rows", None) is not None:
             raise NotSupportedError(
-                driver_error="Use row fetch methods for vectors and buffered callproc results",
-                ddbc_error="Arrow vector conversion is not implemented",
+                driver_error="Use row fetch methods for buffered callproc results",
+                ddbc_error="Arrow conversion of buffered procedure results is not supported",
             )
         pa = self._ensure_pyarrow()
 
@@ -3923,6 +3923,8 @@ class Cursor:
                 Row objects from fetchone/fetchmany/fetchall are automatically
                 converted to tuples. Lists and other types are not accepted.
                 Rows must use the same representation throughout the iterable.
+                Vector cells preserve their dimensions and base_type, which must
+                match the destination column. FLOAT16 encoding is handled by pycore.
 
                 Data Format Requirements:
                 - Each element in the iterable represents one row
@@ -4011,15 +4013,15 @@ class Cursor:
 
         pycore_connection = None
         pycore_cursor = None
-        vector_validation_error: NotSupportedError | None = None
+        vector_validation_error: NotSupportedError | TypeError | ValueError | None = None
 
         def _validated_vector_rows(
             rows: Iterable[tuple[Any, ...]],
         ) -> Iterator[tuple[Any, ...]]:
             nonlocal vector_validation_error
             try:
-                yield from self._validate_bulkcopy_vectors(rows)
-            except NotSupportedError as error:
+                yield from self._adapt_bulkcopy_vectors(rows, mssql_py_core)
+            except (NotSupportedError, TypeError, ValueError) as error:
                 vector_validation_error = error
                 raise
 
@@ -4583,16 +4585,27 @@ class Cursor:
             raise
 
     @staticmethod
-    def _validate_bulkcopy_vectors(
-        rows: Iterable[tuple[Any, ...]],
+    def _adapt_bulkcopy_vectors(
+        rows: Iterable[tuple[Any, ...]], core: PyCoreModule
     ) -> Iterator[tuple[Any, ...]]:
+        vector_type = getattr(core, "BulkCopyVector", None)
         for row in rows:
             if any(isinstance(value, Vector) for value in row):
-                raise NotSupportedError(
-                    driver_error="Vector bulk copy requires the developing pycore vector contract",
-                    ddbc_error="No vector serialization is performed by the Python wrapper",
+                if vector_type is None:
+                    raise NotSupportedError(
+                        driver_error="Vector bulk copy requires a vector-capable pycore build",
+                        ddbc_error="The installed pycore does not expose BulkCopyVector",
+                    )
+                yield tuple(
+                    (
+                        vector_type(value.values, value.base_type)
+                        if isinstance(value, Vector)
+                        else value
+                    )
+                    for value in row
                 )
-            yield row
+            else:
+                yield row
 
     def _next_procedure_result(self) -> bool:
         self._cached_column_map = None

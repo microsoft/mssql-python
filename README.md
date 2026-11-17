@@ -292,11 +292,58 @@ print(output.value)
 ```
 
 Output wrappers currently support vectors only. Procedure text/binary inputs
-must fit the inline binding limits. Arrow vector fetches and Arrow access to
-buffered procedure results are not supported; use row fetch methods instead.
-**Vector bulk copy is pending the pycore vector input contract.** `bulkcopy()`
-explicitly rejects `Vector` cells rather than guessing a serialization format.
-Once that backend contract is available, pycore will own its FLOAT16 conversion.
+must fit the inline binding limits. Arrow access to buffered procedure results
+is not supported; use row fetch methods for those results.
+
+**Bulk copy and Arrow:** `bulkcopy()` accepts `Vector` cells in tuple or `Row`
+sources, including generators and SQL NULLs. A typed bridge preserves each
+vector's dimensions and `base_type`; both must match the mapped destination
+column. Pycore owns TDS serialization and FLOAT16 conversion, not the Python
+wrapper. This path requires the companion vector-capable pycore build exposing
+`BulkCopyVector`; an older backend raises `NotSupportedError` for `Vector` cells.
+The released runtime pin is not changed until that companion build is published.
+As with other bulk-copy types, this uses a separate connection: commit table
+creation before loading, do not use connection-local temporary tables, and do
+not assume rollback on the ODBC connection undoes a bulk load. Its native
+TDS connection negotiates vector support independently of the ODBC connection's
+`VectorTypeSupport` setting.
+
+`arrow_batch()`, `arrow()`, and `arrow_reader()` represent a native SQL vector as
+an Arrow **fixed-size list of float32** for both SQL base types. The list size is
+the number of dimensions, and field metadata
+`b"mssql.vector.base_type": b"float32"` (or `b"float16"`) preserves SQL storage.
+NULLs belong to the parent list; individual vector elements cannot be NULL.
+The native fetch path copies float32 buffers directly without creating Python
+floats per element. Vector-containing results use rowwise ODBC retrieval;
+ordinary Arrow results retain the existing column-binding path.
+
+`bulkcopy_arrow()` accepts the same representation with tables, record batches,
+readers, iterables of batches, and Arrow C stream/array producers. It requires
+the companion pycore Arrow vector adapter. The destination schema validates
+dimensions and determines storage; optional base-type metadata must agree.
+Variable-size lists and non-float32 child arrays are not implicitly converted.
+For raw Arrow input, finite/range and non-NULL-element checks occur during native
+bulk serialization. Earlier batches may already have been written when a later
+batch fails.
+
+```python
+import pyarrow as pa
+
+# dbo.Embeddings already exists: (id INT, embedding VECTOR(3, FLOAT16)).
+cursor.bulkcopy(
+    "dbo.Embeddings",
+    [(1, Vector([0.1, 0.2, 0.3], base_type="float16")), (2, None)],
+)
+cursor.execute("SELECT id, embedding FROM dbo.Embeddings")
+table = cursor.arrow()
+assert table.schema.field("embedding").type == pa.list_(
+    pa.field("item", pa.float32(), nullable=False), 3
+)
+# Use a different, existing table with a matching schema for streaming copies.
+cursor.execute("SELECT id, embedding FROM dbo.Embeddings")
+with cursor.arrow_reader() as reader:
+    cursor.bulkcopy_arrow("dbo.EmbeddingsCopy", reader)
+```
 
 Vector unit tests run without SQL Server. End-to-end tests in
 `tests/test_025_vector.py` exercise v1/FLOAT32, v2/FLOAT32, and v2/FLOAT16:
@@ -305,9 +352,11 @@ typed/all-NULL arrays and streamed text), numeric boundaries and error recovery,
 every row fetch method including `fetchval()`, metadata/row access, output converters,
 commit/rollback, TVPs, stored procedure outputs/result sets, and error recovery.
 Negotiation tests assert that v1 rejects native FLOAT16, `off` rejects native
-vector inputs, and `off` retains JSON/NULL reads. Arrow and bulk-copy cases assert
-the current explicit unsupported boundaries; they are not positive vector
-bulk-copy tests.
+vector inputs, and `off` retains JSON/NULL reads. Vector-capable pycore builds
+add positive row/Arrow bulk-copy round trips, column mappings, streaming sources,
+NULLs, dimensional/range errors, and Arrow ownership/schema checks.
+Bulk-copy integration cases skip explicitly when the companion pycore vector
+bridge is absent; native Arrow fetch coverage does not require that bridge.
 
 Set `DB_CONNECTION_STRING` outside source control to enable the live tests.
 The database principal needs permission to create tables, procedures, and table

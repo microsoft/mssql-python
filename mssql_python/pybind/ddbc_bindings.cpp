@@ -136,6 +136,19 @@ inline int EffectiveCharCtypeForFetch(int charCtype, const std::string& charEnco
 
 // Struct to hold parameter information for binding. Used by SQLBindParameter.
 
+struct ArrowArray;
+struct ArrowSchema;
+
+template <typename T>
+struct ArrowColumnDeleter {
+    void operator()(T* value) const {
+        if (value) {
+            if (value->release) value->release(value);
+            delete value;
+        }
+    }
+};
+
 struct ArrowArrayPrivateData {
     std::unique_ptr<uint8_t[]> valid;
 
@@ -162,11 +175,16 @@ struct ArrowArrayPrivateData {
     // Points to one of the typed *Val buffers above. Since the buffer pointers
     // don't change, this can be set once during batch initialization.
     void* ptrValueBuffer;
+    std::unique_ptr<ArrowArray> child;
+    std::array<ArrowArray*, 1> children{};
 };
 
 struct ArrowSchemaPrivateData {
     std::unique_ptr<char[]> name;
     std::unique_ptr<char[]> format;
+    std::string metadata;
+    std::unique_ptr<ArrowSchema> child;
+    std::array<ArrowSchema*, 1> children{};
 };
 
 #ifndef ARROW_C_DATA_INTERFACE
@@ -5718,6 +5736,8 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules,
     std::vector<bool> columnNullable(numCols);
     std::vector<bool> columnVarLen(numCols, false);
     std::vector<int64_t> nullCounts(numCols, 0);
+    std::vector<std::unique_ptr<VectorBinding>> vectorBindings(numCols);
+    std::vector<int> vectorSubtypes(numCols, 0);
 
     std::vector<std::unique_ptr<ArrowArrayPrivateData>> arrowArrayPrivateData(numCols);
     std::vector<std::unique_ptr<ArrowSchemaPrivateData>> arrowSchemaPrivateData(numCols);
@@ -5752,6 +5772,33 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules,
 
         std::string format = "";
         switch (dataType) {
+            case SQL_SS_VECTOR: {
+                if (columnSize < sizeof(SQL_SS_VECTOR_STRUCT) ||
+                    (columnSize - sizeof(SQL_SS_VECTOR_STRUCT)) % sizeof(float) != 0)
+                    throw py::value_error("ODBC returned invalid vector column metadata");
+                size_t dimensions = (columnSize - sizeof(SQL_SS_VECTOR_STRUCT)) / sizeof(float);
+                int subtype = colMeta["DecimalDigits"].cast<int>();
+                vectorSubtypes[i] = subtype;
+                vectorBindings[i] = std::make_unique<VectorBinding>(dimensions, subtype);
+                hasLobColumns = true;  // Vector ABI pointers cannot be copied as bound columns.
+                fetchSize = 1;
+                format = "+w:" + std::to_string(dimensions);
+                arrowColumnProducer->float32Val =
+                    std::make_unique<float[]>(static_cast<size_t>(arrowBatchSize) * dimensions);
+                arrowColumnProducer->ptrValueBuffer = nullptr;
+                auto& metadata = arrowSchemaPrivateData[i]->metadata;
+                auto appendInt = [&](int32_t value) {
+                    metadata.append(reinterpret_cast<const char*>(&value), sizeof(value));
+                };
+                const std::string key = "mssql.vector.base_type";
+                const std::string value = subtype == 1 ? "float16" : "float32";
+                appendInt(1);
+                appendInt(static_cast<int32_t>(key.size()));
+                metadata.append(key);
+                appendInt(static_cast<int32_t>(value.size()));
+                metadata.append(value);
+                break;
+            }
             case SQL_CHAR:
             case SQL_VARCHAR:
             case SQL_LONGVARCHAR:
@@ -5953,6 +6000,25 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules,
                     assert(idxRowSql == 0 && "GetData only works one row at a time");
 
                     switch (dataType) {
+                        case SQL_SS_VECTOR: {
+                            auto& binding = *vectorBindings[idxCol];
+                            {
+                                py::gil_scoped_release release;
+                                ret = SQLGetData_ptr(
+                                    hStmt, idxCol + 1, SQL_C_SS_VECTOR, &binding.value,
+                                    static_cast<SQLLEN>(VectorBufferSize(binding.elements.size())),
+                                    &binding.indicator);
+                            }
+                            fetchStateGuard.observe(ret);
+                            if (!SQL_SUCCEEDED(ret)) return ret;
+                            binding.validateResult();
+                            if (binding.indicator != SQL_NULL_DATA &&
+                                (static_cast<size_t>(binding.value.dimension) != binding.elements.size() ||
+                                 binding.value.type != vectorSubtypes[idxCol]))
+                                throw py::value_error("ODBC returned inconsistent vector metadata");
+                            buffers.indicators[idxCol][0] = binding.indicator;
+                            break;
+                        }
                         case SQL_SS_UDT:
                         case SQL_BINARY:
                         case SQL_VARBINARY:
@@ -6220,6 +6286,13 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules,
                 auto dataLen = static_cast<uint64_t>(indicator);
 
                 switch (dataType) {
+                    case SQL_SS_VECTOR: {
+                        const auto& binding = *vectorBindings[idxCol];
+                        std::memcpy(arrowColumnProducer->float32Val.get() +
+                                        static_cast<size_t>(idxRowArrow) * binding.elements.size(),
+                                    binding.elements.data(), binding.elements.size() * sizeof(float));
+                        break;
+                    }
                     case SQL_SS_UDT:
                     case SQL_BINARY:
                     case SQL_VARBINARY:
@@ -6445,9 +6518,10 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules,
     auto arrowSchemaBatch = std::make_unique<ArrowSchema>();
 
     auto arrowSchemaBatchChildren = std::make_unique<ArrowSchema*[]>(numCols);
-    auto arrowSchemaBatchChildPointers = std::make_unique<std::unique_ptr<ArrowSchema>[]>(numCols);
+    using SchemaOwner = std::unique_ptr<ArrowSchema, ArrowColumnDeleter<ArrowSchema>>;
+    auto arrowSchemaBatchChildPointers = std::make_unique<SchemaOwner[]>(numCols);
     for (SQLSMALLINT i = 0; i < numCols; i++) {
-        arrowSchemaBatchChildPointers[i] = std::make_unique<ArrowSchema>();
+        arrowSchemaBatchChildPointers[i] = SchemaOwner(new ArrowSchema{});
     }
 
     // Second, transfer ownership to arrowSchemaBatch
@@ -6457,7 +6531,8 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules,
         *arrowSchemaBatchChildPointers[i] = {
             arrowSchemaPrivateData[i]->format.get(),
             arrowSchemaPrivateData[i]->name.get(),
-            nullptr,
+            arrowSchemaPrivateData[i]->metadata.empty()
+                ? nullptr : arrowSchemaPrivateData[i]->metadata.data(),
             static_cast<int64_t>(columnNullable[i] ? ARROW_FLAG_NULLABLE : 0),
             0,
             nullptr,
@@ -6466,12 +6541,33 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules,
                 assert(schema != nullptr);
                 assert(schema->release != nullptr);
                 assert(schema->private_data != nullptr);
-                assert(schema->children == nullptr && schema->n_children == 0);
+                for (int64_t child = 0; child < schema->n_children; ++child) {
+                    if (schema->children[child]->release)
+                        schema->children[child]->release(schema->children[child]);
+                }
                 delete schema->private_data;  // Frees format and name
                 schema->release = nullptr;
             },
             arrowSchemaPrivateData[i].release(),
         };
+        if (vectorBindings[i]) {
+            auto* parent = arrowSchemaBatchChildPointers[i].get();
+            auto* owner = parent->private_data;
+            auto childOwner = std::make_unique<ArrowSchemaPrivateData>();
+            childOwner->format = std::make_unique<char[]>(2);
+            std::memcpy(childOwner->format.get(), "f", 2);
+            childOwner->name = std::make_unique<char[]>(5);
+            std::memcpy(childOwner->name.get(), "item", 5);
+            owner->child = std::make_unique<ArrowSchema>();
+            *owner->child = {
+                childOwner->format.get(), childOwner->name.get(), nullptr,
+                0, 0, nullptr, nullptr, parent->release, childOwner.get(),
+            };
+            childOwner.release();
+            owner->children[0] = owner->child.get();
+            parent->n_children = 1;
+            parent->children = owner->children.data();
+        }
     }
 
     for (SQLSMALLINT i = 0; i < numCols; i++) {
@@ -6533,9 +6629,10 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules,
     arrowArrayBatchBuffers[0] = nullptr;
 
     auto arrowArrayBatchChildren = std::make_unique<ArrowArray*[]>(numCols);
-    auto arrowArrayBatchChildPointers = std::make_unique<std::unique_ptr<ArrowArray>[]>(numCols);
+    using ArrayOwner = std::unique_ptr<ArrowArray, ArrowColumnDeleter<ArrowArray>>;
+    auto arrowArrayBatchChildPointers = std::make_unique<ArrayOwner[]>(numCols);
     for (SQLSMALLINT i = 0; i < numCols; i++) {
-        arrowArrayBatchChildPointers[i] = std::make_unique<ArrowArray>();
+        arrowArrayBatchChildPointers[i] = ArrayOwner(new ArrowArray{});
     }
 
     // Second, transfer ownership to arrowArrayBatch
@@ -6559,14 +6656,36 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules,
                 assert(array != nullptr);
                 assert(array->private_data != nullptr);
                 assert(array->release != nullptr);
-                assert(array->children == nullptr);
-                assert(array->n_children == 0);
+                for (int64_t child = 0; child < array->n_children; ++child) {
+                    if (array->children[child]->release)
+                        array->children[child]->release(array->children[child]);
+                }
                 delete array->private_data;  // Frees all buffer entries
                 assert(array->buffers != nullptr);
                 array->release = nullptr;
             },
             arrowArrayPrivateData[col].release(),
         };
+        if (vectorBindings[col]) {
+            auto* parent = arrowArrayBatchChildPointers[col].get();
+            auto* owner = parent->private_data;
+            auto childOwner = std::make_unique<ArrowArrayPrivateData>();
+            childOwner->float32Val = std::move(owner->float32Val);
+            childOwner->buffers[0] = nullptr;
+            childOwner->buffers[1] = childOwner->float32Val.get();
+            owner->child = std::make_unique<ArrowArray>();
+            *owner->child = {
+                static_cast<int64_t>(idxRowArrow) *
+                    static_cast<int64_t>(vectorBindings[col]->elements.size()),
+                0, 0, 2, 0, (const void**)childOwner->buffers.data(),
+                nullptr, nullptr, parent->release, childOwner.get(),
+            };
+            childOwner.release();
+            owner->children[0] = owner->child.get();
+            parent->n_buffers = 1;
+            parent->n_children = 1;
+            parent->children = owner->children.data();
+        }
     }
 
     for (SQLSMALLINT i = 0; i < numCols; i++) {

@@ -16,8 +16,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
   `TableValuedParameter` and buffered `callproc()` with vector
   `OutputParameter` / `InputOutputParameter` wrappers. FLOAT16 requires Microsoft
   ODBC Driver 18.7.1.1+ (not supplied by the current bundled driver); ODBC owns
-  half-precision conversion. Vector bulk copy remains pending pycore's contract,
-  and Arrow vector fetches are not supported.
+  half-precision conversion.
+- FLOAT32/FLOAT16 vector bulk copy through a typed pycore bridge and Arrow
+  read/write support using fixed-size float32 lists with SQL base-type metadata.
+  Pycore owns bulk FLOAT16 conversion; the companion vector-capable pycore
+  build is required and the released runtime pin is unchanged pending publication.
 - New feature: Support for macOS and Linux.
 - Documentation: Added API documentation in the Wiki.
 - New `token_provider=` parameter on `connect()` / `Connection` for Microsoft

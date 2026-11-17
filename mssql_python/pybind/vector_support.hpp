@@ -61,12 +61,17 @@ struct VectorBinding {
     VectorBinding(const VectorBinding&) = delete;
     VectorBinding& operator=(const VectorBinding&) = delete;
 
-    py::object toPython() const {
-        if (indicator == SQL_NULL_DATA) return py::none();
+    void validateResult() const {
+        if (indicator == SQL_NULL_DATA) return;
         ValidateVectorShape(value.dimension, value.type);
         if (static_cast<size_t>(value.dimension) > elements.size() ||
             indicator != static_cast<SQLLEN>(VectorBufferSize(value.dimension)))
             throw py::value_error("ODBC returned an invalid vector length");
+    }
+
+    py::object toPython() const {
+        if (indicator == SQL_NULL_DATA) return py::none();
+        validateResult();
         py::tuple values(value.dimension);
         for (size_t i = 0; i < static_cast<size_t>(value.dimension); ++i)
             values[i] = py::float_(elements[i]);
