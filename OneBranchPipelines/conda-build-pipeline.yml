@@ -21,6 +21,7 @@
 # (drop_ConsolidateConda_ConsolidateArtifacts). Publishing is the companion
 # conda-release-pipeline.yml. Validated locally that the recipe builds + imports; the
 # per-OS legs + SDL settings need an actual ADO run to confirm.
+# Successful main wheel builds trigger Official Conda builds using that exact producer run.
 # =========================================================================================
 name: $(Year:YY)$(DayOfYear)$(Rev:.r)-CondaBuild
 
@@ -52,7 +53,7 @@ parameters:
 
 variables:
   - name: effectiveOneBranchType
-    ${{ if eq(variables['Build.Reason'], 'Schedule') }}:
+    ${{ if or(eq(variables['Build.Reason'], 'Schedule'), eq(variables['Build.Reason'], 'ResourceTrigger')) }}:
       value: 'Official'
     ${{ else }}:
       value: '${{ parameters.oneBranchType }}'
@@ -68,9 +69,12 @@ resources:
   # The wheel build pipeline whose consolidated wheel artifacts this pipeline repackages.
   pipelines:
     - pipeline: buildPipeline
-      source: 'Build-Release-Package-Pipeline'
+      source: '\OneBranch\Build-Release-Package-Pipeline'
       branch: main
-      trigger: none
+      trigger:
+        branches:
+          include:
+            - refs/heads/main
 
 extends:
   template: 'v2/OneBranch.${{ variables.effectiveOneBranchType }}.CrossPlat.yml@templates'

@@ -270,6 +270,21 @@ path is passed to the publishing task through a read-only task output. Dependenc
 use the publisher's target-specific hash lock and explicit package-feed-proxy `--index-url`
 with pip's `--isolated` mode. Both production and rehearsal use this same code.
 
+On `refs/heads/main`, successful completion of `Build-Release-Package-Pipeline`
+automatically starts an Official `Conda-Build-Pipeline` run. Successful completion
+of that Conda build starts the Official `Conda-Release-Pipeline` rehearsal.
+The resource triggers wait for the entire upstream pipeline, not just an individual
+stage, and retain the exact triggering producer run through `buildPipeline.runID`.
+Direct CI and PR triggers remain disabled on both Conda pipelines. The trigger YAML
+must be present in the ADO repository's configured default branch, with the existing
+pipeline-resource authorizations in place, before this chain can run.
+
+Automatic release runs are always non-publishing, even if `publishToConda=true` is
+supplied. Only a manually queued release with that explicit opt-in can enable the
+publishing credential group, production job and upload path. Manual runs still
+default to non-publishing. Recorded wheel/Conda provenance, the full release matrix,
+native audits and external approval/lock requirements remain unchanged.
+
 With `publishToConda=false` (the default), the release pipeline now rehearses the
 publisher instead of only printing an upload plan. Both modes use the Official
 template, Windows 2022 managed container, network isolation, independent producer
@@ -293,7 +308,7 @@ exact branch/commit, `publishToConda=false` and the intended recorded Conda prod
 run. Inspect actual hosted logs through the expected rejection; a compiled preview
 or a local interpreter check does not establish hosted image/venv/dependency coverage.
 Resource or policy denials must be resolved by the owner, never by weakening the
-production checks. `publishToConda=true` retains the main-branch provenance guard,
+production checks. A manual `publishToConda=true` run retains the main-branch provenance guard,
 publishing credential group and shared exclusive lock.
 The old upload-plan-only task and duplicate interpreter selection in the validation
 job are removed. Superseded MSI cleanup and temporary installer diagnostics are removed;
@@ -316,7 +331,7 @@ must fail before the stage receives the publishing credential. Preserve existing
 permissions and approvals, and restrict permission to administer or bypass the check.
 Do not grant broader pipeline access as part of configuring it.
 
-The existing `publishToConda` condition omits this group for rehearsal runs, so
+The effective publication condition omits this group for all automatic and rehearsal runs, so
 trusted feature-branch rehearsal remains separate from credentialed publication.
 Neither a checkout-local branch check nor a secondary pinned checkout can replace
 the resource-side control: editable YAML could bypass either. These external checks
