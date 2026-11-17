@@ -9,6 +9,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # with zero profiler code. Turn on with -DENABLE_PROFILING=ON (dev/internal builds).
 option(ENABLE_PROFILING "Build with performance profiling instrumentation" OFF)
 option(MSSQL_NATIVE_FETCH_TEST_FAULTS "Build isolated native-fetch failure-contract controls" OFF)
+option(MSSQL_ARROW_TEST_INTERPOSITION "Expose ODBC pointer addresses for isolated Arrow tests" OFF)
 if(MSSQL_NATIVE_FETCH_TEST_FAULTS AND NOT ENABLE_PROFILING)
     message(FATAL_ERROR "Native-fetch fault controls require a separate ENABLE_PROFILING=ON build")
 endif()
@@ -45,7 +46,11 @@ if (MSVC)
     
     # Enable PDB generation for all target types
     add_compile_options("$<$<CONFIG:Release>:/Zi>")
-    add_link_options("$<$<CONFIG:Release>:/DEBUG /OPT:REF /OPT:ICF>")
+    add_link_options(
+        "$<$<CONFIG:Release>:/DEBUG>"
+        "$<$<CONFIG:Release>:/OPT:REF>"
+        "$<$<CONFIG:Release>:/OPT:ICF>"
+    )
     
     message(STATUS "Security flags applied: /GS /guard:cf /DYNAMICBASE /NXCOMPAT /GUARD:CF")
 endif()
@@ -369,6 +374,9 @@ if(ENABLE_PROFILING)
 endif()
 if(MSSQL_NATIVE_FETCH_TEST_FAULTS)
     target_compile_definitions(ddbc_bindings PRIVATE MSSQL_NATIVE_FETCH_TEST_FAULTS)
+endif()
+if(MSSQL_ARROW_TEST_INTERPOSITION)
+    target_compile_definitions(ddbc_bindings PRIVATE MSSQL_ARROW_TEST_INTERPOSITION)
 endif()
 
 # Add warning level flags for MSVC
