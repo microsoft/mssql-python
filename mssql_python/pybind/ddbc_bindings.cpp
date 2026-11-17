@@ -612,7 +612,6 @@ SQLRETURN BindParameters(SqlHandle& handle, SQLHANDLE hStmt, const py::list& par
             continue;
         }
 
-        // TODO: Add more data types like money and intervals.
         switch (paramInfo.paramCType) {
             case SQL_C_SS_VECTOR: {
                 if (!paramInfo.vectorBinding) {
@@ -6840,9 +6839,12 @@ py::tuple CallProcedure_wrap(SqlHandlePtr statement, const std::u16string& query
             directions[i] = py::isinstance(item, inoutClass)
                 ? SQL_PARAM_INPUT_OUTPUT : SQL_PARAM_OUTPUT;
             if (directions[i] == SQL_PARAM_INPUT_OUTPUT) {
-                if (item.attr("value").is_none())
+                py::object input = item.attr("value");
+                if (input.is_none())
                     throw py::value_error("INPUT_OUTPUT parameters require a non-NULL Vector");
-                values[i] = item.attr("value");
+                if (!py::isinstance(input, vectorModule.attr("Vector")))
+                    throw py::type_error("INPUT_OUTPUT parameters require a Vector");
+                values[i] = input;
             } else {
                 size_t dimensions = item.attr("dimensions").cast<size_t>();
                 auto baseType = item.attr("base_type").cast<std::string>();

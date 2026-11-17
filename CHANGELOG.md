@@ -14,8 +14,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
   Explicit vector hints and TVP schemas accept numeric lists with the same
   validation; unhinted lists keep their existing meanings. Added
   `TableValuedParameter` and buffered `callproc()` with vector
-  `OutputParameter` / `InputOutputParameter` wrappers. FLOAT16 requires Microsoft
-  ODBC Driver 18.7.1.1+ (not supplied by the current bundled driver); ODBC owns
+  `OutputParameter` / `InputOutputParameter` wrappers. Procedure calls invalidate
+  the previous prepared-query cache even when the procedure fails; overwritten
+  non-vector INPUT_OUTPUT values are rejected before binding. FLOAT16 requires
+  Microsoft ODBC Driver 18.7.1.1+ (not supplied by the current bundled driver); ODBC owns
   half-precision conversion. Vector bulk copy remains pending pycore's contract,
   and Arrow vector fetches are not supported.
 - New feature: Support for macOS and Linux.

@@ -371,6 +371,34 @@ def test_callproc_propagates_backend_errors(unit_cursor, monkeypatch):
     assert unit_cursor._procedure_rows is None
 
 
+def test_failing_callproc_invalidates_prepared_query(unit_cursor, monkeypatch):
+    unit_cursor.hstmt = Mock()
+    monkeypatch.setattr(ddbc_bindings, "DDBCSQLResetStmt", lambda *args: 0)
+    monkeypatch.setattr(ddbc_bindings, "DDBCSQLRowCount", lambda *args: -1)
+    monkeypatch.setattr(ddbc_bindings, "DDBCSQLDescribeCol", lambda *args: 0)
+
+    def execute(handle, sql, params, hints, prepared, use_prepare, settings):
+        prepared[0] = True
+        return 0
+
+    execute = Mock(side_effect=execute)
+    monkeypatch.setattr(ddbc_bindings, "DDBCSQLExecute", execute)
+    query = "SELECT CAST(? AS INT)"
+    unit_cursor.execute(query, 1)
+    assert unit_cursor.last_executed_stmt == query
+    assert unit_cursor.is_stmt_prepared == [True]
+    monkeypatch.setattr(
+        ddbc_bindings,
+        "DDBCCallProc",
+        Mock(side_effect=mssql_python.ProgrammingError("procedure failed", "42000")),
+    )
+    with pytest.raises(mssql_python.ProgrammingError, match="procedure failed"):
+        unit_cursor.callproc("dbo.failure", [Vector([1, 2, 3])])
+    unit_cursor.execute(query, 2)
+    assert execute.call_count == 2
+    assert all(call.args[5] is True for call in execute.call_args_list)
+
+
 def test_procedure_result_converters_are_refreshed(unit_cursor, monkeypatch):
     value = Vector([1, 2, 3])
     unit_cursor.connection._output_converters[mssql_python.SQL_SS_VECTOR] = lambda v: v.dimensions
@@ -802,6 +830,44 @@ def test_live_vector_procedure_outputs(live_vector_connection, with_results):
             assert cursor.fetchone()[0] is None
         cursor.execute("SELECT 1", reset_cursor=False)
         assert cursor.fetchone()[0] == 1
+
+
+@pytest.mark.parametrize("failure", ["missing-procedure", "procedure-error"])
+def test_live_failing_callproc_reprepares_previous_query(live_vector_connection, failure):
+    connection, base_type = live_vector_connection
+    value = Vector([1, 2, 3], base_type=base_type)
+    with connection.cursor() as cursor:
+        if failure == "procedure-error":
+            cursor.execute(
+                f"CREATE PROCEDURE #failing_vector @v VECTOR(3, {base_type}) AS "
+                "BEGIN SET NOCOUNT ON; THROW 50000, 'expected procedure failure', 1; END"
+            )
+        query = f"SELECT CAST(? AS VECTOR(3, {base_type})) AS embedding"
+        cursor.execute(query, value)
+        assert cursor.fetchval() == value
+        assert cursor.is_stmt_prepared == [True]
+        with pytest.raises(mssql_python.DatabaseError):
+            cursor.callproc("#failing_vector", [value])
+        assert cursor.last_executed_stmt == ""
+        assert cursor.is_stmt_prepared == [False]
+        replacement = Vector([4, 5, 6], base_type=base_type)
+        cursor.execute(query, replacement)
+        assert cursor.fetchval() == replacement
+
+
+@pytest.mark.parametrize(
+    "invalid,error",
+    [(None, ValueError), (1, TypeError), (True, TypeError), ("abc", TypeError), ([1], TypeError)],
+)
+def test_live_vector_rejects_mutated_inout(live_vector_connection, invalid, error):
+    connection, base_type = live_vector_connection
+    parameter = InputOutputParameter(Vector([1, 2, 3], base_type=base_type))
+    parameter.value = invalid
+    with connection.cursor() as cursor:
+        with pytest.raises(error, match="INPUT_OUTPUT.*Vector"):
+            cursor.callproc("#invalid_inout", [parameter])
+        cursor.execute("SELECT 1")
+        assert cursor.fetchval() == 1
 
 
 @pytest.mark.parametrize("method", ["execute", "executemany"])

@@ -4651,6 +4651,8 @@ class Cursor:
         self.messages = []
         if self._cached_decoding_generation != self._connection._decoding_generation:
             self._refresh_decoding_cache()
+        self.last_executed_stmt = ""
+        self.is_stmt_prepared = [False]
         outputs, results = ddbc_bindings.DDBCCallProc(
             self.hstmt,
             query,
@@ -4661,8 +4663,6 @@ class Cursor:
             self._cached_wchar_encoding,
             self._cached_char_ctype,
         )
-        self.last_executed_stmt = ""
-        self.is_stmt_prepared = [False]
         self._reset_inputsizes()
         self._procedure_results = deque(results)
         self._next_procedure_result()
