@@ -85,7 +85,9 @@ On Ubuntu 26.04, `qemu-user-static` is only a virtual package, not an install ca
 The recipe sets `QEMU_LD_PREFIX` to the cross libc directory when available; failed
 Linux interpreter execution stops with an emulation diagnostic, not a missing-wheel
 error. Interpreter-free wheel extraction remains restricted to `osx-*` targets.
-ARM64 failures still preserve native Linux artifacts, but a missing ARM64 matrix blocks release.
+The ARM64 build runs only after every setup check passes; failed setup skips that leg
+without blocking native Linux artifact publication. ARM64 failures still preserve native
+Linux artifacts, but a missing ARM64 matrix blocks release.
 
 For RS-dependent bindings, the orchestrator also supplies the derived `MSSQL_RS_VERSION`
 and a validated `rs-wheel-cp<minor>.txt` selection in `WHEELS_DIR`. Recipes install or

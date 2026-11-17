@@ -111,12 +111,43 @@ grep() {
     output = result.stdout + result.stderr
     if state == "ready":
         assert result.returncode == 0, output
+        assert (
+            output.splitlines().count(
+                "apt-get install -y qemu-user qemu-user-binfmt libc6-arm64-cross"
+            )
+            == 1
+        ), output
         assert "systemctl restart systemd-binfmt.service" in output
         assert "QEMU_VERSION_CHECK" in output
+        assert "##vso[task.setvariable variable=ready;isOutput=true]true" in output
     else:
         assert result.returncode != 0, output
         assert "ERROR:" in output
         assert ("ARM64 glibc loader" if state == "missing-loader" else "aarch64 binfmt") in output
+        assert "##vso[task.setvariable variable=ready;isOutput=true]true" not in output
+
+
+def test_linux_qemu_setup_gates_arm64_build_only():
+    source = (_ROOT / "OneBranchPipelines/conda-build-pipeline.yml").read_text()
+    linux = source.split("- stage: CondaLinux\n", 1)[1].split("- stage: ConsolidateConda\n", 1)[0]
+    steps = re.split(r"^              - ", linux, flags=re.MULTILINE)[1:]
+    setup = next(step for step in steps if "register QEMU binfmt (aarch64)" in step)
+    arm64 = next(step for step in steps if "condaSubdir: 'linux-aarch64'" in step)
+    native = next(step for step in steps if "condaSubdir: 'linux-64'" in step)
+    publish = next(step for step in steps if "displayName: 'Publish Linux conda artifact'" in step)
+    assert "                name: setupArm64Qemu\n" in setup
+    assert "                continueOnError: true\n" in setup
+    assert "                  continueOnError: true\n" in arm64
+    assert re.findall(r"^                  condition: (.+)$", arm64, re.MULTILINE) == [
+        "and(succeeded(), eq(variables['setupArm64Qemu.ready'], 'true'))"
+    ]
+    for step in (native, publish):
+        assert re.findall(r"^\s+condition: (.+)$", step, re.MULTILINE) in ([], ["succeeded()"])
+
+    template = (_ROOT / "OneBranchPipelines/steps/conda-build-validate-step-posix.yml").read_text()
+    parameters, build = template.split("\nsteps:\n", 1)
+    assert re.search(r"- name: condition\n    type: string\n    default: succeeded\(\)", parameters)
+    assert re.search(r"^    condition: \$\{\{ parameters\.condition \}\}$", build, re.MULTILINE)
 
 
 @pytest.mark.parametrize(
