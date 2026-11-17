@@ -24,6 +24,14 @@ from .logging import MSSQLLogger
 import datetime
 import logging
 import pyarrow
+from .vector import (
+    Vector as Vector,
+    OutputParameter as OutputParameter,
+    InputOutputParameter as InputOutputParameter,
+)
+from .table_parameter import TableValuedParameter as TableValuedParameter
+
+SQL_SS_VECTOR: int
 
 # GLOBALS - DB-API 2.0 Required Module Globals
 # https://www.python.org/dev/peps/pep-0249/#module-interface

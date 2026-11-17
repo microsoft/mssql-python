@@ -94,3 +94,32 @@ def fetch_with_converters(
         encoding="utf-8",
     )
     _check_typing(tmp_path, str(usage))
+
+
+@pytest.mark.parametrize("module", ["mssql_python", "mssql_python.mssql_python"])
+def test_vector_consumer_call_shapes(tmp_path: Path, module: str) -> None:
+    usage = tmp_path / "vector_consumer.py"
+    usage.write_text(
+        f"""\
+from {module} import (
+    Cursor, Vector, OutputParameter, InputOutputParameter,
+    TableValuedParameter, SQL_SS_VECTOR,
+)
+
+def supported_calls(cursor: Cursor) -> None:
+    vector = Vector([0.1, 0.2, 0.3], base_type="float16")
+    values: list[float] = list(vector)
+    dimensions: int = vector.dimensions
+    base_type: str = vector.base_type
+    output = OutputParameter(3, base_type="float16")
+    inout = InputOutputParameter(vector)
+    table = TableValuedParameter("dbo.v", [([1, 2, 3],)], [(SQL_SS_VECTOR, 3, 1)])
+    cursor.execute("SELECT ?", [vector])
+    cursor.execute("EXEC dbo.p ?", table)
+    cursor.setinputsizes([(SQL_SS_VECTOR, 3, 1)])
+    cursor.executemany("INSERT INTO v VALUES (?)", [([1, 2, 3],), (None,), (vector,)])
+    cursor.callproc("dbo.p", [vector, output, inout])
+""",
+        encoding="utf-8",
+    )
+    _check_typing(tmp_path, str(usage))

@@ -7,6 +7,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 ## [Unreleased]
 
 ### Added
+- Opt-in synchronous native vector support with immutable `Vector` values,
+  FLOAT32/FLOAT16 subtype metadata, scalar/array parameter binding, and row
+  fetches. `base_type` selects SQL storage; values are normalized to float32 at
+  construction, with early finite/float32 and conservative FLOAT16 range checks.
+  Explicit vector hints and TVP schemas accept numeric lists with the same
+  validation; unhinted lists keep their existing meanings. Added
+  `TableValuedParameter` and buffered `callproc()` with vector
+  `OutputParameter` / `InputOutputParameter` wrappers. FLOAT16 requires Microsoft
+  ODBC Driver 18.7.1.1+ (not supplied by the current bundled driver); ODBC owns
+  half-precision conversion. Vector bulk copy remains pending pycore's contract,
+  and Arrow vector fetches are not supported.
 - New feature: Support for macOS and Linux.
 - Documentation: Added API documentation in the Wiki.
 - New `token_provider=` parameter on `connect()` / `Connection` for Microsoft
