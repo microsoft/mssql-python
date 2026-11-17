@@ -2,7 +2,8 @@
 
 Live tests require DB_CONNECTION_STRING. Enable the v2 matrix with
 MSSQL_TEST_VECTOR_FLOAT16=1 on an ODBC 18.7.1.1+ / FLOAT16-capable server.
-No live operation is mocked; backend/connection errors fail rather than skip.
+Live tests require the Microsoft ODBC provider and a server advertising the
+vector type. No live operation is mocked; connection/backend errors fail.
 """
 
 import json
@@ -13,7 +14,7 @@ import uuid
 from collections import deque
 from itertools import repeat
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import MagicMock, Mock
 
 import pytest
 
@@ -500,6 +501,64 @@ def test_bulkcopy_preserves_vector_rejection(
     core_connection.close.assert_called_once()
 
 
+def _require_live_vector_server(conn_str):
+    if not conn_str:
+        pytest.skip("DB_CONNECTION_STRING is not configured")
+    if mssql_python.get_native_provider_info()["id"] != "msodbcsql18":
+        pytest.skip("Vector integration currently qualifies the Microsoft ODBC provider only")
+    connection = mssql_python.connect(conn_str)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT COUNT(*) FROM sys.types WHERE name=N'vector' AND is_user_defined=0"
+            )
+            if not cursor.fetchval():
+                pytest.skip("Server does not advertise the native vector type")
+    finally:
+        connection.close()
+
+
+@pytest.mark.parametrize("supported", [False, True])
+def test_vector_server_gate_uses_type_metadata_and_closes_connection(monkeypatch, supported):
+    connection = MagicMock()
+    cursor = connection.cursor.return_value.__enter__.return_value
+    cursor.fetchval.return_value = int(supported)
+    monkeypatch.setattr(mssql_python, "connect", Mock(return_value=connection))
+    monkeypatch.setattr(mssql_python, "get_native_provider_info", lambda: {"id": "msodbcsql18"})
+    if supported:
+        _require_live_vector_server("Server=localhost")
+    else:
+        with pytest.raises(pytest.skip.Exception, match="native vector type"):
+            _require_live_vector_server("Server=localhost")
+    cursor.execute.assert_called_once_with(
+        "SELECT COUNT(*) FROM sys.types WHERE name=N'vector' AND is_user_defined=0"
+    )
+    connection.close.assert_called_once()
+
+
+def test_vector_server_gate_does_not_hide_connection_failures(monkeypatch):
+    monkeypatch.setattr(mssql_python, "get_native_provider_info", lambda: {"id": "msodbcsql18"})
+    monkeypatch.setattr(
+        mssql_python, "connect", Mock(side_effect=mssql_python.OperationalError("failed", "08001"))
+    )
+    with pytest.raises(mssql_python.OperationalError, match="failed"):
+        _require_live_vector_server("Server=localhost")
+
+
+def test_vector_server_gate_does_not_connect_unqualified_provider(monkeypatch):
+    connect = Mock()
+    monkeypatch.setattr(mssql_python, "connect", connect)
+    monkeypatch.setattr(mssql_python, "get_native_provider_info", lambda: {"id": "mssql-odbc"})
+    with pytest.raises(pytest.skip.Exception, match="provider"):
+        _require_live_vector_server("Server=localhost")
+    connect.assert_not_called()
+
+
+@pytest.fixture(scope="session")
+def vector_server(conn_str):
+    _require_live_vector_server(conn_str)
+
+
 @pytest.fixture(
     params=[
         pytest.param(("v1", "float32"), id="v1-float32"),
@@ -507,9 +566,7 @@ def test_bulkcopy_preserves_vector_rejection(
         pytest.param(("v2", "float16"), id="v2-float16"),
     ]
 )
-def live_vector_connection(request, conn_str):
-    if not conn_str:
-        pytest.skip("DB_CONNECTION_STRING is not configured")
+def live_vector_connection(request, conn_str, vector_server):
     mode, dtype = request.param
     if mode == "v2" and os.getenv("MSSQL_TEST_VECTOR_FLOAT16") != "1":
         pytest.skip("Set MSSQL_TEST_VECTOR_FLOAT16=1 with ODBC 18.7.1.1+ and server support")
@@ -1022,7 +1079,7 @@ def test_live_vector_bulkcopy_boundary(live_vector_connection):
         pytest.param("v1", "float16", id="v1-rejects-float16"),
     ],
 )
-def test_live_vector_negotiation_rejects_unsupported_inputs(conn_str, mode, dtype):
+def test_live_vector_negotiation_rejects_unsupported_inputs(conn_str, vector_server, mode, dtype):
     if not conn_str:
         pytest.skip("DB_CONNECTION_STRING is not configured")
     if dtype == "float16" and os.getenv("MSSQL_TEST_VECTOR_FLOAT16") != "1":
@@ -1039,7 +1096,7 @@ def test_live_vector_negotiation_rejects_unsupported_inputs(conn_str, mode, dtyp
 
 
 @pytest.mark.parametrize("dtype", ["float32", "float16"])
-def test_live_vector_off_returns_json(conn_str, dtype):
+def test_live_vector_off_returns_json(conn_str, vector_server, dtype):
     if not conn_str:
         pytest.skip("DB_CONNECTION_STRING is not configured")
     if dtype == "float16" and os.getenv("MSSQL_TEST_VECTOR_FLOAT16") != "1":

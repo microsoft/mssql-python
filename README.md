@@ -322,6 +322,11 @@ $env:MSSQL_TEST_VECTOR_FLOAT16 = "1"
 python -m pytest tests\test_025_vector.py -v
 ```
 
+Servers without the built-in vector type and the unqualified alternate provider
+are explicitly skipped, so existing SQL Server 2022 validation legs remain
+usable. The server check reads `sys.types`, not a version banner, and does not
+suppress connection or query errors.
+
 Missing database/capability configuration causes explicit skips. Once enabled,
 connection failures and unsupported backend behavior fail the tests rather than
 being converted to skips.
