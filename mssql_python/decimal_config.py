@@ -5,13 +5,17 @@ Licensed under the MIT license.
 This module provides functions for managing decimal separator configuration.
 """
 
-from typing import TYPE_CHECKING
+from typing import Callable, TYPE_CHECKING
 
 if TYPE_CHECKING:  # pragma: no cover
     from mssql_python.helpers import Settings
 
 
-def _setDecimalSeparator(separator: str, settings: "Settings", set_in_cpp_func=None) -> None:
+def _setDecimalSeparator(
+    separator: str,
+    settings: "Settings",
+    set_in_cpp_func: Callable[[str], None] | None = None,
+) -> None:
     """
     Internal implementation for setting the decimal separator.
 
@@ -65,7 +69,9 @@ def _getDecimalSeparator(settings: "Settings") -> str:
     return settings.decimal_separator
 
 
-def create_decimal_separator_functions(settings: "Settings"):
+def create_decimal_separator_functions(
+    settings: "Settings",
+) -> tuple[Callable[[str], None], Callable[[], str]]:
     """
     Factory function to create decimal separator getter/setter bound to specific settings.
 
@@ -78,6 +84,7 @@ def create_decimal_separator_functions(settings: "Settings"):
         Tuple of (setDecimalSeparator, getDecimalSeparator) functions
     """
     # Try to import and initialize the C++ binding
+    cpp_binding: Callable[[str], None] | None
     try:
         from mssql_python.ddbc_bindings import DDBCSetDecimalSeparator
 
