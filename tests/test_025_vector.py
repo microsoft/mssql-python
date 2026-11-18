@@ -1319,3 +1319,33 @@ def test_live_vector_off_returns_json(conn_str, vector_server, dtype):
             assert cursor.fetchone()[0] is None
     finally:
         connection.close()
+
+
+def test_live_vector_server_converts_between_base_types(conn_str, vector_server):
+    if not conn_str:
+        pytest.skip("DB_CONNECTION_STRING is not configured")
+    if os.getenv("MSSQL_TEST_VECTOR_FLOAT16") != "1":
+        pytest.skip("Set MSSQL_TEST_VECTOR_FLOAT16=1 with a FLOAT16-capable server")
+    connection = mssql_python.connect(conn_str, VectorTypeSupport="v2", autocommit=True)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("CREATE TABLE #cross (f16 VECTOR(3, float16) NULL, f32 VECTOR(3) NULL)")
+            # The driver sends each Vector with its own base type; SQL Server converts.
+            cursor.execute("INSERT INTO #cross (f16) VALUES (?)", Vector([0.1, 65519.0, 1e-8]))
+            cursor.execute(
+                "INSERT INTO #cross (f32) VALUES (?)", Vector([0.1, 2, 3], base_type="float16")
+            )
+            cursor.execute("SELECT f16 FROM #cross WHERE f16 IS NOT NULL")
+            stored = cursor.fetchval()
+            assert stored.base_type == "float16"
+            assert stored == _expected_stored_vector([0.1, 65504.0, 0.0], "float16")
+            cursor.execute("SELECT f32 FROM #cross WHERE f32 IS NOT NULL")
+            widened = cursor.fetchval()
+            assert widened.base_type == "float32"
+            assert widened.values == _expected_stored_vector([0.1, 2, 3], "float16").values
+            with pytest.raises(mssql_python.Error, match="out-of-range"):
+                cursor.execute("INSERT INTO #cross (f16) VALUES (?)", Vector([70000.0, 0, 0]))
+            cursor.execute("SELECT COUNT(*) FROM #cross")
+            assert cursor.fetchval() == 2
+    finally:
+        connection.close()

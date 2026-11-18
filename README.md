@@ -183,20 +183,28 @@ is represented by `None`. FLOAT32 supports 1–1998 dimensions; FLOAT16 supports
 Enable native vector negotiation **when connecting**: `VectorTypeSupport=v1`
 for FLOAT32, or `VectorTypeSupport=v2` for both subtypes. The default remains
 `off` (the ODBC driver's existing JSON/text behavior). FLOAT32 requires Microsoft
-ODBC Driver 18.6.1.1+; FLOAT16 requires **18.7.1.1+** and a server configured to
-support FLOAT16 vectors. The currently published `mssql-python-odbc` 18.6.2.2
+ODBC Driver 18.6.1.1+; FLOAT16 requires **18.7.1.1+** and a server that
+supports FLOAT16 vectors. FLOAT16 is generally available in Azure SQL Database,
+Azure SQL Managed Instance and SQL database in Fabric; in SQL Server 2025 it is a
+preview feature that requires `ALTER DATABASE SCOPED CONFIGURATION SET
+PREVIEW_FEATURES = ON`. FLOAT32 works on all of these. The currently published `mssql-python-odbc` 18.6.2.2
 package does not meet the FLOAT16 requirement. These Python changes do not
 upgrade the bundled driver or add support to the alternate Rust ODBC provider.
 
 | Connection setting | Native FLOAT32 | Native FLOAT16 |
 |---|---|---|
 | `VectorTypeSupport=off` (default) | No; reads return JSON text | No; reads return JSON text |
-| `VectorTypeSupport=v1` | Yes | No; native FLOAT16 inputs are rejected by ODBC |
+| `VectorTypeSupport=v1` | Yes | No; FLOAT16 inputs are rejected by ODBC and FLOAT16 columns are read as JSON text |
 | `VectorTypeSupport=v2` | Yes | Yes |
 
 `Vector(values, base_type="float16")` selects the value's SQL base type; it does not upgrade a
 connection from v1 to v2. The connection setting is passed through to ODBC for
 negotiation rather than emulated in Python.
+
+The driver never converts between FLOAT32 and FLOAT16. A `Vector` is sent with
+its own base type and SQL Server converts it to the column's base type,
+rounding to nearest; FLOAT32 values outside the FLOAT16 range fail with a server
+error. This matches Microsoft.Data.SqlClient.
 
 ```python
 from mssql_python import connect, Vector, SQL_SS_VECTOR
