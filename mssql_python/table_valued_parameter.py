@@ -3,9 +3,16 @@
 from collections.abc import Iterator, Sequence
 from datetime import date, datetime, time
 from decimal import Decimal
+from typing import Any, ClassVar, TypeAlias, cast
 from uuid import UUID
 
 from .constants import ConstantsDDBC as SQL
+
+_TVPColumn: TypeAlias = tuple[str, int] | tuple[str, int, int] | tuple[str, int, int, int]
+_TVPRow: TypeAlias = list[Any] | tuple[Any, ...]
+_TVPRows: TypeAlias = Sequence[_TVPRow] | Iterator[_TVPRow]
+_NormalizedColumn: TypeAlias = tuple[str, int, int, int]
+_CellType: TypeAlias = type[object] | tuple[type[object], ...]
 
 
 class TableValuedParameter:
@@ -20,7 +27,19 @@ class TableValuedParameter:
 
     __slots__ = ("_type_name", "_schema", "_columns", "_rows")
 
-    def __init__(self, type_name, columns, rows, *, schema=None):
+    _type_name: str
+    _schema: str
+    _columns: tuple[_NormalizedColumn, ...]
+    _rows: _TVPRows
+
+    def __init__(
+        self,
+        type_name: str,
+        columns: Sequence[_TVPColumn],
+        rows: _TVPRows,
+        *,
+        schema: str | None = None,
+    ) -> None:
         if not isinstance(type_name, str):
             raise TypeError("TVP type_name must be a string")
         if "." in type_name:
@@ -39,7 +58,7 @@ class TableValuedParameter:
                 raise ValueError("TVP names must be unquoted identifiers of 1–128 UTF-16 units")
         if not isinstance(columns, Sequence) or not columns:
             raise TypeError("TVP columns must be a non-empty sequence")
-        normalized = []
+        normalized: list[_NormalizedColumn] = []
         for column in columns:
             if not isinstance(column, tuple) or not 2 <= len(column) <= 4:
                 raise TypeError("TVP columns use (name, sql_type[, size_or_precision[, scale]])")
@@ -78,30 +97,30 @@ class TableValuedParameter:
             ):
                 raise ValueError(f"TVP column {name}: fixed-length columns require a positive size")
             normalized.append((name, sql_type, size, scale))
-        if not isinstance(rows, (list, tuple, Iterator)):
-            raise TypeError("TVP rows must be a list, tuple, or iterator; use [] for an empty TVP")
+        if not isinstance(rows, (Sequence, Iterator)) or isinstance(rows, (str, bytes, bytearray)):
+            raise TypeError("TVP rows must be a sequence or iterator; use [] for an empty TVP")
         self._type_name, self._schema = type_name, schema
         self._columns, self._rows = tuple(normalized), rows
 
     @property
-    def type_name(self):
+    def type_name(self) -> str:
         return self._type_name
 
     @property
-    def schema(self):
+    def schema(self) -> str:
         return self._schema
 
     @property
-    def columns(self):
+    def columns(self) -> tuple[_NormalizedColumn, ...]:
         return self._columns
 
     @property
-    def rows(self):
+    def rows(self) -> _TVPRows:
         return self._rows
 
     # The existing setinputsizes map owns SQL-to-C mappings. TVP time keeps
     # fractional seconds, and decimals use the scalar exact-text conversion.
-    def _odbc_columns(self):
+    def _odbc_columns(self) -> list[tuple[int, int, int, int]]:
         from .cursor import Cursor
 
         mapping = Cursor._get_sql_to_c_type_map()
@@ -115,7 +134,7 @@ class TableValuedParameter:
             for _, sql_type, size, scale in self.columns
         ]
 
-    def _validate_row(self, row, index):
+    def _validate_row(self, row: _TVPRow, index: int) -> _TVPRow:
         if not isinstance(row, (list, tuple)):
             raise TypeError(f"TVP row {index} must be a list or tuple")
         if len(row) != len(self.columns):
@@ -127,14 +146,14 @@ class TableValuedParameter:
                 continue
             if sql_type in self._integer_ranges:
                 lower, upper = self._integer_ranges[sql_type]
-                if not lower <= value <= upper:
+                if not lower <= cast(int, value) <= upper:
                     raise ValueError(f"TVP row {index}, column {name}: integer out of range")
-            if sql_type in (2, 3) and not value.is_finite():
+            if sql_type in (2, 3) and not cast(Decimal, value).is_finite():
                 raise ValueError(f"TVP row {index}, column {name}: non-finite Decimal")
         return row
 
-    _variable = frozenset((1, 12, -1, -8, -9, -10, -2, -3, -4))
-    _types = {
+    _variable: ClassVar[frozenset[int]] = frozenset((1, 12, -1, -8, -9, -10, -2, -3, -4))
+    _types: ClassVar[dict[int, _CellType]] = {
         **dict.fromkeys((1, 12, -1, -8, -9, -10), str),
         **dict.fromkeys((-2, -3, -4), (bytes, bytearray)),
         **dict.fromkeys((-6, 5, 4, -5), int),
@@ -148,7 +167,7 @@ class TableValuedParameter:
         -155: datetime,
         -11: UUID,
     }
-    _sizes = {
+    _sizes: ClassVar[dict[int, int]] = {
         -7: 1,
         -6: 3,
         5: 5,
@@ -164,7 +183,7 @@ class TableValuedParameter:
         -155: 34,
         -11: 36,
     }
-    _integer_ranges = {
+    _integer_ranges: ClassVar[dict[int, tuple[int, int]]] = {
         -6: (0, 255),
         5: (-(2**15), 2**15 - 1),
         4: (-(2**31), 2**31 - 1),

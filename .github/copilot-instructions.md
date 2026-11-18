@@ -43,12 +43,12 @@ Core facts:
 
 ```bash
 python -m pre_commit run black-check --all-files --hook-stage pre-push  # BLOCKING in CI
-python -m pytest -v                                       # 'stress' marker excluded by default
+python -m pytest -v                                       # 'stress' and 'typing' excluded by default
 ```
 
 - **`pr-format-check` (BLOCKING):** PR title must start with one of `FEAT: FIX: DOC: CHORE: STYLE: REFACTOR: PERF: RELEASE: AI:`; the body must link a work item/issue and have a `### Summary` of at least 10 characters.
 - Use `AI:` for AI tooling, agents, skills, prompts, and AI-assisted development workflows, not merely because AI helped write an ordinary fix or feature.
-- `flake8`, `pylint`, `mypy`, `clang-format`, and `cpplint` run but are **informational**, not blocking.
+- `flake8`, `pylint`, the GitHub lint workflow's `mypy` step, `clang-format`, and `cpplint` are **informational**. The separate source/stub typing harness (`python -m pytest tests/test_typing.py -m typing -v`) checks only `mssql_python` in strict mode and is **blocking** in the ADO PR-validation pipeline. `tests` and `mssql_python_odbc` are not typing-gate targets; the runtime test jobs are unchanged.
 - The authoritative cross-platform validation runs on **Azure DevOps** (broader OS / Python / arch coverage than the GitHub checks); consult the specific pipeline in `eng/pipelines/` for the exact matrix rather than assuming full coverage. A coverage bot posts a report comment on the PR.
 
 ## Code standards
@@ -68,7 +68,7 @@ python -m pytest -v                                       # 'stress' marker excl
 
 ## Testing conventions
 
-- Test files are mostly numbered `test_NNN_*.py`; `tests/test_000_dependencies.py` runs without a DB, most others need a live SQL Server. `-m "not stress"` is the default.
+- Test files are mostly numbered `test_NNN_*.py`; `tests/test_000_dependencies.py` runs without a DB, most others need a live SQL Server. `-m "not stress and not typing"` is the default; run source/stub typing checks separately with `python -m pytest tests/test_typing.py -m typing -v` (no DB required).
 - Run segfault-prone or ODBC/pool global-state tests in an **isolated subprocess** so a crash or shared state cannot poison the rest of the suite.
 - **Assert the contract, not just the output.** If a change's value is "we now call X once," assert the call/round-trip count — a correctness-only test won't catch a perf regression.
 - For global type-mapping changes, add typed-NULL integration cases (VARBINARY, UNIQUEIDENTIFIER, XML, DECIMAL, stored-proc params) before applying the optimization broadly.

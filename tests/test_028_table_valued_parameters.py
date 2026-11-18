@@ -426,6 +426,12 @@ def test_column_sequences_match_public_contract(container):
     assert columns == container([("id", SQL_INTEGER), ("label", SQL_WVARCHAR, 100)])
 
 
+def test_row_sequences_match_public_contract(cursor, tvp_schema):
+    rows = UserList([(1, "one"), [2, None]])
+    cursor.execute(f"EXEC [{tvp_schema}].CountRows ?", items(tvp_schema, rows))
+    assert tuple(cursor.fetchone()) == (2, 3)
+
+
 @pytest.mark.parametrize("bad", [2**31, -(2**31) - 1])
 def test_explicit_integer_width_does_not_truncate(cursor, tvp_schema, bad):
     with pytest.raises(ValueError, match="out of range"):
