@@ -11,10 +11,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
   FLOAT32/FLOAT16 subtype metadata, scalar/array parameter binding, and row
   fetches. `base_type` selects SQL storage; values are normalized to float32 at
   construction, with early finite/float32 and conservative FLOAT16 range checks.
-  Explicit vector hints and TVP schemas accept numeric lists with the same
-  validation; unhinted lists keep their existing meanings. Added
-  `TableValuedParameter` and buffered `callproc()` with vector
-  `OutputParameter` / `InputOutputParameter` wrappers. Procedure calls invalidate
+  Explicit vector hints accept numeric lists with the same
+  validation; unhinted lists keep their existing meanings. Added buffered
+  `callproc()` (1-3 part names, optionally bracket-quoted) with
+  `OutputParameter(sql_type, size, scale)` / `InputOutputParameter` wrappers;
+  output parameters currently support `SQL_SS_VECTOR`. Procedure calls invalidate
   the previous prepared-query cache even when the procedure fails; overwritten
   non-vector INPUT_OUTPUT values are rejected before binding. FLOAT16 requires
   Microsoft ODBC Driver 18.7.1.1+ (not supplied by the current bundled driver); ODBC owns

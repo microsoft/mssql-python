@@ -121,6 +121,51 @@ def _normalize_time_param(value: object, c_type: int) -> str | None:
     return None
 
 
+def _quote_procedure_name(procname: str) -> str:
+    """Bracket-quote a 1-3 part procedure name, accepting already bracketed parts.
+
+    Unquoted parts split on ".". A part starting with "[" runs to its closing "]"
+    ("]]" escapes "]"), so it may contain ".". Malformed brackets raise ValueError.
+    """
+    shape = "procname must be a procedure, schema.procedure or database.schema.procedure"
+    parts: list[str] = []
+    index = 0
+    while True:
+        if procname.startswith("[", index):
+            chunks = []
+            start = index + 1
+            while True:
+                close = procname.find("]", start)
+                if close < 0:
+                    raise ValueError("procname has an unterminated [bracketed] part")
+                if procname.startswith("]", close + 1):
+                    chunks.append(procname[start : close + 1])
+                    start = close + 2
+                    continue
+                chunks.append(procname[start:close])
+                index = close + 1
+                break
+            part = "".join(chunks)
+            if index < len(procname) and procname[index] != ".":
+                raise ValueError("procname has characters after a closing ]")
+        else:
+            end = procname.find(".", index)
+            end = len(procname) if end < 0 else end
+            part = procname[index:end]
+            index = end
+        if not part:
+            raise ValueError(shape)
+        parts.append(part)
+        if index == len(procname):
+            break
+        index += 1  # skip "."
+        if index == len(procname):
+            raise ValueError(shape)
+    if len(parts) > 3:
+        raise ValueError(shape)
+    return ".".join("[" + part.replace("]", "]]") + "]" for part in parts)
+
+
 class _ArrowBatchIterator:
     """Serialize generator advancement with close, including delegated Arrow reads."""
 
@@ -2519,14 +2564,14 @@ class Cursor:
         non_nulls = [v for v in column if v is not None]
         if not non_nulls:
             return None, None, None, 0
-        vectors = [v for v in non_nulls if isinstance(v, Vector)]
-        if vectors:
-            sample = vectors[0]
-            if len(vectors) != len(non_nulls):
+        # Gate on the first value so non-vector columns skip a per-cell ABC isinstance scan.
+        if type(non_nulls[0]) is Vector:
+            sample = non_nulls[0]
+            if any(type(v) is not Vector for v in non_nulls):
                 raise TypeError("Vector batch columns must contain only Vector or None")
             if any(
                 v.dimensions != sample.dimensions or v.base_type != sample.base_type
-                for v in vectors
+                for v in non_nulls
             ):
                 raise ValueError("Vector batch dimensions and subtype must agree")
             return sample, None, None, 0
@@ -4588,7 +4633,7 @@ class Cursor:
         rows: Iterable[tuple[Any, ...]],
     ) -> Iterator[tuple[Any, ...]]:
         for row in rows:
-            if any(isinstance(value, Vector) for value in row):
+            if any(type(value) is Vector for value in row):
                 raise NotSupportedError(
                     driver_error="Vector bulk copy requires the developing pycore vector contract",
                     ddbc_error="No vector serialization is performed by the Python wrapper",
@@ -4631,22 +4676,18 @@ class Cursor:
             A sequence containing the result parameters (input parameters unchanged,
             output parameters with their new values)
 
-        Vector outputs use OutputParameter(dimensions, base_type) or
+        Vector outputs use OutputParameter(SQL_SS_VECTOR, dimensions, subtype) or
         InputOutputParameter(Vector(...)). Results are buffered so output values
         are available on return; fetch methods and nextset() expose those results.
+        procname may be 1-3 parts; parts may already be bracket-quoted.
         """
         self._check_closed()
         if not isinstance(procname, str) or not procname or "\0" in procname:
             raise ValueError("procname must be a non-empty procedure name")
-        parts = procname.split(".")
-        if not 1 <= len(parts) <= 3 or any(not part for part in parts):
-            raise ValueError(
-                "procname must be a procedure, schema.procedure or database.schema.procedure"
-            )
+        name = _quote_procedure_name(procname)
         if isinstance(parameters, (str, bytes, bytearray)):
             raise TypeError("parameters must be a sequence of parameter values")
         values = list(parameters) if parameters is not None else []
-        name = ".".join("[" + part.replace("]", "]]") + "]" for part in parts)
         query = "{CALL " + name + "(" + ",".join("?" for _ in values) + ")}"
         self._soft_reset_cursor()
         self.messages = []

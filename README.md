@@ -252,49 +252,34 @@ to/from FLOAT16, including half-precision rounding and backend diagnostics;
 Python performs only the early finite/range checks above. Python does not
 pack TDS headers, encode half floats, or serialize vectors as binary/JSON.
 
-**Table-valued parameters:** use an existing server-side table type and an
-explicit schema. Each column specification is `(SQL type, size, scale)`; for
-vectors, size means dimensions and scale is the subtype (0 or 1). Empty tables
-and NULL vector cells are supported. Vector columns also accept lists because
-the explicit schema provides dimensions and base type; cells are snapshotted
-as Vectors with the same validation. DECIMAL/NUMERIC cells are snapshotted as
-`Decimal` (other values convert through `str()`, as in `executemany()`), and
-TIME columns preserve fractional seconds. UDT/sql_variant TVP columns and
-data-at-execution TVP cells are not supported.
-
-```python
-from mssql_python import TableValuedParameter, SQL_INTEGER
-
-# dbo.EmbeddingRows: (id INT, embedding VECTOR(3))
-table = TableValuedParameter(
-    "dbo.EmbeddingRows",
-    [(1, vector), (2, None)],
-    [(SQL_INTEGER, 10, 0), (SQL_SS_VECTOR, 3, 0)],
-)
-cursor.execute("EXEC dbo.InsertEmbeddings ?", table)
-```
-
 **Stored procedures:** `callproc()` accepts ordinary input parameters and
-vector `OutputParameter(dimensions, base_type)` / `InputOutputParameter(vector)`
-wrappers. It returns a modified parameter sequence and also fills each wrapper's
+`OutputParameter(sql_type, size, scale)` / `InputOutputParameter(vector)`
+wrappers. `OutputParameter` takes the same triple as `setinputsizes()`; today
+only `SQL_SS_VECTOR` is supported (size is dimensions, scale is 0 for FLOAT32 or
+1 for FLOAT16), and other SQL types raise `NotSupportedError`.
+`InputOutputParameter` infers its type from the initial `Vector`. `callproc()`
+returns a modified parameter sequence and also fills each wrapper's
 `.value`. Result sets are buffered in memory so output values are final when the
 call returns; use normal row fetches and `nextset()` to read them.
 Input parameters may be `None`; parameter-description metadata is not exposed as
-a procedure result set, including when reusing the cursor.
+a procedure result set, including when reusing the cursor. Procedure names have
+1-3 parts; parts may already be bracket-quoted, e.g. `[dbo].[my.proc]`.
 
 ```python
 from mssql_python import OutputParameter, InputOutputParameter
 
 # dbo.EchoEmbedding: @input VECTOR(3), @output VECTOR(3) OUTPUT,
 #                    @inout VECTOR(3) OUTPUT
-output = OutputParameter(3)
+output = OutputParameter(SQL_SS_VECTOR, 3, 0)
 inout = InputOutputParameter(vector)
 parameters = cursor.callproc("dbo.EchoEmbedding", [vector, output, inout])
 print(output.value)
 ```
 
-Output wrappers currently support vectors only. Procedure text/binary inputs
-must fit the inline binding limits. Arrow vector fetches and Arrow access to
+Procedure text/binary inputs
+must fit the inline binding limits. Table-valued parameters are not part of this
+vector support; vector TVP columns will build on the shared TVP definition.
+Arrow vector fetches and Arrow access to
 buffered procedure results are not supported; use row fetch methods instead.
 **Vector bulk copy is pending the pycore vector input contract.** `bulkcopy()`
 explicitly rejects `Vector` cells rather than guessing a serialization format.
@@ -305,7 +290,7 @@ Vector unit tests run without SQL Server. End-to-end tests in
 scalar and batch binding (including explicitly hinted lists, pyformat,
 typed/all-NULL arrays and streamed text), numeric boundaries and error recovery,
 every row fetch method including `fetchval()`, metadata/row access, output converters,
-commit/rollback, TVPs, stored procedure outputs/result sets, and error recovery.
+commit/rollback, stored procedure outputs/result sets, and error recovery.
 Negotiation tests assert that v1 rejects native FLOAT16, `off` rejects native
 vector inputs, and `off` retains JSON/NULL reads. Arrow and bulk-copy cases assert
 the current explicit unsupported boundaries; they are not positive vector

@@ -7,6 +7,9 @@ import struct
 from numbers import Real
 from typing import Literal, Optional, Union, overload
 
+from .constants import ConstantsDDBC
+from .exceptions import NotSupportedError
+
 VectorBaseType = Literal["float32", "float16"]
 _FLOAT32_MAX = 3.4028234663852886e38
 _FLOAT16_MAX = 65504.0
@@ -21,6 +24,24 @@ def _check_shape(dimensions: int, base_type: VectorBaseType) -> None:
         raise TypeError("dimensions must be an integer")
     if not 1 <= dimensions <= limit:
         raise ValueError(f"{base_type} vector dimensions must be between 1 and {limit}")
+
+
+def _try_fast_init(vector: object, values: object, base_type: VectorBaseType) -> bool:
+    """Validate a list/tuple of plain floats in bulk; return False to use the checked loop."""
+    if not isinstance(values, (list, tuple)) or type(values) not in (list, tuple):
+        return False
+    count = len(values)
+    if not 1 <= count <= (1998 if base_type == "float32" else 3996):
+        return False
+    if not all(type(value) is float for value in values):
+        return False
+    peak = _FLOAT16_MAX if base_type == "float16" else _FLOAT32_MAX
+    if not all(map(math.isfinite, values)) or max(map(abs, values)) > peak:
+        return False
+    layout = f"={count}f"
+    object.__setattr__(vector, "values", struct.unpack(layout, struct.pack(layout, *values)))
+    object.__setattr__(vector, "base_type", base_type)
+    return True
 
 
 @dataclass(frozen=True, init=False)
@@ -39,6 +60,8 @@ class Vector(Sequence[float]):
         _check_shape(1, base_type)
         if isinstance(values, (str, bytes, bytearray)):
             raise TypeError("vector values must be an iterable of real numbers")
+        if _try_fast_init(self, values, base_type):
+            return
         converted: list[float] = []
         for index, value in enumerate(values):
             if isinstance(value, bool) or not isinstance(value, Real):
@@ -59,6 +82,14 @@ class Vector(Sequence[float]):
         _check_shape(len(converted), base_type)
         object.__setattr__(self, "values", tuple(converted))
         object.__setattr__(self, "base_type", base_type)
+
+    @classmethod
+    def _from_trusted(cls, values: tuple[float, ...], base_type: VectorBaseType) -> "Vector":
+        """Wrap float32 values produced by the driver without revalidating them."""
+        vector = object.__new__(cls)
+        object.__setattr__(vector, "values", values)
+        object.__setattr__(vector, "base_type", base_type)
+        return vector
 
     @property
     def dimensions(self) -> int:
@@ -97,20 +128,46 @@ def _vector_from_hint(value: object, dimensions: int, subtype: int) -> Optional[
 
 
 class OutputParameter:
-    """A vector OUTPUT parameter for callproc(); value is filled before return."""
+    """An OUTPUT parameter for callproc(); value is filled before return.
 
-    def __init__(self, dimensions: int, base_type: VectorBaseType = "float32") -> None:
-        _check_shape(dimensions, base_type)
-        self.dimensions = dimensions
-        self.base_type = base_type
+    Takes the same (sql_type, size, scale) triple as setinputsizes(). Only
+    SQL_SS_VECTOR is supported today: size is the dimension count and scale is
+    0 (FLOAT32) or 1 (FLOAT16).
+    """
+
+    def __init__(self, sql_type: int, size: int, scale: int = 0) -> None:
+        if sql_type != ConstantsDDBC.SQL_SS_VECTOR.value:
+            raise NotSupportedError(
+                driver_error="callproc() output parameters currently support SQL_SS_VECTOR only",
+                ddbc_error="Unsupported output parameter SQL type",
+            )
+        if isinstance(scale, bool) or scale not in (0, 1):
+            raise ValueError("Vector subtype must be 0 (FLOAT32) or 1 (FLOAT16)")
+        base_type: VectorBaseType = "float16" if scale else "float32"
+        _check_shape(size, base_type)
+        self.sql_type = sql_type
+        self.size = size
+        self.scale = scale
         self.value: Optional[Vector] = None
+
+    @property
+    def dimensions(self) -> int:
+        return self.size
+
+    @property
+    def base_type(self) -> VectorBaseType:
+        return "float16" if self.scale else "float32"
 
 
 class InputOutputParameter(OutputParameter):
-    """A vector INPUT_OUTPUT parameter initialized from a Vector."""
+    """An INPUT_OUTPUT parameter whose SQL type is inferred from its initial Vector."""
 
     def __init__(self, value: Vector) -> None:
         if not isinstance(value, Vector):
             raise TypeError("InputOutputParameter requires a Vector")
-        super().__init__(value.dimensions, value.base_type)
+        super().__init__(
+            ConstantsDDBC.SQL_SS_VECTOR.value,
+            value.dimensions,
+            int(value.base_type == "float16"),
+        )
         self.value = value

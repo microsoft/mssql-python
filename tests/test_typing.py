@@ -102,8 +102,7 @@ def test_vector_consumer_call_shapes(tmp_path: Path, module: str) -> None:
     usage.write_text(
         f"""\
 from {module} import (
-    Cursor, Vector, OutputParameter, InputOutputParameter,
-    TableValuedParameter, SQL_SS_VECTOR,
+    Cursor, Vector, OutputParameter, InputOutputParameter, SQL_SS_VECTOR,
 )
 
 def supported_calls(cursor: Cursor) -> None:
@@ -111,14 +110,12 @@ def supported_calls(cursor: Cursor) -> None:
     values: list[float] = list(vector)
     dimensions: int = vector.dimensions
     base_type: str = vector.base_type
-    output = OutputParameter(3, base_type="float16")
+    output = OutputParameter(SQL_SS_VECTOR, 3, 1)
     inout = InputOutputParameter(vector)
-    table = TableValuedParameter("dbo.v", [([1, 2, 3],)], [(SQL_SS_VECTOR, 3, 1)])
     cursor.execute("SELECT ?", [vector])
-    cursor.execute("EXEC dbo.p ?", table)
     cursor.setinputsizes([(SQL_SS_VECTOR, 3, 1)])
     cursor.executemany("INSERT INTO v VALUES (?)", [([1, 2, 3],), (None,), (vector,)])
-    cursor.callproc("dbo.p", [vector, output, inout])
+    cursor.callproc("[dbo].[p]", [vector, output, inout])
 """,
         encoding="utf-8",
     )
