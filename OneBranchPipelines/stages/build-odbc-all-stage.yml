@@ -201,7 +201,7 @@ stages:
 
           # Scan the redistributed driver binaries + wheels for malware (Official only).
           - ${{ if eq(parameters.oneBranchType, 'Official') }}:
-              - task: EsrpMalwareScanning@5
+              - task: EsrpMalwareScanning@6
                 displayName: 'ESRP MalwareScanning - ODBC Wheels (Official)'
                 inputs:
                   ConnectedServiceName: '$(SigningEsrpConnectedServiceName)'

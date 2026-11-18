@@ -77,6 +77,15 @@ stages:
           # fetchDepth: 0 = full git history (needed for version tagging)
           - checkout: self
             fetchDepth: 0
+
+          - ${{ if eq(parameters.oneBranchType, 'Official') }}:
+              - task: PowerShell@2
+                displayName: 'Reject test overrides and prereleases before Official build'
+                inputs:
+                  pwsh: true
+                  targetType: filePath
+                  filePath: OneBranchPipelines/scripts/validate-release-versions.ps1
+                  arguments: '-BuildOnly'
           
           # =========================
           # PYTHON INSTALLATION
@@ -91,13 +100,13 @@ stages:
           # =========================
           # BUILD TOOLS
           # =========================
-          # CMake = cross-platform build system generator (needed for C++ compilation)
-          # Uninstall first to ensure clean version (avoid conflicts with pre-installed CMake)
+          # Install all Homebrew tooling in one transaction, matching PR validation.
+          # Do not run brew update: hosted runners already provide bottle metadata,
+          # while updating can select formulae that compile Go and Lima from source.
           - script: |
-              brew update
               brew uninstall cmake --ignore-dependencies || echo "CMake not installed"
-              brew install cmake
-            displayName: 'Install CMake'
+              brew install cmake docker colima
+            displayName: 'Install build & container tooling (Homebrew)'
           
           # =========================
           # PYTHON DEPENDENCIES
@@ -133,22 +142,15 @@ stages:
               TargetFolder: '$(ob_outputDirectory)/bindings/macOS'
             displayName: 'Copy .so files'
           
-          # Install Docker CLI and Colima (macOS Docker runtime)
+          # Start Colima (macOS Docker runtime). Tooling is installed above so the
+          # 15-minute timeout covers only VM startup, not Homebrew compilation.
           # Colima = lightweight Docker Desktop alternative using macOS virtualization
-          # vz = native macOS virtualization (faster, only works on M1+)
-          # qemu = cross-platform emulator (slower, works on Intel Macs)
           # 4 CPU cores + 8GB RAM needed for SQL Server container
           - script: |
-              brew update
-              brew install docker colima
-              colima start --vm-type vz --cpu 4 --memory 8 || {
-                echo "vz VM failed, trying qemu..."
-                colima start --vm-type qemu --cpu 4 --memory 8
-              }
-              sleep 30
+              colima start --cpu 4 --memory 8 --disk 50
               docker context use colima >/dev/null || true
               docker version
-            displayName: 'Install and start Docker (Colima)'
+            displayName: 'Start Docker (Colima)'
             timeoutInMinutes: 15
           
           # =========================
@@ -224,7 +226,7 @@ stages:
           # Tests use localhost:1433 connection (SA user with password from variable)
           # -v = verbose output (show test names and results)
           - script: |
-              python -m pytest -v
+              python eng/scripts/mssql_python_rs.py --verify && python -m pytest -v
             displayName: 'Run pytests'
             env:
               # Connection string uses localhost (SQL Server container exposed on port 1433)
@@ -292,7 +294,7 @@ stages:
           # Scans wheel files for malware using Microsoft Defender and custom signatures
           # Only runs for Official builds (production compliance requirement)
           - ${{ if eq(parameters.oneBranchType, 'Official') }}:
-              - task: EsrpMalwareScanning@5
+              - task: EsrpMalwareScanning@6
                 displayName: 'ESRP MalwareScanning - Python Wheels (Official)'
                 inputs:
                   ConnectedServiceName: '$(SigningEsrpConnectedServiceName)'

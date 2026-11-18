@@ -15,6 +15,130 @@ or contact [opencode@microsoft.com](mailto:opencode@microsoft.com) with any addi
 
 ## Before Contributing
 
+### Selecting the Rust Runtime
+
+Local builds and official/release pipelines install the exact released
+`mssql-python-rs` version in
+[`eng/versions/mssql-python-rs.version`](eng/versions/mssql-python-rs.version)
+from public PyPI. The runtime is a separate dependency, not embedded in the
+`mssql-python` wheel. No NuGet transport package is needed.
+
+To test a Python feature against merged but unreleased Rust changes, select the
+exact version from a successful `mssql-rs` dev or nightly publishing run:
+
+```powershell
+# Windows, with the development environment activated
+$env:MSSQL_PYTHON_RS_VERSION = "0.4.0.dev20261028187000"  # Replace with a published build
+.\eng\scripts\install-mssql-py-core.ps1
+```
+
+```bash
+# Linux or macOS, with the development environment activated
+export MSSQL_PYTHON_RS_VERSION=0.4.0.dev20261028187000  # Replace with a published build
+bash eng/scripts/install-mssql-py-core.sh
+```
+
+Keep the environment variable set while building/installing `mssql-python` and
+running tests. Its generated dependency metadata then uses the same selected
+version. Development versions come from the anonymous Azure Artifacts PyPI
+index; clean releases come from public PyPI. A missing requested wheel fails;
+the installer never falls back to another version. Cross-architecture Windows
+builds validate the target wheel without installing it into the host Python.
+
+The GitHub PR-validation checks run in Azure DevOps using
+`eng/pipelines/pr-validation-pipeline.yml`. This validation pipeline (including
+its main-branch CI runs) defaults to the latest published nightly from the Azure
+Python feed, not the stable PyPI pin. It resolves the version once before the
+matrix and passes that exact version to every build/test job. The
+`rs-runtime-selection` artifact records the version, source index and nightly
+wheel hashes.
+
+Nightlies use `X.Y.Z.devYYYYMMDD`; per-merge development builds append a build ID
+and are not selected automatically. Selection requires all nine platform wheels
+for the newest nightly, with valid SHA-256 links and no yanked files. Missing or
+incomplete publication fails validation rather than falling back to an older
+nightly or a stable release. Feed contents establish wheel publication, not
+the overall status or source commit of the producer's Azure build.
+
+Azure build/test pipelines expose the explicit selection as `rsVersionOverride`.
+For PR validation, leave it empty for the nightly, or provide an exact version
+to reproduce a run or test newer per-merge Rust changes. Official/release builds
+retain the committed stable PyPI pin and reject overrides. Other test pipelines
+retain their existing stable default unless explicitly overridden. Record the
+exact dev version in the feature's PR so another developer can reproduce the
+tests. Before running tests after other package installations, verify the runtime
+has not changed:
+
+```console
+python eng/scripts/mssql_python_rs.py --verify
+```
+
+Feature-test artifacts are not eligible for public release, even if an override
+selects a stable version. Once the required Rust runtime is released on PyPI,
+update the committed pin and validate with no override before releasing Python.
+Unset `MSSQL_PYTHON_RS_VERSION` to return to the committed release pin and rerun
+the installer.
+
+### Install Local Formatting Hooks
+
+From the repository root, with your Python 3.10+ development virtual environment
+activated, run this once per clone (including existing clones):
+
+```console
+python -m pip install -r requirements-lint.txt
+python -m pre_commit install --install-hooks
+```
+
+This installs both **pre-commit** and **pre-push** hooks on Windows, macOS, and
+Linux. Devcontainers install them automatically. Git does not install hooks when
+cloning, and installing Python dependencies alone does not activate them. Rerun
+the commands if you recreate your virtual environment.
+
+Copilot setup guidance lives in
+[local-formatting.instructions.md](.github/instructions/local-formatting.instructions.md).
+It directs Copilot to perform missing setup when starting a local editing task,
+subject to tool permissions. Pulling `main` alone does not run setup.
+
+- **On commit:** Black formats staged `.py` and `.pyi` files under `mssql_python`
+  and `tests`. If it changes a file, the commit stops; review and stage the fixes,
+  then commit again. Unstaged changes are temporarily saved and restored by
+  pre-commit.
+- **On push:** Black checks both directories in full, without modifying files,
+  and blocks the push on formatting errors. This also catches formatting errors
+  outside the files changed in your latest commit.
+- **In CI:** the same full-directory hook, pinned Black version, and
+  `pyproject.toml` settings are used. Flake8, Pylint, mypy, clang-format, and
+  cpplint remain informational, matching the existing CI policy.
+
+Run the CI formatting check before opening a PR:
+
+```console
+python -m pre_commit run black-check --all-files --hook-stage pre-push
+```
+
+To fix formatting, run the pinned formatter, review the changes, and stage the
+affected files before retrying your commit or push:
+
+```console
+python -m pre_commit run black --all-files
+```
+
+The formatter returns a nonzero status when it changes files; rerun after
+reviewing the fixes. Hook environments need network access on first installation
+and when the pinned version changes. The checks do not need a native build or a
+SQL Server.
+
+**Repository enforcement:** local hooks can be bypassed and cannot prevent
+someone from opening a GitHub PR. Maintainers must require the **Linting Summary**
+status check in the `main` branch ruleset/branch protection, with bypasses
+restricted, to prevent merging a PR with failing formatting. The lint workflow
+runs for every PR, including documentation-only changes, so a required check is
+not left pending by path filters. Hook installation is a contributor setup step,
+not a repository-wide setting.
+
+When upgrading Black, update its revision in `.pre-commit-config.yaml` and run
+both commands above; local hooks and CI then use the new version together.
+
 ### For External Contributors
 
 If you are an external contributor (not a Microsoft organization member), please follow these steps:
@@ -44,3 +168,44 @@ All pull requests must include:
 Use `AI:` for changes to AI tooling, agents, skills, prompts, or AI-assisted
 development workflows. It describes the subject of the change, not whether
 AI helped write it; ordinary driver fixes and features keep their usual prefixes.
+
+## Type Checking
+
+The typing harness checks Python source (`.py`) and stub (`.pyi`) files recursively
+under `mssql_python` only, excluding generated `build` directories and their
+downloaded third-party sources. `tests` and `mssql_python_odbc` are not targets of
+this typing gate. Focused consumer fixtures also check supported input-size resets,
+positional tuple/list batches, and pyformat dictionary batches against the package
+exports and public stub. It does not execute the checked code or require a live
+database; the existing runtime test jobs are unchanged.
+
+After installing `requirements.txt` and building the native extension using
+`.github/prompts/build-ddbc.prompt.md`, run:
+
+```console
+python -m pytest tests/test_typing.py -m typing -v
+```
+
+The harness runs mypy in strict mode, including checks inside unannotated function
+bodies. It reports source, stub, and import errors without suppressing errors in
+the driver. Explicit package bases resolve module names from the repository root.
+Keep the mypy version pinned in `requirements.txt` aligned
+with the existing locked development dependencies.
+
+To run the same package check directly:
+
+```console
+python -m mypy --config-file= --strict --explicit-package-bases --exclude "(^|/)build/" --no-incremental mssql_python
+```
+
+Private `_ddbc_types.pyi` and `_pycore_types.pyi` declarations describe the native
+boundaries; they do not replace or hide the Python implementations from mypy.
+Keep these declarations aligned with the C++/Rust APIs, and keep the static
+constant declarations aligned with the dynamically exported integer aliases.
+The dependency tests check the native export names and constant declaration parity.
+
+The existing required `MSSQL-Python-PR-Validation` pipeline runs the harness once,
+in the Ubuntu CodeQL job immediately after its native build. Typing failures fail
+the pipeline and block PR merging; no separate GitHub workflow or required check
+is needed. The `typing` marker is excluded from default pytest runs so the same
+static checks are not repeated across the database/OS matrix.

@@ -11,6 +11,8 @@ Resource Management:
 - Cursors are also cleaned up automatically when no longer referenced, to prevent memory leaks.
 """
 
+from __future__ import annotations
+
 import weakref
 import re
 import codecs
@@ -18,11 +20,13 @@ import warnings
 import struct
 from types import MappingProxyType
 from typing import Any, Dict, Optional, Union, List, Tuple, Callable, Protocol, TYPE_CHECKING
+from typing import NoReturn, cast
 import threading
 
 import mssql_python
 from mssql_python.cursor import Cursor
 from mssql_python.helpers import (
+    _resolve_app_name,
     sanitize_user_input,
     validate_attribute_value,
 )
@@ -65,7 +69,9 @@ from mssql_python.constants import (
 )
 
 if TYPE_CHECKING:
-    from mssql_python.row import Row
+    from mssql_python.row import Row, OutputConverter
+    from mssql_python.auth import TokenInfo
+    from mssql_python._ddbc_types import EncodingSettings
 
 
 class TokenProvider(Protocol):
@@ -212,7 +218,7 @@ UTF16_ENCODINGS: frozenset[str] = frozenset(["utf-16le", "utf-16be"])
 _SQLSTATE_RE = re.compile(r"^SQLSTATE:([A-Z0-9]{0,5}):(.*)", re.DOTALL)
 
 
-def _raise_connection_error(e: RuntimeError) -> None:
+def _raise_connection_error(e: RuntimeError) -> NoReturn:
     """Map a RuntimeError from the C++ pybind layer to the correct DB-API 2.0 exception.
 
     Connection::checkError() throws "SQLSTATE:XXXXX:<odbc_message>" so the SQLSTATE
@@ -417,7 +423,11 @@ class Connection:
                 query timeout. An explicit ``attrs_before[SQL_ATTR_LOGIN_TIMEOUT]``
                 takes precedence over this value. (pyodbc migration note: pyodbc
                 lets a positive ``timeout=`` override ``attrs_before``; here the
-                explicit ``attrs_before`` entry wins.)
+                explicit ``attrs_before`` entry wins.) Pooled candidate reset
+                also uses this positive timeout, or 15 seconds when zero/default,
+                temporarily as SQL_ATTR_CONNECTION_TIMEOUT. Driver cancellation
+                and a replacement login can add time; this is not an overall
+                connect deadline.
             native_uuid (bool, optional): Controls whether UNIQUEIDENTIFIER columns return
                 uuid.UUID objects (True) or str (False) for cursors created from this connection.
                 None (default) defers to the module-level ``mssql_python.native_uuid`` setting (True).
@@ -516,7 +526,7 @@ class Connection:
 
         # Initialize encoding settings with defaults for Python 3
         # Python 3 only has str (which is Unicode), so we use utf-16le by default
-        self._encoding_settings = {
+        self._encoding_settings: EncodingSettings = {
             "encoding": "utf-16le",
             "ctype": ConstantsDDBC.SQL_WCHAR.value,
         }
@@ -526,7 +536,7 @@ class Connection:
         # UTF-16 data for VARCHAR columns. This avoids encoding mismatches on
         # Windows where the driver returns raw bytes in the server's native
         # code page (e.g. CP-1252) that may fail to decode as UTF-8.
-        self._decoding_settings = {
+        self._decoding_settings: dict[int, EncodingSettings] = {
             ConstantsDDBC.SQL_CHAR.value: {
                 "encoding": "utf-16le",
                 "ctype": ConstantsDDBC.SQL_WCHAR.value,
@@ -627,7 +637,7 @@ class Connection:
                 token_attr = ConstantsDDBC.SQL_COPT_SS_ACCESS_TOKEN.value
                 base_attrs = self._attrs_before
 
-                def _acquire_token_info():
+                def _acquire_token_info() -> TokenInfo | None:
                     # DB-API boundary: get_auth_token_info fails closed by
                     # letting the underlying Azure error propagate as a
                     # ValueError (unsupported auth type) or RuntimeError
@@ -646,7 +656,9 @@ class Connection:
                             ddbc_error=str(e),
                         ) from e
 
-                def _make_token_factory(expected_account: Optional[str] = None):
+                def _make_token_factory(
+                    expected_account: Optional[str] = None,
+                ) -> Callable[[], tuple[dict[int, int | str | bytes], int | None]]:
                     # Build the deferred connect-attrs provider handed to native.
                     # Native invokes the returned callable only when it actually
                     # opens a physical connection (a pool miss, non-pooled
@@ -661,7 +673,7 @@ class Connection:
                     # pool would hand a caller a connection authenticated as the
                     # wrong account. MSI pools pass ``None`` (their identity is
                     # fixed by params, not by a mutable signed-in account).
-                    def _token_factory():
+                    def _token_factory() -> tuple[dict[int, int | str | bytes], int | None]:
                         attrs = dict(base_attrs)
                         info = _acquire_token_info()
                         if info and info.token_struct:
@@ -779,10 +791,10 @@ class Connection:
         # when no longer in use without requiring explicit deletion.
         # TODO: Think and implement scenarios for multi-threaded access
         # to cursors
-        self._cursors = weakref.WeakSet()
+        self._cursors: weakref.WeakSet[Cursor] = weakref.WeakSet()
 
         # Initialize output converters dictionary and its lock for thread safety
-        self._output_converters = {}
+        self._output_converters: dict[int | type, OutputConverter] = {}
         self._converters_generation = 0
         self._converters_lock = threading.Lock()
 
@@ -796,7 +808,7 @@ class Connection:
         self._encoding_lock = threading.Lock()
 
         # Initialize search escape character
-        self._searchescape = None
+        self._searchescape: str | None = None
 
         # Safety net for the raw access-token pattern: a caller may pass
         # SQL_COPT_SS_ACCESS_TOKEN directly in attrs_before with no
@@ -858,17 +870,22 @@ class Connection:
         _provider = ProviderManager.ensure_available()
         ddbc_bindings._set_odbc_provider(_provider)
 
+        # Configure a reused connection's mode inside native checkout, while
+        # its temporary connection timeout still bounds attribute-setting I/O.
+        native_attrs = self._attrs_before.copy()
+        native_attrs[ConstantsDDBC.SQL_ATTR_AUTOCOMMIT.value] = int(bool(autocommit))
         try:
-            self._conn = ddbc_bindings.Connection(
+            self._conn: ddbc_bindings.Connection | None = ddbc_bindings.Connection(
                 self.connection_str,
                 self._pooling,
-                self._attrs_before,
+                native_attrs,
                 self._pool_key,
                 self._token_factory,
             )
+            if self._conn.get_autocommit() != autocommit:
+                self.setautocommit(autocommit)
         except RuntimeError as e:
             _raise_connection_error(e)
-        self.setautocommit(autocommit)
 
         # Register this connection for cleanup before Python shutdown
         # This ensures ODBC handles are freed in correct order, preventing leaks
@@ -996,7 +1013,7 @@ class Connection:
         1. Parse and validate the base connection_str (validates against allowlist)
         2. Normalize parameter names (e.g., addr/address -> Server, uid -> UID)
         3. Merge kwargs (which override connection_str params after normalization)
-        4. Add Driver and APP (always controlled by the driver)
+        4. Add Driver and resolve the driver-prefixed application name
         5. Build and return the final connection string + parameter dictionary
 
         Args:
@@ -1046,20 +1063,22 @@ class Connection:
         for key, value in kwargs.items():
             normalized_key = _ConnectionStringParser.normalize_key(key)
             if normalized_key:
-                # Driver and APP are reserved - raise error if user tries to set them
+                # Driver is reserved - raise error if the user tries to set it.
                 if normalized_key in _RESERVED_PARAMETERS:
                     raise ValueError(
                         f"Connection parameter '{key}' is reserved and controlled by the driver. "
                         f"It cannot be set by the user."
                     )
+                if normalized_key == "APP" and not isinstance(value, str):
+                    raise TypeError("Application name must be a string")
                 # kwargs override any existing values from connection string
                 normalized_params[normalized_key] = str(value)
             else:
                 logger.warning(f"Ignoring unknown connection parameter from kwargs: {key}")
 
-        # Step 4: Add Driver and APP (always controlled by the driver).
+        # Step 4: Add Driver and resolve APP before authentication or pool lookup.
         normalized_params["Driver"] = "ODBC Driver 18 for SQL Server"
-        normalized_params["APP"] = "MSSQL-Python"
+        normalized_params["APP"] = _resolve_app_name(normalized_params.get("APP"))
 
         # Step 5: Build final connection string
         conn_str = _ConnectionStringBuilder(normalized_params).build()
@@ -1133,6 +1152,8 @@ class Connection:
         Returns:
             bool: True if autocommit is enabled, False otherwise.
         """
+        if self._conn is None:
+            raise InterfaceError("Connection is closed", "Connection is closed")
         try:
             return self._conn.get_autocommit()
         except RuntimeError as e:
@@ -1176,6 +1197,8 @@ class Connection:
         Raises:
             DatabaseError: If there is an error while setting the autocommit mode.
         """
+        if self._conn is None:
+            raise InterfaceError("Connection is closed", "Connection is closed")
         try:
             self._conn.set_autocommit(value)
         except RuntimeError as e:
@@ -1183,15 +1206,24 @@ class Connection:
 
     def setencoding(self, encoding: Optional[str] = None, ctype: Optional[int] = None) -> None:
         """
-        Sets the text encoding for SQL statements and text parameters.
+        Records the requested text encoding settings for compatibility.
 
-        Since Python 3 only has str (which is Unicode), this method configures
-        how text is encoded when sending to the database.
+        SQL statements and str parameters are always sent as UTF-16LE; text
+        parameters are bound as SQL_C_WCHAR on every platform. This applies to
+        execute() and executemany(), with or without setinputsizes(). This method
+        does not change that behavior or enforce the requested codec.
+
+        Requests that pass validation but differ from UTF-16LE with SQL_WCHAR emit
+        UserWarning. Invalid codec names, invalid ctypes, and incompatible
+        combinations (such as UTF-8 with SQL_WCHAR) raise ProgrammingError before
+        any warning is emitted or settings are stored. Accepted settings are still
+        returned by getencoding(), not the effective binding. Use setdecoding()
+        separately to configure how results are read.
 
         Args:
-            encoding (str, optional): The encoding to use. This must be a valid Python
+            encoding (str, optional): The requested encoding. This must be a valid Python
                 encoding that converts text to bytes. If None, defaults to 'utf-16le'.
-            ctype (int, optional): The C data type to use when passing data:
+            ctype (int, optional): The requested C data type:
                 SQL_CHAR or SQL_WCHAR. If not provided, SQL_WCHAR is used for
                 UTF-16 variants (see UTF16_ENCODINGS constant). SQL_CHAR is used
                 for all other encodings.
@@ -1200,15 +1232,20 @@ class Connection:
             None
 
         Raises:
-            ProgrammingError: If the encoding is not valid or not supported.
+            ProgrammingError: If the encoding or ctype is invalid, or their
+                combination is incompatible.
             InterfaceError: If the connection is closed.
 
-        Example:
-            # For databases that only communicate with UTF-8
-            cnxn.setencoding(encoding='utf-8')
+        Warns:
+            UserWarning: If the request passes validation but its encoding or
+                ctype cannot be honored.
 
-            # For explicitly using SQL_CHAR
-            cnxn.setencoding(encoding='utf-8', ctype=mssql_python.SQL_CHAR)
+        Example:
+            # Restore the supported default.
+            cnxn.setencoding()
+
+            # Warns: parameters still use UTF-16LE / SQL_C_WCHAR.
+            cnxn.setencoding(encoding='cp1252', ctype=mssql_python.SQL_CHAR)
         """
         logger.debug(
             "setencoding: Configuring encoding=%s, ctype=%s",
@@ -1276,20 +1313,35 @@ class Connection:
         if ctype == ConstantsDDBC.SQL_WCHAR.value:
             _validate_utf16_wchar_compatibility(encoding, ctype, "SQL_WCHAR")
 
+        if encoding != "utf-16le" or ctype != ConstantsDDBC.SQL_WCHAR.value:
+            warnings.warn(
+                "setencoding() does not change SQL statement encoding or text parameter binding: "
+                "statements and str parameters always use UTF-16LE, and text parameters are "
+                "bound as SQL_C_WCHAR. The requested settings are retained by getencoding() "
+                "for compatibility but are not applied. Use setencoding() with no arguments "
+                "to restore the supported defaults.",
+                UserWarning,
+                stacklevel=2,
+            )
+
         # Store the encoding settings (thread-safe with lock)
         with self._encoding_lock:
             self._encoding_settings = {"encoding": encoding, "ctype": ctype}
 
         # Log with sanitized values for security
         logger.info(
-            "Text encoding set to %s with ctype %s",
+            "Requested text encoding stored as %s with ctype %s",
             sanitize_user_input(encoding),
             sanitize_user_input(str(ctype)),
         )
 
-    def getencoding(self) -> Dict[str, Union[str, int]]:
+    def getencoding(self) -> EncodingSettings:
         """
-        Gets the current text encoding settings (thread-safe).
+        Gets the requested text encoding settings (thread-safe).
+
+        These settings are retained for compatibility. They do not describe the
+        effective binding: SQL statements and str parameters always use UTF-16LE,
+        and text parameters are bound as SQL_C_WCHAR.
 
         Returns:
             dict: A dictionary containing 'encoding' and 'ctype' keys.
@@ -1464,7 +1516,7 @@ class Connection:
             sanitize_user_input(str(ctype)),
         )
 
-    def getdecoding(self, sqltype: int) -> Dict[str, Union[str, int]]:
+    def getdecoding(self, sqltype: int) -> EncodingSettings:
         """
         Gets the current text decoding settings for the specified SQL type (thread-safe).
 
@@ -1543,7 +1595,7 @@ class Connection:
             must be provided in the attrs_before parameter when creating the connection.
             Attempting to set these attributes after connection will raise a ProgrammingError.
         """
-        if self._closed:
+        if self._closed or self._conn is None:
             raise InterfaceError(
                 "Cannot set attribute on closed connection", "Connection is closed"
             )
@@ -1561,7 +1613,7 @@ class Connection:
             )
             raise ProgrammingError(
                 driver_error=f"Invalid attribute or value: {error_message}",
-                ddbc_error=error_message,
+                ddbc_error=str(error_message),
             )
 
         # Log with sanitized values
@@ -1697,7 +1749,7 @@ class Connection:
             self._output_converters[sqltype] = func
             self._converters_generation += 1
             # Pass to the underlying connection if native implementation supports it
-            if hasattr(self._conn, "add_output_converter"):
+            if self._conn is not None and hasattr(self._conn, "add_output_converter"):
                 self._conn.add_output_converter(sqltype, func)
         logger.info(f"Added output converter for SQL type {sqltype}")
 
@@ -1739,7 +1791,7 @@ class Connection:
                 del self._output_converters[sqltype]
                 self._converters_generation += 1
                 # Pass to the underlying connection if native implementation supports it
-                if hasattr(self._conn, "remove_output_converter"):
+                if self._conn is not None and hasattr(self._conn, "remove_output_converter"):
                     self._conn.remove_output_converter(sqltype)
         logger.info(f"Removed output converter for SQL type {sqltype}")
 
@@ -1758,7 +1810,7 @@ class Connection:
             self._output_converters.clear()
             self._converters_generation += 1
             # Pass to the underlying connection if native implementation supports it
-            if hasattr(self._conn, "clear_output_converters"):
+            if self._conn is not None and hasattr(self._conn, "clear_output_converters"):
                 self._conn.clear_output_converters()
         logger.info("Cleared all output converters")
 
@@ -1888,10 +1940,10 @@ class Connection:
 
         # Determine which cursor to use
         is_new_cursor = reuse_cursor is None
-        cursor = self.cursor() if is_new_cursor else reuse_cursor
+        cursor = self.cursor() if reuse_cursor is None else reuse_cursor
 
         # Execute statements and collect results
-        results = []
+        results: list[list[Row] | int] = []
         try:
             for i, (stmt, param) in enumerate(zip(statements, params)):
                 try:
@@ -1945,7 +1997,7 @@ class Connection:
 
         return results, cursor
 
-    def getinfo(self, info_type: int) -> Union[str, int, bool, None]:
+    def getinfo(self, info_type: int) -> str | int | bool | bytes | None:
         """
         Return general information about the driver and data source.
 
@@ -1957,7 +2009,8 @@ class Connection:
             The requested information. The type of the returned value depends
             on the information requested. For registered ODBC types, character values (including
             "Y"/"N") return strings; numeric values and bitmasks return unsigned
-            integers. Native retrieval failures, including unsupported types,
+            integers. Unregistered, driver-specific types can return raw bytes.
+            Native retrieval failures, including unsupported types,
             timeouts, and connection loss, are logged and return None.
 
         Note:
@@ -1973,7 +2026,7 @@ class Connection:
             DatabaseError: If a numeric byte result does not match its ODBC type's width.
             InterfaceError: If the connection is closed.
         """
-        if self._closed:
+        if self._closed or self._conn is None:
             raise InterfaceError(
                 driver_error="Cannot get info on closed connection",
                 ddbc_error="Cannot get info on closed connection",
@@ -2060,7 +2113,7 @@ class Connection:
                                 f"got length={length} with {len(data)} bytes of data"
                             ),
                         )
-                    return return_type.unpack_from(data)[0]
+                    return cast(int, return_type.unpack_from(data)[0])
                 # Legacy non-byte payloads must not lose precision or change bool to int.
                 if isinstance(data, str) and data.isdecimal():
                     try:
@@ -2194,35 +2247,14 @@ class Connection:
         # Close the connection even if cursor cleanup had issues
         try:
             if self._conn:
-                autocommit_error = None
-                rollback_error = None
-                manual_commit = False
+                # Native close owns transaction cleanup and fail-closed discard.
+                # Avoid duplicate attribute probes and untrusted rollback hints.
                 try:
-                    manual_commit = not self._conn.get_autocommit()
-                except RuntimeError as e:
-                    autocommit_error = e
-                if manual_commit:
-                    # End caller work before native close. Pooled connections are
-                    # additionally restored to autocommit by native check-in,
-                    # which atomically discards them if sanitation fails.
-                    logger.debug("Rolling back uncommitted changes before closing connection.")
-                    try:
-                        self._conn.rollback()
-                    except RuntimeError as e:
-                        rollback_error = e
-                # TODO: Check potential race conditions in case of multithreaded scenarios
-                # Close the connection
-                try:
-                    self._conn.close(manual_commit and rollback_error is None)
+                    self._conn.close(rollback_before_disconnect=True)
                 except RuntimeError as e:
                     _raise_connection_error(e)
                 finally:
                     self._conn = None
-                if rollback_error is not None:
-                    # Preserve prior DB-API error mapping after deterministic cleanup.
-                    _raise_connection_error(rollback_error)
-                if autocommit_error is not None:
-                    _raise_connection_error(autocommit_error)
         except Exception as e:
             logger.error(f"Error closing database connection: {e}")
             # Re-raise the connection close error as it's more critical

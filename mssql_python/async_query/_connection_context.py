@@ -4,7 +4,7 @@ from typing import Any
 
 from ..connection_string_parser import _ConnectionStringParser
 from ..exceptions import InterfaceError, NotSupportedError
-from ..helpers import connstr_to_pycore_params
+from ..helpers import _resolve_app_name, connstr_to_pycore_params
 
 
 def build_async_connection_context(connection_str: str, timeout: int) -> dict[str, Any]:
@@ -34,6 +34,7 @@ def build_async_connection_context(connection_str: str, timeout: int) -> dict[st
         )
 
     context = connstr_to_pycore_params(params, strict=True)
+    context["application_name"] = _resolve_app_name(context.get("application_name"))
     if timeout > 0:
         context["connect_timeout"] = timeout
     return context

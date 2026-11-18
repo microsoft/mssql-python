@@ -1,0 +1,2 @@
+# Black is pinned in .pre-commit-config.yaml and installed in an isolated hook environment.
+pre-commit==4.5.1

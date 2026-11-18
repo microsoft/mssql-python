@@ -7,8 +7,12 @@ echo "🚀 Setting up MSSQL Python Driver development environment..."
 
 # Install Python packages from requirements.txt
 echo "📦 Installing Python packages..."
-pip install --upgrade pip setuptools wheel
-pip install -r requirements.txt
+python -m pip install --upgrade pip setuptools wheel
+python -m pip install -r requirements.txt
+python -m pip install -r requirements-lint.txt
+
+echo "Installing commit and push formatting hooks..."
+python -m pre_commit install --install-hooks
 
 # Create symlink for 'python' command (build.sh expects it)
 echo "🔗 Creating python symlink..."
@@ -30,7 +34,7 @@ grep -qxF 'source ~/.shell_aliases' ~/.zshrc 2>/dev/null || echo 'source ~/.shel
 echo ""
 echo "🔍 Verifying environment..."
 python --version
-pip --version
+python -m pip --version
 cmake --version
 if command -v sqlcmd &> /dev/null; then
     echo "✅ sqlcmd available"

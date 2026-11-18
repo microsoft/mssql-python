@@ -45,7 +45,7 @@ receives a bounded frame-structure pass because its streaming API alone accepts
 truncated frame endings. ZIP envelopes must use stored or deflate compression;
 sparse TAR extensions are rejected before sparse-map processing. Wheel metadata
 reads share the ZIP and metadata budgets. These are package-reader limits, not a
-claim that NuGet transport downloads or total process memory have the same bounds.
+claim that runtime wheel downloads or total process memory have the same bounds.
 
 The GitHub audit job installs its complete Linux x64 / CPython 3.11 test-tool closure
 from `requirements-audit.txt` with `--require-hashes --only-binary=:all:`.
@@ -57,8 +57,15 @@ The `conda-audit` PR gate triggers only for `conda/`, `eng/conda_tools/`, Conda-
 OneBranch pipelines/steps/jobs, their native/probe/archive/provenance and release tests,
 and the workflow itself. General package metadata/version changes and shared wheel-build
 infrastructure do not trigger it on their own; mixed PRs with a Conda change still do.
-This scope does not change the unit-test runner, source-version wheel selection, or
-failure handling when a required wheel is unpublished.
+Source-only tests remain current-checkout and blocking. The real Linux CPython 3.11
+build/audit uses `fetch-wheels --published-smoke`: PyPI's current published binding
+and its exact ODBC dependency (plus RS when required). No smoke versions or hashes
+are hardcoded; downloads are verified against PyPI's SHA256 values and actual wheel
+metadata/ownership. Source release bumps do not select unpublished smoke inputs.
+The selected versions are logged and hash-required requirements are generated per run.
+Missing wheels, metadata/dependency or hash mismatches and build/audit failures still
+fail the gate; there is no skip or older-release fallback. This published packaging
+control does not qualify current-source RS or Python 3.15.
 
 Run the source-only trigger regressions without a native build, SQL Server, or PyYAML:
 
@@ -83,10 +90,15 @@ hashes with the final Conda archive hash after Linux relocation.
 
 Use `build --rs-wheel-dir <producer-artifact>/rs-wheels
 --rs-version-file <producer-artifact>/dist/mssql-python-rs.version` for RS inputs.
-The version file asserts the selected producer's source contract, not a new release-version
-setting. The distinct NuGet transport pin remains in `mssql-python-rs-nuget.version`;
-the downloader records its content hash and individual wheel hashes in `transport.json`.
-Conda consumers use staged producer bytes, not a fresh download using their checkout's pin.
+The version file asserts the selected producer's runtime selection against the binding's
+exact dependency, not a new release-version setting. The producer's `transport.json`
+records `distribution_version`, `index_url`, `version_override` and individual
+`wheel_sha256` values. Released runtimes use PyPI; an explicitly selected `.devN`
+version uses the public `mssql-rs_Public` Python index. Conda consumers validate this
+receipt and use staged producer bytes, not a fresh download using their checkout's
+pin or `MSSQL_PYTHON_RS_VERSION`. No NuGet package or transport pin is required.
+Release validation rejects any receipt with `version_override=true`, including
+an override equal to the committed stable pin. Such artifacts remain test-only.
 
 Published historical bindings that declare no RS dependency are accepted only when their
 payload and RECORD own the core initializer and native extension. They produce an explicit
@@ -112,8 +124,9 @@ macOS retains its external Homebrew/MacPorts OpenSSL prerequisite for encryption
 Conda OpenSSL alone does not satisfy the driver's system-path lookup.
 
 The release goal is the matching PyPI release's public API and supported feature
-behavior on all 28 ordinary CPython variants: 3.10-3.14 on win-64, linux-64,
-linux-aarch64, osx-64 and osx-arm64; 3.12-3.14 on win-arm64. No silent removal of
+behavior on all 34 ordinary CPython variants: 3.10-3.15 on win-64, linux-64,
+linux-aarch64, osx-64 and osx-arm64; 3.12-3.15 on win-arm64. Free-threaded CPython
+(including `cp315t`) and musllinux are not Conda targets. No silent removal of
 required native functionality is acceptable. Optional features require their
 corresponding dependencies; Windows ARM64 PyArrow availability remains a blocker
 to qualifying those features, not permission to drop them.
@@ -125,7 +138,7 @@ load do not establish those results. Applicable OS, certificate and authenticati
 configuration remain external prerequisites.
 
 Use only organizationally approved channels and handle applicable terms separately;
-the Windows ARM64 dependency profile includes Anaconda `defaults`. Before unattended
+the Windows ARM64 3.12-3.14 dependency profile includes Anaconda `defaults`. Before unattended
 Windows ARM64 builds, agent owners must use approved provisioning to put a disposable
 Conda installation on `PATH`, with applicable channel terms handled for the job's
 execution identity. The orchestrator's automatic Miniforge installation does not
@@ -133,6 +146,35 @@ establish that approval. If Conda enforces terms that have not been handled, the
 or verification solve stops with Conda's diagnostic; provision the prerequisite before
 running again. Automatic acceptance, including an inherited
 `CONDA_PLUGINS_AUTO_ACCEPT_TOS` opt-in, remains disabled.
+
+Windows ARM64 3.15 uses `microsoft`, then `conda-forge`, for both build and verification
+(after the local verification channel), without `defaults`. Older targets retain their
+existing channel policies and the ARM64 3.12 manual ABI pin. The blocking full dependency
+solve remains; every 3.15 package must pass the `python_abi 3.15.* *_cp315` native audit.
+
+Windows builds pass the package target through conda-build's `target_platform`
+variant, leaving its build process native (win-64 on the x64 agent). Only that
+command's environment removes `CONDA_SUBDIR`, avoiding the ARM64 `/machine`
+launcher on Windows Server 2022. Verification keeps `CONDA_SUBDIR=win-arm64`
+for both target environment creation and the full dependency dry-run.
+
+POSIX steps pass the requested Python matrix through `MSSQL_CONDA_PYTHON_VERSIONS`
+so the shared `PYTHON_VERSIONS` pipeline variable cannot replace it. Custom subsets
+and empty-input wheel auto-detection remain supported.
+
+### Python 3.15 packaging
+
+Conda-forge's Windows Python 3.15 declares `lib/python/site-packages` instead of
+`Lib/site-packages` ([layout change](https://conda-forge.org/blog/2026/09/03/python-315/)).
+The Windows recipe uses the target's `SP_DIR` for binding/RS/ODBC extraction, with
+matching native and installed-metadata checks. Windows legs containing 3.15 use
+**conda-build 26.9.1** for all requested variants: its
+[26.9.0 fix](https://github.com/conda/conda-build/releases/tag/26.9.0) reads
+`python_site_packages_path` from the target Python record, including cross builds.
+25.x computes the old Windows path even for 3.15. Other legs retain `conda-build<26`;
+the publishing toolchain is unchanged. The existing RS 0.3.0 stable-ABI selection and
+ODBC `py3-none` wheels need no version change. PyArrow stays optional; no speculative
+`libpython` dependency or change to the Unix OS floors is introduced.
 
 Run this existing build workflow only in a disposable isolated installation: shared-environment
 ownership hardening is outside this change. Publication/provenance tooling is included
@@ -188,13 +230,65 @@ access. `promote --check-local-only` needs neither a publishing token nor an
 Anaconda client; actual publication and recovery require restricted credentials and
 the shared protected release stage described below. Module placement is not a new
 authorization boundary. The PowerShell upload process deadlines, attempted-file
-tracking, process-tree termination, and dry-run plan remain in their pipeline tasks.
+tracking and process-tree termination remain in their pipeline tasks.
 Network publication and recovery require an explicit nonblank `ANACONDA_API_TOKEN`,
 not an ambient or cached login. The publishing task removes `BINSTAR_API_TOKEN`
 only from its process and children so the CLI uploader uses the same reviewed credential.
 User/machine environment settings and saved credentials are not modified.
 
-Only trusted, reviewed release revisions may be queued, including validate-only feature
+The `PublishConda` job pins the Windows 2022 image to
+`onebranch.azurecr.io/windows/ltsc2022/vse2022@sha256:d627cfbe15f21c34cfde8db6131c39adcc6577fc3b9d504cb4b43bfcef5de87a`
+instead of the moving `latest` tag. The publisher uses this image's existing
+Python 3.13 with a Windows x64 dependency lock; the separate validation job remains
+on Python 3.12 with its own lock. Package versions stay pinned, but native wheel
+hashes are specific to each interpreter target. A replacement image digest must
+pass the same false-token rehearsal before adoption. Build and PyPI images are
+unchanged.
+The official Windows publisher invokes this image's existing interpreter by its
+full path: `%LOCALAPPDATA%\Programs\Python\Python313\python.exe` (the account's
+LocalApplicationData special folder, not a PATH search). It requires CPython 3.13
+Windows x64, without unnecessarily pinning the patch version. Before creating any
+environment, it checks executable/prefix/base-prefix coherence and required
+SSL/native, encoding, venv and XML module ownership. A missing or unusable image
+interpreter fails explicitly; there is no automatic installation, uninstall,
+registry repair, runtime download or fallback to another interpreter.
+
+The bootstrap creates a unique job-owned venv under `Agent.TempDirectory` and
+verifies that it belongs to the checked image interpreter. Only that venv's absolute
+path is passed to the publishing task through a read-only task output. Dependencies
+use the publisher's target-specific hash lock and explicit package-feed-proxy `--index-url`
+with pip's `--isolated` mode. Both production and rehearsal use this same code.
+
+With `publishToConda=false` (the default), the release pipeline now rehearses the
+publisher instead of only printing an upload plan. Both modes use the Official
+template, Windows 2022 managed container, network isolation, independent producer
+download, Python 3.13 bootstrap, hash-locked dependencies and metadata/native audits.
+The publisher checkout explicitly uses `path: s`, matching OneBranch's injected
+checkout so the lock, Python modules and artifacts share `Build.SourcesDirectory`
+on the host and in the container; restricted task commands remain enabled.
+
+Rehearsal omits `Anaconda Publishing` and its production lock, marks the job
+nonproduction and uses a newly generated invalid token, never a supplied or cached
+credential. After all shared gates pass, the pinned client makes only an authenticated
+`GET https://api.anaconda.org/user`. Redirects are disabled, with enforced 15-second
+connect and 60-second read timeouts. The expected result is a **failed task** with
+`EXPECTED_REHEARSAL_AUTH_REJECTION` and HTTP 401. Network/TLS/setup errors, other HTTP
+statuses and unexpectedly accepted credentials are failures, not successful rehearsals.
+No rehearsal path can reach upload, promotion or cleanup. This tests the authentication
+boundary, not valid-token authorization or successful publication/recovery.
+
+To rehearse a reviewed PR branch, queue the existing release definition with that
+exact branch/commit, `publishToConda=false` and the intended recorded Conda producer
+run. Inspect actual hosted logs through the expected rejection; a compiled preview
+or a local interpreter check does not establish hosted image/venv/dependency coverage.
+Resource or policy denials must be resolved by the owner, never by weakening the
+production checks. `publishToConda=true` retains the main-branch provenance guard,
+publishing credential group and shared exclusive lock.
+The old upload-plan-only task and duplicate interpreter selection in the validation
+job are removed. Superseded MSI cleanup and temporary installer diagnostics are removed;
+the short base-library check remains. Independent publisher artifact rechecks are retained.
+
+Only trusted, reviewed release revisions may be queued, including rehearsal feature
 branches: their YAML and Python run with `System.AccessToken`. YAML provenance checks
 cannot sandbox an untrusted queued revision or protect that token from it. Administrators
 must restrict pipeline editing/queueing and source access, minimize the job identity's
@@ -211,8 +305,8 @@ must fail before the stage receives the publishing credential. Preserve existing
 permissions and approvals, and restrict permission to administer or bypass the check.
 Do not grant broader pipeline access as part of configuring it.
 
-The existing `publishToConda` condition omits this group for validate-only runs, so
-trusted feature-branch validation remains separate from credentialed publication.
+The existing `publishToConda` condition omits this group for rehearsal runs, so
+trusted feature-branch rehearsal remains separate from credentialed publication.
 Neither a checkout-local branch check nor a secondary pinned checkout can replace
 the resource-side control: editable YAML could bypass either. These external checks
 are not installed by this repository; production must remain unapproved until the
@@ -228,7 +322,7 @@ create the external check. The lock spans validation, staged uploads, the initia
 label snapshot, promotion, rollback and staging cleanup until the stage ends.
 All publishers and recovery paths for `microsoft/mssql-python` must consume that
 same resource, across versions and target labels; separate groups would not serialize
-them. Keep the group and lock behavior absent from validate-only runs.
+them. Keep the group and lock behavior absent from rehearsal runs.
 
 Recover by rerunning the original protected release stage with its original artifact
 inputs, preserving the build-specific staging label and reacquiring the shared lock.
@@ -242,13 +336,14 @@ acquisition; configuration readback alone is not evidence that a run holds the l
 The release pipeline resolves AUTO from the **recorded upstream wheel commit**, not
 the release checkout or a latest-version lookup. It cross-checks binding setup/runtime
 versions and reads ODBC and, when explicitly required by that source, RS distribution
-versions. RS's NuGet transport pin is separate. Missing or ambiguous source declarations
+versions. Source analysis reads the clean `X.Y.Z` RS pin without executing the
+runtime-selection helper or consulting the consumer's environment override.
+Missing or ambiguous source declarations
 fail rather than select a historical profile. A supplied binding version is only an
 assertion against this resolved version.
 
 Both readiness and the credentialed job use `validate --release-versions` to read the
-verified `RELEASE_VERSIONS` JSON from the environment; `RS_TRANSPORT_VERSION` supplies
-the separate transport assertion. This avoids passing JSON quoting or empty arguments
+verified `RELEASE_VERSIONS` JSON from the environment. This avoids passing JSON quoting or empty arguments
 through Windows PowerShell. Explicit JSON may also follow `--release-versions` in
 source-only controls. With this flag, absent versions fail closed. Without it, `validate`
 remains the metadata/matrix-only inspection command and makes no source-input claim.
@@ -256,23 +351,27 @@ The source-bound gate checks each installed component's METADATA and RECORD owne
 the binding's exact dependency pins, and the selected RS filename/WHEEL tags against
 `rs-transport.json`. Raw wheel/transport hashes remain input evidence; relocated
 installed native files are checked by the native audits, not falsely compared with raw
-wheel hashes. No numeric RS build ID is inferred from a transport-version suffix.
+wheel hashes. The receipt must name the verified RS distribution version and its
+release/development index; a receipt cannot override the verified source version.
+No numeric RS build ID is inferred from a version suffix.
 Release and native auditing also check all installed core paths, not only RECORD-filtered
 members. This detects unowned or cross-owned additions; it cannot recover file origin
 after an overwrite of an already owned path, which is why the raw pre-extraction gate
 is required.
 
-`fetch-wheels` uses exact current maintained versions, hash-required binary-only PyPI
+By default, `fetch-wheels` uses exact current maintained versions, hash-required binary-only PyPI
 downloads, and actual wheel metadata/ownership. Pip selects for its executing interpreter;
 the requested Python/platform must match the binding, ODBC and selected RS wheel tags
 before the command accepts the inputs. These arguments validate the download, rather
 than enabling cross-target pip resolution. An authentic published embedded-core
 binding is explicitly reported as a **historical published packaging control, not
 current-source RS qualification**. An RS-dependent published binding requires its exact
-provider and source pin; unavailable releases, malformed declarations, or mismatches
+provider and selected pin; unavailable releases, malformed declarations, or mismatches
 fail with no older-version or TLS fallback. Public availability does not gate the
 recorded ADO artifact path. Neither a public input check nor static archive checks
 establish installed SQL/runtime qualification.
+Only the explicit `--published-smoke` option selects the published inputs above;
+production, provenance, preflight and release/publish version selection are unchanged.
 
 The driver-load probe's sole implementation is
 `eng/conda_tools/driver_load_probe.py`. It separates native connection execution,
@@ -284,7 +383,7 @@ The `probe-driver` module command is a convenience diagnostic in the calling
 interpreter, not a substitute for this neutral-directory installed-package check.
 
 The files remaining under `conda/` are the conventional recipe entrypoints,
-metadata, documentation and line-ending configuration. Shared NuGet transport,
-feed-resolution and output-safety utilities remain under `eng/scripts` because
+metadata, documentation and line-ending configuration. Shared Python-index download,
+runtime-selection and output-safety utilities remain under `eng/scripts` because
 non-Conda native build/development workflows also use them; Conda reuses those
 implementations rather than keeping private copies.
