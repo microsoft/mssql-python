@@ -48,8 +48,8 @@ stages:
           name: Python-1ES-pool
           demands:
           - imageOverride -equals PYTHON-1ES-UB2404
-        # Six serial build/test cycles exceed two hours under QEMU-based ARM64 emulation.
-        timeoutInMinutes: 180
+        # Allow four hours for six serial build/test cycles under QEMU-based ARM64 emulation.
+        timeoutInMinutes: 240
         
         variables:
           # Disable BinSkim for Linux - requires ICU libraries not available in manylinux/musllinux containers
