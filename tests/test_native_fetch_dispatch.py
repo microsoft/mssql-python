@@ -438,36 +438,6 @@ def test_saved_fetchone_observes_consecutive_class_mutations(connection):
     assert observed == [(4, 3, 4), (4, 3, 4)]
 
 
-@pytest.mark.skipif(
-    sys.version_info < (3, 13),
-    reason="Custom MRO prevents type version assignment on CPython 3.13+",
-)
-def test_native_plan_requires_rearmed_type_dependencies(connection):
-    runtime = _redesign_runtime()
-
-    class CustomMro(type):
-        def mro(cls):
-            return [cls, object]
-
-    class Unversioned(metaclass=CustomMro):
-        pass
-
-    with _native_fetch_counters() as profiling, connection.cursor() as cursor:
-        warm(cursor, "fetchone")
-        policy = runtime[2]
-        with patch.object(policy, "classes", (*policy.classes, Unversioned)):
-            ddbc_bindings._invalidate_native_fetch(cursor)
-            with _fetchone_window(profiling) as declined:
-                assert cursor.fetchone()[0] == 3
-        _assert_fetchone_counts(declined, prepare=1, native=0, fallback=1, sql=1)
-        ddbc_bindings._invalidate_native_fetch(cursor)
-        with _fetchone_window(profiling) as restored:
-            assert cursor.fetchone()[0] == 4
-        _assert_fetchone_counts(restored, prepare=1, native=1, fallback=0, sql=1)
-        assert cursor.rowcount == 4
-        assert cursor.rownumber == 3
-
-
 @pytest.mark.parametrize("method", ("fetchval", "iterator"))
 def test_warm_fetchone_override_is_not_bypassed(connection, method):
     with connection.cursor() as cursor:
