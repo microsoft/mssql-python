@@ -55,7 +55,16 @@ _MP_VER = "1.13.0"
 
 
 @pytest.mark.parametrize(
-    "state", ["ready", "missing-handler", "disabled", "wrong-interpreter", "missing-loader"]
+    "state",
+    [
+        "ready",
+        "symlinked-interpreter",
+        "broken-symlink",
+        "missing-handler",
+        "disabled",
+        "wrong-interpreter",
+        "missing-loader",
+    ],
 )
 def test_linux_qemu_setup_requires_supported_packages_and_enabled_handler(tmp_path, state):
     import os
@@ -72,14 +81,30 @@ def test_linux_qemu_setup_requires_supported_packages_and_enabled_handler(tmp_pa
         1,
     )[0].rsplit("              - bash: |\n", 1)[1]
     handler = tmp_path / "handler"
+    emulator = tmp_path / "qemu-aarch64"
+    emulator.touch()
+    interpreter = emulator
+    if state in {"symlinked-interpreter", "broken-symlink"}:
+        interpreter = tmp_path / "aarch64-binfmt-P"
+        try:
+            interpreter.symlink_to(
+                emulator if state == "symlinked-interpreter" else tmp_path / "missing-emulator"
+            )
+        except OSError as error:
+            pytest.skip(f"Symlink regression requires symlink support: {error}")
+    elif state == "wrong-interpreter":
+        interpreter = tmp_path / "other-emulator"
+        interpreter.touch()
     if state != "missing-handler":
         handler.write_text(
             ("disabled" if state == "disabled" else "enabled")
             + "\ninterpreter "
-            + ("/missing/qemu-aarch64" if state == "wrong-interpreter" else "/usr/bin/qemu-aarch64")
+            + interpreter.as_posix()
             + "\n",
             newline="\n",
         )
+    setup = setup.replace("/proc/sys/fs/binfmt_misc/qemu-aarch64", handler.as_posix())
+    setup = setup.replace("/usr/bin/qemu-aarch64", emulator.as_posix())
     mocks = r"""
 sudo() {
   case "$*" in
@@ -96,20 +121,16 @@ test() {
     builtin test "$@"
   fi
 }
-grep() {
-  if [[ "${!#}" != /proc/sys/fs/binfmt_misc/qemu-aarch64 ]]; then return 1; fi
-  command grep "${@:1:$#-1}" "$TEST_HANDLER"
-}
 """
     result = subprocess.run(
         [bash, "-c", mocks + textwrap.dedent(setup)],
-        env=dict(os.environ, TEST_STATE=state, TEST_HANDLER=handler.as_posix()),
+        env=dict(os.environ, TEST_STATE=state),
         capture_output=True,
         text=True,
         timeout=15,
     )
     output = result.stdout + result.stderr
-    if state == "ready":
+    if state in {"ready", "symlinked-interpreter"}:
         assert result.returncode == 0, output
         assert (
             output.splitlines().count(

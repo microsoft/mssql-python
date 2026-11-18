@@ -366,9 +366,15 @@ extends:
                   sudo systemctl restart systemd-binfmt.service
                   qemu-aarch64 --version
                   test -x /usr/aarch64-linux-gnu/lib/ld-linux-aarch64.so.1 || { echo "ERROR: ARM64 glibc loader is missing after apt install" >&2; exit 1; }
-                  handler=/proc/sys/fs/binfmt_misc/qemu-aarch64
+                  handler="/proc/sys/fs/binfmt_misc/qemu-aarch64"
                   grep -qx enabled "$handler" || { echo "ERROR: aarch64 binfmt handler is missing or disabled after systemd-binfmt restart" >&2; exit 1; }
-                  grep -qx 'interpreter /usr/bin/qemu-aarch64' "$handler" || { echo "ERROR: aarch64 binfmt handler does not use the installed qemu-user emulator" >&2; exit 1; }
+                  interpreter="$(sed -n 's/^interpreter //p' "$handler")"
+                  # Ubuntu 24.04 can register a binfmt-P symlink to the same emulator.
+                  if [[ -z "$interpreter" ]] || ! installed="$(readlink -e "/usr/bin/qemu-aarch64")" \
+                    || ! registered="$(readlink -e "$interpreter")" || [[ "$registered" != "$installed" ]]; then
+                    echo "ERROR: aarch64 binfmt handler does not resolve to the installed qemu-user emulator" >&2
+                    exit 1
+                  fi
                   echo "##vso[task.setvariable variable=ready;isOutput=true]true"
                 displayName: 'Install libc6-arm64-cross + register QEMU binfmt (aarch64)'
                 name: setupArm64Qemu
