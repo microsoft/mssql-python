@@ -12,9 +12,11 @@ Warning:
     may change without notice.
 """
 
+from typing import Any
+
 from ._native import load_py_core
-from .async_connection import _AsyncConnection  # pyright: ignore[reportPrivateUsage]
-from .async_cursor import _AsyncCursor  # pyright: ignore[reportPrivateUsage]
+from .async_connection import _AsyncConnection as _AsyncConnection
+from .async_cursor import _AsyncCursor as _AsyncCursor
 from .exception_translator import (
     DataError,
     DatabaseError,
@@ -44,7 +46,7 @@ _NATIVE_EXPORTS = {
 }
 
 
-def __getattr__(name: str):
+def __getattr__(name: str) -> Any:
     native_name = _NATIVE_EXPORTS.get(name)
     if native_name is None:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
