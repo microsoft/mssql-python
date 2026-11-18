@@ -2556,24 +2556,36 @@ SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list&
                     LOG("BindParameterArray: Binding SQL_C_WCHAR array - "
                         "param_index=%d, count=%zu, column_size=%zu",
                         paramIndex, paramSetSize, info.columnSize);
+                    // Numeric/time text can exceed SQL precision (sign, separators, fractions);
+                    // size the buffer separately and keep columnSize as the SQL metadata.
+                    size_t capacity = info.columnSize;
+                    if (info.paramSQLType == SQL_DECIMAL || info.paramSQLType == SQL_NUMERIC ||
+                        info.paramSQLType == SQL_TYPE_TIME || info.paramSQLType == SQL_TIME ||
+                        info.paramSQLType == SQL_SS_TIME2) {
+                        for (auto item : columnValues) {
+                            if (!item.is_none())
+                                capacity = std::max(capacity,
+                                                    item.cast<std::u16string>().length());
+                        }
+                    }
                     SQLWCHAR* wcharArray = AllocateParamBufferArray<SQLWCHAR>(
-                        tempBuffers, paramSetSize * (info.columnSize + 1));
+                        tempBuffers, paramSetSize * (capacity + 1));
                     strLenOrIndArray = AllocateParamBufferArray<SQLLEN>(tempBuffers, paramSetSize);
                     for (size_t i = 0; i < paramSetSize; ++i) {
                         if (columnValues[i].is_none()) {
                             strLenOrIndArray[i] = SQL_NULL_DATA;
-                            std::memset(wcharArray + i * (info.columnSize + 1), 0,
-                                        (info.columnSize + 1) * sizeof(SQLWCHAR));
+                            std::memset(wcharArray + i * (capacity + 1), 0,
+                                        (capacity + 1) * sizeof(SQLWCHAR));
                         } else {
                             std::u16string wstr = columnValues[i].cast<std::u16string>();
                             // u16string is already UTF-16, so the
                             // original check is sufficient
-                            if (wstr.length() > info.columnSize) {
+                            if (wstr.length() > capacity) {
                                 ThrowStdException("Input string exceeds allowed column size "
                                                   "at parameter index " +
                                                   std::to_string(paramIndex));
                             }
-                            std::memcpy(wcharArray + i * (info.columnSize + 1), wstr.c_str(),
+                            std::memcpy(wcharArray + i * (capacity + 1), wstr.c_str(),
                                         (wstr.length() + 1) * sizeof(SQLWCHAR));
                             strLenOrIndArray[i] = SQL_NTS;
                         }
@@ -2582,7 +2594,7 @@ SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list&
                         "param_index=%d",
                         paramIndex);
                     dataPtr = wcharArray;
-                    bufferLength = (info.columnSize + 1) * sizeof(SQLWCHAR);
+                    bufferLength = (capacity + 1) * sizeof(SQLWCHAR);
                     break;
                 }
                 case SQL_C_TINYINT:
@@ -3117,6 +3129,10 @@ SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list&
 }
 
 namespace {
+bool IsTvpTimeType(int sqlType) {
+    return sqlType == SQL_TYPE_TIME || sqlType == SQL_TIME || sqlType == SQL_SS_TIME2;
+}
+
 SQLRETURN BindTableParameter(SqlHandle& handle, SQLHANDLE hStmt, SQLUSMALLINT ordinal,
                              py::handle parameter,
                              std::vector<std::shared_ptr<void>>& buffers,
@@ -3160,8 +3176,10 @@ SQLRETURN BindTableParameter(SqlHandle& handle, SQLHANDLE hStmt, SQLUSMALLINT or
         }
         if (rows.empty()) column.append(py::none());
         samples.append(sample);
-        overrides.append(py::make_tuple(sqlType,
-            cTypes[py::int_(sqlType)], spec[1], spec[2]));
+        // SQL_TIME_STRUCT has no fractional seconds; send time text as execute() does.
+        py::object cType = IsTvpTimeType(sqlType) ? py::int_(PARAM_C_TYPE_TEXT)
+                                                  : cTypes[py::int_(sqlType)];
+        overrides.append(py::make_tuple(sqlType, cType, spec[1], spec[2]));
         values.append(column);
     }
     // Apply the same explicit coercions to every cell, not just the sample row.
@@ -3172,9 +3190,14 @@ SQLRETURN BindTableParameter(SqlHandle& handle, SQLHANDLE hStmt, SQLUSMALLINT or
             values[col].cast<py::list>()[rowIndex] = normalized[col];
     }
     auto infos = DetectParamTypes(samples.ptr(), overrides.ptr());
-    for (auto& info : infos) {
+    for (size_t col = 0; col < infos.size(); ++col) {
+        auto& info = infos[col];
         if (info.isDAE)
             throw py::value_error("TVP column values must fit their declared inline column sizes");
+        // Keep the declared TIME size; text capacity is sized per value when binding.
+        auto spec = columns[col].cast<py::tuple>();
+        if (IsTvpTimeType(spec[0].cast<int>()) && info.paramCType == PARAM_C_TYPE_TEXT)
+            info.columnSize = spec[1].cast<SQLULEN>();
     }
     rc = SQLSetStmtAttr_ptr(hStmt, SQL_SOPT_SS_PARAM_FOCUS,
         reinterpret_cast<SQLPOINTER>(static_cast<uintptr_t>(ordinal)), SQL_IS_INTEGER);

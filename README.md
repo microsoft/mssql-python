@@ -257,7 +257,9 @@ explicit schema. Each column specification is `(SQL type, size, scale)`; for
 vectors, size means dimensions and scale is the subtype (0 or 1). Empty tables
 and NULL vector cells are supported. Vector columns also accept lists because
 the explicit schema provides dimensions and base type; cells are snapshotted
-as Vectors with the same validation. UDT/sql_variant TVP columns and
+as Vectors with the same validation. DECIMAL/NUMERIC cells are snapshotted as
+`Decimal` (other values convert through `str()`, as in `executemany()`), and
+TIME columns preserve fractional seconds. UDT/sql_variant TVP columns and
 data-at-execution TVP cells are not supported.
 
 ```python

@@ -3296,7 +3296,8 @@ class Cursor:
         self._check_closed()  # Check if the cursor is closed
         procedure_rows: deque[list[Any]] | None = getattr(self, "_procedure_rows", None)
         if procedure_rows is not None:
-            return self.fetchmany(len(procedure_rows)) if self.description else self.fetchmany(1)
+            # Request one extra row so exhaustion finalizes rowcount, even when empty.
+            return self.fetchmany(len(procedure_rows) + 1)
         if not self._has_result_set and self.description:
             self._reset_rownumber()
 

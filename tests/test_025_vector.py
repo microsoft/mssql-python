@@ -6,12 +6,14 @@ Live tests require the Microsoft ODBC provider and a server advertising the
 vector type. No live operation is mocked; connection/backend errors fail.
 """
 
+import datetime
 import json
 import math
 import os
 import struct
 import uuid
 from collections import deque
+from decimal import Decimal
 from itertools import repeat
 from types import SimpleNamespace
 from unittest.mock import MagicMock, Mock
@@ -397,6 +399,49 @@ def test_failing_callproc_invalidates_prepared_query(unit_cursor, monkeypatch):
     unit_cursor.execute(query, 2)
     assert execute.call_count == 2
     assert all(call.args[5] is True for call in execute.call_args_list)
+
+
+def test_buffered_fetchall_finalizes_rowcount_for_empty_results(unit_cursor, monkeypatch):
+    value = Vector([1, 2, 3])
+    monkeypatch.setattr(
+        ddbc_bindings,
+        "DDBCCallProc",
+        lambda *args: (
+            [],
+            [
+                (vector_metadata(), [], -1),
+                (vector_metadata(), [[value], [value]], -1),
+                (vector_metadata(), [], -1),
+            ],
+        ),
+    )
+    unit_cursor.callproc("dbo.v")
+    assert unit_cursor.fetchall() == []
+    assert unit_cursor.rowcount == 0
+    assert unit_cursor.nextset()
+    assert [row[0] for row in unit_cursor.fetchall()] == [value, value]
+    assert unit_cursor.rowcount == 2
+    assert unit_cursor.nextset()
+    assert unit_cursor.fetchall() == []
+    assert unit_cursor.rowcount == 0
+
+
+def test_tvp_numeric_cells_are_normalized_like_executemany():
+    columns = [(mssql_python.SQL_DECIMAL, 3, 2)]
+    rows = [(None,), (1,), (1.25,), (Decimal("-9.99"),), ("0.5",)]
+    parameter = TableValuedParameter("dbo.t", rows, columns)
+    assert parameter.rows == (
+        (None,),
+        (Decimal("1"),),
+        (Decimal("1.25"),),
+        (Decimal("-9.99"),),
+        (Decimal("0.5"),),
+    )
+    assert all(type(row[0]) is Decimal for row in parameter.rows[1:])
+    for invalid in (True, "secret-value", object()):
+        with pytest.raises(ValueError, match="row 1, column 0") as error:
+            TableValuedParameter("dbo.t", [(1,), (invalid,)], columns)
+        assert "secret-value" not in str(error.value)
 
 
 def test_procedure_result_converters_are_refreshed(unit_cursor, monkeypatch):
@@ -934,6 +979,86 @@ def test_live_vector_tvp(live_vector_connection, method):
                 cursor.execute(f"DROP PROCEDURE {proc_name}")
         finally:
             cursor.execute(f"DROP TYPE {type_name}")
+
+
+@pytest.mark.parametrize(
+    "time_spec",
+    [(mssql_python.SQL_TYPE_TIME, 16, 6), (mssql_python.SQL_SS_TIME2, 15, 6)],
+    ids=["sql-type-time", "ss-time2"],
+)
+@pytest.mark.parametrize("method", ["execute", "callproc"])
+def test_live_tvp_decimal_and_time_values(live_vector_connection, time_spec, method):
+    connection, dtype = live_vector_connection
+    suffix = uuid.uuid4().hex
+    type_name = f"dbo.pytest_tvp_types_{suffix}"
+    proc_name = f"dbo.pytest_tvp_types_proc_{suffix}"
+    connection.autocommit = True
+    value = Vector([1, 2, 3], dtype)
+    precise = datetime.time(12, 34, 56, 123456)
+    columns = [
+        (mssql_python.SQL_INTEGER, 10, 0),
+        (mssql_python.SQL_DECIMAL, 3, 2),
+        time_spec,
+        (mssql_python.SQL_SS_VECTOR, 3, int(dtype == "float16")),
+    ]
+    rows = [
+        (1, None, None, None),
+        (2, Decimal("-9.99"), precise, value),
+        (3, Decimal("9.99"), datetime.time(0, 0, 0, 1), value),
+        (4, 1, datetime.time(23, 59, 59, 999999), None),
+        (5, 1.25, precise, value),
+        (6, Decimal("-0.01"), datetime.time(1, 2, 3), value),
+    ]
+    expected = [
+        (1, None, None, None),
+        (2, Decimal("-9.99"), precise, value),
+        (3, Decimal("9.99"), datetime.time(0, 0, 0, 1), value),
+        (4, Decimal("1.00"), datetime.time(23, 59, 59, 999999), None),
+        (5, Decimal("1.25"), precise, value),
+        (6, Decimal("-0.01"), datetime.time(1, 2, 3), value),
+    ]
+    with connection.cursor() as cursor:
+        cursor.execute(
+            f"CREATE TYPE {type_name} AS TABLE "
+            f"(id INT, amount DECIMAL(3, 2), at TIME(6), embedding VECTOR(3, {dtype}))"
+        )
+        try:
+            cursor.execute(
+                f"CREATE PROCEDURE {proc_name} @rows {type_name} READONLY AS "
+                "BEGIN SET NOCOUNT ON; SELECT id, amount, at, embedding FROM @rows ORDER BY id; END"
+            )
+            try:
+                parameter = TableValuedParameter(type_name, rows, columns)
+                if method == "callproc":
+                    cursor.callproc(proc_name, [parameter])
+                else:
+                    cursor.execute(f"EXEC {proc_name} ?", parameter)
+                assert [tuple(row) for row in cursor.fetchall()] == expected
+            finally:
+                cursor.execute(f"DROP PROCEDURE {proc_name}")
+        finally:
+            cursor.execute(f"DROP TYPE {type_name}")
+
+
+def test_live_buffered_procedure_empty_results_rowcount(live_vector_connection):
+    connection, dtype = live_vector_connection
+    value = Vector([1, 2, 3], dtype)
+    with connection.cursor() as cursor:
+        cursor.execute(
+            f"CREATE PROCEDURE #empty_vector_results @v VECTOR(3, {dtype}) AS "
+            "BEGIN SET NOCOUNT ON; SELECT @v AS embedding WHERE 1 = 0; "
+            "SELECT @v AS embedding; SELECT @v AS embedding WHERE 1 = 0; END"
+        )
+        assert cursor.callproc("#empty_vector_results", [value]) == [value]
+        assert cursor.fetchall() == []
+        assert cursor.rowcount == 0
+        assert cursor.nextset()
+        assert [row[0] for row in cursor.fetchall()] == [value]
+        assert cursor.rowcount == 1
+        assert cursor.nextset()
+        assert cursor.fetchall() == []
+        assert cursor.rowcount == 0
+        assert not cursor.nextset()
 
 
 @pytest.mark.parametrize("method", ["fetchone", "fetchmany", "fetchall", "iteration"])

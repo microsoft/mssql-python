@@ -2,10 +2,27 @@
 
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from .constants import SQLTypes, ConstantsDDBC
 from .vector import _check_shape, _vector_from_hint
+
+_NUMERIC_TYPES = (ConstantsDDBC.SQL_DECIMAL.value, ConstantsDDBC.SQL_NUMERIC.value)
+
+
+def _decimal_cell(value: Any, row: int, column: int) -> Any:
+    if value is None or isinstance(value, Decimal):
+        return value
+    # Match executemany(): convert through str() and never echo the rejected value.
+    try:
+        return Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        pass
+    raise ValueError(
+        f"Failed to convert TVP value to Decimal at row {row}, column {column} "
+        f"(value type: {type(value).__name__})"
+    )
 
 
 @dataclass(frozen=True, init=False)
@@ -15,7 +32,9 @@ class TableValuedParameter:
     columns contains (sql_type, size, scale) hints, as for setinputsizes().
     For vector columns, size is the dimension count and scale is 0 (FLOAT32)
     or 1 (FLOAT16). Vector cells accept Vector, list, or None; lists are
-    snapshotted as Vectors. Explicit schema also supports empty/all-NULL tables.
+    snapshotted as Vectors. DECIMAL/NUMERIC cells are snapshotted as Decimal,
+    converting other values through str() as executemany() does. Explicit
+    schema also supports empty/all-NULL tables.
     """
 
     type_name: str
@@ -57,13 +76,15 @@ class TableValuedParameter:
                     raise ValueError("vector subtype must be 0 (FLOAT32) or 1 (FLOAT16)")
                 _check_shape(size, "float16" if scale else "float32")
         snapshot = []
-        for row in rows:
+        for row_index, row in enumerate(rows):
             values = list(row)
             if len(values) != len(schema):
                 raise ValueError("TVP rows must match the number of columns")
             for index, (sql_type, size, scale) in enumerate(schema):
                 if sql_type == ConstantsDDBC.SQL_SS_VECTOR.value:
                     values[index] = _vector_from_hint(values[index], size, scale)
+                elif sql_type in _NUMERIC_TYPES:
+                    values[index] = _decimal_cell(values[index], row_index, index)
             snapshot.append(tuple(values))
         object.__setattr__(self, "type_name", type_name)
         object.__setattr__(self, "columns", schema)
