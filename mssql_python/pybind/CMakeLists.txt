@@ -46,7 +46,11 @@ if (MSVC)
     
     # Enable PDB generation for all target types
     add_compile_options("$<$<CONFIG:Release>:/Zi>")
-    add_link_options("$<$<CONFIG:Release>:/DEBUG /OPT:REF /OPT:ICF>")
+    add_link_options(
+        "$<$<CONFIG:Release>:/DEBUG>"
+        "$<$<CONFIG:Release>:/OPT:REF>"
+        "$<$<CONFIG:Release>:/OPT:ICF>"
+    )
     
     message(STATUS "Security flags applied: /GS /guard:cf /DYNAMICBASE /NXCOMPAT /GUARD:CF")
 endif()
