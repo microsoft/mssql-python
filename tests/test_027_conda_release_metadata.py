@@ -54,6 +54,7 @@ _PYTHONS = ["3.10", "3.11", "3.12", "3.13", "3.14"]
 _MP_VER = "1.13.0"
 
 
+@pytest.mark.skipif(sys.platform != "linux", reason="QEMU provisioning runs on Linux")
 @pytest.mark.parametrize(
     "state",
     [
