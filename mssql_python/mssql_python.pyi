@@ -29,7 +29,6 @@ from .vector import (
     OutputParameter as OutputParameter,
     InputOutputParameter as InputOutputParameter,
 )
-from .table_parameter import TableValuedParameter as TableValuedParameter
 
 SQL_SS_VECTOR: int
 

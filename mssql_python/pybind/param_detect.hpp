@@ -349,14 +349,6 @@ inline std::vector<ParamInfo> DetectParamTypes(PyObject* params, PyObject* input
             info.decimalDigits = static_cast<SQLSMALLINT>(info.vectorBinding->value.type);
             continue;
         }
-        int isTvp = PyObject_IsInstance(obj, PyTypeCache::tvp_class);
-        if (isTvp < 0) throw py::error_already_set();
-        if (isTvp) {
-            info.paramSQLType = SQL_SS_TABLE;
-            info.paramCType = SQL_C_DEFAULT;
-            info.columnSize = static_cast<SQLULEN>(py::len(borrow(obj).attr("rows")));
-            continue;
-        }
 
         // --- None ---
         if (obj == Py_None) {

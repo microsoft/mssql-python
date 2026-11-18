@@ -569,11 +569,6 @@ static SQLRETURN PreResolveUdtTypes(SqlHandle& handle, SQLHANDLE hStmt,
 // rebind over those records instead of issuing SQL_RESET_PARAMS first. An
 // unchanged IPD lets msodbcsql and mssql-odbc keep their prepared handle and
 // send sp_execute; any difference resets first, as before.
-SQLRETURN BindTableParameter(SqlHandle& handle, SQLHANDLE hStmt, SQLUSMALLINT ordinal,
-                             py::handle parameter,
-                             std::vector<std::shared_ptr<void>>& buffers,
-                             const std::string& charEncoding);
-
 SQLRETURN BindParameters(SqlHandle& handle, SQLHANDLE hStmt, const py::list& params,
                          std::vector<ParamInfo>& paramInfos,
                          std::vector<std::shared_ptr<void>>& paramBuffers,
@@ -598,10 +593,7 @@ SQLRETURN BindParameters(SqlHandle& handle, SQLHANDLE hStmt, const py::list& par
             signature.push_back({info.inputOutputType, info.paramCType, info.paramSQLType,
                                  info.columnSize, info.decimalDigits, info.isDAE});
         }
-        const bool hasTable = std::any_of(paramInfos.begin(), paramInfos.end(),
-            [](const ParamInfo& info) { return info.paramSQLType == SQL_SS_TABLE; });
-        if (handle.paramsBound &&
-            (signature.empty() || signature != handle.boundParamSignature || hasTable)) {
+        if (handle.paramsBound && (signature.empty() || signature != handle.boundParamSignature)) {
             SQLRETURN resetRc = ResetParamBindings(handle, hStmt);
             if (!SQL_SUCCEEDED(resetRc))
                 return resetRc;
@@ -623,14 +615,6 @@ SQLRETURN BindParameters(SqlHandle& handle, SQLHANDLE hStmt, const py::list& par
         SQLLEN bufferLength = 0;
         SQLLEN* strLenOrIndPtr = nullptr;
 
-        if (paramInfo.paramSQLType == SQL_SS_TABLE) {
-            SQLRETURN rc = BindTableParameter(handle, hStmt,
-                static_cast<SQLUSMALLINT>(paramIndex + 1), param, paramBuffers, charEncoding);
-            if (!SQL_SUCCEEDED(rc)) return rc;
-            continue;
-        }
-
-        // TODO: Add more data types like money and intervals.
         switch (paramInfo.paramCType) {
             case SQL_C_SS_VECTOR: {
                 if (!paramInfo.vectorBinding) {
@@ -2464,7 +2448,7 @@ SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list&
         "param_count=%zu, param_set_size=%zu",
         columnwise_params.size(), paramSetSize);
 
-    auto& tempBuffers = paramBuffers;
+    std::vector<std::shared_ptr<void>> tempBuffers;
 
     try {
         SQLRETURN describeRc = PreResolveUdtTypes(handle, hStmt, paramInfos);
@@ -3129,99 +3113,12 @@ SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list&
             "buffers");
         throw;
     }
+    paramBuffers.insert(paramBuffers.end(), tempBuffers.begin(), tempBuffers.end());
     LOG("BindParameterArray: Successfully bound all parameters - "
         "total_params=%zu, buffer_count=%zu",
         columnwise_params.size(), paramBuffers.size());
     return SQL_SUCCESS;
 }
-
-namespace {
-SQLRETURN BindTableParameter(SqlHandle& handle, SQLHANDLE hStmt, SQLUSMALLINT ordinal,
-                             py::handle parameter,
-                             std::vector<std::shared_ptr<void>>& buffers,
-                             const std::string& charEncoding) {
-    auto rows = parameter.attr("rows").cast<py::tuple>();
-    auto columns = parameter.attr("columns").cast<py::tuple>();
-    auto name = parameter.attr("type_name").cast<std::u16string>();
-    auto separator = name.find(u'.');
-    std::u16string schema;
-    if (separator != std::u16string::npos) {
-        schema = name.substr(0, separator);
-        name = name.substr(separator + 1);
-    }
-    auto typeName = AllocateParamBuffer<std::u16string>(buffers, name);
-    auto rowCount = AllocateParamBuffer<SQLLEN>(buffers, static_cast<SQLLEN>(rows.size()));
-    SQLRETURN rc = SQLBindParameter_ptr(hStmt, ordinal, SQL_PARAM_INPUT, SQL_C_DEFAULT,
-        SQL_SS_TABLE, std::max<size_t>(1, rows.size()), 0,
-        reinterpretU16stringAsSqlWChar(*typeName), SQL_NTS, rowCount);
-    if (!SQL_SUCCEEDED(rc)) return rc;
-    if (!schema.empty()) {
-        SQLHDESC ipd = nullptr;
-        rc = SQLGetStmtAttr_ptr(hStmt, SQL_ATTR_IMP_PARAM_DESC, &ipd, 0, nullptr);
-        if (!SQL_SUCCEEDED(rc)) return rc;
-        auto schemaName = AllocateParamBuffer<std::u16string>(buffers, schema);
-        rc = SQLSetDescField_ptr(ipd, ordinal, SQL_CA_SS_SCHEMA_NAME,
-            reinterpretU16stringAsSqlWChar(*schemaName), SQL_NTS);
-        if (!SQL_SUCCEEDED(rc)) return rc;
-    }
-    py::list samples, overrides, values;
-    auto cTypes = py::module_::import("mssql_python.cursor")
-        .attr("Cursor").attr("_get_sql_to_c_type_map")().cast<py::dict>();
-    for (size_t col = 0; col < columns.size(); ++col) {
-        auto spec = columns[col].cast<py::tuple>();
-        int sqlType = spec[0].cast<int>();
-        py::list column;
-        py::object sample = py::none();
-        for (auto row : rows) {
-            py::object cell = row.cast<py::tuple>()[col];
-            column.append(cell);
-            if (sample.is_none() && !cell.is_none()) sample = cell;
-        }
-        if (rows.empty()) column.append(py::none());
-        samples.append(sample);
-        overrides.append(py::make_tuple(sqlType,
-            cTypes[py::int_(sqlType)], spec[1], spec[2]));
-        values.append(column);
-    }
-    // Apply the same explicit coercions to every cell, not just the sample row.
-    for (size_t rowIndex = 0; rowIndex < rows.size(); ++rowIndex) {
-        py::list normalized(rows[rowIndex]);
-        DetectParamTypes(normalized.ptr(), overrides.ptr());
-        for (size_t col = 0; col < columns.size(); ++col)
-            values[col].cast<py::list>()[rowIndex] = normalized[col];
-    }
-    auto infos = DetectParamTypes(samples.ptr(), overrides.ptr());
-    for (auto& info : infos) {
-        if (info.isDAE)
-            throw py::value_error("TVP column values must fit their declared inline column sizes");
-    }
-    rc = SQLSetStmtAttr_ptr(hStmt, SQL_SOPT_SS_PARAM_FOCUS,
-        reinterpret_cast<SQLPOINTER>(static_cast<uintptr_t>(ordinal)), SQL_IS_INTEGER);
-    if (!SQL_SUCCEEDED(rc)) return rc;
-    // Always restore focus, including when Python conversion or binding throws.
-    struct FocusGuard {
-        SQLHANDLE statement;
-        bool active = true;
-        ~FocusGuard() {
-            if (!active) return;
-            SQLRETURN result = SQLSetStmtAttr_ptr(statement, SQL_SOPT_SS_PARAM_FOCUS, nullptr,
-                                                  SQL_IS_INTEGER);
-            if (!SQL_SUCCEEDED(result)) LOG_ERROR("Failed to restore TVP parameter focus");
-        }
-    } focus{hStmt};
-    rc = SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_PARAMSET_SIZE,
-        reinterpret_cast<SQLPOINTER>(std::max<size_t>(1, rows.size())), 0);
-    if (!SQL_SUCCEEDED(rc)) return rc;
-    rc = BindParameterArray(handle, hStmt, values, infos, std::max<size_t>(1, rows.size()),
-                             buffers, charEncoding);
-    if (!SQL_SUCCEEDED(rc))
-        py::module_::import("mssql_python.helpers").attr("check_error")(
-            SQL_HANDLE_STMT, py::cast(&handle, py::return_value_policy::reference), rc);
-    SQLRETURN restore = SQLSetStmtAttr_ptr(hStmt, SQL_SOPT_SS_PARAM_FOCUS, nullptr, SQL_IS_INTEGER);
-    focus.active = false;
-    return SQL_SUCCEEDED(rc) ? restore : rc;
-}
-}  // namespace
 
 SQLRETURN SQLExecuteMany_wrap(const SqlHandlePtr statementHandle, const std::u16string& query,
                               const py::list& columnwise_params,
@@ -3273,7 +3170,7 @@ SQLRETURN SQLExecuteMany_wrap(const SqlHandlePtr statementHandle, const std::u16
         LOG("SQLExecuteMany: Using array binding (non-DAE) - calling "
             "BindParameterArray with encoding '%s'",
             charEncoding.c_str());
-        auto& paramBuffers = statementHandle->boundParamBuffers;
+        std::vector<std::shared_ptr<void>> paramBuffers;
         rc = BindParameterArray(*statementHandle, hStmt, columnwise_params, paramInfos, paramSetSize, paramBuffers,
                                 charEncoding);
         if (!SQL_SUCCEEDED(rc)) {
@@ -6959,9 +6856,12 @@ py::tuple CallProcedure_wrap(SqlHandlePtr statement, const std::u16string& query
             directions[i] = py::isinstance(item, inoutClass)
                 ? SQL_PARAM_INPUT_OUTPUT : SQL_PARAM_OUTPUT;
             if (directions[i] == SQL_PARAM_INPUT_OUTPUT) {
-                if (item.attr("value").is_none())
+                py::object input = item.attr("value");
+                if (input.is_none())
                     throw py::value_error("INPUT_OUTPUT parameters require a non-NULL Vector");
-                values[i] = item.attr("value");
+                if (!py::isinstance(input, vectorModule.attr("Vector")))
+                    throw py::type_error("INPUT_OUTPUT parameters require a Vector");
+                values[i] = input;
             } else {
                 size_t dimensions = item.attr("dimensions").cast<size_t>();
                 auto baseType = item.attr("base_type").cast<std::string>();

@@ -25,7 +25,7 @@ inline PyObject* time_class = nullptr;
 inline PyObject* decimal_class = nullptr;
 inline PyObject* uuid_class = nullptr;
 inline PyObject* vector_class = nullptr;
-inline PyObject* tvp_class = nullptr;
+inline PyObject* vector_from_trusted = nullptr;
 inline bool cache_initialized = false;
 
 // Import a module and extract an attribute. Returns a new reference.
@@ -56,7 +56,8 @@ inline void initialize() {
     py::object dec_cls  = steal(import_attr("decimal", "Decimal"));
     py::object uuid_cls = steal(import_attr("uuid", "UUID"));
     py::object vec_cls = steal(import_attr("mssql_python.vector", "Vector"));
-    py::object table_cls = steal(import_attr("mssql_python.table_parameter", "TableValuedParameter"));
+    py::object vec_trusted = steal(PyObject_GetAttrString(vec_cls.ptr(), "_from_trusted"));
+    if (!vec_trusted) throw py::error_already_set();
 
     // Commit to globals — all acquisitions succeeded.
     datetime_class = dt_cls.release().ptr();
@@ -65,7 +66,7 @@ inline void initialize() {
     decimal_class  = dec_cls.release().ptr();
     uuid_class     = uuid_cls.release().ptr();
     vector_class   = vec_cls.release().ptr();
-    tvp_class      = table_cls.release().ptr();
+    vector_from_trusted = vec_trusted.release().ptr();
     cache_initialized = true;
 }
 

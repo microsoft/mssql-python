@@ -3,6 +3,7 @@
 #pragma once
 
 #include "ddbc_bindings.h"
+#include "py_type_cache.hpp"
 #include <cmath>
 #include <limits>
 
@@ -75,7 +76,10 @@ struct VectorBinding {
         py::tuple values(value.dimension);
         for (size_t i = 0; i < static_cast<size_t>(value.dimension); ++i)
             values[i] = py::float_(elements[i]);
-        return py::module_::import("mssql_python.vector")
-            .attr("Vector")(values, value.type == SQL_VECTOR_TYPE_FLOAT16 ? "float16" : "float32");
+        // The shape check above covers what ODBC can get wrong, and SQL Server cannot
+        // store non-finite elements, so skip the public constructor's per-element checks.
+        PyTypeCache::initialize();
+        return py::reinterpret_borrow<py::object>(PyTypeCache::vector_from_trusted)(
+            values, value.type == SQL_VECTOR_TYPE_FLOAT16 ? "float16" : "float32");
     }
 };

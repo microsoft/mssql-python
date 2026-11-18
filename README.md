@@ -183,20 +183,28 @@ is represented by `None`. FLOAT32 supports 1–1998 dimensions; FLOAT16 supports
 Enable native vector negotiation **when connecting**: `VectorTypeSupport=v1`
 for FLOAT32, or `VectorTypeSupport=v2` for both subtypes. The default remains
 `off` (the ODBC driver's existing JSON/text behavior). FLOAT32 requires Microsoft
-ODBC Driver 18.6.1.1+; FLOAT16 requires **18.7.1.1+** and a server configured to
-support FLOAT16 vectors. The currently published `mssql-python-odbc` 18.6.2.2
+ODBC Driver 18.6.1.1+; FLOAT16 requires **18.7.1.1+** and a server that
+supports FLOAT16 vectors. FLOAT16 is generally available in Azure SQL Database,
+Azure SQL Managed Instance and SQL database in Fabric; in SQL Server 2025 it is a
+preview feature that requires `ALTER DATABASE SCOPED CONFIGURATION SET
+PREVIEW_FEATURES = ON`. FLOAT32 works on all of these. The currently published `mssql-python-odbc` 18.6.2.2
 package does not meet the FLOAT16 requirement. These Python changes do not
 upgrade the bundled driver or add support to the alternate Rust ODBC provider.
 
 | Connection setting | Native FLOAT32 | Native FLOAT16 |
 |---|---|---|
 | `VectorTypeSupport=off` (default) | No; reads return JSON text | No; reads return JSON text |
-| `VectorTypeSupport=v1` | Yes | No; native FLOAT16 inputs are rejected by ODBC |
+| `VectorTypeSupport=v1` | Yes | No; FLOAT16 inputs are rejected by ODBC and FLOAT16 columns are read as JSON text |
 | `VectorTypeSupport=v2` | Yes | Yes |
 
 `Vector(values, base_type="float16")` selects the value's SQL base type; it does not upgrade a
 connection from v1 to v2. The connection setting is passed through to ODBC for
 negotiation rather than emulated in Python.
+
+The driver never converts between FLOAT32 and FLOAT16. A `Vector` is sent with
+its own base type and SQL Server converts it to the column's base type,
+rounding to nearest; FLOAT32 values outside the FLOAT16 range fail with a server
+error. This matches Microsoft.Data.SqlClient.
 
 ```python
 from mssql_python import connect, Vector, SQL_SS_VECTOR
@@ -252,54 +260,41 @@ to/from FLOAT16, including half-precision rounding and backend diagnostics;
 Python performs only the early finite/range checks above. Python does not
 pack TDS headers, encode half floats, or serialize vectors as binary/JSON.
 
-**Table-valued parameters:** use an existing server-side table type and an
-explicit schema. Each column specification is `(SQL type, size, scale)`; for
-vectors, size means dimensions and scale is the subtype (0 or 1). Empty tables
-and NULL vector cells are supported. Vector columns also accept lists because
-the explicit schema provides dimensions and base type; cells are snapshotted
-as Vectors with the same validation. UDT/sql_variant TVP columns and
-data-at-execution TVP cells are not supported.
-
-```python
-from mssql_python import TableValuedParameter, SQL_INTEGER
-
-# dbo.EmbeddingRows: (id INT, embedding VECTOR(3))
-table = TableValuedParameter(
-    "dbo.EmbeddingRows",
-    [(1, vector), (2, None)],
-    [(SQL_INTEGER, 10, 0), (SQL_SS_VECTOR, 3, 0)],
-)
-cursor.execute("EXEC dbo.InsertEmbeddings ?", table)
-```
-
 **Stored procedures:** `callproc()` accepts ordinary input parameters and
-vector `OutputParameter(dimensions, base_type)` / `InputOutputParameter(vector)`
-wrappers. It returns a modified parameter sequence and also fills each wrapper's
+`OutputParameter(sql_type, size, scale)` / `InputOutputParameter(vector)`
+wrappers. `OutputParameter` takes the same triple as `setinputsizes()`; today
+only `SQL_SS_VECTOR` is supported (size is dimensions, scale is 0 for FLOAT32 or
+1 for FLOAT16), and other SQL types raise `NotSupportedError`.
+`InputOutputParameter` infers its type from the initial `Vector`. `callproc()`
+returns a modified parameter sequence and also fills each wrapper's
 `.value`. Result sets are buffered in memory so output values are final when the
 call returns; use normal row fetches and `nextset()` to read them.
 Input parameters may be `None`; parameter-description metadata is not exposed as
-a procedure result set, including when reusing the cursor.
+a procedure result set, including when reusing the cursor. Procedure names have
+1-3 parts; parts may already be bracket-quoted, e.g. `[dbo].[my.proc]`.
 
 ```python
 from mssql_python import OutputParameter, InputOutputParameter
 
 # dbo.EchoEmbedding: @input VECTOR(3), @output VECTOR(3) OUTPUT,
 #                    @inout VECTOR(3) OUTPUT
-output = OutputParameter(3)
+output = OutputParameter(SQL_SS_VECTOR, 3, 0)
 inout = InputOutputParameter(vector)
 parameters = cursor.callproc("dbo.EchoEmbedding", [vector, output, inout])
 print(output.value)
 ```
 
-Output wrappers currently support vectors only. Procedure text/binary inputs
-must fit the inline binding limits. Arrow access to buffered procedure results
-is not supported; use row fetch methods for those results.
+Procedure text/binary inputs
+must fit the inline binding limits. Table-valued parameters are not part of this
+vector support; vector TVP columns will build on the shared TVP definition.
+Arrow access to buffered procedure results is not supported; use row fetch
+methods for those results.
 
 **Bulk copy and Arrow:** `bulkcopy()` accepts `Vector` cells in tuple or `Row`
 sources, including generators and SQL NULLs. A typed bridge preserves each
-vector's dimensions and `base_type`; both must match the mapped destination
-column. Pycore owns TDS serialization and FLOAT16 conversion, not the Python
-wrapper. This path requires the companion vector-capable pycore build exposing
+vector's dimensions and `base_type`; dimensions must match the mapped
+destination column. Pycore owns TDS serialization, not the Python wrapper. This
+path requires the companion vector-capable pycore build exposing
 `BulkCopyVector`; an older backend raises `NotSupportedError` for `Vector` cells.
 The released runtime pin is not changed until that companion build is published.
 As with other bulk-copy types, this uses a separate connection: commit table
@@ -307,6 +302,15 @@ creation before loading, do not use connection-local temporary tables, and do
 not assume rollback on the ODBC connection undoes a bulk load. Its native
 TDS connection negotiates vector support independently of the ODBC connection's
 `VectorTypeSupport` setting.
+
+Base types follow Microsoft.Data.SqlClient's SqlBulkCopy: the client never
+converts between FLOAT32 and FLOAT16. Each vector column is declared with the
+base type of its first row's `Vector`, and SQL Server converts it to the
+destination column (rounding to nearest; values outside the FLOAT16 range fail
+on the server). Every `Vector` in a column must then share that base type. JSON
+text for a FLOAT16 column is sent as text and parsed by SQL Server; JSON for a
+FLOAT32 column and plain numeric lists are converted to the destination base
+type, as before.
 
 `arrow_batch()`, `arrow()`, and `arrow_reader()` represent a native SQL vector as
 an Arrow **fixed-size list of float32** for both SQL base types. The list size is
@@ -320,11 +324,12 @@ ordinary Arrow results retain the existing column-binding path.
 `bulkcopy_arrow()` accepts the same representation with tables, record batches,
 readers, iterables of batches, and Arrow C stream/array producers. It requires
 the companion pycore Arrow vector adapter. The destination schema validates
-dimensions and determines storage; optional base-type metadata must agree.
-Variable-size lists and non-float32 child arrays are not implicitly converted.
-For raw Arrow input, finite/range and non-NULL-element checks occur during native
-bulk serialization. Earlier batches may already have been written when a later
-batch fails.
+dimensions. A column is sent with the base type in its `mssql.vector.base_type`
+metadata (FLOAT32 when absent) and SQL Server converts it to the destination,
+as for row bulk copy. Variable-size lists and non-float32 child arrays are not
+implicitly converted. For raw Arrow input, finite/range and non-NULL-element
+checks occur during native bulk serialization. Earlier batches may already have
+been written when a later batch fails.
 
 ```python
 import pyarrow as pa
@@ -350,7 +355,7 @@ Vector unit tests run without SQL Server. End-to-end tests in
 scalar and batch binding (including explicitly hinted lists, pyformat,
 typed/all-NULL arrays and streamed text), numeric boundaries and error recovery,
 every row fetch method including `fetchval()`, metadata/row access, output converters,
-commit/rollback, TVPs, stored procedure outputs/result sets, and error recovery.
+commit/rollback, stored procedure outputs/result sets, and error recovery.
 Negotiation tests assert that v1 rejects native FLOAT16, `off` rejects native
 vector inputs, and `off` retains JSON/NULL reads. Vector-capable pycore builds
 add positive row/Arrow bulk-copy round trips, column mappings, streaming sources,

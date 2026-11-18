@@ -11,16 +11,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
   FLOAT32/FLOAT16 subtype metadata, scalar/array parameter binding, and row
   fetches. `base_type` selects SQL storage; values are normalized to float32 at
   construction, with early finite/float32 and conservative FLOAT16 range checks.
-  Explicit vector hints and TVP schemas accept numeric lists with the same
-  validation; unhinted lists keep their existing meanings. Added
-  `TableValuedParameter` and buffered `callproc()` with vector
-  `OutputParameter` / `InputOutputParameter` wrappers. FLOAT16 requires Microsoft
-  ODBC Driver 18.7.1.1+ (not supplied by the current bundled driver); ODBC owns
+  Explicit vector hints accept numeric lists with the same
+  validation; unhinted lists keep their existing meanings. Added buffered
+  `callproc()` (1-3 part names, optionally bracket-quoted) with
+  `OutputParameter(sql_type, size, scale)` / `InputOutputParameter` wrappers;
+  output parameters currently support `SQL_SS_VECTOR`. Procedure calls invalidate
+  the previous prepared-query cache even when the procedure fails; overwritten
+  non-vector INPUT_OUTPUT values are rejected before binding. FLOAT16 requires
+  Microsoft ODBC Driver 18.7.1.1+ (not supplied by the current bundled driver); ODBC owns
   half-precision conversion.
 - FLOAT32/FLOAT16 vector bulk copy through a typed pycore bridge and Arrow
   read/write support using fixed-size float32 lists with SQL base-type metadata.
-  Pycore owns bulk FLOAT16 conversion; the companion vector-capable pycore
-  build is required and the released runtime pin is unchanged pending publication.
+  As in Microsoft.Data.SqlClient, bulk copy never converts between base types:
+  each column is declared with its source base type (JSON text for FLOAT16
+  columns is sent as text) and SQL Server converts it to the destination. The
+  companion vector-capable pycore build is required and the released runtime pin
+  is unchanged pending publication.
 - New feature: Support for macOS and Linux.
 - Documentation: Added API documentation in the Wiki.
 - New `token_provider=` parameter on `connect()` / `Connection` for Microsoft

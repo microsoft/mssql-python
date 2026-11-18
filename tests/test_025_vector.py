@@ -19,7 +19,7 @@ from unittest.mock import MagicMock, Mock
 import pytest
 
 import mssql_python
-from mssql_python import InputOutputParameter, OutputParameter, TableValuedParameter, Vector
+from mssql_python import InputOutputParameter, OutputParameter, Vector
 from mssql_python import ddbc_bindings
 from mssql_python.constants import ConstantsDDBC
 from mssql_python.cursor import Cursor
@@ -60,27 +60,86 @@ def test_vector_is_immutable_and_preserves_input():
 
 
 def test_vector_procedure_parameters():
-    output = OutputParameter(3, base_type="float16")
+    output = OutputParameter(mssql_python.SQL_SS_VECTOR, 3, 1)
+    assert (output.sql_type, output.size, output.scale) == (mssql_python.SQL_SS_VECTOR, 3, 1)
     assert output.base_type == "float16"
     assert output.dimensions == 3
     assert output.value is None
+    assert OutputParameter(mssql_python.SQL_SS_VECTOR, 3).base_type == "float32"
     value = Vector([1, 2, 3], base_type="float16")
     inout = InputOutputParameter(value)
     assert inout.value == value
+    assert (inout.sql_type, inout.size, inout.scale) == (mssql_python.SQL_SS_VECTOR, 3, 1)
     with pytest.raises(TypeError):
         InputOutputParameter([1, 2])
 
 
-def test_tvp_schema_and_rows():
-    columns = [(mssql_python.SQL_INTEGER, 0, 0), (mssql_python.SQL_SS_VECTOR, 3, 1)]
-    value = Vector([1, 2, 3], base_type="float16")
-    tvp = TableValuedParameter("dbo.Embeddings", [(1, value), (2, None)], columns)
-    assert tvp.rows == ((1, value), (2, None))
-    assert TableValuedParameter("dbo.Embeddings", [], columns).rows == ()
-    with pytest.raises(ValueError, match="columns"):
-        TableValuedParameter("dbo.Embeddings", [(1,)], columns)
-    with pytest.raises(ValueError, match="dimensions|subtype"):
-        TableValuedParameter("dbo.Embeddings", [(1, Vector([1, 2]))], columns)
+@pytest.mark.parametrize("sql_type", [mssql_python.SQL_INTEGER, mssql_python.SQL_WVARCHAR])
+def test_output_parameter_other_sql_types_not_supported_yet(sql_type):
+    with pytest.raises(mssql_python.NotSupportedError, match="SQL_SS_VECTOR"):
+        OutputParameter(sql_type, 10, 0)
+
+
+@pytest.mark.parametrize("scale", [2, -1, True])
+def test_output_parameter_invalid_vector_subtype(scale):
+    with pytest.raises(ValueError, match="subtype"):
+        OutputParameter(mssql_python.SQL_SS_VECTOR, 3, scale)
+
+
+@pytest.mark.parametrize("base_type,limit", [("float32", 1998), ("float16", 3996)])
+@pytest.mark.parametrize("container", [list, tuple])
+def test_vector_float_fast_path_matches_checked_loop(monkeypatch, base_type, limit, container):
+    import mssql_python.vector as vector_module
+
+    values = [(-1) ** i * (i * 0.1 + 1e-40) for i in range(limit)]
+    values[1] = 65504.0 if base_type == "float16" else 3.4028234663852886e38
+    expected = tuple(struct.unpack("=f", struct.pack("=f", value))[0] for value in values)
+    # The per-element packer is only used by the checked loop.
+    monkeypatch.setattr(vector_module, "_FLOAT32", None)
+    vector = Vector(container(values), base_type=base_type)
+    assert vector.values == expected
+    assert vector.base_type == base_type
+
+
+@pytest.mark.parametrize("base_type", ["float32", "float16"])
+@pytest.mark.parametrize(
+    "invalid,error,message",
+    [
+        (math.nan, ValueError, "index 1.*finite float32"),
+        (math.inf, ValueError, "index 1.*finite float32"),
+        (-3.5e38, ValueError, "index 1.*finite float32"),
+        (True, TypeError, "index 1"),
+        (None, TypeError, "index 1"),
+    ],
+)
+def test_vector_all_float_errors_match_checked_loop(base_type, invalid, error, message):
+    with pytest.raises(error, match=message):
+        Vector([0.0, invalid, 1.0], base_type=base_type)
+
+
+@pytest.mark.parametrize("values", [[0.0, 65505.0], (0.0, -70000.0)])
+def test_vector_all_float_half_range_errors_match_checked_loop(values):
+    with pytest.raises(ValueError, match="index 1.*float16"):
+        Vector(values, base_type="float16")
+
+
+@pytest.mark.parametrize("values", [[], [0.5] * 1999])
+def test_vector_all_float_shape_errors_match_checked_loop(values):
+    with pytest.raises(ValueError, match="dimensions"):
+        Vector(values)
+
+
+def test_trusted_vector_construction_skips_public_validation(monkeypatch):
+    def reject(*args, **kwargs):
+        raise AssertionError("trusted construction must not call Vector.__init__")
+
+    monkeypatch.setattr(Vector, "__init__", reject)
+    vector = Vector._from_trusted((1.25, -2.5), "float16")
+    assert vector.values == (1.25, -2.5)
+    assert vector.base_type == "float16"
+    assert vector.dimensions == 2
+    with pytest.raises(AttributeError):
+        vector.values = ()
 
 
 @pytest.mark.parametrize("mode", ["off", "v1", "v2"])
@@ -220,22 +279,10 @@ def test_native_fetch_policy_excludes_buffered_procedures(rows):
     assert policy(Cursor.__new__(Cursor), {"_procedure_rows": deque(rows)}) is None
 
 
-def test_tvp_vector_lists_use_explicit_schema_and_snapshot():
-    source = [0.1, 2, 3]
-    columns = [(mssql_python.SQL_SS_VECTOR, 3, 1)]
-    parameter = TableValuedParameter("dbo.v", [(source,), (None,)], columns)
-    expected = Vector(source, base_type="float16")
-    source[0] = 9
-    assert parameter.rows == ((expected,), (None,))
-    for invalid, error in (([1, 2], ValueError), ([1e40, 2, 3], ValueError), ("123", TypeError)):
-        with pytest.raises(error):
-            TableValuedParameter("dbo.v", [(invalid,)], columns)
-
-
 @pytest.mark.parametrize("dimensions", [True, 1.5, "3"])
 def test_output_parameter_invalid_shape_type(dimensions):
     with pytest.raises(TypeError, match="integer"):
-        OutputParameter(dimensions)
+        OutputParameter(mssql_python.SQL_SS_VECTOR, dimensions, 0)
 
 
 @pytest.mark.parametrize("mode", ["", "v3", "true"])
@@ -254,26 +301,6 @@ def test_vector_negotiation_is_opt_in():
     parser = _ConnectionStringParser(validate_keywords=True)
     assert "VectorTypeSupport" not in parser._normalize_params(parser._parse("Server=localhost"))
     assert parser._normalize_params({"vectortypesupport": "V1"})["VectorTypeSupport"] == "v1"
-
-
-@pytest.mark.parametrize("name", ["", "dbo..v", "dbo.v;drop", "a.b.c", "dbo.\0v"])
-def test_invalid_tvp_name(name):
-    with pytest.raises(ValueError):
-        TableValuedParameter(name, [], [(mssql_python.SQL_SS_VECTOR, 3, 0)])
-
-
-def test_tvp_immutable_snapshot_and_native_detection():
-    rows = [[Vector([1, 2, 3])]]
-    columns = [[mssql_python.SQL_SS_VECTOR, 3, 0]]
-    parameter = TableValuedParameter("dbo.v", rows, columns)
-    rows.clear()
-    columns.clear()
-    assert len(parameter.rows) == 1
-    with pytest.raises(AttributeError):
-        parameter.rows = ()
-    info = ddbc_bindings._detect_param_types([parameter])[0]
-    assert info.paramSQLType == -153
-    assert not info.isDAE
 
 
 @pytest.fixture
@@ -307,7 +334,7 @@ def vector_metadata(dtype="float32"):
 
 def test_callproc_buffered_results_and_cursor_reuse(unit_cursor, monkeypatch):
     vectors = [Vector([i, 2, 3]) for i in range(4)]
-    output = OutputParameter(3)
+    output = OutputParameter(mssql_python.SQL_SS_VECTOR, 3, 0)
 
     def callproc(handle, sql, params, settings, messages, *decoding):
         assert sql == "{CALL [dbo].[a]]b](?,?)}"
@@ -349,6 +376,66 @@ def test_callproc_invalid_name_without_database(unit_cursor, name):
         unit_cursor.callproc(name)
 
 
+@pytest.mark.parametrize(
+    "name,expected",
+    [
+        ("dbo.vecproc", "[dbo].[vecproc]"),
+        ("[dbo].[vecproc]", "[dbo].[vecproc]"),
+        ("[dbo].[vec.proc]", "[dbo].[vec.proc]"),
+        ("db.[dbo].vecproc", "[db].[dbo].[vecproc]"),
+        ("[a]]b].c", "[a]]b].[c]"),
+        ("dbo.a]b", "[dbo].[a]]b]"),
+        ("[#temp.proc]", "[#temp.proc]"),
+    ],
+)
+def test_callproc_accepts_bracketed_names(unit_cursor, monkeypatch, name, expected):
+    calls = []
+    monkeypatch.setattr(
+        ddbc_bindings, "DDBCCallProc", lambda handle, sql, *args: calls.append(sql) or ([], [])
+    )
+    unit_cursor.callproc(name)
+    assert calls == ["{CALL " + expected + "()}"]
+
+
+@pytest.mark.parametrize(
+    "name,message",
+    [
+        ("[dbo", "unterminated"),
+        ("[dbo]x.p", "after a closing"),
+        ("[].p", "procedure"),
+        ("[a].[b].[c].[d]", "procedure"),
+        ("[dbo].", "procedure"),
+    ],
+)
+def test_callproc_rejects_malformed_bracketed_names(unit_cursor, monkeypatch, name, message):
+    native = Mock()
+    monkeypatch.setattr(ddbc_bindings, "DDBCCallProc", native)
+    with pytest.raises(ValueError, match=message):
+        unit_cursor.callproc(name)
+    native.assert_not_called()
+
+
+def test_executemany_non_vector_columns_skip_vector_instance_checks(unit_cursor, monkeypatch):
+    from abc import ABCMeta
+
+    import mssql_python.cursor as cursor_module
+
+    checks = []
+
+    class CountingMeta(ABCMeta):
+        def __instancecheck__(cls, instance):
+            checks.append(instance)
+            return super().__instancecheck__(instance)
+
+    class Probe(metaclass=CountingMeta):
+        pass
+
+    monkeypatch.setattr(cursor_module, "Vector", Probe)
+    unit_cursor._compute_column_type([None, 1, 2, 3])
+    unit_cursor._compute_column_type(["a", None, "b"])
+    assert checks == []
+
+
 def test_buffered_procedure_rejects_arrow_and_releases_rows(unit_cursor, monkeypatch):
     monkeypatch.setattr(
         ddbc_bindings,
@@ -369,6 +456,59 @@ def test_callproc_propagates_backend_errors(unit_cursor, monkeypatch):
     with pytest.raises(mssql_python.ProgrammingError, match="procedure failed"):
         unit_cursor.callproc("dbo.failure", [Vector([1, 2, 3])])
     assert unit_cursor._procedure_rows is None
+
+
+def test_failing_callproc_invalidates_prepared_query(unit_cursor, monkeypatch):
+    unit_cursor.hstmt = Mock()
+    monkeypatch.setattr(ddbc_bindings, "DDBCSQLResetStmt", lambda *args: 0)
+    monkeypatch.setattr(ddbc_bindings, "DDBCSQLRowCount", lambda *args: -1)
+    monkeypatch.setattr(ddbc_bindings, "DDBCSQLDescribeCol", lambda *args: 0)
+
+    def execute(handle, sql, params, hints, prepared, use_prepare, settings):
+        prepared[0] = True
+        return 0
+
+    execute = Mock(side_effect=execute)
+    monkeypatch.setattr(ddbc_bindings, "DDBCSQLExecute", execute)
+    query = "SELECT CAST(? AS INT)"
+    unit_cursor.execute(query, 1)
+    assert unit_cursor.last_executed_stmt == query
+    assert unit_cursor.is_stmt_prepared == [True]
+    monkeypatch.setattr(
+        ddbc_bindings,
+        "DDBCCallProc",
+        Mock(side_effect=mssql_python.ProgrammingError("procedure failed", "42000")),
+    )
+    with pytest.raises(mssql_python.ProgrammingError, match="procedure failed"):
+        unit_cursor.callproc("dbo.failure", [Vector([1, 2, 3])])
+    unit_cursor.execute(query, 2)
+    assert execute.call_count == 2
+    assert all(call.args[5] is True for call in execute.call_args_list)
+
+
+def test_buffered_fetchall_finalizes_rowcount_for_empty_results(unit_cursor, monkeypatch):
+    value = Vector([1, 2, 3])
+    monkeypatch.setattr(
+        ddbc_bindings,
+        "DDBCCallProc",
+        lambda *args: (
+            [],
+            [
+                (vector_metadata(), [], -1),
+                (vector_metadata(), [[value], [value]], -1),
+                (vector_metadata(), [], -1),
+            ],
+        ),
+    )
+    unit_cursor.callproc("dbo.v")
+    assert unit_cursor.fetchall() == []
+    assert unit_cursor.rowcount == 0
+    assert unit_cursor.nextset()
+    assert [row[0] for row in unit_cursor.fetchall()] == [value, value]
+    assert unit_cursor.rowcount == 2
+    assert unit_cursor.nextset()
+    assert unit_cursor.fetchall() == []
+    assert unit_cursor.rowcount == 0
 
 
 def test_procedure_result_converters_are_refreshed(unit_cursor, monkeypatch):
@@ -805,7 +945,7 @@ def test_live_vector_procedure_outputs(live_vector_connection, with_results):
             f"@o VECTOR(3, {dtype}) OUTPUT, @io VECTOR(3, {dtype}) OUTPUT AS "
             f"BEGIN SET NOCOUNT ON; SET @o=@i; SET @io=@i; {selects} END"
         )
-        output = OutputParameter(3, dtype)
+        output = OutputParameter(mssql_python.SQL_SS_VECTOR, 3, int(dtype == "float16"))
         inout = InputOutputParameter(Vector([0, 0, 0], dtype))
         assert cursor.callproc("#vector_echo", [value, output, inout]) == [value] * 3
         assert output.value == inout.value == value
@@ -826,6 +966,44 @@ def test_live_vector_procedure_outputs(live_vector_connection, with_results):
             assert cursor.fetchone()[0] is None
         cursor.execute("SELECT 1", reset_cursor=False)
         assert cursor.fetchone()[0] == 1
+
+
+@pytest.mark.parametrize("failure", ["missing-procedure", "procedure-error"])
+def test_live_failing_callproc_reprepares_previous_query(live_vector_connection, failure):
+    connection, base_type = live_vector_connection
+    value = Vector([1, 2, 3], base_type=base_type)
+    with connection.cursor() as cursor:
+        if failure == "procedure-error":
+            cursor.execute(
+                f"CREATE PROCEDURE #failing_vector @v VECTOR(3, {base_type}) AS "
+                "BEGIN SET NOCOUNT ON; THROW 50000, 'expected procedure failure', 1; END"
+            )
+        query = f"SELECT CAST(? AS VECTOR(3, {base_type})) AS embedding"
+        cursor.execute(query, value)
+        assert cursor.fetchval() == value
+        assert cursor.is_stmt_prepared == [True]
+        with pytest.raises(mssql_python.DatabaseError):
+            cursor.callproc("#failing_vector", [value])
+        assert cursor.last_executed_stmt == ""
+        assert cursor.is_stmt_prepared == [False]
+        replacement = Vector([4, 5, 6], base_type=base_type)
+        cursor.execute(query, replacement)
+        assert cursor.fetchval() == replacement
+
+
+@pytest.mark.parametrize(
+    "invalid,error",
+    [(None, ValueError), (1, TypeError), (True, TypeError), ("abc", TypeError), ([1], TypeError)],
+)
+def test_live_vector_rejects_mutated_inout(live_vector_connection, invalid, error):
+    connection, base_type = live_vector_connection
+    parameter = InputOutputParameter(Vector([1, 2, 3], base_type=base_type))
+    parameter.value = invalid
+    with connection.cursor() as cursor:
+        with pytest.raises(error, match="INPUT_OUTPUT.*Vector"):
+            cursor.callproc("#invalid_inout", [parameter])
+        cursor.execute("SELECT 1")
+        assert cursor.fetchval() == 1
 
 
 @pytest.mark.parametrize("method", ["execute", "executemany"])
@@ -854,44 +1032,72 @@ def test_live_vector_maximum_dimensions_and_rounding(live_vector_connection, met
             assert [row[0] for row in cursor.fetchall()] == [None, actual]
 
 
-@pytest.mark.parametrize("method", ["execute", "callproc"])
-def test_live_vector_tvp(live_vector_connection, method):
+def test_live_buffered_procedure_empty_results_rowcount(live_vector_connection):
     connection, dtype = live_vector_connection
-    suffix = uuid.uuid4().hex
-    type_name = f"dbo.pytest_vector_type_{suffix}"
-    proc_name = f"dbo.pytest_vector_proc_{suffix}"
-    # Named types cannot be temporary; use unique names and scoped cleanup.
-    connection.autocommit = True
-    value = Vector([1.25, -2.5, 0], dtype)
+    value = Vector([1, 2, 3], dtype)
     with connection.cursor() as cursor:
-        cursor.execute(f"CREATE TYPE {type_name} AS TABLE (id INT, embedding VECTOR(3, {dtype}))")
-        try:
-            cursor.execute(
-                f"CREATE PROCEDURE {proc_name} @rows {type_name} READONLY AS "
-                "BEGIN SET NOCOUNT ON; SELECT id, embedding FROM @rows ORDER BY id; END"
-            )
-            try:
-                columns = [
-                    (mssql_python.SQL_INTEGER, 10, 0),
-                    (mssql_python.SQL_SS_VECTOR, 3, int(dtype == "float16")),
-                ]
-                for rows in (
-                    [(1, value), (2, None), (3, value)],
-                    [(1, [1.25, -2.5, 0])],
-                    [(1, None), (2, None)],
-                    [],
-                ):
-                    parameter = TableValuedParameter(type_name, rows, columns)
-                    if method == "callproc":
-                        assert cursor.callproc(proc_name, [parameter]) == [parameter]
-                    else:
-                        cursor.execute(f"EXEC {proc_name} ?", parameter)
-                    assert cursor.description[1][1] is Vector
-                    assert [tuple(row) for row in cursor.fetchall()] == list(parameter.rows)
-            finally:
-                cursor.execute(f"DROP PROCEDURE {proc_name}")
-        finally:
-            cursor.execute(f"DROP TYPE {type_name}")
+        cursor.execute(
+            f"CREATE PROCEDURE #empty_vector_results @v VECTOR(3, {dtype}) AS "
+            "BEGIN SET NOCOUNT ON; SELECT @v AS embedding WHERE 1 = 0; "
+            "SELECT @v AS embedding; SELECT @v AS embedding WHERE 1 = 0; END"
+        )
+        assert cursor.callproc("#empty_vector_results", [value]) == [value]
+        assert cursor.fetchall() == []
+        assert cursor.rowcount == 0
+        assert cursor.nextset()
+        assert [row[0] for row in cursor.fetchall()] == [value]
+        assert cursor.rowcount == 1
+        assert cursor.nextset()
+        assert cursor.fetchall() == []
+        assert cursor.rowcount == 0
+        assert not cursor.nextset()
+
+
+@pytest.mark.parametrize("name", ["[#quoted.vector]", "[#quoted]]vector]"])
+def test_live_callproc_bracketed_names(live_vector_connection, name):
+    connection, dtype = live_vector_connection
+    value = Vector([1, 2, 3], dtype)
+    with connection.cursor() as cursor:
+        cursor.execute(
+            f"CREATE PROCEDURE {name} @v VECTOR(3, {dtype}) AS "
+            "BEGIN SET NOCOUNT ON; SELECT @v AS embedding; END"
+        )
+        assert cursor.callproc(name, [value]) == [value]
+        assert cursor.fetchone()[0] == value
+
+
+def test_live_fetch_and_outputs_use_trusted_vector_construction(
+    live_vector_connection, monkeypatch
+):
+    connection, dtype = live_vector_connection
+    value = Vector([1.25, -2.5, 0], dtype)
+    output = OutputParameter(mssql_python.SQL_SS_VECTOR, 3, int(dtype == "float16"))
+    with connection.cursor() as cursor:
+        cursor.execute(
+            f"CREATE PROCEDURE #trusted_vector @i VECTOR(3, {dtype}), "
+            f"@o VECTOR(3, {dtype}) OUTPUT AS BEGIN SET NOCOUNT ON; SET @o=@i; END"
+        )
+        cursor.execute(f"CREATE TABLE #trusted (id INT, embedding VECTOR(3, {dtype}))")
+        cursor.executemany(
+            "INSERT INTO #trusted VALUES (?, ?)", [(i, value) for i in range(50)] + [(50, None)]
+        )
+        # Values produced by the driver must not pass through the public constructor.
+        public_init = Vector.__init__
+        calls = []
+
+        def counting_init(self, *args, **kwargs):
+            calls.append(args)
+            public_init(self, *args, **kwargs)
+
+        monkeypatch.setattr(Vector, "__init__", counting_init)
+        cursor.execute("SELECT embedding FROM #trusted ORDER BY id")
+        rows = [row[0] for row in cursor.fetchall()]
+        assert rows == [value] * 50 + [None]
+        assert all(row.base_type == dtype for row in rows[:-1])
+        assert calls == []
+        monkeypatch.setattr(Vector, "__init__", public_init)
+        cursor.callproc("#trusted_vector", [value, output])
+        assert output.value == value
 
 
 @pytest.mark.parametrize("method", ["fetchone", "fetchmany", "fetchall", "iteration"])
@@ -1244,9 +1450,7 @@ def test_live_vector_bulkcopy_arrow_roundtrip(
     "method,failure",
     [
         ("bulkcopy", "dimensions"),
-        ("bulkcopy", "base_type"),
         ("bulkcopy_arrow", "dimensions"),
-        ("bulkcopy_arrow", "base_type"),
         ("bulkcopy_arrow", "nonfinite"),
         ("bulkcopy_arrow", "null_element"),
         ("bulkcopy_arrow", "range"),
@@ -1261,33 +1465,19 @@ def test_live_vector_bulkcopy_validation(live_vector_connection, vector_bulk_cor
         cursor.execute(f"CREATE TABLE {table_name} (embedding VECTOR(3, {dtype}))")
         try:
             if method == "bulkcopy":
-                value = Vector(
-                    [1, 2] if failure == "dimensions" else [1, 2, 3],
-                    (
-                        ("float16" if dtype == "float32" else "float32")
-                        if failure == "base_type"
-                        else dtype
-                    ),
-                )
-                source = [(value,)]
+                source = [(Vector([1, 2], dtype),)]
             else:
                 values = {
                     "dimensions": [1, 2],
-                    "base_type": [1, 2, 3],
                     "nonfinite": [math.inf, 2, 3],
                     "null_element": [None, 2, 3],
                     "range": [65505, 2, 3],
                 }[failure]
                 arrow_type = pa.list_(pa.float32(), len(values))
-                base_type = (
-                    ("float16" if dtype == "float32" else "float32")
-                    if failure == "base_type"
-                    else dtype
-                )
                 field = pa.field(
                     "embedding",
                     arrow_type,
-                    metadata={b"mssql.vector.base_type": base_type.encode()},
+                    metadata={b"mssql.vector.base_type": dtype.encode()},
                 )
                 source = pa.record_batch(
                     [pa.array([values], type=arrow_type)], schema=pa.schema([field])
@@ -1305,6 +1495,81 @@ def test_live_vector_bulkcopy_validation(live_vector_connection, vector_bulk_cor
             assert cursor.fetchval() == expected_rows
             cursor.execute("SELECT 1")
             assert cursor.fetchval() == 1
+        finally:
+            cursor.execute(f"DROP TABLE {table_name}")
+
+
+@pytest.mark.parametrize("source", ["vectors", "arrow", "json"])
+def test_live_vector_bulkcopy_server_converts_base_types(
+    live_vector_connection, vector_bulk_core, source
+):
+    """Like SqlBulkCopy: declare the source base type and let SQL Server convert."""
+    pa = pytest.importorskip("pyarrow")
+    connection, dtype = live_vector_connection
+    if os.getenv("MSSQL_TEST_VECTOR_FLOAT16") != "1":
+        pytest.skip("Cross-base conversion needs a FLOAT16-capable server")
+    if source == "json" and dtype != "float16":
+        pytest.skip("JSON text is sent as text only for FLOAT16 destinations")
+    other = "float32" if dtype == "float16" else "float16"
+    connection.autocommit = True
+    table_name = f"dbo.pytest_vector_cross_{uuid.uuid4().hex}"
+    values = [0.1, 2.0, 1e-8]
+    # One side is always FLOAT16, so stored values carry FLOAT16 rounding.
+    expected = Vector(_expected_stored_vector(values, "float16").values, dtype)
+    if source == "vectors":
+        data = [(Vector(values, other),), (None,), (Vector(values, other),)]
+    elif source == "json":
+        data = [("[0.1, 2, 1e-8]",), (None,), ("[0.1,2,0.00000001]",)]
+    else:
+        field = pa.field(
+            "embedding",
+            pa.list_(pa.float32(), 3),
+            metadata={b"mssql.vector.base_type": other.encode()},
+        )
+        data = pa.Table.from_arrays(
+            [pa.array([values, None, values], type=field.type)], schema=pa.schema([field])
+        )
+    method = "bulkcopy_arrow" if source == "arrow" else "bulkcopy"
+    with connection.cursor() as cursor:
+        cursor.execute(f"CREATE TABLE {table_name} (id INT IDENTITY, embedding VECTOR(3, {dtype}))")
+        try:
+            assert (
+                getattr(cursor, method)(table_name, data, column_mappings=[(0, "embedding")])[
+                    "rows_copied"
+                ]
+                == 3
+            )
+            cursor.execute(f"SELECT embedding FROM {table_name} ORDER BY id")
+            rows = [row[0] for row in cursor.fetchall()]
+            assert rows == [expected, None, expected]
+            assert rows[0].base_type == dtype
+        finally:
+            cursor.execute(f"DROP TABLE {table_name}")
+
+
+def test_live_vector_bulkcopy_cross_base_errors(live_vector_connection, vector_bulk_core):
+    connection, dtype = live_vector_connection
+    if dtype != "float16":
+        pytest.skip("FLOAT16 destination cases")
+    connection.autocommit = True
+    table_name = f"dbo.pytest_vector_cross_err_{uuid.uuid4().hex}"
+    with connection.cursor() as cursor:
+        cursor.execute(f"CREATE TABLE {table_name} (embedding VECTOR(3, float16))")
+        try:
+            # SQL Server rejects FLOAT32 values outside the FLOAT16 range.
+            with pytest.raises(Exception, match="out-of-range"):
+                cursor.bulkcopy(
+                    table_name, [(Vector([70000.0, 0, 0]),)], use_internal_transaction=True
+                )
+            # The first row's Vector declares the column's base type for the load.
+            for rows in (
+                [(Vector([1, 2, 3]),), (Vector([1, 2, 3], "float16"),)],
+                [(None,), (Vector([1, 2, 3]),)],
+            ):
+                with pytest.raises(ValueError, match="(?i)base.?type"):
+                    cursor.bulkcopy(table_name, rows, use_internal_transaction=True)
+            cursor.execute(f"SELECT COUNT(*) FROM {table_name}")
+            assert cursor.fetchval() == 0
         finally:
             cursor.execute(f"DROP TABLE {table_name}")
 
@@ -1412,5 +1677,35 @@ def test_live_vector_off_returns_json(conn_str, vector_server, dtype):
             assert json.loads(value) == [1.25, -2.5, 0]
             cursor.execute(f"SELECT CAST(NULL AS VECTOR(3, {dtype}))")
             assert cursor.fetchone()[0] is None
+    finally:
+        connection.close()
+
+
+def test_live_vector_server_converts_between_base_types(conn_str, vector_server):
+    if not conn_str:
+        pytest.skip("DB_CONNECTION_STRING is not configured")
+    if os.getenv("MSSQL_TEST_VECTOR_FLOAT16") != "1":
+        pytest.skip("Set MSSQL_TEST_VECTOR_FLOAT16=1 with a FLOAT16-capable server")
+    connection = mssql_python.connect(conn_str, VectorTypeSupport="v2", autocommit=True)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("CREATE TABLE #cross (f16 VECTOR(3, float16) NULL, f32 VECTOR(3) NULL)")
+            # The driver sends each Vector with its own base type; SQL Server converts.
+            cursor.execute("INSERT INTO #cross (f16) VALUES (?)", Vector([0.1, 65519.0, 1e-8]))
+            cursor.execute(
+                "INSERT INTO #cross (f32) VALUES (?)", Vector([0.1, 2, 3], base_type="float16")
+            )
+            cursor.execute("SELECT f16 FROM #cross WHERE f16 IS NOT NULL")
+            stored = cursor.fetchval()
+            assert stored.base_type == "float16"
+            assert stored == _expected_stored_vector([0.1, 65504.0, 0.0], "float16")
+            cursor.execute("SELECT f32 FROM #cross WHERE f32 IS NOT NULL")
+            widened = cursor.fetchval()
+            assert widened.base_type == "float32"
+            assert widened.values == _expected_stored_vector([0.1, 2, 3], "float16").values
+            with pytest.raises(mssql_python.Error, match="out-of-range"):
+                cursor.execute("INSERT INTO #cross (f16) VALUES (?)", Vector([70000.0, 0, 0]))
+            cursor.execute("SELECT COUNT(*) FROM #cross")
+            assert cursor.fetchval() == 2
     finally:
         connection.close()

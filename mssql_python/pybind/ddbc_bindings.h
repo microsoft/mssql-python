@@ -58,9 +58,6 @@ using py::literals::operator""_a;
 #define SQL_CA_SS_VARIANT_TYPE (1215)
 #define SQL_SS_VECTOR (-156)
 #define SQL_C_SS_VECTOR (0x4002)
-#define SQL_SS_TABLE (-153)
-#define SQL_SOPT_SS_PARAM_FOCUS (1236)
-#define SQL_CA_SS_SCHEMA_NAME (1226)
 
 // Include logger bridge for LOG macros
 #include "logger_bridge.hpp"
