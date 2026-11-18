@@ -438,11 +438,13 @@ if(UNIX AND NOT APPLE)
         $<$<NOT:$<CONFIG:Debug>>:-U_FORTIFY_SOURCE>
         $<$<NOT:$<CONFIG:Debug>>:-D_FORTIFY_SOURCE=${DDBC_FORTIFY_LEVEL}>
     )
-    target_link_options(ddbc_bindings PRIVATE
-        -Wl,-z,relro
-        -Wl,-z,now
-        -Wl,-z,noexecstack
-    )
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        target_link_options(ddbc_bindings PRIVATE
+            -Wl,-z,relro
+            -Wl,-z,now
+            -Wl,-z,noexecstack
+        )
+    endif()
 endif()
 
 # Python 3.15 defines newer POSIX feature levels than glibc's C++ headers.

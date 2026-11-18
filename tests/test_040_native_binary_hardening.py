@@ -167,8 +167,12 @@ def test_posix_hardening_flags_are_explicit():
     assert "-D_FORTIFY_SOURCE=${DDBC_FORTIFY_LEVEL}" in cmake
     assert "$<NOT:$<CONFIG:Debug>>" in cmake
     assert "if(UNIX AND NOT APPLE)" in cmake
+    linux_guard = 'if(CMAKE_SYSTEM_NAME STREQUAL "Linux")'
+    assert linux_guard in cmake, "ELF linker hardening must be guarded for Linux only"
+    linux_linker_block = cmake.split(linux_guard, 1)[1].split("endif()", 1)[0]
+    assert "target_link_options(ddbc_bindings PRIVATE" in linux_linker_block
     for flag in ("-Wl,-z,relro", "-Wl,-z,now", "-Wl,-z,noexecstack"):
-        assert flag in cmake
+        assert flag in linux_linker_block
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="ELF hardening applies to Linux")
