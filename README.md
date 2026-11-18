@@ -324,9 +324,10 @@ ordinary Arrow results retain the existing column-binding path.
 `bulkcopy_arrow()` accepts the same representation with tables, record batches,
 readers, iterables of batches, and Arrow C stream/array producers. It requires
 the companion pycore Arrow vector adapter. The destination schema validates
-dimensions. A column is sent with the base type in its `mssql.vector.base_type`
-metadata (FLOAT32 when absent) and SQL Server converts it to the destination,
-as for row bulk copy. Variable-size lists and non-float32 child arrays are not
+dimensions. A column tagged with `mssql.vector.base_type` metadata is sent with
+that base type and SQL Server converts it to the destination, as for row bulk
+copy; untagged columns are converted to the destination base type, like lists.
+Variable-size lists and non-float32 child arrays are not
 implicitly converted. For raw Arrow input, finite/range and non-NULL-element
 checks occur during native bulk serialization. Earlier batches may already have
 been written when a later batch fails.
