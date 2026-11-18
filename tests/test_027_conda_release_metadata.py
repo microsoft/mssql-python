@@ -150,19 +150,12 @@ def test_linux_qemu_setup_gates_arm64_build_only():
     assert re.search(r"^    condition: \$\{\{ parameters\.condition \}\}$", build, re.MULTILINE)
 
 
-@pytest.mark.parametrize(
-    ("filename", "producer"),
-    [
-        ("conda-build-pipeline.yml", r"\OneBranch\Build-Release-Package-Pipeline"),
-        ("conda-release-pipeline.yml", r"\OneBranch\Conda-Build-Pipeline"),
-    ],
-)
-def test_conda_pipeline_completion_triggers_only_main(filename, producer):
-    source = (_ROOT / "OneBranchPipelines" / filename).read_text()
+def test_conda_build_completion_trigger_only_main():
+    source = (_ROOT / "OneBranchPipelines/conda-build-pipeline.yml").read_text()
     assert "\ntrigger: none\npr: none\n" in source
     resource = source.split("\n  pipelines:\n", 1)[1].split("\nextends:\n", 1)[0]
     assert resource.count("- pipeline: buildPipeline") == 1
-    assert f"      source: '{producer}'\n" in resource
+    assert "      source: '\\OneBranch\\Build-Release-Package-Pipeline'\n" in resource
     assert "      branch: main\n" in resource
     assert resource.split("      trigger:\n", 1)[1].strip() == (
         "branches:\n          include:\n            - refs/heads/main"
@@ -183,21 +176,14 @@ def test_automatic_conda_builds_use_official_template():
     assert "template: 'v2/OneBranch.${{ variables.effectiveOneBranchType }}.CrossPlat.yml" in source
 
 
-def test_automatic_conda_release_cannot_enable_publication():
+def test_conda_release_remains_manual():
     source = (_ROOT / "OneBranchPipelines/conda-release-pipeline.yml").read_text()
-    assert (
-        "  - name: effectivePublishToConda\n"
-        "    ${{ if and(eq(variables['Build.Reason'], 'Manual'), "
-        "eq(parameters.publishToConda, true)) }}:\n"
-        "      value: 'true'\n"
-        "    ${{ else }}:\n"
-        "      value: 'false'\n"
-    ) in source
-    assert source.count("parameters.publishToConda") == 1
-    assert "PUBLISH_TO_CONDA: '${{ variables.effectivePublishToConda }}'" in source
-    assert (
-        "      ${{ if eq(variables.effectivePublishToConda, 'true') }}:\n" "        binskim:\n"
-    ) in source
+    assert "\ntrigger: none\npr: none\n" in source
+    resource = source.split("\n  pipelines:\n", 1)[1].split("\nextends:\n", 1)[0]
+    assert re.findall(r"^      trigger: (.+)$", resource, re.MULTILINE) == ["none"]
+    assert "      trigger:\n" not in resource
+    assert "PUBLISH_TO_CONDA: '${{ parameters.publishToConda }}'" in source
+    assert ("      ${{ if eq(parameters.publishToConda, true) }}:\n" "        binskim:\n") in source
 
 
 @pytest.mark.parametrize(
@@ -1975,7 +1961,7 @@ def test_publication_lock_covers_the_complete_release_stage():
     stage = pipeline.split("      - stage: CondaRelease\n", 1)[1]
     configuration, jobs = stage.split("        jobs:\n", 1)
     assert (
-        "        ${{ if eq(variables.effectivePublishToConda, 'true') }}:\n"
+        "        ${{ if eq(parameters.publishToConda, true) }}:\n"
         "          lockBehavior: sequential\n"
         "          variables:\n"
         "            - group: 'Anaconda Publishing'\n"
@@ -1994,15 +1980,12 @@ def test_dry_release_shares_the_official_publisher_without_credentials():
     assert "            dependsOn: ValidateConda\n" in guarded_job
     assert (
         "              type: releaseJob\n"
-        "              isProduction: ${{ eq(variables.effectivePublishToConda, 'true') }}\n"
+        "              isProduction: ${{ parameters.publishToConda }}\n"
     ) in guarded_job
     template = "/OneBranchPipelines/steps/conda-publish-step.yml@self"
     assert pipeline.count(template) == 1
     assert template in guarded_job
-    assert (
-        "                  publishToConda: ${{ eq(variables.effectivePublishToConda, 'true') }}"
-        in guarded_job
-    )
+    assert "                  publishToConda: ${{ parameters.publishToConda }}" in guarded_job
     assert "path: s" in guarded_job
     assert (
         "WindowsContainerImage: 'onebranch.azurecr.io/windows/ltsc2022/vse2022"

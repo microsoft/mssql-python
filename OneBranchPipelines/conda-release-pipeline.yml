@@ -13,8 +13,6 @@
 # then deliberately fails at a read-only Anaconda authentication probe with a random
 # invalid token. Only a confirmed HTTP 401 is the expected rehearsal outcome.
 # No upload, promotion or cleanup is attempted in rehearsal, even if authentication succeeds.
-# Successful main Conda builds trigger this Official rehearsal. Only explicitly opted-in
-# manual runs can enable publication; automatic runs never receive publishing credentials.
 # An administrator must enable the native Exclusive lock check on 'Anaconda Publishing'.
 # The production stage uses that shared resource throughout publication and recovery.
 # Keep its credentials, pipeline authorizations and other checks restricted.
@@ -50,11 +48,6 @@ parameters:
     default: ''
 
 variables:
-  - name: effectivePublishToConda
-    ${{ if and(eq(variables['Build.Reason'], 'Manual'), eq(parameters.publishToConda, true)) }}:
-      value: 'true'
-    ${{ else }}:
-      value: 'false'
   - template: /OneBranchPipelines/variables/common-variables.yml@self
   - template: /OneBranchPipelines/variables/onebranch-variables.yml@self
 
@@ -70,12 +63,9 @@ resources:
       # Registered ADO definition Conda-Build-Pipeline, backed by conda-build-pipeline.yml. Its
       # ConsolidateConda stage publishes drop_ConsolidateConda_ConsolidateArtifacts.
       # This is not the wheel pipeline (definition 2199), which no longer builds Conda.
-      source: '\OneBranch\Conda-Build-Pipeline'
+      source: 'Conda-Build-Pipeline'
       branch: main
-      trigger:
-        branches:
-          include:
-            - refs/heads/main
+      trigger: none
 
 extends:
   # Rehearse the actual managed container/network path, not a NonOfficial substitute.
@@ -100,7 +90,7 @@ extends:
       publishLogs:
         enabled: true
       # Publication-only compliance outputs; both modes retain managed container isolation.
-      ${{ if eq(variables.effectivePublishToConda, 'true') }}:
+      ${{ if eq(parameters.publishToConda, true) }}:
         binskim:
           enabled: true
           break: true
@@ -111,7 +101,7 @@ extends:
     stages:
       - stage: CondaRelease
         displayName: 'Validate & Publish Conda Release'
-        ${{ if eq(variables.effectivePublishToConda, 'true') }}:
+        ${{ if eq(parameters.publishToConda, true) }}:
           lockBehavior: sequential
           variables:
             - group: 'Anaconda Publishing'
@@ -145,7 +135,7 @@ extends:
                   CONDA_BUILD_SOURCE_BRANCH: $(resources.pipeline.buildPipeline.sourceBranch)
                   CONDA_BUILD_SOURCE_COMMIT: $(resources.pipeline.buildPipeline.sourceCommit)
                   RELEASE_SOURCE_BRANCH: $(Build.SourceBranch)
-                  PUBLISH_TO_CONDA: '${{ variables.effectivePublishToConda }}'
+                  PUBLISH_TO_CONDA: '${{ parameters.publishToConda }}'
                   MSSQL_PYTHON_VERSION: '${{ parameters.mssqlPythonVersion }}'
                   SYSTEM_ACCESSTOKEN: $(System.AccessToken)
                   SYSTEM_COLLECTIONURI: $(System.CollectionUri)
@@ -174,7 +164,7 @@ extends:
             cancelTimeoutInMinutes: 5
             templateContext:
               type: releaseJob
-              isProduction: ${{ eq(variables.effectivePublishToConda, 'true') }}
+              isProduction: ${{ parameters.publishToConda }}
             pool:
               type: windows
             variables:
@@ -189,7 +179,7 @@ extends:
                 fetchDepth: 1
               - template: /OneBranchPipelines/steps/conda-publish-step.yml@self
                 parameters:
-                  publishToConda: ${{ eq(variables.effectivePublishToConda, 'true') }}
+                  publishToConda: ${{ parameters.publishToConda }}
                   condaChannel: '${{ parameters.condaChannel }}'
                   condaLabel: '${{ parameters.condaLabel }}'
                   mssqlPythonVersion: '$(mssqlPythonVersion)'
