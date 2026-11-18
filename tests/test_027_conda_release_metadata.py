@@ -75,6 +75,12 @@ def test_linux_qemu_setup_requires_supported_packages_and_enabled_handler(tmp_pa
     bash = shutil.which("bash")
     if not bash:
         pytest.skip("QEMU setup regression requires bash")
+    if subprocess.run(
+        [bash, "-c", 'readlink -e "$1" >/dev/null 2>&1', "bash", tmp_path.as_posix()],
+        capture_output=True,
+        timeout=15,
+    ).returncode:
+        pytest.skip("QEMU setup regression requires readlink -e")
     source = (_ROOT / "OneBranchPipelines/conda-build-pipeline.yml").read_text()
     setup = source.split(
         "                displayName: 'Install libc6-arm64-cross + register QEMU binfmt (aarch64)'",
