@@ -67,6 +67,10 @@ parameters:
   - name: continueOnError
     type: boolean
     default: false
+  # Emulated callers can require successful provisioning without blocking native artifacts.
+  - name: condition
+    type: string
+    default: succeeded()
 
 steps:
   - bash: |
@@ -102,4 +106,5 @@ steps:
       MSSQL_CONDA_PYTHON_VERSIONS: ${{ parameters.pythonVersions }}
       CONDA_TARGET_SUBDIR: ${{ parameters.condaTargetSubdir }}
     displayName: 'Conda build + validate (${{ parameters.condaSubdir }})'
+    condition: ${{ parameters.condition }}
     continueOnError: ${{ parameters.continueOnError }}
