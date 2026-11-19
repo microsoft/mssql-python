@@ -69,6 +69,7 @@ from .cursor import Cursor
 
 # Row Objects
 from .row import Row, RowMapping
+from .vector import Vector, OutputParameter, InputOutputParameter
 
 # Logging Configuration (Simplified single-level DEBUG system)
 from .logging import logger, setup_logging, driver_logger
@@ -186,6 +187,7 @@ from .constants import (  # noqa: F401
     SQL_SS_TIME2,
     SQL_SS_XML,
     SQL_SS_VARIANT,
+    SQL_SS_VECTOR,
     # Connection attribute constants
     SQL_ATTR_ACCESS_MODE,
     SQL_ATTR_CONNECTION_TIMEOUT,
@@ -327,6 +329,10 @@ from .constants import (  # noqa: F401
 )
 
 __all__ = [
+    "Vector",
+    "OutputParameter",
+    "InputOutputParameter",
+    "SQL_SS_VECTOR",
     # Exception classes
     "Warning",
     "Error",

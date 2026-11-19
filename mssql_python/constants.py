@@ -120,6 +120,8 @@ class ConstantsDDBC(Enum):
     SQL_SS_TIME2 = -154
     SQL_SS_XML = -152
     SQL_SS_VARIANT = -150
+    SQL_SS_VECTOR = -156
+    SQL_C_SS_VECTOR = 0x4002
     SQL_C_SS_TIMESTAMPOFFSET = 0x4001
     SQL_SCOPE_CURROW = 0
     SQL_BEST_ROWID = 1
@@ -420,6 +422,7 @@ class SQLTypes:
             ConstantsDDBC.SQL_GUID.value,
             ConstantsDDBC.SQL_SS_UDT.value,
             ConstantsDDBC.SQL_SS_VARIANT.value,
+            ConstantsDDBC.SQL_SS_VECTOR.value,
         }
 
     # Could also add category methods for convenience
@@ -572,6 +575,7 @@ _ALLOWED_CONNECTION_STRING_PARAMS = {
     # (with spaces) ODBC only honors "PacketSize" without spaces
     # internally.
     "packetsize": "PacketSize",
+    "vectortypesupport": "VectorTypeSupport",
 }
 
 
@@ -629,6 +633,7 @@ _DDBC_PUBLIC_API = {
     "SQL_SS_TIME2",
     "SQL_SS_XML",
     "SQL_SS_VARIANT",
+    "SQL_SS_VECTOR",
     # Connection attribute constants (ODBC-standard, driver-independent only)
     "SQL_ATTR_ACCESS_MODE",
     "SQL_ATTR_CONNECTION_TIMEOUT",
@@ -695,6 +700,7 @@ if TYPE_CHECKING:
     SQL_SS_TIME2: int
     SQL_SS_XML: int
     SQL_SS_VARIANT: int
+    SQL_SS_VECTOR: int
     SQL_ATTR_ACCESS_MODE: int
     SQL_ATTR_CONNECTION_TIMEOUT: int
     SQL_ATTR_CURRENT_CATALOG: int

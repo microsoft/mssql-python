@@ -174,6 +174,160 @@ example, requesting ASCII with `SQL_CHAR` does not cause non-ASCII parameters to
 raise encoding errors. Use `setencoding()` with no arguments to restore the
 supported defaults. `setdecoding()` independently controls how result data is read.
 
+### Native vector values
+
+The synchronous ODBC API accepts and returns immutable `Vector` values. SQL NULL
+is represented by `None`. FLOAT32 supports 1–1998 dimensions; FLOAT16 supports
+1–3996. A vector's dimensions and subtype must match its SQL column or parameter.
+
+Enable native vector negotiation **when connecting**: `VectorTypeSupport=v1`
+for FLOAT32, or `VectorTypeSupport=v2` for both subtypes. The default remains
+`off` (the ODBC driver's existing JSON/text behavior). FLOAT32 requires Microsoft
+ODBC Driver 18.6.1.1+; FLOAT16 requires **18.7.1.1+** and a server that
+supports FLOAT16 vectors. FLOAT16 is generally available in Azure SQL Database,
+Azure SQL Managed Instance and SQL database in Fabric; in SQL Server 2025 it is a
+preview feature that requires `ALTER DATABASE SCOPED CONFIGURATION SET
+PREVIEW_FEATURES = ON`. FLOAT32 works on all of these. The currently published `mssql-python-odbc` 18.6.2.2
+package does not meet the FLOAT16 requirement. These Python changes do not
+upgrade the bundled driver or add support to the alternate Rust ODBC provider.
+
+| Connection setting | Native FLOAT32 | Native FLOAT16 |
+|---|---|---|
+| `VectorTypeSupport=off` (default) | No; reads return JSON text | No; reads return JSON text |
+| `VectorTypeSupport=v1` | Yes | No; FLOAT16 inputs are rejected by ODBC and FLOAT16 columns are read as JSON text |
+| `VectorTypeSupport=v2` | Yes | Yes |
+
+`Vector(values, base_type="float16")` selects the value's SQL base type; it does not upgrade a
+connection from v1 to v2. The connection setting is passed through to ODBC for
+negotiation rather than emulated in Python.
+
+The driver never converts between FLOAT32 and FLOAT16. A `Vector` is sent with
+its own base type and SQL Server converts it to the column's base type,
+rounding to nearest; FLOAT32 values outside the FLOAT16 range fail with a server
+error. This matches Microsoft.Data.SqlClient.
+
+```python
+from mssql_python import connect, Vector, SQL_SS_VECTOR
+
+connection = connect(connection_string, VectorTypeSupport="v1")
+cursor = connection.cursor()
+cursor.execute("CREATE TABLE #embeddings (embedding VECTOR(3) NULL)")
+vector = Vector([1.25, -2.5, 0])  # FLOAT16 values require a v2 connection
+cursor.execute("INSERT INTO #embeddings VALUES (?)", vector)
+cursor.executemany("INSERT INTO #embeddings VALUES (?)", [(None,), (vector,)])
+cursor.setinputsizes([(SQL_SS_VECTOR, 3, 0)])  # dimensions, subtype: 0=FLOAT32, 1=FLOAT16
+cursor.execute("INSERT INTO #embeddings VALUES (?)", None)
+cursor.execute("SELECT embedding FROM #embeddings")
+rows = cursor.fetchall()  # fetchone(), fetchmany(), and iteration work too
+values = list(vector)  # Independent list; the Vector remains immutable
+```
+
+`Vector(values, base_type="float32")` snapshots a numeric iterable and normalizes
+each element to float32 immediately. Its `.base_type` and `.dimensions`
+properties describe the SQL value; iteration and indexing return Python floats.
+Ordinary float32 rounding is allowed, including subnormal values and underflow
+to zero. Exact float32 representability is not required.
+
+Non-numeric elements (including bool and None) raise `TypeError`. NaN, infinity,
+and magnitudes above the finite float32 maximum (approximately 3.402823466e38)
+raise `ValueError` in the constructor, before binding or network I/O. FLOAT16
+values additionally reject magnitudes above 65504 conservatively, before
+float32 rounding. Errors identify the element index without including its value.
+Values are never clamped, promoted to float64, or silently changed to JSON.
+
+An explicit vector input hint also accepts a numeric **list**, applying the
+same checks during binding. Without a hint, ordinary lists retain their existing
+parameter meanings and are not automatically vectors. Hints are consumed by a
+successful execution; reapply them for subsequent calls.
+
+```python
+cursor.setinputsizes([(SQL_SS_VECTOR, 3, 0)])
+cursor.execute("INSERT INTO #embeddings VALUES (?)", [[0.1, 0.2, 0.3]])
+cursor.setinputsizes([(SQL_SS_VECTOR, 3, 0)])
+cursor.executemany(
+    "INSERT INTO #embeddings VALUES (?)",
+    [([0.1, 0.2, 0.3],), (None,), (vector,)],
+)
+```
+
+Non-NULL values must match the hinted dimensions and base type. A conflicting
+`Vector` is rejected, not reinterpreted. Batch vector columns must agree in
+dimensions/base type; hinted columns may mix lists, matching Vectors, and None.
+
+Both subtypes are marshaled to ODBC as `SQL_C_SS_VECTOR` structures containing
+C float32 arrays and bound with SQL type `SQL_SS_VECTOR`. ODBC owns conversion
+to/from FLOAT16, including half-precision rounding and backend diagnostics;
+Python performs only the early finite/range checks above. Python does not
+pack TDS headers, encode half floats, or serialize vectors as binary/JSON.
+
+**Stored procedures:** `callproc()` accepts ordinary input parameters and
+`OutputParameter(sql_type, size, scale)` / `InputOutputParameter(vector)`
+wrappers. `OutputParameter` takes the same triple as `setinputsizes()`; today
+only `SQL_SS_VECTOR` is supported (size is dimensions, scale is 0 for FLOAT32 or
+1 for FLOAT16), and other SQL types raise `NotSupportedError`.
+`InputOutputParameter` infers its type from the initial `Vector`; if its
+`.value` is later `None` (for example after a NULL output), it is sent as a NULL
+of that type. `callproc()`
+returns a modified parameter sequence and also fills each wrapper's
+`.value`. Result sets are buffered in memory so output values are final when the
+call returns; use normal row fetches and `nextset()` to read them.
+Input parameters may be `None`; parameter-description metadata is not exposed as
+a procedure result set, including when reusing the cursor. Procedure names have
+1-3 parts; parts may already be bracket-quoted, e.g. `[dbo].[my.proc]`.
+
+```python
+from mssql_python import OutputParameter, InputOutputParameter
+
+# dbo.EchoEmbedding: @input VECTOR(3), @output VECTOR(3) OUTPUT,
+#                    @inout VECTOR(3) OUTPUT
+output = OutputParameter(SQL_SS_VECTOR, 3, 0)
+inout = InputOutputParameter(vector)
+parameters = cursor.callproc("dbo.EchoEmbedding", [vector, output, inout])
+print(output.value)
+```
+
+Procedure text/binary inputs
+must fit the inline binding limits. Table-valued parameters are not part of this
+vector support; vector TVP columns will build on the shared TVP definition.
+Arrow vector fetches and Arrow access to
+buffered procedure results are not supported; use row fetch methods instead.
+**Vector bulk copy is pending the pycore vector input contract.** `bulkcopy()`
+explicitly rejects `Vector` cells rather than guessing a serialization format.
+Once that backend contract is available, pycore will own its FLOAT16 conversion.
+
+Vector unit tests run without SQL Server. End-to-end tests in
+`tests/test_025_vector.py` exercise v1/FLOAT32, v2/FLOAT32, and v2/FLOAT16:
+scalar and batch binding (including explicitly hinted lists, pyformat,
+typed/all-NULL arrays and streamed text), numeric boundaries and error recovery,
+every row fetch method including `fetchval()`, metadata/row access, output converters,
+commit/rollback, stored procedure outputs/result sets, and error recovery.
+Negotiation tests assert that v1 rejects native FLOAT16, `off` rejects native
+vector inputs, and `off` retains JSON/NULL reads. Arrow and bulk-copy cases assert
+the current explicit unsupported boundaries; they are not positive vector
+bulk-copy tests.
+
+Set `DB_CONNECTION_STRING` outside source control to enable the live tests.
+The database principal needs permission to create tables, procedures, and table
+types in `dbo`; named test objects use unique names and are dropped in cleanup.
+The v2 cases additionally require `MSSQL_TEST_VECTOR_FLOAT16=1`, ODBC 18.7.1.1+,
+and a FLOAT16-capable server. For example, from PowerShell:
+
+```powershell
+python -m pytest tests\test_025_vector.py -k live -v
+# Enable the full v2 matrix only after provisioning a compatible driver/server:
+$env:MSSQL_TEST_VECTOR_FLOAT16 = "1"
+python -m pytest tests\test_025_vector.py -v
+```
+
+Servers without the built-in vector type and the unqualified alternate provider
+are explicitly skipped, so existing SQL Server 2022 validation legs remain
+usable. The server check reads `sys.types`, not a version banner, and does not
+suppress connection or query errors.
+
+Missing database/capability configuration causes explicit skips. Once enabled,
+connection failures and unsupported backend behavior fail the tests rather than
+being converted to skips.
+
 ## Getting Started Examples
 Connect to SQL Server and execute a simple query:
  
