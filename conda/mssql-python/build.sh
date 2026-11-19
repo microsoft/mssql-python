@@ -29,7 +29,7 @@ if "$PYTHON" -c "import sys" >/dev/null 2>&1; then
     "$PYTHON" -m pip install --no-deps --no-index "$WHEELS_DIR/$rs_whl" -vv
   fi
   core_suffix="$("$PYTHON" -c 'import sysconfig; print(sysconfig.get_config_var("EXT_SUFFIX"))')"
-else
+elif [[ "${target_platform:-${CONDA_SUBDIR:-}}" == osx-* ]]; then
   core_suffix=".cpython-${CONDA_PY}-darwin.so"
   echo "Host Python '$PYTHON' is not executable on this agent (non-emulated cross-build);"
   echo "extracting both wheels into \$SP_DIR without running Python."
@@ -67,6 +67,10 @@ else
   if [ -n "$rs_ver" ]; then
     unzip -oq "$WHEELS_DIR/$rs_whl" -d "$SP_DIR"
   fi
+else
+  echo "ERROR: target Python '$PYTHON' cannot execute for '${target_platform:-${CONDA_SUBDIR:-unknown}}'; only osx-* targets support wheel extraction without Python." >&2
+  echo "For linux-aarch64, check QEMU binfmt registration and the ARM64 glibc loader/QEMU_LD_PREFIX before rebuilding." >&2
+  exit 1
 fi
 
 if [ -n "$rs_ver" ]; then
