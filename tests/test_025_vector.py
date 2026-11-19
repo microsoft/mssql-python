@@ -370,6 +370,26 @@ def test_callproc_buffered_results_and_cursor_reuse(unit_cursor, monkeypatch):
     assert unit_cursor._procedure_results is None
 
 
+def test_callproc_refreshes_decoding_after_connection_change(unit_cursor, monkeypatch):
+    seen = []
+
+    def callproc(handle, sql, params, settings, messages, *decoding):
+        seen.append(decoding)
+        return [], []
+
+    monkeypatch.setattr(ddbc_bindings, "DDBCCallProc", callproc)
+    unit_cursor.callproc("p")
+    connection = unit_cursor._connection
+    connection.getdecoding = lambda sql_type: (
+        {"encoding": "latin-1", "ctype": mssql_python.SQL_CHAR}
+        if sql_type == mssql_python.SQL_CHAR
+        else {"encoding": "utf-16le", "ctype": -8}
+    )
+    connection._decoding_generation += 1
+    unit_cursor.callproc("p")
+    assert seen == [("utf-16le", "utf-16le", -8), ("latin-1", "utf-16le", mssql_python.SQL_CHAR)]
+
+
 @pytest.mark.parametrize("name", ["", "a..b", "a.b.c.d", "a\0b"])
 def test_callproc_invalid_name_without_database(unit_cursor, name):
     with pytest.raises(ValueError):
@@ -940,6 +960,17 @@ def test_live_vector_procedure_outputs(live_vector_connection, with_results):
             assert cursor.fetchone()[0] is None
             assert cursor.nextset()
             assert cursor.fetchone()[0] is None
+        # Reusing the wrapper after a NULL result binds a typed NULL input.
+        cursor.execute(
+            f"CREATE PROCEDURE #vector_inout_null @io VECTOR(3, {dtype}) OUTPUT AS "
+            "BEGIN SET NOCOUNT ON; "
+            "SELECT CAST(CASE WHEN @io IS NULL THEN 1 ELSE 0 END AS BIT) AS was_null; "
+            f"SET @io = CAST('[4, 5, 6]' AS VECTOR(3, {dtype})); END"
+        )
+        expected = Vector([4, 5, 6], dtype)
+        assert cursor.callproc("#vector_inout_null", [inout]) == [expected]
+        assert inout.value == expected
+        assert cursor.fetchone()[0] is True
         cursor.execute("SELECT 1", reset_cursor=False)
         assert cursor.fetchone()[0] == 1
 
@@ -969,7 +1000,7 @@ def test_live_failing_callproc_reprepares_previous_query(live_vector_connection,
 
 @pytest.mark.parametrize(
     "invalid,error",
-    [(None, ValueError), (1, TypeError), (True, TypeError), ("abc", TypeError), ([1], TypeError)],
+    [(1, TypeError), (True, TypeError), ("abc", TypeError), ([1], TypeError)],
 )
 def test_live_vector_rejects_mutated_inout(live_vector_connection, invalid, error):
     connection, base_type = live_vector_connection
@@ -1040,6 +1071,20 @@ def test_live_callproc_bracketed_names(live_vector_connection, name):
         )
         assert cursor.callproc(name, [value]) == [value]
         assert cursor.fetchone()[0] == value
+
+
+def test_live_callproc_uses_decoding_changed_after_cursor_creation(live_vector_connection):
+    connection, _ = live_vector_connection
+    with connection.cursor() as cursor:
+        cursor.execute(
+            "CREATE PROCEDURE #varchar_probe AS BEGIN SET NOCOUNT ON; "
+            "SELECT CAST(0x80 AS VARCHAR(1)) COLLATE SQL_Latin1_General_CP1_CI_AS AS value; END"
+        )
+        connection.setdecoding(
+            mssql_python.SQL_CHAR, encoding="latin-1", ctype=mssql_python.SQL_CHAR
+        )
+        assert cursor.callproc("#varchar_probe") == []
+        assert cursor.fetchone()[0] == "\x80"
 
 
 def test_live_fetch_and_outputs_use_trusted_vector_construction(

@@ -265,7 +265,9 @@ pack TDS headers, encode half floats, or serialize vectors as binary/JSON.
 wrappers. `OutputParameter` takes the same triple as `setinputsizes()`; today
 only `SQL_SS_VECTOR` is supported (size is dimensions, scale is 0 for FLOAT32 or
 1 for FLOAT16), and other SQL types raise `NotSupportedError`.
-`InputOutputParameter` infers its type from the initial `Vector`. `callproc()`
+`InputOutputParameter` infers its type from the initial `Vector`; if its
+`.value` is later `None` (for example after a NULL output), it is sent as a NULL
+of that type. `callproc()`
 returns a modified parameter sequence and also fills each wrapper's
 `.value`. Result sets are buffered in memory so output values are final when the
 call returns; use normal row fetches and `nextset()` to read them.

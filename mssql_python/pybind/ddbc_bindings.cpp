@@ -6731,19 +6731,21 @@ py::tuple CallProcedure_wrap(SqlHandlePtr statement, const std::u16string& query
     auto outputClass = vectorModule.attr("OutputParameter");
     auto inoutClass = vectorModule.attr("InputOutputParameter");
     std::vector<SQLSMALLINT> directions(parameters.size(), SQL_PARAM_INPUT);
+    std::vector<bool> nullInputs(parameters.size(), false);
     for (size_t i = 0; i < parameters.size(); ++i) {
         auto item = parameters[i];
         if (py::isinstance(item, outputClass)) {
             directions[i] = py::isinstance(item, inoutClass)
                 ? SQL_PARAM_INPUT_OUTPUT : SQL_PARAM_OUTPUT;
-            if (directions[i] == SQL_PARAM_INPUT_OUTPUT) {
-                py::object input = item.attr("value");
-                if (input.is_none())
-                    throw py::value_error("INPUT_OUTPUT parameters require a non-NULL Vector");
+            py::object input = item.attr("value");
+            if (directions[i] == SQL_PARAM_INPUT_OUTPUT && !input.is_none()) {
                 if (!py::isinstance(input, vectorModule.attr("Vector")))
                     throw py::type_error("INPUT_OUTPUT parameters require a Vector");
                 values[i] = input;
             } else {
+                // A NULL INPUT_OUTPUT value (e.g. a previous NULL result) is bound
+                // as a typed NULL from the wrapper's retained dimensions and subtype.
+                nullInputs[i] = directions[i] == SQL_PARAM_INPUT_OUTPUT;
                 size_t dimensions = item.attr("dimensions").cast<size_t>();
                 auto baseType = item.attr("base_type").cast<std::string>();
                 ValidateVectorShape(dimensions, baseType == "float16" ? 1 : 0);
@@ -6758,6 +6760,7 @@ py::tuple CallProcedure_wrap(SqlHandlePtr statement, const std::u16string& query
         infos[i].inputOutputType = directions[i];
         if (infos[i].isDAE)
             throw py::value_error("callproc input strings/binary must fit inline parameter limits");
+        if (nullInputs[i]) infos[i].vectorBinding->indicator = SQL_NULL_DATA;
     }
     SQLRETURN rc = ResetParamBindings(*statement, hStmt);
     CheckFetchError(statement, rc);
