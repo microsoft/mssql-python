@@ -305,7 +305,8 @@ TDS connection negotiates vector support independently of the ODBC connection's
 
 Base types follow Microsoft.Data.SqlClient's SqlBulkCopy: the client never
 converts between FLOAT32 and FLOAT16. Each vector column is declared with the
-base type of its first row's `Vector`, and SQL Server converts it to the
+base type of its first non-NULL `Vector` (looking ahead up to 1000 rows), and
+SQL Server converts it to the
 destination column (rounding to nearest; values outside the FLOAT16 range fail
 on the server). Every `Vector` in a column must then share that base type. JSON
 text for a FLOAT16 column is sent as text and parsed by SQL Server; JSON for a

@@ -1561,15 +1561,72 @@ def test_live_vector_bulkcopy_cross_base_errors(live_vector_connection, vector_b
                 cursor.bulkcopy(
                     table_name, [(Vector([70000.0, 0, 0]),)], use_internal_transaction=True
                 )
-            # The first row's Vector declares the column's base type for the load.
+            # The first non-NULL Vector declares the column's base type for the load.
             for rows in (
                 [(Vector([1, 2, 3]),), (Vector([1, 2, 3], "float16"),)],
-                [(None,), (Vector([1, 2, 3]),)],
+                [(None,), (Vector([1, 2, 3]),), (Vector([1, 2, 3], "float16"),)],
             ):
                 with pytest.raises(ValueError, match="(?i)base.?type"):
                     cursor.bulkcopy(table_name, rows, use_internal_transaction=True)
             cursor.execute(f"SELECT COUNT(*) FROM {table_name}")
             assert cursor.fetchval() == 0
+        finally:
+            cursor.execute(f"DROP TABLE {table_name}")
+
+
+@pytest.mark.parametrize("streaming", [False, True], ids=["list", "generator"])
+def test_live_vector_bulkcopy_leading_nulls_use_first_vector_base_type(
+    live_vector_connection, vector_bulk_core, streaming
+):
+    """Like SqlClient's untyped sources: leading NULLs do not decide the base type."""
+    connection, dtype = live_vector_connection
+    if os.getenv("MSSQL_TEST_VECTOR_FLOAT16") != "1":
+        pytest.skip("Cross-base conversion needs a FLOAT16-capable server")
+    other = "float32" if dtype == "float16" else "float16"
+    connection.autocommit = True
+    table_name = f"dbo.pytest_vector_leading_null_{uuid.uuid4().hex}"
+    values = [0.1, 2.0, 1e-8]
+    expected = Vector(_expected_stored_vector(values, "float16").values, dtype)
+    # Two vector columns whose first non-NULL values appear on different rows.
+    rows = [(1, None, None), (2, None, Vector(values, other))]
+    rows += [(i, None, None) for i in range(3, 40)]
+    rows += [(40, Vector(values, other), Vector(values, other)), (41, None, None)]
+    with connection.cursor() as cursor:
+        cursor.execute(
+            f"CREATE TABLE {table_name} "
+            f"(id INT, a VECTOR(3, {dtype}) NULL, b VECTOR(3, {dtype}) NULL)"
+        )
+        try:
+            source = (row for row in rows) if streaming else rows
+            assert cursor.bulkcopy(table_name, source, batch_size=7)["rows_copied"] == len(rows)
+            cursor.execute(
+                f"SELECT id, a, b FROM {table_name} WHERE a IS NOT NULL OR b IS NOT NULL ORDER BY id"
+            )
+            assert [tuple(row) for row in cursor.fetchall()] == [
+                (2, None, expected),
+                (40, expected, expected),
+            ]
+            cursor.execute(f"SELECT COUNT(*) FROM {table_name}")
+            assert cursor.fetchval() == len(rows)
+        finally:
+            cursor.execute(f"DROP TABLE {table_name}")
+
+
+def test_live_vector_bulkcopy_all_null_lookahead_keeps_destination_type(
+    live_vector_connection, vector_bulk_core
+):
+    connection, dtype = live_vector_connection
+    connection.autocommit = True
+    table_name = f"dbo.pytest_vector_null_window_{uuid.uuid4().hex}"
+    value = Vector([1, 2, 3], dtype)
+    # Past the look-ahead window the destination type applies, so matching vectors load.
+    rows = [(None,)] * 1000 + [(value,), (None,)]
+    with connection.cursor() as cursor:
+        cursor.execute(f"CREATE TABLE {table_name} (embedding VECTOR(3, {dtype}) NULL)")
+        try:
+            assert cursor.bulkcopy(table_name, iter(rows))["rows_copied"] == len(rows)
+            cursor.execute(f"SELECT embedding FROM {table_name} WHERE embedding IS NOT NULL")
+            assert [row[0] for row in cursor.fetchall()] == [_expected_stored_vector(value, dtype)]
         finally:
             cursor.execute(f"DROP TABLE {table_name}")
 
