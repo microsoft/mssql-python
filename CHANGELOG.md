@@ -62,6 +62,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
   (on by default; `jitter=False` gives exact delays). `max_attempts` counts
   total tries including the first; without a policy
   `connect()` behaves exactly as before.
+- **GH-682:** `Cursor.execute()` can now retry a statement on the same
+  connection: pass a `RetryPolicy` as `retry_policy=` to `Connection.cursor()`
+  or to a single `execute()` call. A cursor never inherits the policy given to
+  `connect()`. A statement runs again, from its beginning, only while the
+  connection is in autocommit mode, and only for codes that can succeed on the
+  same connection: class `08`, `HYT01` and `40003` never are (see the new
+  `RetryPolicy.is_retriable_on_same_connection()`), so of the default set only
+  `HYT00` and `40001` are retried. Autocommit on is still not exactly once: a
+  procedure or batch replays the statements it already committed, and a query
+  timeout can land after the server committed; see `Cursor.execute`.
+  `Connection.execute()` never retries; the row by row fallback of
+  `executemany()` and `batch_execute()` with `reuse_cursor` follow the cursor's
+  policy. Without a policy every path behaves exactly as before.
 
 ### Changed
 - Pooled check-in skips transaction sanitation only after a prior successful

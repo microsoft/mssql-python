@@ -1,5 +1,6 @@
 """
-Pins the type stub to the runtime signatures of connect() and Connection.__init__.
+Pins the type stub to the runtime signatures of connect(), Connection.__init__,
+Connection.cursor(), Cursor.__init__ and Cursor.execute().
 
 Parses source with ast only, so it needs neither the native ddbc_bindings module nor a server.
 Annotations are not compared because the stub spells them differently (a string forward
@@ -47,6 +48,9 @@ def _signature(path, name, cls=None):
     [
         ("connection.py", "__init__", "Connection"),
         ("db_connection.py", "connect", None),
+        ("connection.py", "cursor", "Connection"),
+        ("cursor.py", "__init__", "Cursor"),
+        ("cursor.py", "execute", "Cursor"),
     ],
 )
 def test_stub_matches_runtime_signature(runtime_file, name, cls):

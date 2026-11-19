@@ -29,6 +29,7 @@ from mssql_python.constants import ConstantsDDBC as ddbc_sql_const, SQLTypes
 from mssql_python.helpers import check_error, connstr_to_pycore_params
 from mssql_python.logging import logger
 from mssql_python import ddbc_bindings
+from mssql_python import retry
 from mssql_python.exceptions import (
     InterfaceError,
     NotSupportedError,
@@ -444,13 +445,26 @@ class Cursor:
     # Consider using locks, redesigning for immutability, or ensuring
     # cursor objects are never shared across threads.
 
-    def __init__(self, connection: "Connection", timeout: int = 0) -> None:
+    def __init__(
+        self,
+        connection: "Connection",
+        timeout: int = 0,
+        retry_policy: Optional[retry.RetryPolicy] = None,
+    ) -> None:
         """
         Initialize the cursor with a database connection.
 
         Args:
             connection: Database connection object.
             timeout: Query timeout in seconds
+            retry_policy: Policy for retrying a statement that ``execute()`` runs on this cursor
+                when it fails with a transient SQLSTATE while the connection is in autocommit
+                mode. None (default) makes a single attempt, exactly as before. The policy is
+                never inherited from the connection; pass it here or per call to ``execute()``.
+                See ``Cursor.execute`` for what a statement retry does and does not guarantee.
+
+        Raises:
+            TypeError: If ``retry_policy`` is neither None nor a ``RetryPolicy``.
         """
         # Establish the close() invariant *first*, before any statement that
         # can raise (notably ``_initialize_cursor`` below).  Setting
@@ -466,6 +480,15 @@ class Cursor:
         self._connection: "Connection" = connection  # Store as private attribute
         self._timeout: int = timeout
         self._inputsizes: Optional[List[Tuple[int, int, int, int]]] = None
+        # Check the retry policy type before the statement handle is allocated, so a wrong value
+        # fails fast with nothing to release. Explicit only: a policy passed to connect() stays
+        # on the connection and is never picked up here.
+        if retry_policy is not None and not isinstance(retry_policy, retry.RetryPolicy):
+            raise TypeError(
+                "retry_policy must be a RetryPolicy instance or None, "
+                f"got {type(retry_policy).__name__}"
+            )
+        self._retry_policy: Optional[retry.RetryPolicy] = retry_policy
         # self.connection.autocommit = False
         self._initialize_cursor()
         self.description: _Description | None = None
@@ -1807,21 +1830,164 @@ class Cursor:
         """
         return next(self)
 
+    def _statement_sqlstate(self, ret: int) -> Optional[str]:
+        """Return the SQLSTATE of a failed native execute, or None.
+
+        ODBC keeps a handle's diagnostic records until the next call other than SQLGetDiagRec
+        on that handle, so this read leaves the same records for ``check_error``;
+        ``executemany`` already reads a failed handle twice. If the read itself fails the
+        result is None, which is never retried, so the statement's own error is still the one
+        the caller sees.
+        """
+        if ret >= 0:
+            return None
+        try:
+            info = ddbc_bindings.DDBCSQLCheckError(
+                ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret
+            )
+        except Exception:  # pylint: disable=broad-exception-caught
+            return None
+        return info.sqlState or None
+
+    def _statement_retry_refusal(
+        self,
+        policy: retry.RetryPolicy,
+        attempt: int,
+        max_attempts: int,
+        sqlstate: Optional[str],
+    ) -> Optional[str]:
+        """Return why the statement that just failed may not run again, or None if it may.
+
+        The autocommit read is a native call, so it runs last: a dead link (class 08) is
+        refused without it, and a cursor closed by another thread is never used again. Any
+        exception from that read counts as a refusal (fail closed), so the statement's own
+        exception is what the caller sees.
+        """
+        if attempt >= max_attempts:
+            return "the attempt limit was reached"
+        if self.closed:
+            return "the cursor was closed"
+        if not policy.is_retriable(sqlstate):
+            return "the policy does not list the SQLSTATE"
+        if not policy.is_retriable_on_same_connection(sqlstate):
+            return "the SQLSTATE is never retried on the same connection"
+        try:
+            autocommit = self._connection.autocommit
+        except Exception:  # pylint: disable=broad-exception-caught
+            return "the autocommit state could not be read"
+        return None if autocommit is True else "autocommit is off"
+
+    def _wait_to_retry_statement(
+        self,
+        policy: Optional[retry.RetryPolicy],
+        attempt: int,
+        max_attempts: int,
+        sqlstate: Optional[str],
+    ) -> bool:
+        """Wait out the retry delay and return True when the failed statement should run again.
+
+        The checks run once before the delay and once more after it, since the delay is the
+        widest window in which another thread could close the cursor or turn autocommit off.
+        Each retry is logged at warning level, and so is the attempt that gives up once a
+        retry has been logged. A refusal on the first attempt of a code the policy lists, for
+        example with autocommit off, is logged at debug level with the reason.
+        """
+        if policy is None:
+            return False
+        reason = self._statement_retry_refusal(policy, attempt, max_attempts, sqlstate)
+        announced = attempt > 1
+        if reason is None:
+            delay = policy.compute_delay(attempt)
+            logger.warning(
+                "Statement attempt %d of %d failed with SQLSTATE %s; retry in %.2f seconds",
+                attempt,
+                max_attempts,
+                sqlstate,
+                delay,
+            )
+            retry._sleep(delay)  # pylint: disable=protected-access
+            reason = self._statement_retry_refusal(policy, attempt, max_attempts, sqlstate)
+            if reason is None:
+                return True
+            reason += " (checked again after the delay)"
+            announced = True
+        message = "Statement failed on attempt %d of %d with SQLSTATE %s; not retrying because %s"
+        details = (attempt, max_attempts, sqlstate or "none", reason)
+        if announced:
+            logger.warning(message, *details)
+        elif policy.is_retriable(sqlstate):
+            logger.debug(message, *details)
+        return False
+
     def execute(  # pylint: disable=too-many-locals,too-many-branches,too-many-statements
         self,
         operation: str,
         *parameters: Any,
         use_prepare: bool = True,
         reset_cursor: bool = True,
+        retry_policy: Optional[retry.RetryPolicy] = None,
     ) -> "Cursor":
         """
         Prepare and execute a database operation (query or command).
+
+        Note:
+            Statement retry, when a ``retry_policy`` is active, works as follows. A retried
+            statement runs again from its beginning, on the same connection, after
+            ``RetryPolicy.compute_delay(attempt)`` seconds. Each retry is logged at warning
+            level through the driver logger, without the SQL text or the parameter values.
+            The failed attempt itself is still logged as any failed execute is.
+
+            It happens only when the connection is in autocommit mode at the moment of
+            failure. With autocommit off the statement belongs to a transaction whose state
+            the driver cannot see (a deadlock rolls back the whole transaction, a timeout may
+            or may not have), so the failure is raised at once and the application retries
+            the transaction itself.
+
+            Autocommit on does not make the statement exactly once. A stored procedure or a
+            multi statement batch commits each statement as it goes, so work that completed
+            before the failure runs again, and a query timeout can land after the server
+            committed the statement but before the client saw it. Callers who need exactly
+            once keep autocommit off and retry the whole transaction themselves. A
+            transaction opened in SQL text (BEGIN TRANSACTION or SET IMPLICIT_TRANSACTIONS
+            ON) while autocommit is on is invisible to the driver.
+
+            Only codes accepted by ``RetryPolicy.is_retriable_on_same_connection()`` are
+            retried: class 08, HYT01 and 40003 never are, even if the policy lists them.
+
+            Attempts after the first run on a fresh statement handle, since the failed
+            attempt's handle is released; a parameterized statement is prepared again on it,
+            and a parameterless statement is executed directly, as it always is. Each attempt
+            is bounded separately by the query timeout, so the wall clock time is roughly the
+            timeouts plus the delays.
+
+            Cursors are not thread safe. The delay lengthens the window in which another
+            thread could close the cursor or turn autocommit off, so both are checked again
+            after it; if either changed, the statement is not run again and the original
+            failure is raised.
+
+            ``Connection.execute()`` runs on a new cursor with no policy, so it never
+            retries, and bulk copy does not go through ``execute()``. ``executemany()`` and
+            ``Connection.batch_execute()`` make no retry decision of their own, but any
+            ``execute()`` they run on a cursor that carries a policy follows it:
+            ``executemany()`` when it falls back to one row at a time for values sent as
+            data at execution, and ``batch_execute()`` given a ``reuse_cursor``. To make one
+            call a single attempt on a cursor that has a policy, pass
+            ``retry_policy=RetryPolicy(max_attempts=1)``; ``retry_policy=None`` means the
+            cursor's own policy.
 
         Args:
             operation: SQL query or command.
             parameters: Sequence of parameters to bind.
             use_prepare: Whether to use SQLPrepareW (default) or SQLExecDirectW.
             reset_cursor: Whether to reset the cursor before execution.
+            retry_policy: Policy for retrying this statement when it fails with a transient
+                SQLSTATE. Overrides the policy the cursor was created with for this call only.
+                None (default) uses the cursor's policy, and a cursor created without one makes
+                a single attempt, exactly as before. The ``retry_policy`` given to ``connect()``
+                is never used here.
+
+        Raises:
+            TypeError: If ``retry_policy`` is neither None nor a ``RetryPolicy``.
         """
         logger.debug(
             "execute: Starting - operation_length=%d, param_count=%d, use_prepare=%s",
@@ -1834,6 +2000,15 @@ class Cursor:
         logger.debug("Executing query: %s", operation)
 
         self._check_closed()  # Check if the cursor is closed
+        if retry_policy is not None and not isinstance(retry_policy, retry.RetryPolicy):
+            raise TypeError(
+                "retry_policy must be a RetryPolicy instance or None, "
+                f"got {type(retry_policy).__name__}"
+            )
+        # The policy passed to this call wins over the cursor's own. getattr keeps a Cursor
+        # built with __new__ and no __init__ on the single attempt path, as close() already
+        # tolerates such objects.
+        policy = retry_policy if retry_policy is not None else getattr(self, "_retry_policy", None)
         if reset_cursor:
             if self.hstmt:
                 self._soft_reset_cursor()
@@ -1935,28 +2110,59 @@ class Cursor:
             self.is_stmt_prepared = [False]
         effective_use_prepare = use_prepare and not same_sql
 
-        with perf_phase("py::execute::cpp_call"):
-            if bound_parameters:
-                ret = ddbc_bindings.DDBCSQLExecute(
-                    self.hstmt,
-                    operation,
-                    bound_parameters,
-                    self._inputsizes,
-                    self.is_stmt_prepared,
-                    effective_use_prepare,
-                    encoding_settings,
-                )
-            else:
-                ret = ddbc_bindings.DDBCSQLExecDirect(self.hstmt, operation)
-        # Check return code
-        try:
+        # Statement retry wraps only the native call and its error check; everything above ran
+        # once. Without a policy this is a single attempt through the same calls as before
+        # retry_policy existed, with no extra diagnostic read.
+        max_attempts = policy.max_attempts if policy is not None else 1
+        # The native type detector rewrites list slots in place, so a retried attempt binds a
+        # fresh list built from the values as they were before the first attempt.
+        pristine = tuple(bound_parameters) if max_attempts > 1 else ()
+        for attempt in range(1, max_attempts + 1):
+            if attempt > 1:
+                # _reset_cursor replaced the statement handle and the is_stmt_prepared list,
+                # so the plan from the failed attempt is gone and the native layer refuses to
+                # execute an unprepared statement; prepare again on the fresh handle.
+                bound_parameters = list(pristine)
+                effective_use_prepare = True
+            try:
+                with perf_phase("py::execute::cpp_call"):
+                    if bound_parameters:
+                        ret = ddbc_bindings.DDBCSQLExecute(
+                            self.hstmt,
+                            operation,
+                            bound_parameters,
+                            self._inputsizes,
+                            self.is_stmt_prepared,
+                            effective_use_prepare,
+                            encoding_settings,
+                        )
+                    else:
+                        ret = ddbc_bindings.DDBCSQLExecDirect(self.hstmt, operation)
+            except Exception as e:  # pylint: disable=broad-exception-caught
+                # An error the native layer raises, rather than returns, is never retried and
+                # keeps its own type. After a retry the attempt that gave up is still logged.
+                if attempt > 1:
+                    logger.warning(
+                        "Statement failed on attempt %d of %d with SQLSTATE none; "
+                        "not retrying because the native call raised %s",
+                        attempt,
+                        max_attempts,
+                        type(e).__name__,
+                    )
+                raise
+            sqlstate = self._statement_sqlstate(ret) if max_attempts > 1 else None
+            # Check return code
+            try:
 
-            # Check for errors but don't raise exceptions for info/warning messages
-            check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
-        except Exception as e:  # pylint: disable=broad-exception-caught
-            logger.warning("Execute failed, resetting cursor: %s", e)
-            self._reset_cursor()
-            raise
+                # Check for errors but don't raise exceptions for info/warning messages
+                check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
+            except Exception as e:  # pylint: disable=broad-exception-caught
+                logger.warning("Execute failed, resetting cursor: %s", e)
+                self._reset_cursor()
+                if not self._wait_to_retry_statement(policy, attempt, max_attempts, sqlstate):
+                    raise
+                continue
+            break
 
         # Capture any diagnostic messages (SQL_SUCCESS_WITH_INFO, etc.)
         with perf_phase("py::execute::diag_records"):
