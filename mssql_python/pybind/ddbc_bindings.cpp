@@ -3378,20 +3378,45 @@ SQLRETURN SQLFetch_wrap(SqlHandlePtr StatementHandle) {
 // Non-static so it can be called from inline functions in header
 py::object FetchLobColumnData(SQLHSTMT hStmt, SQLUSMALLINT colIndex, SQLSMALLINT cType,
                               bool isWideChar, bool isBinary, const std::string& charEncoding,
-                              py::handle messages) {
+                              py::handle messages, bool sizeWideConversion) {
     PERF_TIMER("FetchLobColumnData");
     std::vector<char> buffer;
     SQLRETURN ret = SQL_SUCCESS_WITH_INFO;
     int loopCount = 0;
+    size_t chunkSize = DAE_CHUNK_SIZE;
+    if (sizeWideConversion) {
+        // Unix drivers can consume characters that do not fit during a truncated
+        // VARCHAR-to-WCHAR conversion. A binary probe does not consume data and
+        // bounds UTF-16 output by two bytes per source byte, plus the terminator.
+        SQLLEN sourceLength = 0;
+        {
+            py::gil_scoped_release release;
+            ret = SQLGetData_ptr(hStmt, colIndex, SQL_C_BINARY, nullptr, 0, &sourceLength);
+        }
+        CaptureFetchDiagnostics(hStmt, ret, messages, true);
+        if (!SQL_SUCCEEDED(ret)) {
+            ThrowStdException("SQLGetData failed to probe the UTF-16 LOB length");
+        }
+        if (sourceLength == SQL_NULL_DATA) {
+            return py::none();
+        }
+        if (sourceLength < 0 ||
+            sourceLength > (std::numeric_limits<SQLLEN>::max() -
+                            static_cast<SQLLEN>(sizeof(SQLWCHAR))) / 2) {
+            ThrowStdException("SQLGetData returned an invalid UTF-16 LOB source length");
+        }
+        chunkSize = std::max(chunkSize, static_cast<size_t>(sourceLength) * 2 + sizeof(SQLWCHAR));
+    }
 
     while (true) {
         ++loopCount;
-        std::vector<char> chunk(DAE_CHUNK_SIZE, 0);
+        std::vector<char> chunk(chunkSize, 0);
         SQLLEN actualRead = 0;
         {
             // Release the GIL during blocking SQLGetData LOB streaming
             py::gil_scoped_release release;
-            ret = SQLGetData_ptr(hStmt, colIndex, cType, chunk.data(), DAE_CHUNK_SIZE, &actualRead);
+            ret = SQLGetData_ptr(hStmt, colIndex, cType, chunk.data(),
+                                static_cast<SQLLEN>(chunkSize), &actualRead);
         }
         CaptureFetchDiagnostics(hStmt, ret, messages, true);
 
@@ -3411,7 +3436,7 @@ py::object FetchLobColumnData(SQLHSTMT hStmt, SQLUSMALLINT colIndex, SQLSMALLINT
         }
 
         const size_t terminatorSize = isBinary ? 0 : (isWideChar ? sizeof(SQLWCHAR) : 1);
-        const size_t payloadCapacity = DAE_CHUNK_SIZE - terminatorSize;
+        const size_t payloadCapacity = chunkSize - terminatorSize;
         size_t bytesRead = 0;
         if (actualRead >= 0) {
             // ODBC lengths exclude the terminator; payload NULs must not be trimmed.
@@ -3424,8 +3449,17 @@ py::object FetchLobColumnData(SQLHSTMT hStmt, SQLUSMALLINT colIndex, SQLSMALLINT
         if (isWideChar && bytesRead % sizeof(SQLWCHAR) != 0) {
             ThrowStdException("SQLGetData returned an unaligned UTF-16 LOB length");
         }
+        if (sizeWideConversion && (actualRead == SQL_NO_TOTAL ||
+                                   static_cast<size_t>(actualRead) > payloadCapacity)) {
+            ThrowStdException("SQLGetData exceeded the probed UTF-16 LOB buffer size");
+        }
         if (bytesRead > 0) {
-            buffer.insert(buffer.end(), chunk.begin(), chunk.begin() + bytesRead);
+            if (buffer.empty()) {
+                buffer.swap(chunk);
+                buffer.resize(bytesRead);
+            } else {
+                buffer.insert(buffer.end(), chunk.begin(), chunk.begin() + bytesRead);
+            }
             LOG("FetchLobColumnData: Appended %zu bytes at loop %d", bytesRead, loopCount);
         }
         if (ret == SQL_SUCCESS) {
@@ -3697,7 +3731,7 @@ static SQLRETURN GetRowData(const SqlHandlePtr& StatementHandle, SQLUSMALLINT co
                         i, useWideChar ? "SQL_C_WCHAR" : "SQL_C_CHAR", (unsigned long)columnSize);
                     if (useWideChar) {
                         row.append(FetchLobColumnData(hStmt, i, SQL_C_WCHAR, true, false,
-                                                      "utf-16le", messages));
+                                                      "utf-16le", messages, true));
                     } else {
                         row.append(FetchLobColumnData(hStmt, i, SQL_C_CHAR, false, false,
                                                       effectiveCharEnc, messages));
@@ -3742,7 +3776,7 @@ static SQLRETURN GetRowData(const SqlHandlePtr& StatementHandle, SQLUSMALLINT co
                                     "truncated, using streaming LOB",
                                     i);
                                 row.append(FetchLobColumnData(hStmt, i, SQL_C_WCHAR, true, false,
-                                                              "utf-16le", messages));
+                                                              "utf-16le", messages, true));
                             }
                         } else if (dataLen == SQL_NULL_DATA) {
                             LOG("SQLGetData: Column %d is NULL (CHAR via WCHAR)", i);
@@ -3758,7 +3792,7 @@ static SQLRETURN GetRowData(const SqlHandlePtr& StatementHandle, SQLUSMALLINT co
                                 "streaming via FetchLobColumnData",
                                 i);
                             row.append(FetchLobColumnData(hStmt, i, SQL_C_WCHAR, true, false,
-                                                          "utf-16le", messages));
+                                                          "utf-16le", messages, true));
                         } else if (dataLen < 0) {
                             LOG("SQLGetData: Unexpected negative data length "
                                 "for column %d - dataType=%d, dataLen=%ld",

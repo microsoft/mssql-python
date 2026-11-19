@@ -7849,6 +7849,8 @@ class TestIssue531Utf8CollationVarchar:
 @pytest.mark.parametrize(
     "payload",
     [
+        None,
+        "",
         "\x00",
         "\x00\x00",
         "\x00A",
@@ -7857,8 +7859,13 @@ class TestIssue531Utf8CollationVarchar:
         "A" * 4094 + "\x00B",
         "\U0001f600" * 4096 + "\x00",
         "A" * 4094 + "\U0001f600\x00" + "B" * 4096,
+        "A" * 4093 + "\U0001f600\x00" + "B" * 4097,
+        "A" * 4095 + "\U0001f600\x00" + "B" * 4095,
+        ("\x00" * 4094 + "\U0001f600") * 3 + "\x00\x00",
     ],
     ids=[
+        "null",
+        "empty",
         "nul",
         "two-nuls",
         "leading",
@@ -7867,6 +7874,9 @@ class TestIssue531Utf8CollationVarchar:
         "chunk-nul",
         "multi-chunk",
         "surrogate-boundary",
+        "surrogate-before-boundary",
+        "surrogate-after-boundary",
+        "nul-surrogate-boundaries",
     ],
 )
 def test_lob_preserves_payload_nuls(

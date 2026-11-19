@@ -183,6 +183,9 @@ code-unit length across all rows, not just the longest Python string. Embedded
 NUL characters are preserved using explicit text lengths. Batch text metadata
 is computed natively without allocating encoded copies of each string; BMP-only
 strings do not require a character-by-character scan.
+Wide-character retrieval of `VARCHAR(MAX)` values uses a non-consuming binary
+length probe to size the conversion buffer, avoiding character loss at truncated
+UTF-16 conversion boundaries while preserving embedded and trailing NULs.
 Explicit `setinputsizes()` SQL types and sizes still take precedence. An explicit
 `VARCHAR` parameter can lose characters outside the database collation's code
 page even when inserting into an `NVARCHAR` destination; use `SQL_WVARCHAR` when
