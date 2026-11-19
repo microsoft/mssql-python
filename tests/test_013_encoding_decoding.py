@@ -7836,6 +7836,65 @@ class TestIssue531Utf8CollationVarchar:
             assert row[1] == original
 
 
+@pytest.mark.parametrize("fetch_method", ["fetchone", "fetchmany", "fetchall"])
+@pytest.mark.parametrize(
+    "sql_type, ctype, encoding",
+    [
+        ("NVARCHAR(MAX)", SQL_WCHAR, "utf-16le"),
+        ("VARCHAR(MAX)", SQL_WCHAR, "utf-16le"),
+        ("VARCHAR(MAX)", SQL_CHAR, "utf-8"),
+    ],
+    ids=["nvarchar-wide", "varchar-wide", "varchar-narrow"],
+)
+@pytest.mark.parametrize(
+    "payload",
+    [
+        "\x00",
+        "\x00\x00",
+        "\x00A",
+        "A\x00",
+        "A\x00B",
+        "A" * 4094 + "\x00B",
+        "\U0001f600" * 4096 + "\x00",
+        "A" * 4094 + "\U0001f600\x00" + "B" * 4096,
+    ],
+    ids=[
+        "nul",
+        "two-nuls",
+        "leading",
+        "trailing",
+        "embedded",
+        "chunk-nul",
+        "multi-chunk",
+        "surrogate-boundary",
+    ],
+)
+def test_lob_preserves_payload_nuls(
+    db_connection, fetch_method, sql_type, ctype, encoding, payload
+):
+    """ODBC's terminator is not part of the reported payload byte length."""
+    char_settings = db_connection.getdecoding(SQL_CHAR)
+    wide_settings = db_connection.getdecoding(SQL_WCHAR)
+    try:
+        db_connection.setdecoding(SQL_CHAR, encoding=encoding, ctype=ctype)
+        db_connection.setdecoding(SQL_WCHAR, encoding="utf-16le", ctype=SQL_WCHAR)
+        with db_connection.cursor() as cur:
+            cur.execute(
+                f"SELECT CAST(? COLLATE Latin1_General_100_CI_AS_SC_UTF8 AS {sql_type})",
+                payload,
+            )
+            if fetch_method == "fetchone":
+                actual = cur.fetchone()[0]
+            elif fetch_method == "fetchmany":
+                actual = cur.fetchmany(1)[0][0]
+            else:
+                actual = cur.fetchall()[0][0]
+            assert actual == payload
+    finally:
+        db_connection.setdecoding(SQL_CHAR, **char_settings)
+        db_connection.setdecoding(SQL_WCHAR, **wide_settings)
+
+
 class TestIssue531CoverageGaps:
     """Targeted coverage for the new CHAR-via-WCHAR / LOB / boundary branches
     introduced for issue #531 (review feedback)."""

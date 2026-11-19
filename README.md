@@ -174,6 +174,33 @@ example, requesting ASCII with `SQL_CHAR` does not cause non-ASCII parameters to
 raise encoding errors. Use `setencoding()` with no arguments to restore the
 supported defaults. `setdecoding()` independently controls how result data is read.
 
+### Batch parameter inference
+
+For automatically inferred `executemany()` text columns, any non-ASCII value
+makes the entire parameter column `NVARCHAR`; ASCII-only columns retain `VARCHAR`
+inference. Buffer sizes and the streaming threshold use the maximum UTF-16
+code-unit length across all rows, not just the longest Python string. Embedded
+NUL characters are preserved using explicit text lengths. Batch text metadata
+is computed natively without allocating encoded copies of each string; BMP-only
+strings do not require a character-by-character scan.
+Explicit `setinputsizes()` SQL types and sizes still take precedence. An explicit
+`VARCHAR` parameter can lose characters outside the database collation's code
+page even when inserting into an `NVARCHAR` destination; use `SQL_WVARCHAR` when
+Unicode preservation is required.
+
+Automatically inferred Decimal columns use a `NUMERIC` precision and scale
+covering every row. Their formatted text buffer capacity is separate from SQL
+precision, so signs and decimal points do not change the declared numeric type.
+If individually valid Decimals cannot share a lossless precision/scale within SQL
+Server's 38-digit limit, the batch uses individual `execute()` calls. Columns
+mixing incompatible Python types (for example, integers and Decimals, or dates
+and datetimes) or naive and timezone-aware datetimes also use individual calls
+rather than coercing every value through one sample's type. Boolean/integer and
+bytes/bytearray mixtures remain eligible for array binding. Explicit
+`setinputsizes()` overrides retain their specified SQL types, precision and scale.
+Individual execution is slower than array binding; known affected-row counts are
+summed across the batch, or `rowcount` is `-1` if any execution's count is unknown.
+
 ## Getting Started Examples
 Connect to SQL Server and execute a simple query:
  

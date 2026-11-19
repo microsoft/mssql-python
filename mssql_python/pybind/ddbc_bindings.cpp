@@ -2421,6 +2421,7 @@ SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list&
         for (int paramIndex = 0; paramIndex < columnwise_params.size(); ++paramIndex) {
             const py::list& columnValues = columnwise_params[paramIndex].cast<py::list>();
             ParamInfo& info = paramInfos[paramIndex];
+            const SQLULEN bufferSize = std::max(info.columnSize, info.arrayBufferSize);
             LOG("BindParameterArray: Processing param_index=%d, C_type=%d, "
                 "SQL_type=%d, column_size=%zu, decimal_digits=%d",
                 paramIndex, info.paramCType, info.paramSQLType, info.columnSize,
@@ -2480,32 +2481,33 @@ SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list&
                         "param_index=%d, count=%zu, column_size=%zu",
                         paramIndex, paramSetSize, info.columnSize);
                     SQLWCHAR* wcharArray = AllocateParamBufferArray<SQLWCHAR>(
-                        tempBuffers, paramSetSize * (info.columnSize + 1));
+                        tempBuffers, paramSetSize * (bufferSize + 1));
                     strLenOrIndArray = AllocateParamBufferArray<SQLLEN>(tempBuffers, paramSetSize);
                     for (size_t i = 0; i < paramSetSize; ++i) {
                         if (columnValues[i].is_none()) {
                             strLenOrIndArray[i] = SQL_NULL_DATA;
-                            std::memset(wcharArray + i * (info.columnSize + 1), 0,
-                                        (info.columnSize + 1) * sizeof(SQLWCHAR));
+                            std::memset(wcharArray + i * (bufferSize + 1), 0,
+                                        (bufferSize + 1) * sizeof(SQLWCHAR));
                         } else {
                             std::u16string wstr = columnValues[i].cast<std::u16string>();
                             // u16string is already UTF-16, so the
                             // original check is sufficient
-                            if (wstr.length() > info.columnSize) {
+                            if (wstr.length() > bufferSize) {
                                 ThrowStdException("Input string exceeds allowed column size "
                                                   "at parameter index " +
                                                   std::to_string(paramIndex));
                             }
-                            std::memcpy(wcharArray + i * (info.columnSize + 1), wstr.c_str(),
+                            std::memcpy(wcharArray + i * (bufferSize + 1), wstr.c_str(),
                                         (wstr.length() + 1) * sizeof(SQLWCHAR));
-                            strLenOrIndArray[i] = SQL_NTS;
+                            strLenOrIndArray[i] =
+                                static_cast<SQLLEN>(wstr.length() * sizeof(SQLWCHAR));
                         }
                     }
                     LOG("BindParameterArray: SQL_C_WCHAR bound - "
                         "param_index=%d",
                         paramIndex);
                     dataPtr = wcharArray;
-                    bufferLength = (info.columnSize + 1) * sizeof(SQLWCHAR);
+                    bufferLength = (bufferSize + 1) * sizeof(SQLWCHAR);
                     break;
                 }
                 case SQL_C_TINYINT:
@@ -2577,13 +2579,13 @@ SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list&
                         "param_index=%d, count=%zu, column_size=%zu, encoding='%s'",
                         paramIndex, paramSetSize, info.columnSize, charEncoding.c_str());
                     char* charArray = AllocateParamBufferArray<char>(
-                        tempBuffers, paramSetSize * (info.columnSize + 1));
+                        tempBuffers, paramSetSize * (bufferSize + 1));
                     strLenOrIndArray = AllocateParamBufferArray<SQLLEN>(tempBuffers, paramSetSize);
                     for (size_t i = 0; i < paramSetSize; ++i) {
                         if (columnValues[i].is_none()) {
                             strLenOrIndArray[i] = SQL_NULL_DATA;
-                            std::memset(charArray + i * (info.columnSize + 1), 0,
-                                        info.columnSize + 1);
+                            std::memset(charArray + i * (bufferSize + 1), 0,
+                                        bufferSize + 1);
                         } else {
                             std::string encodedStr;
 
@@ -2613,7 +2615,7 @@ SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list&
                                 encodedStr = columnValues[i].cast<std::string>();
                             }
 
-                            if (encodedStr.size() > info.columnSize) {
+                            if (encodedStr.size() > bufferSize) {
                                 LOG("BindParameterArray: String/binary too "
                                     "long - param_index=%d, row=%zu, size=%zu, "
                                     "max=%zu",
@@ -2621,7 +2623,7 @@ SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list&
                                 ThrowStdException("Input exceeds column size at index " +
                                                   std::to_string(i));
                             }
-                            std::memcpy(charArray + i * (info.columnSize + 1), encodedStr.c_str(),
+                            std::memcpy(charArray + i * (bufferSize + 1), encodedStr.c_str(),
                                         encodedStr.size());
                             strLenOrIndArray[i] = static_cast<SQLLEN>(encodedStr.size());
                         }
@@ -2630,7 +2632,7 @@ SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list&
                         "param_index=%d",
                         paramIndex);
                     dataPtr = charArray;
-                    bufferLength = info.columnSize + 1;
+                    bufferLength = bufferSize + 1;
                     break;
                 }
                 case SQL_C_BIT: {
@@ -3393,6 +3395,9 @@ py::object FetchLobColumnData(SQLHSTMT hStmt, SQLUSMALLINT colIndex, SQLSMALLINT
         }
         CaptureFetchDiagnostics(hStmt, ret, messages, true);
 
+        if (ret == SQL_NO_DATA) {
+            break;
+        }
         if (ret == SQL_ERROR || !SQL_SUCCEEDED(ret) && ret != SQL_SUCCESS_WITH_INFO) {
             std::ostringstream oss;
             oss << "Error fetching LOB for column " << colIndex << ", cType=" << cType
@@ -3405,47 +3410,19 @@ py::object FetchLobColumnData(SQLHSTMT hStmt, SQLUSMALLINT colIndex, SQLSMALLINT
             return py::none();
         }
 
+        const size_t terminatorSize = isBinary ? 0 : (isWideChar ? sizeof(SQLWCHAR) : 1);
+        const size_t payloadCapacity = DAE_CHUNK_SIZE - terminatorSize;
         size_t bytesRead = 0;
         if (actualRead >= 0) {
-            bytesRead = static_cast<size_t>(actualRead);
-            if (bytesRead > DAE_CHUNK_SIZE) {
-                bytesRead = DAE_CHUNK_SIZE;
-            }
+            // ODBC lengths exclude the terminator; payload NULs must not be trimmed.
+            bytesRead = std::min(static_cast<size_t>(actualRead), payloadCapacity);
+        } else if (actualRead == SQL_NO_TOTAL && ret == SQL_SUCCESS_WITH_INFO) {
+            bytesRead = payloadCapacity;
         } else {
-            // fallback: use full buffer size if actualRead is unknown
-            bytesRead = DAE_CHUNK_SIZE;
+            ThrowStdException("SQLGetData returned an invalid LOB length indicator");
         }
-
-        // For character data, trim trailing null terminators
-        if (!isBinary && bytesRead > 0) {
-            if (!isWideChar) {
-                // Narrow characters
-                while (bytesRead > 0 && chunk[bytesRead - 1] == '\0') {
-                    --bytesRead;
-                }
-                if (bytesRead < DAE_CHUNK_SIZE) {
-                    LOG("FetchLobColumnData: Trimmed null terminator from "
-                        "narrow char data - loop=%d",
-                        loopCount);
-                }
-            } else {
-                // Wide characters
-                size_t wcharSize = sizeof(SQLWCHAR);
-                if (bytesRead >= wcharSize && (bytesRead % wcharSize == 0)) {
-                    size_t wcharCount = bytesRead / wcharSize;
-                    std::vector<SQLWCHAR> alignedBuf(wcharCount);
-                    std::memcpy(alignedBuf.data(), chunk.data(), bytesRead);
-                    while (wcharCount > 0 && alignedBuf[wcharCount - 1] == 0) {
-                        --wcharCount;
-                        bytesRead -= wcharSize;
-                    }
-                    if (bytesRead < DAE_CHUNK_SIZE) {
-                        LOG("FetchLobColumnData: Trimmed null terminator from "
-                            "wide char data - loop=%d",
-                            loopCount);
-                    }
-                }
-            }
+        if (isWideChar && bytesRead % sizeof(SQLWCHAR) != 0) {
+            ThrowStdException("SQLGetData returned an unaligned UTF-16 LOB length");
         }
         if (bytesRead > 0) {
             buffer.insert(buffer.end(), chunk.begin(), chunk.begin() + bytesRead);
@@ -6737,6 +6714,7 @@ PYBIND11_MODULE(ddbc_bindings, m) {
 
     // Expose the C++ functions to Python
     m.def("ThrowStdException", &ThrowStdException);
+    m.def("_batch_text_metadata", &BatchTextMetadata);
     m.def("GetDriverPathCpp", &GetDriverPathCpp, "Get the path to the ODBC driver");
     m.def("_get_odbc_driver_path", &GetDriverPathForProviderCpp,
           "Get the ODBC driver path for an explicit provider without selecting it");
@@ -6750,6 +6728,7 @@ PYBIND11_MODULE(ddbc_bindings, m) {
         .def_readwrite("paramCType", &ParamInfo::paramCType)
         .def_readwrite("paramSQLType", &ParamInfo::paramSQLType)
         .def_readwrite("columnSize", &ParamInfo::columnSize)
+        .def_readwrite("arrayBufferSize", &ParamInfo::arrayBufferSize)
         .def_readwrite("decimalDigits", &ParamInfo::decimalDigits)
         .def_readwrite("strLenOrInd", &ParamInfo::strLenOrInd)
         .def_property(
