@@ -196,8 +196,10 @@ Server's 38-digit limit, the batch uses individual `execute()` calls. Columns
 mixing incompatible Python types (for example, integers and Decimals, or dates
 and datetimes) or naive and timezone-aware datetimes also use individual calls
 rather than coercing every value through one sample's type. Boolean/integer and
-bytes/bytearray mixtures remain eligible for array binding. Explicit
-`setinputsizes()` overrides retain their specified SQL types, precision and scale.
+bytes/bytearray mixtures, and mixtures of strings with `str` subclasses remain
+eligible for array binding. Explicit `setinputsizes()` overrides retain their
+specified SQL types, precision and scale, including numeric normalization during
+individual execution.
 Individual execution is slower than array binding; known affected-row counts are
 summed across the batch, or `rowcount` is `-1` if any execution's count is unknown.
 

@@ -2064,7 +2064,11 @@ def test_executemany_string_column_inference_is_per_column(db_connection):
             cur.execute("DROP TABLE #gh906_columns")
 
 
-def test_executemany_unicode_subclass_uses_native_payload(db_connection):
+@pytest.mark.parametrize("mixed", [False, True], ids=["subclasses", "mixed-text"])
+@pytest.mark.parametrize("reverse", [False, True])
+def test_executemany_unicode_subclass_uses_native_payload(db_connection, mixed, reverse):
+    from mssql_python import ddbc_bindings
+
     class Text(str):
         def encode(self, *args, **kwargs):
             raise AssertionError("Native binding does not call subclass encode()")
@@ -2076,10 +2080,20 @@ def test_executemany_unicode_subclass_uses_native_payload(db_connection):
             return 0
 
     values = [Text("\u0158"), Text("\U0001f600" * 6)]
+    if mixed:
+        values.insert(0, "longer ASCII sample")
+    if reverse:
+        values.reverse()
     with db_connection.cursor() as cur:
         cur.execute("CREATE TABLE #unicode_subclass (id INT, value NVARCHAR(20))")
         try:
-            cur.executemany("INSERT INTO #unicode_subclass VALUES (?, ?)", list(enumerate(values)))
+            with patch.object(
+                ddbc_bindings, "SQLExecuteMany", wraps=ddbc_bindings.SQLExecuteMany
+            ) as batch:
+                cur.executemany(
+                    "INSERT INTO #unicode_subclass VALUES (?, ?)", list(enumerate(values))
+                )
+            batch.assert_called_once()
             cur.execute("SELECT value FROM #unicode_subclass ORDER BY id")
             assert [row[0] for row in cur.fetchall()] == values
         finally:
@@ -2273,6 +2287,100 @@ def test_executemany_mixed_fallback_reapplies_partial_overrides(db_connection):
             cur.execute("DROP TABLE #mixed_overrides")
 
 
+@pytest.mark.parametrize("streamed", [False, True], ids=["mixed-types", "streaming"])
+def test_executemany_fallback_accepts_generic_row_sequences(db_connection, streamed):
+    from collections import UserList
+    from mssql_python import ddbc_bindings
+
+    values = ["A" * 4001, "\u0158"] if streamed else [1, 0.5]
+    with db_connection.cursor() as cur:
+        cur.execute("CREATE TABLE #generic_batch_rows (id INT, value NVARCHAR(MAX))")
+        try:
+            for index, value in enumerate(values):
+                cur.execute("INSERT INTO #generic_batch_rows VALUES (?, ?)", (index, value))
+            cur.execute("SELECT value FROM #generic_batch_rows ORDER BY id")
+            expected = [row[0] for row in cur.fetchall()]
+            cur.execute("DELETE FROM #generic_batch_rows")
+            with patch.object(
+                ddbc_bindings, "SQLExecuteMany", wraps=ddbc_bindings.SQLExecuteMany
+            ) as batch:
+                cur.executemany(
+                    "INSERT INTO #generic_batch_rows VALUES (?, ?)",
+                    [UserList([index, value]) for index, value in enumerate(values)],
+                )
+            batch.assert_not_called()
+            assert cur.rowcount == len(values)
+            cur.execute("SELECT value FROM #generic_batch_rows ORDER BY id")
+            assert [row[0] for row in cur.fetchall()] == expected
+        finally:
+            cur.execute("DROP TABLE #generic_batch_rows")
+
+
+@pytest.mark.parametrize("sql_type", [mssql_python.SQL_DECIMAL, mssql_python.SQL_NUMERIC])
+@pytest.mark.parametrize("streamed", [False, True], ids=["mixed-types", "streaming"])
+def test_executemany_fallback_normalizes_numeric_overrides(db_connection, sql_type, streamed):
+    from mssql_python import ddbc_bindings
+
+    values = [(42, 1), (19.99, 0.5), (None, None)]
+    if streamed:
+        values = [(42, "A" * 4001), (19.99, "\u0158"), (None, None)]
+    second_type = "NVARCHAR(MAX)" if streamed else "DECIMAL(18,2)"
+    with db_connection.cursor() as cur:
+        cur.execute(f"CREATE TABLE #fallback_numeric (amount DECIMAL(18,2), value {second_type})")
+        try:
+            cur.setinputsizes([(sql_type, 18, 2)])
+            with (
+                pytest.warns(Warning, match="Number of input sizes"),
+                patch.object(
+                    ddbc_bindings, "SQLExecuteMany", wraps=ddbc_bindings.SQLExecuteMany
+                ) as batch,
+            ):
+                cur.executemany("INSERT INTO #fallback_numeric VALUES (?, ?)", values)
+            batch.assert_not_called()
+            assert cur.rowcount == 3
+            assert cur._inputsizes is None
+            cur.execute("SELECT amount, value FROM #fallback_numeric ORDER BY amount DESC")
+            assert [tuple(row) for row in cur.fetchall()] == [
+                (decimal.Decimal("42.00"), "A" * 4001 if streamed else decimal.Decimal("1")),
+                (decimal.Decimal("19.99"), "\u0158" if streamed else decimal.Decimal("0.5")),
+                (None, None),
+            ]
+        finally:
+            cur.execute("DROP TABLE #fallback_numeric")
+
+
+@pytest.mark.parametrize("exploding", [False, True], ids=["invalid-text", "str-error"])
+def test_executemany_fallback_numeric_error_no_leak(db_connection, exploding):
+    secret = "sensitive-invalid-numeric-value"
+
+    class ExplodingStr:
+        def __str__(self):
+            raise ValueError(secret)
+
+    with db_connection.cursor() as cur:
+        cur.execute("CREATE TABLE #fallback_numeric_error (amount DECIMAL(18,2), value FLOAT)")
+        try:
+            cur.setinputsizes([(mssql_python.SQL_DECIMAL, 18, 2)])
+            with (
+                pytest.warns(Warning, match="Number of input sizes"),
+                pytest.raises(ValueError) as exc_info,
+            ):
+                cur.executemany(
+                    "INSERT INTO #fallback_numeric_error VALUES (?, ?)",
+                    [(ExplodingStr() if exploding else secret, 1), ("19.99", 0.5)],
+                )
+            assert "row 0, column 0" in str(exc_info.value)
+            assert secret not in str(exc_info.value)
+            assert exc_info.value.__cause__ is None
+            assert exc_info.value.__context__ is None
+            assert secret not in "".join(traceback.format_exception(exc_info.value))
+            assert cur._inputsizes is None
+            cur.executemany("INSERT INTO #fallback_numeric_error VALUES (?, ?)", [(1, 1), (2, 2)])
+            assert cur.rowcount == 2
+        finally:
+            cur.execute("DROP TABLE #fallback_numeric_error")
+
+
 @pytest.mark.parametrize("nocount", [False, True])
 def test_executemany_mixed_fallback_aggregates_rowcounts(db_connection, nocount):
     with db_connection.cursor() as cur:
@@ -2327,8 +2435,6 @@ def test_executemany_inference_error_recovery(db_connection, values, error):
 )
 def test_executemany_generated_batches_match_execute(db_connection, kind):
     """Exercise deterministic combinations, boundaries, and order permutations."""
-    import random
-
     scenarios = {
         "text": (
             "NVARCHAR(MAX)",
@@ -2382,7 +2488,6 @@ def test_executemany_generated_batches_match_execute(db_connection, kind):
         ),
     }
     sql_type, pool = scenarios[kind]
-    randomizer = random.Random(906)
     operation = "INSERT INTO #generated_batches VALUES (?, ?)"
     if kind == "binary":
         # Give the single-row reference typed NULL context for its temporary table.
@@ -2391,7 +2496,7 @@ def test_executemany_generated_batches_match_execute(db_connection, kind):
         cur.execute(f"CREATE TABLE #generated_batches (id INT, value {sql_type})")
         try:
             for case in range(20):
-                values = randomizer.choices(pool, k=6)
+                values = [pool[(case * (i + 1) + i * i) % len(pool)] for i in range(6)]
                 for i, value in enumerate(values):
                     cur.execute(operation, (i, value))
                 cur.execute("SELECT value FROM #generated_batches ORDER BY id")

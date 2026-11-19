@@ -119,6 +119,26 @@ def _normalize_time_param(value: object, c_type: int) -> str | None:
     return None
 
 
+def _format_numeric_batch_parameter(value: Any, row_index: int, column_index: int) -> str:
+    if isinstance(value, decimal.Decimal):
+        return format(value, "f")
+
+    formatted = ""
+    conversion_failed = False
+    try:
+        formatted = format(decimal.Decimal(str(value)), "f")
+    except Exception:  # pylint: disable=broad-exception-caught
+        # User-defined str() can raise value-bearing exceptions of any type.
+        conversion_failed = True
+    if conversion_failed:
+        # Raise outside the handler so neither context nor message exposes values.
+        raise ValueError(
+            f"Failed to convert parameter to Decimal at row "
+            f"{row_index}, column {column_index} (value type: {type(value).__name__})"
+        ) from None
+    return formatted
+
+
 class _ArrowBatchIterator:
     """Serialize generator advancement with close, including delegated Arrow reads."""
 
@@ -2743,6 +2763,11 @@ class Cursor:
                 else:
                     # Use auto-detection for columns without explicit types
                     column_types = {type(value) for value in column if value is not None}
+                    if len(column_types) > 1:
+                        column_types = {
+                            str if issubclass(value_type, str) else value_type
+                            for value_type in column_types
+                        }
                     mixed_types = (
                         len(column_types) > 1
                         and not column_types <= {int, bool}
@@ -2849,12 +2874,26 @@ class Cursor:
                 "Batch parameters require row-by-row execution to preserve their types and sizes.",
             )
             input_sizes = self._inputsizes
+            numeric_overrides = [
+                i
+                for i, (sql_type, _, _, _) in enumerate(input_sizes or [])
+                if i < param_count
+                and sql_type in (ddbc_sql_const.SQL_DECIMAL.value, ddbc_sql_const.SQL_NUMERIC.value)
+            ]
             total_rowcount = 0
             try:
-                for row in seq_of_parameters:
+                for row_index, row in enumerate(seq_of_parameters):
+                    if numeric_overrides:
+                        processed_row = list(row)
+                        for i in numeric_overrides:
+                            if processed_row[i] is not None:
+                                processed_row[i] = _format_numeric_batch_parameter(
+                                    processed_row[i], row_index, i
+                                )
+                        row = processed_row
                     # execute() consumes overrides; every row needs them.
                     self._inputsizes = input_sizes
-                    self.execute(operation, row)
+                    self.execute(operation, tuple(row))
                     if self.rowcount < 0:
                         total_rowcount = -1
                     elif total_rowcount >= 0:
@@ -2887,28 +2926,7 @@ class Cursor:
                         ddbc_sql_const.SQL_DECIMAL.value,
                         ddbc_sql_const.SQL_NUMERIC.value,
                     ):
-                        if isinstance(val, decimal.Decimal):
-                            processed_row[i] = format(val, "f")
-                        else:
-                            # Do not embed the parameter value or the full row in the
-                            # message: rows may contain PII (SSNs, emails, balances)
-                            # that would leak into caller error handlers, tracebacks,
-                            # and log/APM stores. Report metadata only (row index,
-                            # column index, value type).
-                            err_msg = (
-                                f"Failed to convert parameter to Decimal at row "
-                                f"{row_index}, column {i} (value type: {type(val).__name__})"
-                            )
-                            # Raise outside the handler so conversion exceptions are
-                            # not retained as context with rejected input.
-                            conversion_failed = False
-                            try:
-                                val_text = str(val)
-                                processed_row[i] = format(decimal.Decimal(val_text), "f")
-                            except Exception:  # pylint: disable=broad-exception-caught
-                                conversion_failed = True
-                            if conversion_failed:
-                                raise ValueError(err_msg) from None
+                        processed_row[i] = _format_numeric_batch_parameter(val, row_index, i)
                         parameters_type[i].arrayBufferSize = max(
                             parameters_type[i].arrayBufferSize, len(processed_row[i])
                         )
