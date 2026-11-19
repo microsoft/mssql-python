@@ -21,6 +21,7 @@
 # (drop_ConsolidateConda_ConsolidateArtifacts). Publishing is the companion
 # conda-release-pipeline.yml. Validated locally that the recipe builds + imports; the
 # per-OS legs + SDL settings need an actual ADO run to confirm.
+# Successful main wheel builds trigger Official Conda builds using that exact producer run.
 # =========================================================================================
 name: $(Year:YY)$(DayOfYear)$(Rev:.r)-CondaBuild
 
@@ -52,7 +53,7 @@ parameters:
 
 variables:
   - name: effectiveOneBranchType
-    ${{ if eq(variables['Build.Reason'], 'Schedule') }}:
+    ${{ if or(eq(variables['Build.Reason'], 'Schedule'), eq(variables['Build.Reason'], 'ResourceTrigger')) }}:
       value: 'Official'
     ${{ else }}:
       value: '${{ parameters.oneBranchType }}'
@@ -68,9 +69,12 @@ resources:
   # The wheel build pipeline whose consolidated wheel artifacts this pipeline repackages.
   pipelines:
     - pipeline: buildPipeline
-      source: 'Build-Release-Package-Pipeline'
+      source: '\OneBranch\Build-Release-Package-Pipeline'
       branch: main
-      trigger: none
+      trigger:
+        branches:
+          include:
+            - refs/heads/main
 
 extends:
   template: 'v2/OneBranch.${{ variables.effectiveOneBranchType }}.CrossPlat.yml@templates'
@@ -356,14 +360,24 @@ extends:
               - bash: |
                   set -euo pipefail
                   sudo apt-get update
-                  sudo apt-get install -y qemu-user-static binfmt-support libc6-arm64-cross
-                  # qemu-user-static + binfmt-support register the aarch64 binfmt_misc handler
-                  # on install (update-binfmts), so host-level qemu-user emulation works WITHOUT
-                  # a `docker run --privileged multiarch/qemu-user-static` (an unpinned public
-                  # image SDL would flag). Verify the handler is present and fail loudly if not,
-                  # rather than silently emulating nothing.
-                  test -e /proc/sys/fs/binfmt_misc/qemu-aarch64 || { echo "ERROR: aarch64 binfmt handler not registered after apt install" >&2; exit 1; }
+                  sudo apt-get install -y qemu-user qemu-user-binfmt libc6-arm64-cross
+                  # Ubuntu 26.04 provides static emulators in qemu-user; qemu-user-binfmt
+                  # supplies systemd registration files, not update-binfmts entries.
+                  sudo systemctl restart systemd-binfmt.service
+                  qemu-aarch64 --version
+                  test -x /usr/aarch64-linux-gnu/lib/ld-linux-aarch64.so.1 || { echo "ERROR: ARM64 glibc loader is missing after apt install" >&2; exit 1; }
+                  handler="/proc/sys/fs/binfmt_misc/qemu-aarch64"
+                  grep -qx enabled "$handler" || { echo "ERROR: aarch64 binfmt handler is missing or disabled after systemd-binfmt restart" >&2; exit 1; }
+                  interpreter="$(sed -n 's/^interpreter //p' "$handler")"
+                  # Ubuntu 24.04 can register a binfmt-P symlink to the same emulator.
+                  if [[ -z "$interpreter" ]] || ! installed="$(readlink -e "/usr/bin/qemu-aarch64")" \
+                    || ! registered="$(readlink -e "$interpreter")" || [[ "$registered" != "$installed" ]]; then
+                    echo "ERROR: aarch64 binfmt handler does not resolve to the installed qemu-user emulator" >&2
+                    exit 1
+                  fi
+                  echo "##vso[task.setvariable variable=ready;isOutput=true]true"
                 displayName: 'Install libc6-arm64-cross + register QEMU binfmt (aarch64)'
+                name: setupArm64Qemu
                 # continueOnError so a transient apt/binfmt flake fails ONLY the best-effort
                 # aarch64 leg (which is itself continueOnError), never the shared Linux job -- a
                 # blocking setup step here would discard the already-validated linux-64 packages
@@ -374,6 +388,7 @@ extends:
                   condaSubdir: 'linux-aarch64'
                   condaTargetSubdir: 'linux-aarch64'
                   continueOnError: true
+                  condition: and(succeeded(), eq(variables['setupArm64Qemu.ready'], 'true'))
                   odbcWheelDir: '$(Pipeline.Workspace)/odbc_wheels'
                   odbcWheelFilter: 'mssql_python_odbc-*manylinux_2_28_aarch64.whl'
                   pythonVersions: '${{ parameters.pythonVersions }}'

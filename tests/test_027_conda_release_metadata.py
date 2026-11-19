@@ -54,6 +54,166 @@ _PYTHONS = ["3.10", "3.11", "3.12", "3.13", "3.14"]
 _MP_VER = "1.13.0"
 
 
+@pytest.mark.skipif(sys.platform != "linux", reason="QEMU provisioning runs on Linux")
+@pytest.mark.parametrize(
+    "state",
+    [
+        "ready",
+        "symlinked-interpreter",
+        "broken-symlink",
+        "missing-handler",
+        "disabled",
+        "wrong-interpreter",
+        "missing-loader",
+    ],
+)
+def test_linux_qemu_setup_requires_supported_packages_and_enabled_handler(tmp_path, state):
+    import os
+    import shutil
+    import subprocess
+    import textwrap
+
+    bash = shutil.which("bash")
+    if not bash:
+        pytest.skip("QEMU setup regression requires bash")
+    if subprocess.run(
+        [bash, "-c", 'readlink -e "$1" >/dev/null 2>&1', "bash", tmp_path.as_posix()],
+        capture_output=True,
+        timeout=15,
+    ).returncode:
+        pytest.skip("QEMU setup regression requires readlink -e")
+    source = (_ROOT / "OneBranchPipelines/conda-build-pipeline.yml").read_text()
+    setup = source.split(
+        "                displayName: 'Install libc6-arm64-cross + register QEMU binfmt (aarch64)'",
+        1,
+    )[0].rsplit("              - bash: |\n", 1)[1]
+    handler = tmp_path / "handler"
+    emulator = tmp_path / "qemu-aarch64"
+    emulator.touch()
+    interpreter = emulator
+    if state in {"symlinked-interpreter", "broken-symlink"}:
+        interpreter = tmp_path / "aarch64-binfmt-P"
+        try:
+            interpreter.symlink_to(
+                emulator if state == "symlinked-interpreter" else tmp_path / "missing-emulator"
+            )
+        except OSError as error:
+            pytest.skip(f"Symlink regression requires symlink support: {error}")
+    elif state == "wrong-interpreter":
+        interpreter = tmp_path / "other-emulator"
+        interpreter.touch()
+    if state != "missing-handler":
+        handler.write_text(
+            ("disabled" if state == "disabled" else "enabled")
+            + "\ninterpreter "
+            + interpreter.as_posix()
+            + "\n",
+            newline="\n",
+        )
+    setup = setup.replace("/proc/sys/fs/binfmt_misc/qemu-aarch64", handler.as_posix())
+    setup = setup.replace("/usr/bin/qemu-aarch64", emulator.as_posix())
+    mocks = r"""
+sudo() {
+  case "$*" in
+    "apt-get update"|"apt-get install -y qemu-user qemu-user-binfmt libc6-arm64-cross"|\
+    "systemctl restart systemd-binfmt.service") printf '%s\n' "$*" ;;
+    *) echo "Unexpected privileged command: $*" >&2; return 1 ;;
+  esac
+}
+qemu-aarch64() { echo "QEMU_VERSION_CHECK"; }
+test() {
+  if [[ "$*" == "-x /usr/aarch64-linux-gnu/lib/ld-linux-aarch64.so.1" ]]; then
+    [[ "$TEST_STATE" != missing-loader ]]
+  else
+    builtin test "$@"
+  fi
+}
+"""
+    result = subprocess.run(
+        [bash, "-c", mocks + textwrap.dedent(setup)],
+        env=dict(os.environ, TEST_STATE=state),
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    output = result.stdout + result.stderr
+    if state in {"ready", "symlinked-interpreter"}:
+        assert result.returncode == 0, output
+        assert (
+            output.splitlines().count(
+                "apt-get install -y qemu-user qemu-user-binfmt libc6-arm64-cross"
+            )
+            == 1
+        ), output
+        assert "systemctl restart systemd-binfmt.service" in output
+        assert "QEMU_VERSION_CHECK" in output
+        assert "##vso[task.setvariable variable=ready;isOutput=true]true" in output
+    else:
+        assert result.returncode != 0, output
+        assert "ERROR:" in output
+        assert ("ARM64 glibc loader" if state == "missing-loader" else "aarch64 binfmt") in output
+        assert "##vso[task.setvariable variable=ready;isOutput=true]true" not in output
+
+
+def test_linux_qemu_setup_gates_arm64_build_only():
+    source = (_ROOT / "OneBranchPipelines/conda-build-pipeline.yml").read_text()
+    linux = source.split("- stage: CondaLinux\n", 1)[1].split("- stage: ConsolidateConda\n", 1)[0]
+    steps = re.split(r"^              - ", linux, flags=re.MULTILINE)[1:]
+    setup = next(step for step in steps if "register QEMU binfmt (aarch64)" in step)
+    arm64 = next(step for step in steps if "condaSubdir: 'linux-aarch64'" in step)
+    native = next(step for step in steps if "condaSubdir: 'linux-64'" in step)
+    publish = next(step for step in steps if "displayName: 'Publish Linux conda artifact'" in step)
+    assert "                name: setupArm64Qemu\n" in setup
+    assert "                continueOnError: true\n" in setup
+    assert "                  continueOnError: true\n" in arm64
+    assert re.findall(r"^                  condition: (.+)$", arm64, re.MULTILINE) == [
+        "and(succeeded(), eq(variables['setupArm64Qemu.ready'], 'true'))"
+    ]
+    for step in (native, publish):
+        assert re.findall(r"^\s+condition: (.+)$", step, re.MULTILINE) in ([], ["succeeded()"])
+
+    template = (_ROOT / "OneBranchPipelines/steps/conda-build-validate-step-posix.yml").read_text()
+    parameters, build = template.split("\nsteps:\n", 1)
+    assert re.search(r"- name: condition\n    type: string\n    default: succeeded\(\)", parameters)
+    assert re.search(r"^    condition: \$\{\{ parameters\.condition \}\}$", build, re.MULTILINE)
+
+
+def test_conda_build_completion_trigger_only_main():
+    source = (_ROOT / "OneBranchPipelines/conda-build-pipeline.yml").read_text()
+    assert "\ntrigger: none\npr: none\n" in source
+    resource = source.split("\n  pipelines:\n", 1)[1].split("\nextends:\n", 1)[0]
+    assert resource.count("- pipeline: buildPipeline") == 1
+    assert "      source: '\\OneBranch\\Build-Release-Package-Pipeline'\n" in resource
+    assert "      branch: main\n" in resource
+    assert resource.split("      trigger:\n", 1)[1].strip() == (
+        "branches:\n          include:\n            - refs/heads/main"
+    )
+    assert "$(resources.pipeline.buildPipeline.runID)" in source
+
+
+def test_automatic_conda_builds_use_official_template():
+    source = (_ROOT / "OneBranchPipelines/conda-build-pipeline.yml").read_text()
+    assert (
+        "  - name: effectiveOneBranchType\n"
+        "    ${{ if or(eq(variables['Build.Reason'], 'Schedule'), "
+        "eq(variables['Build.Reason'], 'ResourceTrigger')) }}:\n"
+        "      value: 'Official'\n"
+        "    ${{ else }}:\n"
+        "      value: '${{ parameters.oneBranchType }}'\n"
+    ) in source
+    assert "template: 'v2/OneBranch.${{ variables.effectiveOneBranchType }}.CrossPlat.yml" in source
+
+
+def test_conda_release_remains_manual():
+    source = (_ROOT / "OneBranchPipelines/conda-release-pipeline.yml").read_text()
+    assert "\ntrigger: none\npr: none\n" in source
+    resource = source.split("\n  pipelines:\n", 1)[1].split("\nextends:\n", 1)[0]
+    assert re.findall(r"^      trigger: (.+)$", resource, re.MULTILINE) == ["none"]
+    assert "      trigger:\n" not in resource
+    assert "PUBLISH_TO_CONDA: '${{ parameters.publishToConda }}'" in source
+    assert ("      ${{ if eq(parameters.publishToConda, true) }}:\n" "        binskim:\n") in source
+
+
 @pytest.mark.parametrize(
     "source_present", [False, True], ids=["wheel-tests-only", "source-checkout"]
 )

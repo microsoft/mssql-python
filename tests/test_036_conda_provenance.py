@@ -701,11 +701,66 @@ def chain(release_sources):
     producer_run["resources"]["pipelines"] = {
         "buildPipeline": {"pipeline": {"id": 173176}, "version": "26250.2"}
     }
+    wheel["reason"] = "manual"
+    wheel_run["templateParameters"] = {
+        "oneBranchType": "Official",
+        "runSdlTasks": True,
+        "signWindowsBinaries": True,
+        "windowsConfigs": [{"pyVer": "312", "arch": "x64"}, {"pyVer": "312", "arch": "arm64"}],
+        "macosConfigs": [{"pyVer": "312"}],
+        "linuxConfigs": [{"tag": "manylinux_2_28", "arch": "aarch64"}],
+    }
+    timeline = []
+    for identifier in (
+        "Win_py312_x64.BuildWheel.__default",
+        "Win_py312_arm64.BuildWheel.__default",
+        "MacOS_py312.BuildWheel.__default",
+        "Linux_manylinux_2_28_aarch64.BuildWheels.__default",
+        "ODBC_BuildAll.BuildWheel.__default",
+    ):
+        timeline.append(
+            {
+                "id": identifier,
+                "identifier": identifier,
+                "type": "Job",
+                "state": "completed",
+                "result": "succeeded",
+                "attempt": 1,
+            }
+        )
+        label = "ODBC" if identifier.startswith("ODBC_") else "Python"
+        tasks = [
+            (f"ESRP MalwareScanning - {label} Wheels (Official)", "EsrpMalwareScanning"),
+            ("Component Governance Detection", "ComponentGovernanceComponentDetection"),
+        ]
+        if identifier.startswith("Win_"):
+            tasks.extend(
+                [
+                    ("ESRP MalwareScanning - Native extension", "EsrpMalwareScanning"),
+                    ("ESRP CodeSigning - Native extension (.pyd)", "EsrpCodeSigning"),
+                    ("Verify Authenticode signature (native extension)", "PowerShell"),
+                    ("Verify signed .pyd inside built wheel", "PowerShell"),
+                ]
+            )
+        timeline.extend(
+            {
+                "id": f"{identifier}-{index}",
+                "parentId": identifier,
+                "type": "Task",
+                "name": name,
+                "task": {"name": task},
+                "state": "completed",
+                "result": "succeeded",
+                "attempt": 1,
+            }
+            for index, (name, task) in enumerate(tasks)
+        )
     records = {
         "build/builds/174195?api-version=7.1": producer,
         "pipelines/2318/runs/174195?api-version=7.1": producer_run,
         "build/builds/173176?api-version=7.1": wheel,
         "pipelines/2199/runs/173176?api-version=7.1": wheel_run,
+        "build/builds/173176/timeline?api-version=7.1": {"records": timeline},
     }
     records.update(_source_record(path, content) for path, content in release_sources.items())
     return records
@@ -735,6 +790,86 @@ def test_exact_recorded_wheel_run_is_verified_not_packaging_mode_or_build_number
     }
     assert result["producer"]["commit"] == "a" * 40  # Recipe and wheel commits can differ.
     assert result["versions"] == {"mssql-python": "1.15.0", "mssql-python-odbc": "18.6.2.1"}
+
+
+@pytest.mark.parametrize(
+    "problem",
+    [
+        "nonofficial",
+        "missing-parameters",
+        "sdl-disabled",
+        "signing-disabled",
+        "empty-matrix",
+        "missing-timeline",
+        "missing-job",
+        "missing-wheel-scan",
+        "missing-odbc-scan",
+        "missing-signing",
+        "missing-signature-verification",
+        "failed-task",
+        "skipped-task",
+        "wrong-task-kind",
+        "wrong-job",
+        "previous-attempt",
+    ],
+)
+def test_wheel_security_evidence_required_for_production(chain, problem):
+    run = chain["pipelines/2199/runs/173176?api-version=7.1"]
+    timeline = chain["build/builds/173176/timeline?api-version=7.1"]["records"]
+    params = run["templateParameters"]
+    scan = next(
+        record
+        for record in timeline
+        if record.get("name") == "ESRP MalwareScanning - Python Wheels (Official)"
+        and record["parentId"].startswith("Win_py312_arm64.")
+    )
+    if problem == "nonofficial":
+        params["oneBranchType"] = "NonOfficial"
+    elif problem == "missing-parameters":
+        del run["templateParameters"]
+    elif problem == "sdl-disabled":
+        params["runSdlTasks"] = False
+    elif problem == "signing-disabled":
+        params["signWindowsBinaries"] = False
+    elif problem == "empty-matrix":
+        params["windowsConfigs"] = []
+    elif problem == "missing-timeline":
+        timeline.clear()
+    elif problem == "missing-job":
+        timeline[:] = [record for record in timeline if record.get("id") != scan["parentId"]]
+    elif problem == "missing-wheel-scan":
+        timeline.remove(scan)
+    elif problem in {"missing-odbc-scan", "missing-signing", "missing-signature-verification"}:
+        label = {
+            "missing-odbc-scan": "ESRP MalwareScanning - ODBC Wheels (Official)",
+            "missing-signing": "ESRP CodeSigning - Native extension (.pyd)",
+            "missing-signature-verification": "Verify signed .pyd inside built wheel",
+        }[problem]
+        timeline.remove(next(record for record in timeline if record.get("name") == label))
+    elif problem in {"failed-task", "skipped-task"}:
+        scan["result"] = problem.removesuffix("-task")
+    elif problem == "wrong-task-kind":
+        scan["task"]["name"] = "CmdLine"
+    elif problem == "wrong-job":
+        scan["parentId"] = "unrelated-job"
+    elif problem == "previous-attempt":
+        next(record for record in timeline if record["id"] == scan["parentId"])["attempt"] = 2
+    with pytest.raises(ValueError, match="Production publication is ineligible"):
+        _verify(chain)
+    result = _verify(chain, publish=False)
+    assert result["productionEligible"] is False
+    assert result["productionIneligibilityReasons"]
+
+
+def test_scheduled_official_wheel_run_still_requires_completed_security_checks(chain):
+    chain["build/builds/173176?api-version=7.1"]["reason"] = "schedule"
+    chain["pipelines/2199/runs/173176?api-version=7.1"]["templateParameters"][
+        "oneBranchType"
+    ] = "NonOfficial"
+    assert _verify(chain)["productionEligible"] is True
+    chain["build/builds/173176/timeline?api-version=7.1"]["records"].clear()
+    with pytest.raises(ValueError, match="Production publication is ineligible"):
+        _verify(chain)
 
 
 @pytest.mark.parametrize(
@@ -1002,6 +1137,31 @@ def test_provenance_cli_executes_same_chain_in_both_modes(monkeypatch, chain, ca
     )
 
 
+@pytest.mark.parametrize("publish", ["true", "false"])
+def test_provenance_cli_cannot_promote_unsigned_wheels(
+    monkeypatch, provenance_cli_env, chain, capsys, publish
+):
+    monkeypatch.setenv("PUBLISH_TO_CONDA", publish)
+    monkeypatch.setattr(provenance, "ado_get_json", chain.__getitem__)
+    chain["pipelines/2199/runs/173176?api-version=7.1"]["templateParameters"][
+        "signWindowsBinaries"
+    ] = False
+    status = provenance.cli()
+    output = capsys.readouterr()
+    if publish == "true":
+        assert status == 1
+        assert "Production publication is ineligible" in output.err
+        assert "##vso[task.setvariable" not in output.out
+    else:
+        assert status == 0
+        result = json.loads(output.out.splitlines()[0].split(": ", 1)[1])
+        assert result["productionEligible"] is False
+        assert (
+            "wheel producer signWindowsBinaries was not enabled"
+            in result["productionIneligibilityReasons"]
+        )
+
+
 def test_invalid_publish_flag_is_not_treated_as_dry_run(monkeypatch):
     monkeypatch.setenv("PUBLISH_TO_CONDA", "perhaps")
     with pytest.raises(ValueError, match="true or false"):
@@ -1251,7 +1411,8 @@ def test_recorded_rs_source_is_read_only_at_verified_wheel_commit(release_source
         with pytest.raises((ValueError, KeyError, HTTPError)):
             _verify(chain, get_json=get_json)
         assert reads[-1] == key
-    assert len(reads) == 8
+    assert reads[4] == "build/builds/173176/timeline?api-version=7.1"
+    assert len(reads) == 9
 
 
 @pytest.mark.parametrize(
