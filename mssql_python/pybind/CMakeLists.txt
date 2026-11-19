@@ -5,6 +5,15 @@ project(ddbc_bindings)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Performance profiling instrumentation. OFF by default so released wheels ship
+# with zero profiler code. Turn on with -DENABLE_PROFILING=ON (dev/internal builds).
+option(ENABLE_PROFILING "Build with performance profiling instrumentation" OFF)
+option(MSSQL_NATIVE_FETCH_TEST_FAULTS "Build isolated native-fetch failure-contract controls" OFF)
+option(MSSQL_ARROW_TEST_INTERPOSITION "Expose ODBC pointer addresses for isolated Arrow tests" OFF)
+if(MSSQL_NATIVE_FETCH_TEST_FAULTS AND NOT ENABLE_PROFILING)
+    message(FATAL_ERROR "Native-fetch fault controls require a separate ENABLE_PROFILING=ON build")
+endif()
+
 # Enable verbose output to see actual compiler/linker commands
 set(CMAKE_VERBOSE_MAKEFILE ON CACHE BOOL "Verbose output" FORCE)
 
@@ -37,7 +46,11 @@ if (MSVC)
     
     # Enable PDB generation for all target types
     add_compile_options("$<$<CONFIG:Release>:/Zi>")
-    add_link_options("$<$<CONFIG:Release>:/DEBUG /OPT:REF /OPT:ICF>")
+    add_link_options(
+        "$<$<CONFIG:Release>:/DEBUG>"
+        "$<$<CONFIG:Release>:/OPT:REF>"
+        "$<$<CONFIG:Release>:/OPT:ICF>"
+    )
     
     message(STATUS "Security flags applied: /GS /guard:cf /DYNAMICBASE /NXCOMPAT /GUARD:CF")
 endif()
@@ -354,16 +367,31 @@ target_compile_definitions(ddbc_bindings PRIVATE
     NOMINMAX
 )
 
+# Emit ENABLE_PROFILING to the compiler only when the option is on.
+if(ENABLE_PROFILING)
+    message(STATUS "Building WITH performance profiling instrumentation")
+    target_compile_definitions(ddbc_bindings PRIVATE ENABLE_PROFILING)
+endif()
+if(MSSQL_NATIVE_FETCH_TEST_FAULTS)
+    target_compile_definitions(ddbc_bindings PRIVATE MSSQL_NATIVE_FETCH_TEST_FAULTS)
+endif()
+if(MSSQL_ARROW_TEST_INTERPOSITION)
+    target_compile_definitions(ddbc_bindings PRIVATE MSSQL_ARROW_TEST_INTERPOSITION)
+endif()
+
 # Add warning level flags for MSVC
 if(MSVC)
     target_compile_options(ddbc_bindings PRIVATE /W4 /WX)
 endif()
 
 # Add warning flags for GCC/Clang on Linux and macOS
-if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang" OR
+   CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang")
     target_compile_options(ddbc_bindings PRIVATE 
         -Werror        # Treat warnings as errors
         -Wattributes   # Enable attribute warnings (cross-compiler)
+        -Wformat=2     # Check nonliteral formats and printf argument types
+        -Werror=format-security  # Explicitly keep format-security diagnostics fatal
     )
     
     # GCC-specific warning flags
@@ -374,9 +402,33 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang
     endif()
 endif()
 
+# Python 3.15 defines newer POSIX feature levels than glibc's C++ headers.
+# Process Python.h first so libc sees the matching feature-test macros.
+if(UNIX)
+    target_compile_options(ddbc_bindings PRIVATE -include Python.h)
+endif()
+
 # Add macOS-specific string conversion fix
 if(APPLE)
     message(STATUS "Enabling macOS string conversion fix")
     target_compile_definitions(ddbc_bindings PRIVATE MACOS_STRING_FIX)
     target_compile_options(ddbc_bindings PRIVATE -DAPPLE_SILICON)
+endif()
+
+# Exercise the real connection/pool/handle code against deterministic ODBC
+# function pointers, without shipping test hooks in the extension.
+option(BUILD_NATIVE_POOL_TESTS "Build database-free native pool sanitation tests" OFF)
+if(BUILD_NATIVE_POOL_TESTS)
+    find_package(Python3 COMPONENTS Development REQUIRED)
+    get_target_property(pool_test_sources ddbc_bindings SOURCES)
+    add_executable(pool_sanitation_tests ${pool_test_sources}
+        ../../tests/native/pool_sanitation.cpp)
+    foreach(property INCLUDE_DIRECTORIES COMPILE_DEFINITIONS COMPILE_OPTIONS)
+        set_property(TARGET pool_sanitation_tests PROPERTY ${property}
+            $<TARGET_PROPERTY:ddbc_bindings,${property}>)
+    endforeach()
+    target_link_libraries(pool_sanitation_tests PRIVATE
+        Python3::Python simdutf::simdutf ${CMAKE_DL_LIBS})
+    enable_testing()
+    add_test(NAME pool_sanitation COMMAND pool_sanitation_tests)
 endif()

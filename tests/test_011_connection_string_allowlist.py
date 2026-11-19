@@ -78,8 +78,7 @@ class Test_ConnectionStringAllowList:
         """Test normalization of APP parameter."""
         assert _ConnectionStringParser.normalize_key("app") == "APP"
         assert _ConnectionStringParser.normalize_key("APP") == "APP"
-        # 'application name' is not in restricted allowlist
-        assert _ConnectionStringParser.normalize_key("application name") is None
+        assert _ConnectionStringParser.normalize_key("application name") == "APP"
 
     def test_normalize_key_driver(self):
         """Test normalization of Driver parameter."""
@@ -147,11 +146,11 @@ class Test_ConnectionStringAllowList:
         assert "Driver" not in filtered
         assert "Server" in filtered
 
-    def test__normalize_params_removes_app(self):
-        """Test that APP parameter is filtered out (controlled by driver)."""
+    def test__normalize_params_preserves_app(self):
+        """APP is retained for resolution after kwargs are merged."""
         params = {"app": "MyApp", "server": "localhost"}
         filtered = _ConnectionStringParser._normalize_params(params, warn_rejected=False)
-        assert "APP" not in filtered
+        assert filtered["APP"] == "MyApp"
         assert "Server" in filtered
 
     def test__normalize_params_mixed_case_keys(self):
@@ -213,7 +212,7 @@ class Test_ConnectionStringAllowList:
         import os
 
         # Enable logging to capture the debug messages
-        from mssql_python.logging import setup_logging, driver_logger
+        from mssql_python.logging import setup_logging, driver_logger, logger
 
         # Create a temp log file
         with tempfile.NamedTemporaryFile(mode="w", suffix=".log", delete=False) as f:
@@ -245,7 +244,7 @@ class Test_ConnectionStringAllowList:
                 handler.close()
                 driver_logger.removeHandler(handler)
             # Disable logging
-            driver_logger.setLevel(logging.CRITICAL)
+            logger._setLevel(logging.CRITICAL)
             # Clean up temp file
             if os.path.exists(log_file):
                 os.remove(log_file)

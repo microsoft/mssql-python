@@ -1,8 +1,10 @@
 """Tests for SQL Server spatial types (geography, geometry, hierarchyid)."""
 
 import pytest
+import uuid
 from decimal import Decimal
 import mssql_python
+from mssql_python.constants import ConstantsDDBC as C
 
 # ==================== GEOGRAPHY TYPE TESTS ====================
 
@@ -824,3 +826,131 @@ def test_hierarchyid_invalid_parsing(cursor, db_connection):
             "1/2/",
         )
     db_connection.rollback()
+
+
+# ==================== UDT PARAMETER BINDING (GH-816) ====================
+
+
+@pytest.fixture
+def udt_table(db_connection):
+    name = f"dbo.udt_parameters_{uuid.uuid4().hex}"
+    with db_connection.cursor() as cursor:
+        cursor.execute(
+            f"CREATE TABLE {name} "
+            "(id int, h hierarchyid NULL, g geometry NULL, geo geography NULL, b varbinary(10))"
+        )
+    try:
+        yield name
+    finally:
+        with db_connection.cursor() as cursor:
+            cursor.execute(f"DROP TABLE {name}")
+        db_connection.commit()
+
+
+@pytest.fixture
+def udt_payloads(db_connection):
+    with db_connection.cursor() as cursor:
+        cursor.execute(
+            "SELECT CONVERT(varbinary(max), hierarchyid::Parse('/1/')), "
+            "CONVERT(varbinary(max), geometry::STGeomFromText('POINT(1 2)', 0)), "
+            "CONVERT(varbinary(max), geography::STGeomFromText('POINT(1 2)', 4326))"
+        )
+        return tuple(cursor.fetchone())
+
+
+@pytest.mark.parametrize("method", ["execute", "executemany"])
+@pytest.mark.parametrize("value_kind", ["bytes", "bytearray", "null"])
+def test_explicit_udt_parameters(db_connection, udt_table, udt_payloads, method, value_kind):
+    if value_kind == "null":
+        values = [None] * 3
+    elif value_kind == "bytearray":
+        values = [bytearray(value) for value in udt_payloads]
+    else:
+        values = list(udt_payloads)
+    sql = f"INSERT INTO {udt_table} (id, h, g, geo) VALUES (?, ?, ?, ?)"
+    sizes = [(C.SQL_INTEGER.value, 0, 0)] + [(C.SQL_SS_UDT.value, 8000, 0)] * 3
+    with db_connection.cursor() as cursor:
+        for i in range(2):
+            cursor.setinputsizes(sizes)
+            params = [i, *values]
+            getattr(cursor, method)(sql, params if method == "execute" else [params])
+        cursor.execute(
+            f"SELECT CONVERT(varbinary(max), h), CONVERT(varbinary(max), g), "
+            f"CONVERT(varbinary(max), geo) FROM {udt_table} ORDER BY id"
+        )
+        expected = (None, None, None) if value_kind == "null" else udt_payloads
+        assert [tuple(row) for row in cursor.fetchall()] == [expected, expected]
+
+
+def test_udt_array_mixed_nulls(db_connection, udt_table, udt_payloads):
+    with db_connection.cursor() as cursor:
+        cursor.setinputsizes([(C.SQL_SS_UDT.value, 8000, 0)] * 3)
+        cursor.executemany(
+            f"INSERT INTO {udt_table} (h, g, geo) VALUES (?, ?, ?)",
+            [(None, None, None), udt_payloads, (None, None, None), udt_payloads],
+        )
+        cursor.execute(f"SELECT COUNT(*), COUNT(h), COUNT(g), COUNT(geo) FROM {udt_table}")
+        assert tuple(cursor.fetchone()) == (4, 2, 2, 2)
+
+
+def test_udt_changed_statement_and_type(db_connection, udt_table, udt_payloads):
+    with db_connection.cursor() as cursor:
+        for column, payload in zip(("h", "g", "geo", "h"), (*udt_payloads, udt_payloads[0])):
+            cursor.setinputsizes([(C.SQL_SS_UDT.value, 8000, 0)])
+            cursor.execute(f"INSERT INTO {udt_table} ({column}) VALUES (?)", [payload])
+        cursor.execute(f"SELECT COUNT(h), COUNT(g), COUNT(geo) FROM {udt_table}")
+        assert tuple(cursor.fetchone()) == (2, 1, 1)
+
+
+def test_udt_with_inferred_binary_null(db_connection, udt_table, udt_payloads):
+    with db_connection.cursor() as cursor:
+        for _ in range(2):
+            cursor.setinputsizes([(C.SQL_SS_UDT.value, 8000, 0)])
+            with pytest.warns(Warning, match="Number of input sizes"):
+                cursor.execute(
+                    f"INSERT INTO {udt_table} (h, b) VALUES (?, ?)", [udt_payloads[0], None]
+                )
+        cursor.execute(f"SELECT h.ToString(), b FROM {udt_table}")
+        assert [tuple(row) for row in cursor.fetchall()] == [("/1/", None)] * 2
+
+
+@pytest.mark.parametrize("method", ["execute", "executemany"])
+def test_large_udt_parameters(db_connection, udt_table, method, monkeypatch):
+    wkt = "LINESTRING(" + ", ".join(f"{i} {i % 7}" for i in range(1000)) + ")"
+    with db_connection.cursor() as cursor:
+        cursor.execute("SELECT CONVERT(varbinary(max), geometry::STGeomFromText(?, 0))", [wkt])
+        payload = cursor.fetchone()[0]
+        assert len(payload) > 8000
+        cursor.setinputsizes([(C.SQL_SS_UDT.value, len(payload), 0)])
+        sql = f"INSERT INTO {udt_table} (g) VALUES (?)"
+        params = [payload] if method == "execute" else [(payload,), (payload,)]
+        sizes = cursor._inputsizes
+        observed_sizes = []
+        execute = cursor.execute
+
+        def record_overrides(operation, parameters):
+            observed_sizes.append(cursor._inputsizes)
+            return execute(operation, parameters)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(cursor, "execute", record_overrides)
+            getattr(cursor, method)(sql, params)
+        expected_rows = 1 if method == "execute" else 2
+        assert observed_sizes == [sizes] * expected_rows
+        assert cursor._inputsizes is None
+        cursor.execute(f"SELECT CONVERT(varbinary(max), g) FROM {udt_table}")
+        assert [row[0] for row in cursor.fetchall()] == [payload] * expected_rows
+
+
+@pytest.mark.parametrize("method", ["execute", "executemany"])
+def test_udt_discovery_error_and_recovery(db_connection, udt_table, udt_payloads, method):
+    with db_connection.cursor() as cursor:
+        cursor.setinputsizes([(C.SQL_SS_UDT.value, 8000, 0)])
+        missing = f"dbo.udt_missing_{uuid.uuid4().hex}"
+        params = [udt_payloads[0]] if method == "execute" else [(udt_payloads[0],)]
+        with pytest.raises(mssql_python.DatabaseError, match="Invalid object name"):
+            getattr(cursor, method)(f"INSERT INTO {missing} (h) VALUES (?)", params)
+        cursor.setinputsizes([(C.SQL_SS_UDT.value, 8000, 0)])
+        getattr(cursor, method)(f"INSERT INTO {udt_table} (h) VALUES (?)", params)
+        cursor.execute(f"SELECT h.ToString() FROM {udt_table}")
+        assert cursor.fetchone()[0] == "/1/"

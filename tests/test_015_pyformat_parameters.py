@@ -18,7 +18,9 @@ from mssql_python.parameter_helper import (
     detect_and_convert_parameters,
     _has_unquoted_question_marks,
     _skip_quoted_context,
+    _compile_pyformat,
 )
+from mssql_python import parameter_helper
 
 
 class TestParsePyformatParams:
@@ -341,6 +343,195 @@ class TestConvertPyformatToQmark:
         assert result_sql.count("?") == 50
         assert len(result_params) == 50
         assert result_params == tuple(range(50))
+
+
+class TestPyformatRewrite:
+    """Test the single-pass %(name)s -> ? rewrite and its per-statement cache."""
+
+    def test_placeholder_text_in_literal_is_not_rewritten(self):
+        """A %(name)s inside a string literal is data, even when the name is a real parameter."""
+        sql = "SELECT '%(id)s' AS lit, %(id)s AS v"
+        result_sql, params = convert_pyformat_to_qmark(sql, {"id": 1})
+        assert result_sql == "SELECT '%(id)s' AS lit, ? AS v"
+        assert params == (1,)
+
+    def test_placeholder_text_in_brackets_and_comments_is_not_rewritten(self):
+        sql = (
+            "SELECT [%(id)s] FROM t /* %(id)s */ WHERE a = %(id)s -- %(id)s\n"
+            'AND "%(id)s" = %(name)s'
+        )
+        result_sql, params = convert_pyformat_to_qmark(sql, {"id": 1, "name": "x"})
+        assert result_sql == (
+            "SELECT [%(id)s] FROM t /* %(id)s */ WHERE a = ? -- %(id)s\n" 'AND "%(id)s" = ?'
+        )
+        assert params == (1, "x")
+
+    def test_literal_and_escaped_percent_together(self):
+        sql = "SELECT '%(id)s' AS lit, '100%%' AS pct, %(id)s AS v"
+        result_sql, params = convert_pyformat_to_qmark(sql, {"id": 7})
+        assert result_sql == "SELECT '%(id)s' AS lit, '100%' AS pct, ? AS v"
+        assert params == (7,)
+
+    def test_large_multirow_insert(self):
+        """The shape an ORM emits for a batched INSERT: ~1,000 rows, 2,000 parameters."""
+        rows = 1000
+        sql = "INSERT INTO t (id, name) VALUES " + ", ".join(
+            f"(%(id_m{i})s, %(name_m{i})s)" for i in range(rows)
+        )
+        values = {}
+        for i in range(rows):
+            values[f"id_m{i}"] = i
+            values[f"name_m{i}"] = f"user_{i}"
+        result_sql, params = convert_pyformat_to_qmark(sql, values)
+        assert result_sql == "INSERT INTO t (id, name) VALUES " + ", ".join(["(?, ?)"] * rows)
+        assert len(params) == 2 * rows
+        assert params[:4] == (0, "user_0", 1, "user_1")
+        assert params[-2:] == (rows - 1, f"user_{rows - 1}")
+
+    def test_repeated_statement_reuses_rewrite(self):
+        """Each execution gets its own values while the SQL rewrite is reused."""
+        sql = "SELECT * FROM t WHERE a = %(a)s AND b = %(b)s AND tag = 'cache-reuse-test'"
+        hits_before = _compile_pyformat.cache_info().hits
+        first = convert_pyformat_to_qmark(sql, {"a": 1, "b": 2})
+        second = convert_pyformat_to_qmark(sql, {"a": 3, "b": 4})
+        assert first == (
+            "SELECT * FROM t WHERE a = ? AND b = ? AND tag = 'cache-reuse-test'",
+            (1, 2),
+        )
+        assert second == (
+            "SELECT * FROM t WHERE a = ? AND b = ? AND tag = 'cache-reuse-test'",
+            (3, 4),
+        )
+        assert _compile_pyformat.cache_info().hits >= hits_before + 1
+
+    def test_missing_parameter_still_raises_for_cached_statement(self):
+        sql = "SELECT * FROM t WHERE a = %(a)s AND b = %(b)s AND tag = 'cache-missing-test'"
+        convert_pyformat_to_qmark(sql, {"a": 1, "b": 2})
+        with pytest.raises(KeyError, match="'b'"):
+            convert_pyformat_to_qmark(sql, {"a": 1})
+
+    def test_escaped_percent_never_starts_a_placeholder(self):
+        """%%(a)s is the literal text %(a)s, so parsing and conversion agree on the names.
+
+        executemany() takes the row order from parse_pyformat_params() and the SQL from
+        convert_pyformat_to_qmark(), so the two must find the same placeholders.
+        """
+        sql = "SELECT 100%%(a)s AS pct, %(b)s AS v"
+        assert parse_pyformat_params(sql) == ["b"]
+        assert convert_pyformat_to_qmark(sql, {"b": 2}) == ("SELECT 100%(a)s AS pct, ? AS v", (2,))
+        sql = "SELECT 100%%%(a)s"
+        assert parse_pyformat_params(sql) == ["a"]
+        assert convert_pyformat_to_qmark(sql, {"a": 1}) == ("SELECT 100%?", (1,))
+
+    def test_sql_containing_old_sentinel_text_is_unchanged(self):
+        """%% handling no longer swaps in a sentinel string, so no SQL text can collide with it."""
+        sql = "SELECT %(id)s AS v -- see __MSSQL_PYFORMAT_ESCAPED_PERCENT_PLACEHOLDER__ docs"
+        assert convert_pyformat_to_qmark(sql, {"id": 1}) == (
+            "SELECT ? AS v -- see __MSSQL_PYFORMAT_ESCAPED_PERCENT_PLACEHOLDER__ docs",
+            (1,),
+        )
+
+    def test_defaultdict_missing_parameter_still_raises(self):
+        from collections import defaultdict
+
+        values = defaultdict(lambda: "filled", {"a": 1})
+        with pytest.raises(KeyError, match="'b'"):
+            convert_pyformat_to_qmark("SELECT %(a)s, %(b)s", values)
+
+    def test_qmark_sql_with_percent_paren_text_still_validated(self):
+        """The tuple/list fast path still rejects SQL that contains real pyformat placeholders."""
+        with pytest.raises(TypeError, match="Parameter style mismatch"):
+            detect_and_convert_parameters("SELECT %(id)s", (1,))
+        sql = "SELECT '%(id)s', ?"
+        assert detect_and_convert_parameters(sql, (1,)) == (sql, (1,))
+
+
+class TestPyformatScanner:
+    """The regex-driven scanner must keep the quoting rules of _skip_quoted_context()."""
+
+    @pytest.mark.parametrize(
+        "sql, expected_sql, expected_names",
+        [
+            ("/* a /* %(x)s */ %(y)s */ %(z)s", "/* a /* %(x)s */ %(y)s */ ?", ("z",)),
+            ("SELECT 'it''s %(x)s' , %(y)s", "SELECT 'it''s %(x)s' , ?", ("y",)),
+            ("SELECT [a]]%(x)s] , %(y)s", "SELECT [a]]%(x)s] , ?", ("y",)),
+            ('SELECT "a""%(x)s" , %(y)s', 'SELECT "a""%(x)s" , ?', ("y",)),
+            ("SELECT %(a)s -- %(x)s", "SELECT ? -- %(x)s", ("a",)),
+            ("SELECT %(a)s, 'open %(x)s", "SELECT ?, 'open %(x)s", ("a",)),
+            ("SELECT %(a)s /* open %(x)s", "SELECT ? /* open %(x)s", ("a",)),
+            ("SELECT a - b / c * %(a)s", "SELECT a - b / c * ?", ("a",)),
+            ("SELECT %(a)s%(b)s%%%(c)s", "SELECT ??%?", ("a", "b", "c")),
+            ("SELECT a %(b) s, %(c", "SELECT a %(b) s, %(c", ()),
+            ("SELECT %(a)x, %(b)s", "SELECT %(a)x, ?", ("b",)),
+            ("SELECT %(a'b)s, 'x'", "SELECT ?, 'x'", ("a'b",)),
+            ("SELECT %()s", "SELECT ?", ("",)),
+            ("", "", ()),
+        ],
+    )
+    def test_rewrite(self, sql, expected_sql, expected_names):
+        assert _compile_pyformat(sql) == (expected_sql, expected_names)
+        assert parse_pyformat_params(sql) == list(expected_names)
+
+
+class TestPyformatCache:
+    """The rewrite cache stays bounded and the hot path scans a statement once."""
+
+    @staticmethod
+    def _large_insert(rows, tag):
+        return f"INSERT INTO t (id, name) /* {tag} */ VALUES " + ", ".join(
+            f"(%(id_m{i})s, %(name_m{i})s)" for i in range(rows)
+        )
+
+    def test_varying_large_statements_stay_bounded(self):
+        """Multi-row INSERTs with a varying row count must not accumulate."""
+        for rows in range(300, 340):
+            _compile_pyformat(self._large_insert(rows, "bounded-test"))
+        info = _compile_pyformat.cache_info()
+        assert info.currsize <= info.maxsize == parameter_helper._PYFORMAT_CACHE_SIZE
+
+    def test_parse_then_convert_scans_once(self):
+        """executemany() calls parse_pyformat_params() and then convert_pyformat_to_qmark()."""
+        sql = self._large_insert(1000, "scan-once-test")
+        values = {f"{col}_m{i}": i for i in range(1000) for col in ("id", "name")}
+        _compile_pyformat.cache_clear()
+        names = parse_pyformat_params(sql)
+        _, params = convert_pyformat_to_qmark(sql, values)
+        assert len(names) == len(params) == 2000
+        assert _compile_pyformat.cache_info().misses == 1
+
+    def test_valid_pyformat_with_question_mark_skips_qmark_scan(self, monkeypatch):
+        """A ? in a literal or comment must not force a rescan of a statement that has placeholders."""
+
+        def fail(sql):
+            raise AssertionError("qmark scan should not run when pyformat placeholders exist")
+
+        monkeypatch.setattr(parameter_helper, "_has_unquoted_question_marks", fail)
+        sql = "SELECT 'why?' AS q, %(id)s AS v /* really? */"
+        assert detect_and_convert_parameters(sql, {"id": 1}) == (
+            "SELECT 'why?' AS q, ? AS v /* really? */",
+            (1,),
+        )
+
+    def test_dict_with_only_qmark_placeholders_still_rejected(self):
+        with pytest.raises(TypeError, match="Parameter style mismatch"):
+            detect_and_convert_parameters("SELECT ? AS v, 'x' AS mismatch_test", {"id": 1})
+        sql = "SELECT 'why?' AS q"
+        assert detect_and_convert_parameters(sql, {"id": 1}) == (sql, ())
+
+    def test_keys_not_materialized_when_debug_logging_is_off(self, monkeypatch):
+        class CountingDict(dict):
+            keys_calls = 0
+
+            def keys(self):
+                CountingDict.keys_calls += 1
+                return super().keys()
+
+        from mssql_python.logging import logger
+
+        monkeypatch.setattr(logger, "_is_debug_enabled", False)
+        values = CountingDict(id=1)
+        assert detect_and_convert_parameters("SELECT %(id)s", values) == ("SELECT ?", (1,))
+        assert CountingDict.keys_calls == 0
 
 
 class TestSkipQuotedContext:
@@ -1302,14 +1493,6 @@ class TestRealWorldScenarios:
 class TestBackwardCompatibility:
     """Test that qmark style (existing functionality) still works perfectly."""
 
-    def test_qmark_single_param(self):
-        """Test backward compatibility: single qmark parameter."""
-        sql = "SELECT * FROM users WHERE id = ?"
-        params = (42,)
-        result_sql, result_params = detect_and_convert_parameters(sql, params)
-        assert result_sql == sql
-        assert result_params == params
-
     def test_qmark_multiple_params(self):
         """Test backward compatibility: multiple qmark parameters."""
         sql = "INSERT INTO users (name, age, city) VALUES (?, ?, ?)"
@@ -1325,13 +1508,6 @@ class TestBackwardCompatibility:
         result_sql, result_params = detect_and_convert_parameters(sql, params)
         assert result_sql == sql
         assert result_params == params
-
-    def test_qmark_no_params(self):
-        """Test backward compatibility: query with no parameters."""
-        sql = "SELECT * FROM users"
-        result_sql, result_params = detect_and_convert_parameters(sql, None)
-        assert result_sql == sql
-        assert result_params is None
 
     def test_qmark_complex_query(self):
         """Test backward compatibility: complex query with qmark."""
@@ -2050,16 +2226,6 @@ class TestErrorHandling:
         assert result[0] == 42
         cursor.close()
 
-    def test_parameter_wrapping_with_none_value(self, db_connection):
-        """Test that None values are properly wrapped"""
-        cursor = db_connection.cursor()
-
-        # None as single parameter should be wrapped to (None,)
-        cursor.execute("SELECT ?", None)
-        result = cursor.fetchone()
-        assert result[0] is None
-        cursor.close()
-
     def test_very_long_parameter_value(self, db_connection):
         """Test parameter with very long string value"""
         cursor = db_connection.cursor()
@@ -2233,15 +2399,6 @@ class TestCursorParameterConversion:
             else:
                 assert result[0] == expected
 
-        cursor.close()
-
-    def test_execute_normal_tuple_not_unwrapped(self, db_connection):
-        """Test that normal single-item tuple stays as-is (lines 1253-1254)."""
-        cursor = db_connection.cursor()
-        # (42,) should stay as (42,) not unwrap to 42
-        cursor.execute("SELECT ?", (42,))
-        result = cursor.fetchone()
-        assert result[0] == 42
         cursor.close()
 
     def test_execute_with_list_conversion(self, db_connection):

@@ -62,6 +62,10 @@ class PoolingManager:
                 max_size,
                 idle_timeout,
             )
+            # enable_pooling() only configures the connection-pool manager; it
+            # does not load the native driver, so it must not resolve/freeze
+            # the ODBC provider (an explicit pooling() before selecting a
+            # provider would otherwise lock in the default prematurely).
             ddbc_bindings.enable_pooling(max_size, idle_timeout)
             cls._config["max_size"] = max_size
             cls._config["idle_timeout"] = idle_timeout
@@ -129,7 +133,7 @@ class PoolingManager:
 
 
 @atexit.register
-def shutdown_pooling():
+def shutdown_pooling() -> None:
     """
     Shutdown pooling during application exit.
 

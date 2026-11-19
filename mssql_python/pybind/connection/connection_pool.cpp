@@ -6,10 +6,12 @@
 #include <chrono>
 #include <exception>
 #include <memory>
+#include <limits>
 #include <vector>
 
 // Logging uses LOG() macro for all diagnostic output
 #include "logger_bridge.hpp"
+#include "performance_counter.hpp"
 
 // Refresh threshold for expiry-aware checkout: a pooled connection whose access
 // token expires within this many seconds is discarded and reopened with a fresh
@@ -58,6 +60,23 @@ ConnectionPool::ConnectionPool(size_t max_size, int idle_timeout_secs)
 std::shared_ptr<Connection> ConnectionPool::acquire(const std::u16string& connStr,
                                                     const py::dict& attrs_before,
                                                     const py::object& token_factory) {
+    PERF_TIMER("ConnectionPool::acquire");
+    // A login timeout does not cover SQLSetConnectAttr on an existing socket.
+    // Use it for bounded candidate reset as well; zero/unspecified
+    // retains a finite validation default rather than an OS TCP retry budget.
+    unsigned int validation_timeout = 15;
+    const py::int_ login_timeout_attr(SQL_ATTR_LOGIN_TIMEOUT);
+    if (attrs_before.contains(login_timeout_attr)) {
+        const auto requested = attrs_before[login_timeout_attr].cast<long long>();
+        if (requested > 0) {
+            validation_timeout = static_cast<unsigned int>(std::min<long long>(
+                requested, std::numeric_limits<unsigned int>::max()));
+        }
+    }
+    const py::int_ autocommit_attr(SQL_ATTR_AUTOCOMMIT);
+    const bool autocommit = attrs_before.contains(autocommit_attr)
+                                ? attrs_before[autocommit_attr].cast<int>() != SQL_AUTOCOMMIT_OFF
+                                : true;
     std::vector<std::shared_ptr<Connection>> to_disconnect;
     std::shared_ptr<Connection> valid_conn = nullptr;
     bool needs_connect = false;
@@ -107,7 +126,11 @@ std::shared_ptr<Connection> ConnectionPool::acquire(const std::u16string& connSt
             if (_pool.empty()) {
                 // No more candidates — try to reserve a slot for a new connection.
                 if (_current_size < _max_size) {
-                    valid_conn = std::make_shared<Connection>(connStr, true);
+                    // Reserve the slot here but construct the Connection outside
+                    // _mutex (Phase 3): the Connection constructor allocates ODBC
+                    // handles and emits log records that acquire the GIL, and
+                    // holding _mutex across a GIL acquisition deadlocks a thread
+                    // that holds the GIL and is waiting on _mutex (#671).
                     ++_current_size;
                     needs_connect = true;
                     break;
@@ -125,6 +148,7 @@ std::shared_ptr<Connection> ConnectionPool::acquire(const std::u16string& connSt
 
         // Validate the candidate outside the mutex.
         bool reuse_candidate = false;
+        bool validation_attempted = false;
         try {
             if (token_factory && !token_factory.is_none() &&
                 candidate->isTokenNearExpiry(TOKEN_EXPIRY_THRESHOLD_SECS)) {
@@ -163,7 +187,10 @@ std::shared_ptr<Connection> ConnectionPool::acquire(const std::u16string& connSt
                     // is taken in practice. We favor never handing out a token
                     // that may expire mid-query over avoiding the churn.
                     candidate->setTokenExpiry(fresh_expiry);
-                    reuse_candidate = candidate->isAlive() && candidate->reset();
+                    if (candidate->isAlive()) {
+                        validation_attempted = true;
+                        reuse_candidate = candidate->reset(validation_timeout, autocommit);
+                    }
                     if (!reuse_candidate) {
                         // The token is still valid but the socket is dead
                         // (isAlive()/reset() failed). We already minted the
@@ -207,7 +234,10 @@ std::shared_ptr<Connection> ConnectionPool::acquire(const std::u16string& connSt
                     }
                 }
             } else {
-                reuse_candidate = candidate->isAlive() && candidate->reset();
+                if (candidate->isAlive()) {
+                    validation_attempted = true;
+                    reuse_candidate = candidate->reset(validation_timeout, autocommit);
+                }
             }
         } catch (const std::exception& ex) {
             LOG("Candidate connection validation failed: %s", ex.what());
@@ -226,28 +256,36 @@ std::shared_ptr<Connection> ConnectionPool::acquire(const std::u16string& connSt
             if (_current_size > 0) --_current_size;
         }
 
-        // If a rotated token was captured, reserve a slot and reopen with it
-        // immediately instead of churning through the remaining candidates
-        // (which hold the same stale token and would all be discarded anyway).
-        if (have_pending_token) {
+        // After a reset failure, open a replacement instead of spending another
+        // timeout on each idle socket. Token rotation likewise opens directly
+        // using the captured token.
+        if (have_pending_token || validation_attempted) {
             std::lock_guard<std::mutex> lock(_mutex);
             if (_current_size < _max_size) {
-                valid_conn = std::make_shared<Connection>(connStr, true);
+                // Reserve the slot here but construct the Connection outside
+                // _mutex (Phase 3): the constructor emits GIL-acquiring log
+                // records, and holding _mutex across a GIL acquisition
+                // deadlocks a thread that holds the GIL and waits on _mutex (#671).
                 ++_current_size;
                 needs_connect = true;
                 break;
             }
-            // Pool momentarily full; fall through and retry the loop. On the
-            // retry another near-expiry candidate may re-invoke the factory and
-            // overwrite pending_attrs/pending_expiry with a newer token. That
-            // needs a full pool AND a simultaneous rotation, is rare, and is
-            // harmless: we simply reopen with the most recently minted token.
+            if (validation_attempted) {
+                throw std::runtime_error(
+                    "ConnectionPool::acquire: pool size limit reached");
+            }
+            // A concurrent acquire reserved the slot freed by token rotation.
+            // Retry token comparison with another idle candidate.
         }
     }
 
-    // Phase 3: Connect the new connection outside the mutex.
+    // Phase 3: Construct and connect the new connection outside the mutex.
     if (needs_connect) {
         try {
+            // Construct the Connection outside _mutex (#671): the constructor
+            // allocates ODBC handles and emits log records that acquire the GIL,
+            // so it must not run while _mutex is held.
+            valid_conn = std::make_shared<Connection>(connStr, true);
             if (have_pending_token) {
                 // Reopen with the fresh token captured during expiry-aware
                 // checkout (the previous connection's token had rotated).
@@ -270,7 +308,7 @@ std::shared_ptr<Connection> ConnectionPool::acquire(const std::u16string& connSt
                 valid_conn->connect(attrs_before);
             }
         } catch (...) {
-            // Connect failed — release the reserved slot
+            // Construct/connect failed — release the reserved slot
             {
                 std::lock_guard<std::mutex> lock(_mutex);
                 if (_current_size > 0) --_current_size;
@@ -291,6 +329,7 @@ std::shared_ptr<Connection> ConnectionPool::acquire(const std::u16string& connSt
 }
 
 void ConnectionPool::release(std::shared_ptr<Connection> conn) {
+    PERF_TIMER("ConnectionPool::release");
     bool should_disconnect = false;
     {
         std::lock_guard<std::mutex> lock(_mutex);
@@ -313,6 +352,15 @@ void ConnectionPool::release(std::shared_ptr<Connection> conn) {
         if (_current_size > 0)
             --_current_size;
     }
+}
+
+void ConnectionPool::discard(std::shared_ptr<Connection> conn) {
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        if (_current_size > 0)
+            --_current_size;
+    }
+    conn->disconnectNoThrow();
 }
 
 bool ConnectionPool::canEvict() {
@@ -347,6 +395,7 @@ bool ConnectionPool::canEvict() {
 }
 
 void ConnectionPool::close() {
+    PERF_TIMER("ConnectionPool::close");
     std::vector<std::shared_ptr<Connection>> to_close;
     {
         std::lock_guard<std::mutex> lock(_mutex);
@@ -373,11 +422,15 @@ ConnectionPoolManager& ConnectionPoolManager::getInstance() {
 std::shared_ptr<Connection> ConnectionPoolManager::acquireConnection(const std::u16string& connStr,
                                                                      const py::dict& attrs_before,
                                                                      const std::u16string& pool_key,
-                                                                     const py::object& token_factory) {
+                                                                     const py::object& token_factory,
+                                                                     std::weak_ptr<ConnectionPool>*
+                                                                         originating_pool) {
+    PERF_TIMER("ConnectionPoolManager::acquireConnection");
     // Key the pool by pool_key when provided (identity-aware),
     // else fall back to the connection string (legacy behavior).
     const std::u16string& key = pool_key.empty() ? connStr : pool_key;
     std::shared_ptr<ConnectionPool> pool;
+    bool created = false;
     std::vector<std::shared_ptr<ConnectionPool>> evicted;
     {
         std::lock_guard<std::mutex> lock(_manager_mutex);
@@ -429,10 +482,19 @@ std::shared_ptr<Connection> ConnectionPoolManager::acquireConnection(const std::
         }
         auto& pool_ref = _pools[key];
         if (!pool_ref) {
-            LOG("Creating new connection pool");
             pool_ref = std::make_shared<ConnectionPool>(_default_max_size, _default_idle_secs);
+            created = true;
         }
         pool = pool_ref;
+        if (originating_pool) {
+            *originating_pool = pool;
+        }
+    }
+    // Log after releasing _manager_mutex (#671): LOG() acquires the GIL, and
+    // holding a native mutex across a GIL acquisition deadlocks a thread that
+    // holds the GIL and is waiting on the same mutex.
+    if (created) {
+        LOG("Creating new connection pool");
     }
     // Close evicted pools outside _manager_mutex: close() disconnects ODBC
     // handles (releasing the GIL), which must never run while holding
@@ -451,18 +513,18 @@ std::shared_ptr<Connection> ConnectionPoolManager::acquireConnection(const std::
     return pool->acquire(connStr, attrs_before, token_factory);
 }
 
-void ConnectionPoolManager::returnConnection(const std::u16string& pool_key,
-                                             const std::shared_ptr<Connection> conn) {
-    std::shared_ptr<ConnectionPool> pool;
+void ConnectionPoolManager::returnConnection(
+    const std::u16string& pool_key, const std::weak_ptr<ConnectionPool>& originating_pool,
+    const std::shared_ptr<Connection> conn) {
+    std::shared_ptr<ConnectionPool> pool = originating_pool.lock();
+    bool registered = false;
     {
         std::lock_guard<std::mutex> lock(_manager_mutex);
         auto it = _pools.find(pool_key);
-        if (it != _pools.end()) {
-            pool = it->second;
-        }
+        registered = pool && it != _pools.end() && it->second == pool;
     }
     // Call release() outside _manager_mutex to avoid deadlock.
-    if (pool) {
+    if (registered) {
         pool->release(conn);
     } else {
         // No pool is registered under this key (e.g. the pool was lazily
@@ -480,6 +542,20 @@ void ConnectionPoolManager::returnConnection(const std::u16string& pool_key,
                     ex.what());
             }
         }
+    }
+}
+
+void ConnectionPoolManager::discardConnection(
+    const std::weak_ptr<ConnectionPool>& originating_pool,
+    const std::shared_ptr<Connection> conn) {
+    if (!conn) {
+        return;
+    }
+    std::shared_ptr<ConnectionPool> pool = originating_pool.lock();
+    if (pool) {
+        pool->discard(conn);
+    } else {
+        conn->disconnectNoThrow();
     }
 }
 

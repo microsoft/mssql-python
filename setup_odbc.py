@@ -16,7 +16,8 @@ pipeline overwrites that subtree per-platform and is the source of truth for the
 full release matrix.
 
 Each wheel ships ONLY its own platform's ``libs/`` subtree (see
-``_target_libs_globs``). Because the package contains no compiled extension, a
+``_target_libs_globs``); manylinux and musllinux wheels also select only their
+own libc family. Because the package contains no compiled extension, a
 single build host can produce EVERY platform's wheel by setting
 ``ODBC_TARGET_PLATFORM_TAG`` / ``ODBC_TARGET_ARCH`` (see ``get_platform_info``),
 e.g. build all 7 release wheels on one Windows agent.
@@ -151,7 +152,8 @@ def _target_libs_globs(platform_tag: str, arch: str) -> list:
     the minimal set of ``libs/`` globs. Combined with ``include_package_data=False``
     this guarantees a Windows wheel never carries Linux/macOS binaries (and vice
     versa), whether the build runs on the native OS or is cross-built on a single
-    host via the ``ODBC_TARGET_*`` overrides.
+    host via the ``ODBC_TARGET_*`` overrides. Linux's manylinux and musllinux
+    tags additionally restrict the payload to glibc and musl, respectively.
     """
     # LICENSING travels with every wheel (it is a file at the libs/ root).
     globs = ["libs/LICENSING"]
@@ -173,9 +175,14 @@ def _target_libs_globs(platform_tag: str, arch: str) -> list:
             if arch in ("x86_64", "amd64")
             else "arm64" if arch in ("aarch64", "arm64") else arch
         )
-        # A single Linux wheel serves all distro families for its arch; the driver
-        # is selected at runtime via /etc/*-release detection.
-        for distro in ("alpine", "debian_ubuntu", "rhel", "suse"):
+        # Keep the distro-specific layout used by the runtime resolver, but do
+        # not ship a different libc's binaries in manylinux/musllinux wheels.
+        distros = ("alpine", "debian_ubuntu", "rhel", "suse")
+        if tag.startswith("manylinux"):
+            distros = ("debian_ubuntu", "rhel", "suse")
+        elif tag.startswith("musllinux"):
+            distros = ("alpine",)
+        for distro in distros:
             _subtree(f"libs/linux/{distro}/{libs_arch}")
     else:
         raise OSError(f"Cannot determine libs subtree for platform tag {platform_tag!r}")

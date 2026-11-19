@@ -49,10 +49,11 @@ def test_connection_invalidation_with_multiple_cursors(conn_str):
 
     # Create multiple cursors with statement handles
     cursors = []
+    rows = []
     for i in range(5):
         cursor = conn.cursor()
         cursor.execute("SELECT 1 AS id, 'test' AS name")
-        cursor.fetchall()  # Fetch results to complete the query
+        rows.append(cursor.fetchmany(1)[0])
         cursors.append(cursor)
 
     # Close connection without explicitly closing cursors first
@@ -62,10 +63,10 @@ def test_connection_invalidation_with_multiple_cursors(conn_str):
     # Force garbage collection to trigger cursor cleanup
     # This is where the segfault would occur without the fix
     cursors = None
+    del cursor
     gc.collect()
 
-    # If we reach here without crashing, the fix is working
-    assert True
+    assert [(row.id, row.name) for row in rows] == [(1, "test")] * 5
 
 
 def test_connection_invalidation_without_cursor_close(conn_str):

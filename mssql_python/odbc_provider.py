@@ -1,0 +1,251 @@
+"""
+Copyright (c) Microsoft Corporation.
+Licensed under the MIT license.
+Selects which ODBC provider (native driver package) mssql-python loads.
+
+Two providers are supported: ``msodbcsql18`` (the Microsoft ODBC Driver 18,
+shipped by ``mssql_python_odbc``) and ``mssql-odbc`` (the Rust driver, shipped
+inside ``mssql_py_core`` / the ``mssql-python-rs`` wheel). Selection is process-wide and resolved exactly
+once, before the native driver loads, from — in precedence order — the
+``MSSQL_PYTHON_NATIVE_PROVIDER`` environment variable, the ``mssql_python.native_provider``
+module property, then the release default. An unknown value fails closed rather
+than falling back.
+"""
+
+import os
+import threading
+import warnings
+import importlib
+from typing import Dict, Optional, Tuple
+
+from mssql_python.logging import logger
+
+NATIVE_PROVIDER_ENV_VAR = "MSSQL_PYTHON_NATIVE_PROVIDER"
+
+# Customer-facing provider identifiers.
+PROVIDER_MSODBCSQL18 = "msodbcsql18"
+PROVIDER_MSSQL_ODBC = "mssql-odbc"
+
+# Phase 1 default. Phase 2 flips this to PROVIDER_MSSQL_ODBC via a documented release.
+_DEFAULT_PROVIDER = PROVIDER_MSODBCSQL18
+
+# Provider -> import package that ships its native binaries.
+# Keep in sync with ddbc_bindings.cpp's ProviderPackageForId / ProviderDistForId.
+_PACKAGE_BY_PROVIDER: Dict[str, str] = {
+    PROVIDER_MSODBCSQL18: "mssql_python_odbc",
+    PROVIDER_MSSQL_ODBC: "mssql_py_core",
+}
+
+# Provider -> the pip distribution that installs its package (for error hints).
+_DIST_BY_PROVIDER: Dict[str, str] = {
+    PROVIDER_MSODBCSQL18: "mssql-python-odbc",
+    PROVIDER_MSSQL_ODBC: "mssql-python-rs",
+}
+
+
+def _normalize(value: str) -> str:
+    """Return the canonical provider id for ``value`` or raise ``ValueError``.
+
+    An unrecognized selection is rejected so a typo fails closed instead of
+    silently loading the default provider.
+    """
+    canonical = value.strip().lower()
+    if canonical not in _PACKAGE_BY_PROVIDER:
+        valid = ", ".join(sorted(_PACKAGE_BY_PROVIDER))
+        raise ValueError(f"Unknown ODBC provider {value!r}. Valid providers are: {valid}.")
+    return canonical
+
+
+class ProviderManager:
+    """Process-wide, resolve-once selector for the ODBC provider.
+
+    The selection freezes when :meth:`resolve` first runs (at native driver
+    load). A later change to the module property is ignored with a warning,
+    mirroring the connection-pool configuration model.
+    """
+
+    _lock: threading.Lock = threading.Lock()
+    _property_value: Optional[str] = None
+    _resolved: Optional[str] = None
+    _source: Optional[str] = None
+
+    @classmethod
+    def _compute(cls) -> Tuple[str, str]:
+        """Apply precedence env var -> module property -> default (lock-free)."""
+        env_value = os.environ.get(NATIVE_PROVIDER_ENV_VAR)
+        if env_value and env_value.strip():
+            return _normalize(env_value), "environment"
+        if cls._property_value is not None:
+            return cls._property_value, "property"
+        return _DEFAULT_PROVIDER, "default"
+
+    @classmethod
+    def set_property(cls, value: Optional[str]) -> None:
+        """Set the module-property selection.
+
+        Accepts a provider id or ``None`` to clear. A change after the provider
+        has been resolved is ignored with a warning; the env var still takes
+        precedence over this value when both are set.
+        """
+        with cls._lock:
+            canonical = _normalize(value) if value is not None else None
+            if cls._resolved is not None:
+                if canonical != cls._resolved:
+                    cls._warn_frozen()
+                return
+            cls._property_value = canonical
+            env_value = os.environ.get(NATIVE_PROVIDER_ENV_VAR)
+            if canonical is not None and env_value and env_value.strip():
+                try:
+                    env_provider = _normalize(env_value)
+                except ValueError:
+                    # Preserve the existing fail-closed error at connection time.
+                    return
+                if canonical != env_provider:
+                    cls._warn_env_override(canonical, env_provider)
+
+    @classmethod
+    def resolve(cls) -> str:
+        """Resolve and freeze the provider, returning its canonical id."""
+        with cls._lock:
+            if cls._resolved is None:
+                cls._resolved, cls._source = cls._compute()
+                logger.info(
+                    "ODBC provider resolved to '%s' (source=%s)",
+                    cls._resolved,
+                    cls._source,
+                )
+            return cls._resolved
+
+    @classmethod
+    def effective(cls) -> str:
+        """Return the provider that would be used, without freezing it.
+
+        Reports the release default for an invalid selection (e.g. a mistyped
+        env var) rather than raising - this backs the public getter and
+        diagnostics, which must stay safe to read at any time. The hard
+        failure for a bad selection surfaces at :meth:`resolve`/
+        :meth:`ensure_available` instead.
+        """
+        with cls._lock:
+            if cls._resolved is not None:
+                return cls._resolved
+            try:
+                provider, _ = cls._compute()
+            except ValueError:
+                return _DEFAULT_PROVIDER
+            return provider
+
+    @classmethod
+    def package_name(cls, provider: Optional[str] = None) -> str:
+        """Return the import package that ships ``provider``'s native binaries."""
+        provider = provider or cls.effective()
+        return _PACKAGE_BY_PROVIDER[provider]
+
+    @classmethod
+    def ensure_available(cls) -> str:
+        """Verify the selected provider's package is installed, then freeze it.
+
+        Called before the native driver loads. Fails closed with an actionable
+        error if the package is missing. The selection is only frozen (via
+        :meth:`resolve`) once the package has been confirmed importable, so a
+        failed check here does not permanently lock in a provider that never
+        actually loaded - a later call can still select a different, installed
+        provider instead of requiring a process restart.
+        """
+        provider = cls.effective()
+        package = _PACKAGE_BY_PROVIDER[provider]
+        try:
+            importlib.import_module(package)
+        except ModuleNotFoundError as exc:
+            if exc.name != package:
+                # A transitive dependency of an installed package is missing,
+                # or the package is broken - don't mask it as "not installed".
+                raise
+            dist = _DIST_BY_PROVIDER[provider]
+            raise ImportError(
+                f"The '{provider}' ODBC provider is selected but its package "
+                f"'{package}' is not installed. Install it with: pip install {dist}"
+            ) from exc
+        return cls.resolve()
+
+    @classmethod
+    def is_frozen(cls) -> bool:
+        """Whether the provider has been resolved and can no longer change."""
+        return cls._resolved is not None
+
+    @classmethod
+    def get_info(cls) -> Dict[str, object]:
+        """Report the selected provider for diagnostics.
+
+        Never raises: an invalid selection is reported via the ``error`` key
+        (with ``id`` falling back to the default) instead of propagating, so
+        this stays safe to call at any time, including before a provider is
+        chosen or resolvable.
+        """
+        with cls._lock:
+            if cls._resolved is not None:
+                provider, source, error = cls._resolved, cls._source, None
+            else:
+                try:
+                    provider, source = cls._compute()
+                    error = None
+                except ValueError as exc:
+                    provider, source, error = _DEFAULT_PROVIDER, None, str(exc)
+            frozen = cls._resolved is not None
+
+        version = None
+        driver_path = None
+        package = _PACKAGE_BY_PROVIDER[provider]
+        try:
+            provider_module = importlib.import_module(package)
+            version = getattr(provider_module, "__version__", None)
+            module_file = getattr(provider_module, "__file__", None)
+            if module_file:
+                from mssql_python import ddbc_bindings
+
+                driver_path = ddbc_bindings._get_odbc_driver_path(
+                    os.path.dirname(os.path.abspath(module_file)), provider
+                )
+        except Exception:  # pylint: disable=broad-exception-caught
+            # Diagnostics must remain safe even for a broken provider package.
+            pass
+
+        info: Dict[str, object] = {
+            "id": provider,
+            "package": package,
+            "version": version,
+            "driver_path": driver_path,
+            "source": source,
+            "frozen": frozen,
+        }
+        if error is not None:
+            info["error"] = error
+        return info
+
+    @classmethod
+    def _warn_env_override(cls, requested: str, effective: str) -> None:
+        message = (
+            f"ODBC provider property was set to '{requested}', but "
+            f"{NATIVE_PROVIDER_ENV_VAR} selects '{effective}' and takes precedence."
+        )
+        logger.warning(message)
+        warnings.warn(message, RuntimeWarning, stacklevel=3)
+
+    @classmethod
+    def _warn_frozen(cls) -> None:
+        message = (
+            f"ODBC provider is already loaded as '{cls._resolved}'; ignoring the "
+            f"change. Select a provider before the first connection, or set the "
+            f"{NATIVE_PROVIDER_ENV_VAR} environment variable."
+        )
+        logger.warning(message)
+        warnings.warn(message, RuntimeWarning, stacklevel=3)
+
+    @classmethod
+    def _reset_for_testing(cls) -> None:
+        """Reset selection state - for testing purposes only."""
+        with cls._lock:
+            cls._property_value = None
+            cls._resolved = None
+            cls._source = None

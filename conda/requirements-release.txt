@@ -1,0 +1,2 @@
+zstandard==0.23.0 \
+    --hash=sha256:64585e1dba664dc67c7cdabd56c1e5685233fbb1fc1966cfba2a340ec0dfff7b

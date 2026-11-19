@@ -43,8 +43,62 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
   This is a non-breaking step toward decoupling driver-binary updates from
   mssql-python releases; a future major version will make the dependency
   explicit and drop the bundled binaries.
+- **Opt-in/opt-out native provider selection:** a new `mssql_python.native_provider`
+  module property (and `MSSQL_PYTHON_NATIVE_PROVIDER` environment variable, which
+  takes precedence) lets a caller select which native ODBC provider is loaded:
+  the default `"msodbcsql18"` (Microsoft ODBC Driver 18, unchanged behavior) or
+  the opt-in `"mssql-odbc"` (a Rust-based driver, shipped inside the
+  `mssql-python-rs` package alongside the Rust TDS core). The selection must be made before the first
+  connection; it resolves and freezes then, and a later change is ignored with
+  a `RuntimeWarning`; a conflicting property assignment also warns when the
+  environment variable takes precedence. Call `mssql_python.get_native_provider_info()`
+  for diagnostics (selected id, package, version, driver path, source, and
+  whether it's frozen). This PR
+  does not change the default provider or ship any Rust driver binaries.
 
 ### Changed
+- Pooled check-in skips transaction sanitation only after a prior successful
+  native rollback/autocommit restore and no subsequent statement allocation or
+  uncertain operation. Used connections still roll back explicit transactions
+  before parking; sanitation uses one native attribute probe and one GIL release.
+  Raw-handle exposure and arbitrary connection attributes disable the fast path;
+  successfully applied scalar login timeouts (including `connect(timeout=30)`)
+  do not permanently disable it.
+- Fetches reuse owned native metadata for stable columns within a result set;
+  `fetchmany()` avoids the Python metadata-dictionary roundtrip. Re-execution,
+  result transitions and statement/connection cleanup invalidate this metadata.
+  Public descriptions stay fresh, name-validation timing is preserved, and
+  `sql_variant` columns retain per-row descriptions and per-value probes.
+  Fetch buffers, decoding settings and converted values are not cached.
+- DATE, TIME, and TIMESTAMP fetch conversion uses checked CPython constructors
+  for the standard datetime types, while preserving cached substitute constructors,
+  their positional arguments and exceptions, and fractional-second truncation.
+  DATETIMEOFFSET, UUID, and Decimal conversion are unchanged.
+- `mssql-python` now depends on `mssql-python-rs==0.1.0` for `mssql_py_core`
+  instead of embedding files owned by that separately published distribution.
+- **GH-769 deprecation policy:** The misplaced `GetInfoConstants` members
+  `SQL_TXN_ISOLATION_LEVEL`, `SQL_CONCURRENCY`, `SQL_ROWSET_SIZE`, `SQL_ROW_NUMBER`,
+  `SQL_IC_UPPER`, `SQL_IC_LOWER`, `SQL_IC_SENSITIVE`, `SQL_IC_MIXED`, and
+  `SQL_SQL92_ENTRY_SQL`, `SQL_SQL92_INTERMEDIATE_SQL`, `SQL_SQL92_FULL_SQL`
+  remain available with their original values throughout **1.x**. Existing enum
+  attribute access, module-level imports, and `get_info_constants()` dictionary
+  lookups remain available. Removal is deferred to **2.0 or later**, only after
+  maintainer approval and an explicit migration notice; this is not a scheduled removal.
+  Deprecation is documented rather than emitting runtime warnings.
+  These names are not information-type names, and passing their integers to
+  `getinfo()` still requests unrelated information. They cannot be rejected by
+  value without also rejecting legitimate information types with the same IDs.
+  For migration, use `SQL_ATTR_TXN_ISOLATION` for the connection attribute;
+  use `ConstantsDDBC` or module-level names for legacy statement options and
+  `SQL_IC_*` response values, not as `getinfo()` requests. To interpret
+  `SQL_SQL_CONFORMANCE`, use `SQL_SC_SQL92_ENTRY` (1),
+  `SQL_SC_FIPS127_2_TRANSITIONAL` (2), `SQL_SC_SQL92_INTERMEDIATE` (4), and
+  `SQL_SC_SQL92_FULL` (8). The deprecated `SQL_SQL92_*_SQL` names retain
+  **127/128/129** solely for compatibility; they are not conformance flags.
+  For information types whose IDs are corrected, previously persisted value-based
+  enum pickles and raw IDs cannot identify their original meaning; rebuild them
+  from the intended information-type names. Name-based enum pickles resolve
+  retained names to their corrected values.
 - Connection strings and string connection parameters that contain a NUL
   (`\x00`) character are now rejected up front with `InterfaceError` instead of
   being silently truncated at the NUL by the underlying driver.
@@ -57,6 +111,69 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
   before; users should call `cursor.setinputsizes()` to work around this.
 
 ### Fixed
+- **GH-863:** `Cursor.nextset()` now refreshes `Cursor.rowcount` for
+  the result it moves to, as `execute()` does: the affected-row count for an
+  INSERT/UPDATE/DELETE/MERGE result and -1 for a result set. Previously
+  `rowcount` kept the value of the first statement of a multi-statement batch,
+  so the rows affected by later statements (for example each INSERT of a
+  T-SQL `WHILE` loop) could not be read. This matches pyodbc.
+- **GH-855:** Bulk copy and internal async queries load the Rust extension directly
+  when upgrading from 1.15.0 removes `mssql_py_core/__init__.py`. Existing affected
+  installations can restore the initializer with
+  `python -m pip install --force-reinstall --no-deps mssql-python-rs==0.3.0`,
+  followed by restarting Python.
+- **GH-754:** Pooled connections are now rolled back and restored to autocommit
+  mode before being parked. This prevents an empty transaction from remaining
+  visible on an idle SQL Server session after `Connection.close()`. Abandoned
+  native connections also roll back pending work before disconnecting during
+  normal object destruction. Statement-handle allocation and cleanup are
+  synchronized with disconnect, including cleanup invoked by cursor finalizers.
+- Bounded text fetched as UTF-16 now preserves leading U+FEFF and U+FFFE as
+  payload rather than treating them as byte-order markers. This corrects
+  row-wise `fetchone()`, `fetchmany()`, and `fetchall()` results, including
+  bounded columns fetched alongside a MAX column, as well as bounded batch
+  decoding on Linux/macOS. Existing platform-specific decode-error fallbacks
+  remain unchanged. Actual MAX/LOB text decoding
+  is unchanged; its existing BOM and trailing-NUL loss is not fixed here.
+- **GH-769:** Corrected 11 `GetInfoConstants` IDs for scalar functions, outer
+  joins, driver handles, cursor attributes, catalog support, and parameter
+  descriptions. Added the ODBC name `SQL_TIMEDATE_FUNCTIONS` as an alias of
+  `SQL_DATETIME_FUNCTIONS` at 52, preserving the existing canonical `.name`.
+  For registered information types,
+  `getinfo()` now uses ODBC return types instead of guessing from the bytes: numeric
+  information is decoded as unsigned integers (including
+  `SQL_SQL_CONFORMANCE`, `SQL_CURSOR_SENSITIVITY`, and
+  `SQL_MAX_IDENTIFIER_LEN`), and character results use the Unicode path.
+  An immutable return-type registry enforces the exact ODBC numeric width,
+  including pointer-sized handles. Wrong-width or truncated numeric payloads
+  raise `DatabaseError` rather than returning a guessed value. Legacy non-byte
+  numeric payloads are not truncated or coerced from bool to int; convertible
+  decimal strings still return integers.
+  Also corrects decoding for the unlisted standard IDs `SQL_DBMS_NAME` (17),
+  `SQL_DBMS_VER` (18), `SQL_XOPEN_CLI_YEAR` (10000), `SQL_ASYNC_MODE` (10021), and
+  `SQL_CREATE_ASSERTION` (127). Other unlisted raw IDs retain their existing behavior.
+  Driver Manager-only handle queries can still be unsupported by the native
+  provider; correcting their IDs does not add Driver Manager support. Native
+  retrieval errors, including timeout and connection-loss errors, continue to be
+  logged and return `None`. Providers may return cached metadata after connection
+  loss: `getinfo()` is not a connection-health check.
+- **GH-740:** A Python `Decimal` whose value falls in the SQL Server MONEY /
+  SMALLMONEY range is now bound as `SQL_NUMERIC` with its own precision and scale
+  on both `execute()` paths (native detection, and the legacy path reached when
+  `setinputsizes()` covers fewer positions than parameters). Previously it was
+  bound as a formatted `VARCHAR` based on the value alone, so comparing it against
+  a smaller `numeric`/`decimal` column (`WHERE v = ?`) made SQL Server convert
+  `varchar`→`numeric` and raise an arithmetic overflow instead of simply not
+  matching. Also fixes a latent binder bug the shortcut was masking: the numeric
+  APD descriptor record number was hardcoded to `1`, so a numeric parameter in any
+  position other than the first corrupted the parameter bound at position 1.
+  **Behavioral change on the wire:** money-range Decimals now arrive as `numeric`
+  rather than `varchar` — a bare `SELECT ?` returns `Decimal` instead of `str`,
+  `sql_variant` stores them as `numeric`, and because `numeric` outranks
+  `money`/`varchar` in data-type precedence, `WHERE money_or_varchar_col = ?` can
+  add a `CONVERT_IMPLICIT` on the column side that turns an index seek into a scan.
+  `executemany` intentionally keeps its batch `VARCHAR` string binding (GH-503);
+  the remaining money-range case there is tracked in #745.
 - **GH-725:** The `timeout` parameter of `connect()` / `Connection(...)` now
   correctly sets the **login (connection-attempt) timeout**
   (`SQL_ATTR_LOGIN_TIMEOUT`), matching pyodbc and its own docstring. Previously

@@ -16,7 +16,11 @@ from typing import (
     Callable,
     Iterator,
     Iterable,
+    Literal,
 )
+from ._ddbc_types import EncodingSettings
+from ._pycore_types import BulkCopyResult
+from .logging import MSSQLLogger
 import datetime
 import logging
 import pyarrow
@@ -30,6 +34,7 @@ threadsafety: int  # 1
 # Module Settings - Properties that can be get/set at module level
 lowercase: bool  # Controls column name case behavior
 native_uuid: bool  # Controls UUID type handling
+native_provider: Optional[str]  # Selects the native ODBC provider ('msodbcsql18' or 'mssql-odbc')
 
 # Settings Class
 class Settings:
@@ -43,10 +48,11 @@ def get_settings() -> Settings: ...
 def setDecimalSeparator(separator: str) -> None: ...
 def getDecimalSeparator() -> str: ...
 def pooling(max_size: int = 100, idle_timeout: int = 600, enabled: bool = True) -> None: ...
+def get_native_provider_info() -> Dict[str, object]: ...
 def get_info_constants() -> Dict[str, int]: ...
 
 # Logging Functions
-def setup_logging(mode: str = "file", log_level: int = logging.DEBUG) -> None: ...
+def setup_logging(output: str = "file", log_file_path: Optional[str] = None) -> MSSQLLogger: ...
 def get_logger() -> Optional[logging.Logger]: ...
 
 # DB-API 2.0 Type Objects
@@ -87,12 +93,12 @@ def Timestamp(
     hour: int,
     minute: int,
     second: int,
-    microsecond: int,
+    microsecond: int = 0,
 ) -> datetime.datetime: ...
 def DateFromTicks(ticks: int) -> datetime.date: ...
 def TimeFromTicks(ticks: int) -> datetime.time: ...
 def TimestampFromTicks(ticks: int) -> datetime.datetime: ...
-def Binary(value: Union[str, bytes, bytearray]) -> bytes: ...
+def Binary(value: Union[str, bytes, bytearray, memoryview]) -> bytes: ...
 
 # DB-API 2.0 Exception Hierarchy
 # https://www.python.org/dev/peps/pep-0249/#exceptions
@@ -142,18 +148,31 @@ class Row:
 
     def __init__(
         self,
-        values: List[Any],
-        column_map: Dict[str, int],
+        values: Sequence[Any],
+        column_map: Mapping[str, int] | None,
         cursor: Optional["Cursor"] = None,
-        converter_map: Optional[List[Any]] = None,
+        converter_map: Sequence[Callable[[Any], Any] | None] | None = None,
         uuid_str_indices: Optional[Tuple[int, ...]] = None,
+        column_map_lower: Optional[Mapping[str, int]] = None,
+        column_names: Optional[Tuple[str, ...]] = None,
     ) -> None: ...
-    def __getitem__(self, index: int) -> Any: ...
+    @property
+    def _mapping(self) -> "RowMapping": ...
+    def __getitem__(self, index: int | str | slice) -> Any: ...
     def __getattr__(self, name: str) -> Any: ...
-    def __eq__(self, other: Any) -> bool: ...
+    def __eq__(self, other: object) -> bool: ...
     def __len__(self) -> int: ...
     def __iter__(self) -> Iterator[Any]: ...
     def __str__(self) -> str: ...
+    def __repr__(self) -> str: ...
+
+class RowMapping(Mapping[str, Any]):
+    """Read-only mapping view (column name -> value) over a Row."""
+
+    def __init__(self, row: "Row") -> None: ...
+    def __getitem__(self, key: str) -> Any: ...
+    def __iter__(self) -> Iterator[str]: ...
+    def __len__(self) -> int: ...
     def __repr__(self) -> str: ...
 
 # DB-API 2.0 Cursor Object
@@ -213,7 +232,7 @@ class Cursor:
     def fetchmany(self, size: Optional[int] = None) -> List[Row]: ...
     def fetchall(self) -> List[Row]: ...
     def nextset(self) -> Optional[bool]: ...
-    def setinputsizes(self, sizes: List[Union[int, Tuple[Any, ...]]]) -> None: ...
+    def setinputsizes(self, sizes: Sequence[int | tuple[int, ...]] | None) -> None: ...
     def setoutputsize(self, size: int, column: Optional[int] = None) -> None: ...
 
     # Arrow Extension Methods (requires pyarrow)
@@ -221,12 +240,38 @@ class Cursor:
     def arrow(self, batch_size: int = 8192) -> pyarrow.Table: ...
     def arrow_reader(self, batch_size: int = 8192) -> "_ArrowReader": ...
 
+    # Bulk Copy
+    def bulkcopy(
+        self,
+        table_name: str,
+        data: Iterable[Tuple[Any, ...]] | Iterable[Row],
+        batch_size: int = 0,
+        timeout: int = 30,
+        column_mappings: Optional[Union[List[str], List[Tuple[int, str]]]] = None,
+        keep_identity: bool = False,
+        check_constraints: bool = False,
+        table_lock: bool = False,
+        keep_nulls: bool = False,
+        fire_triggers: bool = False,
+        use_internal_transaction: bool = False,
+    ) -> BulkCopyResult: ...
+    def bulkcopy_arrow(
+        self,
+        table_name: str,
+        source: object,
+        batch_size: int = 0,
+        timeout: int = 30,
+        column_mappings: Optional[Union[List[str], List[Tuple[int, str]]]] = None,
+        keep_identity: bool = False,
+        check_constraints: bool = False,
+        table_lock: bool = False,
+        keep_nulls: bool = False,
+        fire_triggers: bool = False,
+        use_internal_transaction: bool = False,
+    ) -> BulkCopyResult: ...
+
 # pyarrow.RecordBatchReader-compatible wrapper returned by Cursor.arrow_reader.
-# Not part of the DB-API 2.0 surface and not intended to be instantiated
-# directly by users; declared here so the return type of arrow_reader is
-# accurate for static type checkers.  Attributes not listed here (e.g.
-# ``read_all``, ``read_pandas``, ``cast``) are delegated at runtime to the
-# wrapped ``pyarrow.RecordBatchReader`` via ``__getattr__``.
+# Methods not listed here are delegated to the wrapped pyarrow reader.
 class _ArrowReader:
     @property
     def closed(self) -> bool: ...
@@ -234,42 +279,12 @@ class _ArrowReader:
     def schema(self) -> pyarrow.Schema: ...
     def read_next_batch(self) -> pyarrow.RecordBatch: ...
     def close(self) -> None: ...
-    def __arrow_c_stream__(self, requested_schema: Any = ...) -> Any: ...
+    def __arrow_c_stream__(self, requested_schema: object = None) -> object: ...
     def __iter__(self) -> "_ArrowReader": ...
     def __next__(self) -> pyarrow.RecordBatch: ...
     def __enter__(self) -> "_ArrowReader": ...
-    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None: ...
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> Literal[False]: ...
     def __getattr__(self, name: str) -> Any: ...
-
-    # Bulk Copy
-    def bulkcopy(
-        self,
-        table_name: str,
-        data: Iterable[Union[Tuple[Any, ...], Row]],
-        batch_size: int = 0,
-        timeout: int = 30,
-        column_mappings: Optional[Union[List[str], List[Tuple[int, str]]]] = None,
-        keep_identity: bool = False,
-        check_constraints: bool = False,
-        table_lock: bool = False,
-        keep_nulls: bool = False,
-        fire_triggers: bool = False,
-        use_internal_transaction: bool = False,
-    ) -> Dict[str, Any]: ...
-    def bulkcopy_arrow(
-        self,
-        table_name: str,
-        source: Any,
-        batch_size: int = 0,
-        timeout: int = 30,
-        column_mappings: Optional[Union[List[str], List[Tuple[int, str]]]] = None,
-        keep_identity: bool = False,
-        check_constraints: bool = False,
-        table_lock: bool = False,
-        keep_nulls: bool = False,
-        fire_triggers: bool = False,
-        use_internal_transaction: bool = False,
-    ) -> Dict[str, Any]: ...
 
 # DB-API 2.0 Connection Object
 # https://www.python.org/dev/peps/pep-0249/#connection-objects
@@ -322,11 +337,11 @@ class Connection:
     # Extension Methods
     def setautocommit(self, value: bool = False) -> None: ...
     def setencoding(self, encoding: Optional[str] = None, ctype: Optional[int] = None) -> None: ...
-    def getencoding(self) -> Dict[str, Union[str, int]]: ...
+    def getencoding(self) -> EncodingSettings: ...
     def setdecoding(
         self, sqltype: int, encoding: Optional[str] = None, ctype: Optional[int] = None
     ) -> None: ...
-    def getdecoding(self, sqltype: int) -> Dict[str, Union[str, int]]: ...
+    def getdecoding(self, sqltype: int) -> EncodingSettings: ...
     def set_attr(self, attribute: int, value: Union[int, str, bytes, bytearray]) -> None: ...
     def add_output_converter(
         self, sqltype: Union[int, type], func: Callable[[Any], Any]
@@ -342,7 +357,7 @@ class Connection:
         reuse_cursor: Optional[Cursor] = None,
         auto_close: bool = False,
     ) -> Tuple[List[Union[List[Row], int]], Cursor]: ...
-    def getinfo(self, info_type: int) -> Union[str, int, bool, None]: ...
+    def getinfo(self, info_type: int) -> Union[str, int, bool, bytes, None]: ...
 
     # Context Manager Support
     def __enter__(self) -> "Connection": ...
@@ -381,6 +396,10 @@ SQL_LONGVARBINARY: int
 SQL_DATE: int
 SQL_TIME: int
 SQL_TIMESTAMP: int
+# SQL Server-specific type constants (pyodbc parity)
+SQL_SS_TIME2: int
+SQL_SS_XML: int
+SQL_SS_VARIANT: int
 SQL_WMETADATA: int
 
 # Connection Attribute Constants
@@ -390,6 +409,12 @@ SQL_ATTR_CURRENT_CATALOG: int
 SQL_ATTR_LOGIN_TIMEOUT: int
 SQL_ATTR_PACKET_SIZE: int
 SQL_ATTR_TXN_ISOLATION: int
+SQL_TXN_ISOLATION_LEVEL: int
+
+# Legacy Statement Options (not information types)
+SQL_CONCURRENCY: int
+SQL_ROWSET_SIZE: int
+SQL_ROW_NUMBER: int
 
 # Transaction Isolation Level Constants
 SQL_TXN_READ_UNCOMMITTED: int
@@ -405,6 +430,9 @@ SQL_MODE_READ_ONLY: int
 SQL_DRIVER_NAME: int
 SQL_DRIVER_VER: int
 SQL_DRIVER_ODBC_VER: int
+SQL_DRIVER_HLIB: int
+SQL_DRIVER_HENV: int
+SQL_DRIVER_HDBC: int
 SQL_DATA_SOURCE_NAME: int
 SQL_DATABASE_NAME: int
 SQL_SERVER_NAME: int
@@ -422,8 +450,32 @@ SQL_DEFAULT_TXN_ISOLATION: int
 SQL_NUMERIC_FUNCTIONS: int
 SQL_STRING_FUNCTIONS: int
 SQL_DATETIME_FUNCTIONS: int
+SQL_TIMEDATE_FUNCTIONS: int
+SQL_SYSTEM_FUNCTIONS: int
 SQL_MAX_COLUMN_NAME_LEN: int
 SQL_MAX_TABLE_NAME_LEN: int
 SQL_MAX_SCHEMA_NAME_LEN: int
 SQL_MAX_CATALOG_NAME_LEN: int
 SQL_MAX_IDENTIFIER_LEN: int
+SQL_CATALOG_NAME: int
+SQL_DESCRIBE_PARAMETER: int
+SQL_STATIC_CURSOR_ATTRIBUTES1: int
+SQL_STATIC_CURSOR_ATTRIBUTES2: int
+SQL_KEYSET_CURSOR_ATTRIBUTES1: int
+SQL_KEYSET_CURSOR_ATTRIBUTES2: int
+SQL_OJ_CAPABILITIES: int
+
+# SQLGetInfo Return Values (not information types)
+SQL_IC_UPPER: int
+SQL_IC_LOWER: int
+SQL_IC_SENSITIVE: int
+SQL_IC_MIXED: int
+SQL_SC_SQL92_ENTRY: int
+SQL_SC_FIPS127_2_TRANSITIONAL: int
+SQL_SC_SQL92_INTERMEDIATE: int
+SQL_SC_SQL92_FULL: int
+
+# Deprecated legacy values (127/128/129), not SQL conformance flags
+SQL_SQL92_ENTRY_SQL: int
+SQL_SQL92_INTERMEDIATE_SQL: int
+SQL_SQL92_FULL_SQL: int
