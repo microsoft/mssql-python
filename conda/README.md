@@ -78,6 +78,19 @@ version before rendering/building. The shared orchestrator derives and supplies 
 automatically; omitted input fails recipe rendering instead of choosing a release.
 Both native installation and cross extraction require the bulk-copy initializer and
 a compatible extension filename. The separate native audits still validate binary headers.
+Linux ARM64 builds on the x64 Ubuntu agent require working QEMU emulation. The pipeline
+installs `qemu-user`, `qemu-user-binfmt` and `libc6-arm64-cross`, reloads the systemd binfmt
+registrations, and checks the enabled aarch64 handler, its emulator and the ARM64 loader.
+The handler's interpreter must resolve to the installed emulator; valid Ubuntu 24.04
+`binfmt-P` symlinks are accepted, but missing, dangling or different interpreters are not.
+On Ubuntu 26.04, `qemu-user-static` is only a virtual package, not an install candidate.
+The recipe sets `QEMU_LD_PREFIX` to the cross libc directory when available; failed
+Linux interpreter execution stops with an emulation diagnostic, not a missing-wheel
+error. Interpreter-free wheel extraction remains restricted to `osx-*` targets.
+The ARM64 build runs only after every setup check passes; failed setup skips that leg
+without blocking native Linux artifact publication. ARM64 failures still preserve native
+Linux artifacts, but a missing ARM64 matrix blocks release.
+
 For RS-dependent bindings, the orchestrator also supplies the derived `MSSQL_RS_VERSION`
 and a validated `rs-wheel-cp<minor>.txt` selection in `WHEELS_DIR`. Recipes install or
 extract that entire wheel, including private libraries and distribution metadata, before
@@ -258,6 +271,24 @@ verifies that it belongs to the checked image interpreter. Only that venv's abso
 path is passed to the publishing task through a read-only task output. Dependencies
 use the publisher's target-specific hash lock and explicit package-feed-proxy `--index-url`
 with pip's `--isolated` mode. Both production and rehearsal use this same code.
+
+On `refs/heads/main`, successful completion of `Build-Release-Package-Pipeline`
+automatically starts an Official `Conda-Build-Pipeline` run. This resource trigger
+waits for the entire upstream pipeline, not just an individual stage, and retains
+the exact triggering wheel producer run through `buildPipeline.runID`.
+An Official Conda build does not by itself make its input wheels production-eligible.
+The release provenance gate checks the recorded wheel run's effective Official mode
+(including scheduled Official runs), enabled SDL and Windows signing settings, and
+completed/succeeded timeline evidence for every recorded platform build job: wheel
+ESRP malware scans and Component Governance, plus Windows native malware scanning,
+signing, Authenticode verification and signed-wheel verification. The ODBC wheel scan
+is also required. Missing, skipped, failed or mismatched evidence blocks production;
+non-publishing validation reports the ineligibility without granting publication.
+Automation stops after the Conda build: `Conda-Release-Pipeline` remains manually
+queued, with no build-completion trigger for release, rehearsal or publication.
+Direct CI and PR triggers remain disabled on both Conda pipelines. The build-trigger YAML
+must be present in the ADO repository's configured default branch, with the existing
+pipeline-resource authorizations in place, before automatic Conda builds can run.
 
 With `publishToConda=false` (the default), the release pipeline now rehearses the
 publisher instead of only printing an upload plan. Both modes use the Official
