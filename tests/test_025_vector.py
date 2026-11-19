@@ -608,9 +608,23 @@ def test_executemany_rejects_mixed_vector_columns(unit_cursor, values, error):
 
 def test_bulkcopy_does_not_invent_pycore_serialization():
     rows = [(1, "x"), (2, None)]
-    assert list(Cursor._validate_bulkcopy_vectors(rows)) == rows
+    core = SimpleNamespace()
+    assert list(Cursor._adapt_bulkcopy_vectors(rows, core)) == rows
     with pytest.raises(mssql_python.NotSupportedError, match="pycore"):
-        list(Cursor._validate_bulkcopy_vectors([(1, Vector([1, 2, 3]))]))
+        list(Cursor._adapt_bulkcopy_vectors([(1, Vector([1, 2, 3]))], core))
+
+
+@pytest.mark.parametrize("base_type", ["float32", "float16"])
+def test_bulkcopy_adapts_only_vectors_and_preserves_base_type(base_type):
+    value = Vector([0.1, 2, 3], base_type)
+    converted = object()
+    factory = Mock(return_value=converted)
+    core = SimpleNamespace(BulkCopyVector=factory)
+    ordinary = (1, [1, 2, 3], None)
+    rows = list(Cursor._adapt_bulkcopy_vectors(iter([ordinary, (value, None)]), core))
+    assert rows[0] is ordinary
+    assert rows[1] == (converted, None)
+    factory.assert_called_once_with(value.values, base_type)
 
 
 @pytest.mark.parametrize("leading_row", [False, True])
@@ -716,6 +730,16 @@ def live_vector_connection(request, conn_str, vector_server):
         yield connection, dtype
     finally:
         connection.close()
+
+
+@pytest.fixture
+def vector_bulk_core():
+    core = pytest.importorskip("mssql_py_core")
+    if not hasattr(core, "BulkCopyVector"):
+        pytest.skip(
+            "Vector bulk-copy integration requires the companion vector-capable pycore build"
+        )
+    return core
 
 
 def _expected_stored_vector(values, base_type):
@@ -1251,28 +1275,421 @@ def test_live_vector_output_converters(live_vector_connection):
 
 
 @pytest.mark.parametrize("method", ["arrow_batch", "arrow", "arrow_reader"])
-def test_live_vector_arrow_boundary(live_vector_connection, method):
-    pytest.importorskip("pyarrow")
+def test_live_vector_arrow_roundtrip(live_vector_connection, method):
+    pa = pytest.importorskip("pyarrow")
     connection, dtype = live_vector_connection
     value = Vector([1, 2, 3], dtype)
     with connection.cursor() as cursor:
         cursor.execute("SELECT ? AS embedding", value)
-        with pytest.raises(mssql_python.NotSupportedError, match="row fetch"):
-            getattr(cursor, method)()
-        assert cursor.fetchone()[0] == value
+        result = getattr(cursor, method)(batch_size=2)
+        if method == "arrow_reader":
+            with result:
+                result = result.read_all()
+        assert result.schema.field("embedding").type == pa.list_(
+            pa.field("item", pa.float32(), nullable=False), 3
+        )
+        assert result.schema.field("embedding").metadata == {
+            b"mssql.vector.base_type": dtype.encode()
+        }
+        assert result.column(0).to_pylist() == [list(value)]
 
 
-def test_live_vector_bulkcopy_boundary(live_vector_connection):
+@pytest.mark.parametrize("source_kind", ["tuples", "generator", "rows", "lists"])
+def test_live_vector_bulkcopy_roundtrip(live_vector_connection, vector_bulk_core, source_kind):
     connection, dtype = live_vector_connection
     table_name = f"dbo.pytest_vector_bulk_{uuid.uuid4().hex}"
     connection.autocommit = True
     with connection.cursor() as cursor:
+        cursor.execute(f"CREATE TABLE {table_name} (id INT, embedding VECTOR(3, {dtype}))")
+        try:
+            value = Vector([0.1, -0.0, 1.0001], dtype)
+            data = [(1, None), (2, value), (3, value)]
+            if source_kind == "generator":
+                data = (row for row in data)
+            elif source_kind == "lists":
+                data = [(row_id, list(v) if v is not None else None) for row_id, v in data]
+            elif source_kind == "rows":
+                cursor.execute(
+                    "SELECT 1 AS id, CAST(NULL AS VECTOR(3, " + dtype + ")) AS embedding "
+                    "UNION ALL SELECT 2, ? UNION ALL SELECT 3, ?",
+                    value,
+                    value,
+                )
+                data = cursor.fetchall()
+            result = cursor.bulkcopy(
+                table_name,
+                data,
+                batch_size=2,
+                column_mappings=[(0, "id"), (1, "embedding")],
+            )
+            assert result["rows_copied"] == 3
+            cursor.execute(f"SELECT id, embedding FROM {table_name} ORDER BY id")
+            rows = cursor.fetchall()
+            expected = _expected_stored_vector(value, dtype)
+            assert [tuple(row) for row in rows] == [(1, None), (2, expected), (3, expected)]
+        finally:
+            cursor.execute(f"DROP TABLE {table_name}")
+
+
+@pytest.mark.parametrize("batch_size", [0, 1, 7, 64])
+def test_live_vector_arrow_nulls_slices_and_ownership(live_vector_connection, batch_size):
+    import gc
+
+    pa = pytest.importorskip("pyarrow")
+    connection, dtype = live_vector_connection
+    value = Vector([0.1, 2.5, -0.0], dtype)
+    expected = list(_expected_stored_vector(value, dtype))
+    with connection.cursor() as cursor:
+        cursor.execute(
+            "SELECT TOP (71) ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS id, "
+            "CASE WHEN ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) % 2 = 0 "
+            f"THEN ? ELSE CAST(NULL AS VECTOR(3, {dtype})) END AS v, "
+            "REPLICATE(CAST(N'x' AS NVARCHAR(MAX)), 9000) AS text_value "
+            "FROM sys.all_objects a",
+            value,
+        )
+        schema_only = cursor.arrow_batch(0)
+        assert schema_only.num_rows == 0
+        assert schema_only.schema.field("v").type == pa.list_(
+            pa.field("item", pa.float32(), nullable=False), 3
+        )
+        table = cursor.arrow(batch_size or 7)
+        assert table.num_rows == 71
+        assert all(v is None or v == expected for v in table.column("v").to_pylist())
+        assert table.column("v").null_count > 0
+        assert table.column("text_value").to_pylist() == ["x" * 9000] * 71
+        sliced = table.slice(1, 5)
+        retained = sliced.column("v").chunk(0)
+        retained_children = retained.values
+        expected_children = retained_children.to_pylist()
+        cursor.execute("SELECT 1")
+    del table, sliced
+    gc.collect()
+    assert all(v is None or v == expected for v in retained.to_pylist())
+    del retained
+    gc.collect()
+    assert retained_children.to_pylist() == expected_children
+
+
+@pytest.mark.parametrize(
+    "source_kind", ["table", "batch", "reader", "batches", "c_stream", "c_array"]
+)
+def test_live_vector_bulkcopy_arrow_roundtrip(
+    live_vector_connection, vector_bulk_core, source_kind
+):
+    pa = pytest.importorskip("pyarrow")
+    connection, dtype = live_vector_connection
+    connection.autocommit = True
+    table_name = f"dbo.pytest_vector_arrow_{uuid.uuid4().hex}"
+    value = [0.1, -0.0, 1.0001]
+    with connection.cursor() as cursor:
+        cursor.execute(f"CREATE TABLE {table_name} (id INT, embedding VECTOR(3, {dtype}))")
+        try:
+            field = pa.field(
+                "v",
+                pa.list_(pa.float32(), 3),
+                metadata={b"mssql.vector.base_type": dtype.encode()},
+            )
+            batch = pa.record_batch(
+                [
+                    pa.array([99, 1, 2, 3], type=pa.int32()),
+                    pa.array([value, None, value, value], type=field.type),
+                ],
+                schema=pa.schema([pa.field("i", pa.int32()), field]),
+            ).slice(1)
+            if source_kind == "table":
+                source = pa.Table.from_batches([batch.slice(0, 1), batch.slice(1)])
+            elif source_kind == "reader":
+                source = pa.RecordBatchReader.from_batches(batch.schema, [batch])
+            elif source_kind == "batches":
+                source = iter([batch])
+            elif source_kind == "c_stream":
+
+                class Stream:
+                    def __arrow_c_stream__(self, requested_schema=None):
+                        return pa.Table.from_batches([batch]).__arrow_c_stream__(requested_schema)
+
+                source = Stream()
+            elif source_kind == "c_array":
+
+                class Array:
+                    def __arrow_c_array__(self, requested_schema=None):
+                        return batch.__arrow_c_array__(requested_schema)
+
+                source = Array()
+            else:
+                source = batch
+            result = cursor.bulkcopy_arrow(
+                table_name,
+                source,
+                batch_size=2,
+                column_mappings=[(1, "embedding"), (0, "id")],
+            )
+            assert result["rows_copied"] == 3
+            cursor.execute(f"SELECT id, embedding FROM {table_name} ORDER BY id")
+            expected = _expected_stored_vector(value, dtype)
+            assert [tuple(row) for row in cursor.fetchall()] == [
+                (1, None),
+                (2, expected),
+                (3, expected),
+            ]
+            copy_name = table_name + "_copy"
+            cursor.execute(f"CREATE TABLE {copy_name} (id INT, embedding VECTOR(3, {dtype}))")
+            cursor.execute(f"SELECT id, embedding FROM {table_name} ORDER BY id")
+            with cursor.arrow_reader(batch_size=2) as reader:
+                copied = cursor.bulkcopy_arrow(
+                    copy_name, reader, column_mappings=["id", "embedding"]
+                )
+            assert copied["rows_copied"] == 3
+        finally:
+            cursor.execute(f"DROP TABLE IF EXISTS {table_name}_copy")
+            cursor.execute(f"DROP TABLE {table_name}")
+
+
+@pytest.mark.parametrize(
+    "method,failure",
+    [
+        ("bulkcopy", "dimensions"),
+        ("bulkcopy_arrow", "dimensions"),
+        ("bulkcopy_arrow", "nonfinite"),
+        ("bulkcopy_arrow", "null_element"),
+        ("bulkcopy_arrow", "range"),
+    ],
+)
+def test_live_vector_bulkcopy_validation(live_vector_connection, vector_bulk_core, method, failure):
+    pa = pytest.importorskip("pyarrow")
+    connection, dtype = live_vector_connection
+    connection.autocommit = True
+    table_name = f"dbo.pytest_vector_invalid_{uuid.uuid4().hex}"
+    with connection.cursor() as cursor:
         cursor.execute(f"CREATE TABLE {table_name} (embedding VECTOR(3, {dtype}))")
         try:
-            with pytest.raises(mssql_python.NotSupportedError, match="pycore"):
-                cursor.bulkcopy(table_name, [(Vector([1, 2, 3], dtype),)])
+            if method == "bulkcopy":
+                source = [(Vector([1, 2], dtype),)]
+            else:
+                values = {
+                    "dimensions": [1, 2],
+                    "nonfinite": [math.inf, 2, 3],
+                    "null_element": [None, 2, 3],
+                    "range": [65505, 2, 3],
+                }[failure]
+                arrow_type = pa.list_(pa.float32(), len(values))
+                field = pa.field(
+                    "embedding",
+                    arrow_type,
+                    metadata={b"mssql.vector.base_type": dtype.encode()},
+                )
+                source = pa.record_batch(
+                    [pa.array([values], type=arrow_type)], schema=pa.schema([field])
+                )
+            expected_rows = 0
+            if failure == "range" and dtype == "float32":
+                assert getattr(cursor, method)(table_name, source)["rows_copied"] == 1
+                expected_rows = 1
+            else:
+                with pytest.raises(
+                    ValueError, match="(?i)vector|dimension|base_type|range|finite|NULL"
+                ):
+                    getattr(cursor, method)(table_name, source, use_internal_transaction=True)
             cursor.execute(f"SELECT COUNT(*) FROM {table_name}")
-            assert cursor.fetchone()[0] == 0
+            assert cursor.fetchval() == expected_rows
+            cursor.execute("SELECT 1")
+            assert cursor.fetchval() == 1
+        finally:
+            cursor.execute(f"DROP TABLE {table_name}")
+
+
+@pytest.mark.parametrize("source", ["vectors", "arrow", "json"])
+def test_live_vector_bulkcopy_server_converts_base_types(
+    live_vector_connection, vector_bulk_core, source
+):
+    """Like SqlBulkCopy: declare the source base type and let SQL Server convert."""
+    pa = pytest.importorskip("pyarrow")
+    connection, dtype = live_vector_connection
+    if os.getenv("MSSQL_TEST_VECTOR_FLOAT16") != "1":
+        pytest.skip("Cross-base conversion needs a FLOAT16-capable server")
+    if source == "json" and dtype != "float16":
+        pytest.skip("JSON text is sent as text only for FLOAT16 destinations")
+    other = "float32" if dtype == "float16" else "float16"
+    connection.autocommit = True
+    table_name = f"dbo.pytest_vector_cross_{uuid.uuid4().hex}"
+    values = [0.1, 2.0, 1e-8]
+    # One side is always FLOAT16, so stored values carry FLOAT16 rounding.
+    expected = Vector(_expected_stored_vector(values, "float16").values, dtype)
+    if source == "vectors":
+        data = [(Vector(values, other),), (None,), (Vector(values, other),)]
+    elif source == "json":
+        data = [("[0.1, 2, 1e-8]",), (None,), ("[0.1,2,0.00000001]",)]
+    else:
+        field = pa.field(
+            "embedding",
+            pa.list_(pa.float32(), 3),
+            metadata={b"mssql.vector.base_type": other.encode()},
+        )
+        data = pa.Table.from_arrays(
+            [pa.array([values, None, values], type=field.type)], schema=pa.schema([field])
+        )
+    method = "bulkcopy_arrow" if source == "arrow" else "bulkcopy"
+    with connection.cursor() as cursor:
+        cursor.execute(f"CREATE TABLE {table_name} (id INT IDENTITY, embedding VECTOR(3, {dtype}))")
+        try:
+            assert (
+                getattr(cursor, method)(table_name, data, column_mappings=[(0, "embedding")])[
+                    "rows_copied"
+                ]
+                == 3
+            )
+            cursor.execute(f"SELECT embedding FROM {table_name} ORDER BY id")
+            rows = [row[0] for row in cursor.fetchall()]
+            assert rows == [expected, None, expected]
+            assert rows[0].base_type == dtype
+        finally:
+            cursor.execute(f"DROP TABLE {table_name}")
+
+
+def test_live_vector_bulkcopy_cross_base_errors(live_vector_connection, vector_bulk_core):
+    connection, dtype = live_vector_connection
+    if dtype != "float16":
+        pytest.skip("FLOAT16 destination cases")
+    connection.autocommit = True
+    table_name = f"dbo.pytest_vector_cross_err_{uuid.uuid4().hex}"
+    with connection.cursor() as cursor:
+        cursor.execute(f"CREATE TABLE {table_name} (embedding VECTOR(3, float16))")
+        try:
+            # SQL Server rejects FLOAT32 values outside the FLOAT16 range.
+            with pytest.raises(Exception, match="out-of-range"):
+                cursor.bulkcopy(
+                    table_name, [(Vector([70000.0, 0, 0]),)], use_internal_transaction=True
+                )
+            # The first non-NULL Vector declares the column's base type for the load.
+            for rows in (
+                [(Vector([1, 2, 3]),), (Vector([1, 2, 3], "float16"),)],
+                [(None,), (Vector([1, 2, 3]),), (Vector([1, 2, 3], "float16"),)],
+            ):
+                with pytest.raises(ValueError, match="(?i)base.?type"):
+                    cursor.bulkcopy(table_name, rows, use_internal_transaction=True)
+            cursor.execute(f"SELECT COUNT(*) FROM {table_name}")
+            assert cursor.fetchval() == 0
+        finally:
+            cursor.execute(f"DROP TABLE {table_name}")
+
+
+@pytest.mark.parametrize("streaming", [False, True], ids=["list", "generator"])
+def test_live_vector_bulkcopy_leading_nulls_use_first_vector_base_type(
+    live_vector_connection, vector_bulk_core, streaming
+):
+    """Like SqlClient's untyped sources: leading NULLs do not decide the base type."""
+    connection, dtype = live_vector_connection
+    if os.getenv("MSSQL_TEST_VECTOR_FLOAT16") != "1":
+        pytest.skip("Cross-base conversion needs a FLOAT16-capable server")
+    other = "float32" if dtype == "float16" else "float16"
+    connection.autocommit = True
+    table_name = f"dbo.pytest_vector_leading_null_{uuid.uuid4().hex}"
+    values = [0.1, 2.0, 1e-8]
+    expected = Vector(_expected_stored_vector(values, "float16").values, dtype)
+    # Two vector columns whose first non-NULL values appear on different rows.
+    rows = [(1, None, None), (2, None, Vector(values, other))]
+    rows += [(i, None, None) for i in range(3, 40)]
+    rows += [(40, Vector(values, other), Vector(values, other)), (41, None, None)]
+    with connection.cursor() as cursor:
+        cursor.execute(
+            f"CREATE TABLE {table_name} "
+            f"(id INT, a VECTOR(3, {dtype}) NULL, b VECTOR(3, {dtype}) NULL)"
+        )
+        try:
+            source = (row for row in rows) if streaming else rows
+            assert cursor.bulkcopy(table_name, source, batch_size=7)["rows_copied"] == len(rows)
+            cursor.execute(
+                f"SELECT id, a, b FROM {table_name} WHERE a IS NOT NULL OR b IS NOT NULL ORDER BY id"
+            )
+            assert [tuple(row) for row in cursor.fetchall()] == [
+                (2, None, expected),
+                (40, expected, expected),
+            ]
+            cursor.execute(f"SELECT COUNT(*) FROM {table_name}")
+            assert cursor.fetchval() == len(rows)
+        finally:
+            cursor.execute(f"DROP TABLE {table_name}")
+
+
+def test_live_vector_bulkcopy_all_null_lookahead_keeps_destination_type(
+    live_vector_connection, vector_bulk_core
+):
+    connection, dtype = live_vector_connection
+    connection.autocommit = True
+    table_name = f"dbo.pytest_vector_null_window_{uuid.uuid4().hex}"
+    value = Vector([1, 2, 3], dtype)
+    # Past the look-ahead window the destination type applies, so matching vectors load.
+    rows = [(None,)] * 1000 + [(value,), (None,)]
+    with connection.cursor() as cursor:
+        cursor.execute(f"CREATE TABLE {table_name} (embedding VECTOR(3, {dtype}) NULL)")
+        try:
+            assert cursor.bulkcopy(table_name, iter(rows))["rows_copied"] == len(rows)
+            cursor.execute(f"SELECT embedding FROM {table_name} WHERE embedding IS NOT NULL")
+            assert [row[0] for row in cursor.fetchall()] == [_expected_stored_vector(value, dtype)]
+        finally:
+            cursor.execute(f"DROP TABLE {table_name}")
+
+
+@pytest.mark.parametrize("method", ["bulkcopy", "bulkcopy_arrow"])
+def test_live_vector_bulkcopy_maximum_dimensions(live_vector_connection, vector_bulk_core, method):
+    pa = pytest.importorskip("pyarrow")
+    connection, dtype = live_vector_connection
+    connection.autocommit = True
+    dimensions = 3996 if dtype == "float16" else 1998
+    table_name = f"dbo.pytest_vector_max_bulk_{uuid.uuid4().hex}"
+    value = Vector([0.125] * dimensions, dtype)
+    with connection.cursor() as cursor:
+        cursor.execute(f"CREATE TABLE {table_name} (embedding VECTOR({dimensions}, {dtype}))")
+        try:
+            if method == "bulkcopy":
+                source = [(None,), (value,)]
+            else:
+                source = pa.table(
+                    {
+                        "embedding": pa.array(
+                            [None, list(value)], type=pa.list_(pa.float32(), dimensions)
+                        )
+                    }
+                )
+            assert getattr(cursor, method)(table_name, source)["rows_copied"] == 2
+            cursor.execute(f"SELECT embedding FROM {table_name} WHERE embedding IS NOT NULL")
+            table = cursor.arrow()
+            assert table.schema.field("embedding").type == pa.list_(
+                pa.field("item", pa.float32(), nullable=False), dimensions
+            )
+            assert table.column(0).to_pylist() == [list(value)]
+        finally:
+            cursor.execute(f"DROP TABLE {table_name}")
+
+
+@pytest.mark.parametrize("method", ["bulkcopy", "bulkcopy_arrow"])
+@pytest.mark.parametrize("empty", [False, True])
+def test_live_vector_bulkcopy_empty_and_all_null(
+    live_vector_connection, vector_bulk_core, method, empty
+):
+    pa = pytest.importorskip("pyarrow")
+    connection, dtype = live_vector_connection
+    connection.autocommit = True
+    table_name = f"dbo.pytest_vector_null_bulk_{uuid.uuid4().hex}"
+    count = 0 if empty else 2
+    with connection.cursor() as cursor:
+        cursor.execute(f"CREATE TABLE {table_name} (embedding VECTOR(3, {dtype}))")
+        try:
+            if method == "bulkcopy":
+                source = [(None,)] * count
+            else:
+                # Hidden child values under NULL parents must not be validated as data.
+                values = pa.array([math.nan] * (3 * count), type=pa.float32())
+                vectors = pa.FixedSizeListArray.from_arrays(
+                    values, 3, mask=pa.array([True] * count, type=pa.bool_())
+                )
+                source = pa.table({"embedding": vectors})
+            assert getattr(cursor, method)(table_name, source)["rows_copied"] == count
+            cursor.execute(f"SELECT embedding FROM {table_name}")
+            table = cursor.arrow()
+            assert table.num_rows == count
+            assert table.column(0).to_pylist() == [None] * count
         finally:
             cursor.execute(f"DROP TABLE {table_name}")
 
