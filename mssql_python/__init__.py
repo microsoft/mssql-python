@@ -57,7 +57,7 @@ from .db_connection import connect, Connection
 # Token provider protocol (structural type for the token_provider= parameter)
 from .connection import TokenProvider
 
-# Retry policy for transient failures at connect() time (the retry_policy= parameter)
+# Retry policy for transient failures on connect() and Cursor.execute() (retry_policy=)
 from .retry import RetryPolicy
 
 # Connection String Handling

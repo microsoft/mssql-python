@@ -75,7 +75,9 @@ def connect(
             it fails with a transient SQLSTATE such as a login timeout or a lost link. None
             (default) makes a single attempt, exactly as before. See ``RetryPolicy`` for the
             settings and ``mssql_python.retry.DEFAULT_RETRIABLE_SQLSTATES`` for the codes
-            retried by default.
+            retried by default. The policy covers the connect only; statement retry needs its
+            own policy, passed to ``Connection.cursor()`` or to a single ``Cursor.execute()``
+            call.
 
             Example::
 

@@ -2,7 +2,8 @@
 Copyright (c) Microsoft Corporation.
 Licensed under the MIT license.
 This module defines the RetryPolicy class, which describes how connect() retries a connection
-attempt that fails with a transient error.
+attempt, and how Cursor.execute() retries a statement on the same connection, when the failure
+carries a transient SQLSTATE.
 """
 
 import random
@@ -24,6 +25,18 @@ _random = random.random
 DEFAULT_RETRIABLE_SQLSTATES: FrozenSet[str] = frozenset(
     {"HYT00", "HYT01", "08001", "08S01", "08007", "40001", "40003"}
 )
+
+# Transient codes that a statement retry on the same connection can never turn into a success,
+# so RetryPolicy.is_retriable_on_same_connection() refuses them even when the policy lists them.
+# HYT01 is the connection timeout, not the query timeout (HYT00): the server did not answer a
+# request on the link at all, which points at the connection rather than the statement, so
+# the statement is not run on that connection again. 40003 is raised when the connection fails
+# while a statement is in flight: the driver has no way to know whether the statement ran, so
+# running it again could repeat work the server already did. Class 08 codes (the link itself
+# failed) are refused by prefix in the same method rather than listed here. All of these stay
+# retriable at connect scope, where a retry opens a fresh connection instead of reusing a
+# broken one.
+_NEVER_RETRIED_ON_SAME_CONNECTION: FrozenSet[str] = frozenset({"HYT01", "40003"})
 
 _BACKOFF_STRATEGIES = ("exponential", "fixed")
 _SQLSTATE_LENGTH = 5
@@ -90,17 +103,22 @@ def _normalize_sqlstates(codes: Optional[Iterable[str]]) -> FrozenSet[str]:
 
 
 class RetryPolicy:
-    """Describes how ``connect()`` retries a connection attempt that fails with a transient error.
+    """Describes how the driver retries an operation that fails with a transient error.
 
-    A policy is optional: ``connect()`` and ``Connection()`` make a single attempt unless one is
-    passed as ``retry_policy=``. When the native connect raises with a SQLSTATE in
+    A policy is optional and works at two scopes. Passed as ``retry_policy=`` to ``connect()``
+    or ``Connection()`` it retries the native connect: when that raises with a SQLSTATE in
     ``retriable_sqlstates``, the driver waits for ``compute_delay(attempt)`` seconds and tries
-    again, up to ``max_attempts`` tries in total. Any other failure is raised at once, as the
-    same exception type it has always been.
+    again, up to ``max_attempts`` tries in total. Passed to ``Connection.cursor()`` or to a
+    single ``Cursor.execute()`` call it retries the statement on the same connection, from its
+    beginning, under the narrower rule of ``is_retriable_on_same_connection()`` and only while
+    the connection is in autocommit mode; ``Cursor.execute`` documents what such a retry does
+    and does not guarantee. A policy given to ``connect()`` never applies to the cursors of
+    that connection. Without a policy each operation makes a single attempt, and any failure
+    that is not retried is raised at once, as the same exception type it has always been.
 
     Every setting is validated once in ``__init__`` and exposed through a property with no
     setter, so an instance cannot be changed after construction and the same policy can be
-    shared by any number of connections.
+    shared by any number of connections and cursors.
 
     Attributes:
         max_attempts (int): Total number of tries, including the first. 1 means never retry.
@@ -120,6 +138,7 @@ class RetryPolicy:
         >>> import mssql_python as ms
         >>> policy = ms.RetryPolicy(max_attempts=5, base_delay=0.5, max_delay=10.0)
         >>> conn = ms.connect("Server=myserver;Database=mydb", retry_policy=policy)
+        >>> cursor = conn.cursor(retry_policy=policy)  # statement retry needs autocommit on
     """
 
     def __init__(
@@ -211,6 +230,28 @@ class RetryPolicy:
         if not isinstance(sqlstate, str):
             return False
         return sqlstate.upper() in self.retriable_sqlstates
+
+    def is_retriable_on_same_connection(self, sqlstate: Optional[str]) -> bool:
+        """Return True when a statement may run again on the connection it failed on.
+
+        This is the test ``Cursor.execute()`` applies. It is ``is_retriable(sqlstate)`` narrowed
+        by the codes a retry on the same connection can never satisfy: every class 08 code,
+        since the link itself failed and only a fresh connection (the ``connect()`` scope) can
+        help, plus ``HYT01`` (connection timeout) and ``40003`` (statement completion unknown).
+        Those codes are refused here even when the policy lists them.
+
+        Args:
+            sqlstate (str, optional): SQLSTATE code from the failed statement, or None when the
+                failure carried no SQLSTATE. None is never retriable.
+
+        Returns:
+            bool: True only when ``is_retriable(sqlstate)`` is True and the upper cased code is
+                neither a class 08 code nor ``HYT01`` or ``40003``.
+        """
+        if not isinstance(sqlstate, str) or not self.is_retriable(sqlstate):
+            return False
+        code = sqlstate.upper()
+        return not (code.startswith("08") or code in _NEVER_RETRIED_ON_SAME_CONNECTION)
 
     def compute_delay(self, attempt: int) -> float:
         """Return how long to wait, in seconds, after a failed attempt.

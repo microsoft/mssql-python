@@ -504,7 +504,9 @@ class Connection:
                 separately, so the total wall clock time is roughly the attempt timeouts plus
                 the delays. Each retry, and the final failure after a retry, is logged at
                 warning level through the driver logger, which shows these lines once
-                ``setup_logging()`` has been called.
+                ``setup_logging()`` has been called. The policy covers the connect only;
+                statement retry needs its own policy, passed to ``cursor()`` or to a single
+                ``Cursor.execute()`` call.
             **kwargs: Additional key/value pairs for the connection string.
 
         Returns:
@@ -1763,7 +1765,7 @@ class Connection:
                 self._searchescape = "\\"
         return self._searchescape
 
-    def cursor(self) -> Cursor:
+    def cursor(self, retry_policy: Optional[retry.RetryPolicy] = None) -> Cursor:
         """
         Return a new Cursor object using the connection.
 
@@ -1771,12 +1773,22 @@ class Connection:
         execute SQL queries and fetch results. The cursor is associated with the
         current connection and allows interaction with the database.
 
+        Args:
+            retry_policy (RetryPolicy, optional): Policy for retrying a statement that
+                ``execute()`` runs on the new cursor when it fails with a transient SQLSTATE
+                while this connection is in autocommit mode. None (default) makes each
+                statement a single attempt, exactly as before. Statement retry is opted into
+                here or per ``execute()`` call; the ``retry_policy`` given to ``connect()``
+                covers only the connect and is never inherited by cursors. See
+                ``Cursor.execute`` for what a statement retry does and does not guarantee.
+
         Returns:
             Cursor: A new cursor object for executing SQL queries.
 
         Raises:
             DatabaseError: If there is an error while creating the cursor.
             InterfaceError: If there is an error related to the database interface.
+            TypeError: If ``retry_policy`` is neither None nor a ``RetryPolicy``.
         """
         logger.debug(
             "cursor: Creating new cursor - timeout=%d, total_cursors=%d",
@@ -1791,7 +1803,7 @@ class Connection:
                 ddbc_error="Cannot create cursor on closed connection",
             )
 
-        cursor = Cursor(self, timeout=self._timeout)
+        cursor = Cursor(self, timeout=self._timeout, retry_policy=retry_policy)
         self._cursors.add(cursor)  # Track the cursor
         logger.debug("cursor: Cursor created successfully - total_cursors=%d", len(self._cursors))
         return cursor
