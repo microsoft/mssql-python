@@ -1,13 +1,17 @@
 """Native mssql-py-core dependency boundary for asynchronous queries."""
 
 from importlib import import_module
-from types import ModuleType
+from typing import TYPE_CHECKING, cast
+
+if TYPE_CHECKING:
+    from .._pycore_types import PyCoreModule
 
 
-def load_py_core() -> ModuleType:
+def load_py_core() -> "PyCoreModule":
     """Load the PyO3 extension that owns asynchronous TDS operations."""
     try:
-        py_core = import_module("mssql_py_core")
+        # Upgrading from a bundled core can remove the package's __init__.py.
+        py_core = import_module("mssql_py_core.mssql_py_core")
     except ImportError as exc:
         raise ImportError(
             "Async query support requires the mssql-python-rs dependency "
@@ -20,4 +24,4 @@ def load_py_core() -> ModuleType:
         missing = ", ".join(missing_types)
         raise ImportError(f"mssql_py_core does not provide the required async types: {missing}")
 
-    return py_core
+    return cast("PyCoreModule", py_core)

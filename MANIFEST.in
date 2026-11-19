@@ -1,1 +1,2 @@
 include eng/versions/mssql-python-rs.version
+include eng/scripts/mssql_python_rs.py

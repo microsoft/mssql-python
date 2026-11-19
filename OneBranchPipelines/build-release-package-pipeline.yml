@@ -51,6 +51,12 @@ schedules:
 # PIPELINE PARAMETERS
 # =========================
 parameters:
+  # ADO manual runs require a non-empty string; this sentinel maps to no override below.
+  - name: rsVersionOverride
+    displayName: 'mssql-python-rs test version (NonOfficial only; keep committed for Official)'
+    type: string
+    default: 'committed'
+
   # OneBranch build type determines compliance level
   # - Official: Production builds with full SDL compliance, all security scanning enabled
   # - NonOfficial: Development/test builds with reduced security scanning
@@ -182,6 +188,11 @@ parameters:
 # PIPELINE VARIABLES
 # =========================
 variables:
+  - name: MSSQL_PYTHON_RS_VERSION
+    ${{ if eq(parameters.rsVersionOverride, 'committed') }}:
+      value: ''
+    ${{ else }}:
+      value: ${{ parameters.rsVersionOverride }}
   # Determine effective build type: scheduled builds are Official, manual/PR builds use parameter
   # Build.Reason values: Schedule, Manual, IndividualCI, PullRequest, BatchedCI
   - name: effectiveOneBranchType

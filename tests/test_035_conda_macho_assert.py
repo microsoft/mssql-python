@@ -190,6 +190,47 @@ def _realistic_payload(binding, arm64=None, x86_64=None):
     return payload
 
 
+@pytest.mark.parametrize(
+    ("target", "subdir"),
+    [("linux-64", ""), ("linux-aarch64", ""), ("", "linux-aarch64")],
+)
+def test_unix_recipe_rejects_failed_linux_python_before_wheel_extraction(tmp_path, target, subdir):
+    bash = shutil.which("bash")
+    if not bash:
+        pytest.skip("Direct Unix recipe execution requires bash")
+    wheels = tmp_path / "wheels"
+    wheels.mkdir()
+    arch = "aarch64" if "aarch64" in (target or subdir) else "x86_64"
+    (wheels / f"mssql_python-1.18.0-cp312-cp312-manylinux_2_28_{arch}.whl").touch()
+    site_packages = tmp_path / "site-packages"
+    result = subprocess.run(
+        [bash, (_ROOT / "conda/mssql-python/build.sh").as_posix()],
+        env=dict(
+            os.environ,
+            PYTHON=(tmp_path / "nonexecutable-python").as_posix(),
+            PKG_NAME="mssql-python",
+            PKG_VERSION="1.18.0",
+            CONDA_PY="312",
+            WHEELS_DIR=wheels.as_posix(),
+            SP_DIR=site_packages.as_posix(),
+            MSSQL_ODBC_VERSION="18.6.2.2",
+            MSSQL_RS_VERSION="",
+            target_platform=target,
+            CONDA_SUBDIR=subdir,
+        ),
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    output = result.stdout + result.stderr
+    assert result.returncode != 0
+    assert f"cannot execute for '{target or subdir}'" in output
+    assert "QEMU binfmt" in output and "QEMU_LD_PREFIX" in output
+    assert "no mssql-python==" not in output
+    assert "extracting both wheels" not in output
+    assert not site_packages.exists()
+
+
 @pytest.mark.parametrize("cross_build", [False, True])
 @pytest.mark.parametrize(
     ("rs_owned", "state"),

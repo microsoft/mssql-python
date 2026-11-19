@@ -60,15 +60,7 @@ def _producer_inputs(get_json: Callable[[str], dict], commit: str) -> dict:
             raise ValueError(f"Missing or mismatched wheel producer source for {path} at {commit}.")
         return item["content"]
 
-    versions = read_release_versions(read_source)
-    result = {"versions": versions, "rsTransportVersion": ""}
-    if "mssql-python-rs" in versions:
-        path = "eng/versions/mssql-python-rs-nuget.version"
-        transport_version = read_source(path).strip()
-        if not re.fullmatch(r"[0-9][A-Za-z0-9.+_-]*", transport_version):
-            raise ValueError(f"{path} must contain one RS transport version.")
-        result["rsTransportVersion"] = transport_version
-    return result
+    return {"versions": read_release_versions(read_source)}
 
 
 def _verify_run(build: dict, run: dict, pipeline_id: int, run_id: int) -> dict:
@@ -98,6 +90,96 @@ def _verify_run(build: dict, run: dict, pipeline_id: int, run_id: int) -> dict:
     ):
         raise ValueError(f"Build/run source repository, branch or commit mismatch for {run_id}.")
     return {"pipeline": pipeline_id, "run": run_id, "branch": branch, "commit": commit}
+
+
+def _wheel_security_reasons(get_json: Callable[[str], dict], build: dict, run: dict) -> list[str]:
+    parameters = run.get("templateParameters")
+    if not isinstance(parameters, dict):
+        return ["wheel producer security parameters are missing"]
+    reasons = []
+    # Scheduled producers select Official even when the parameter defaults to NonOfficial.
+    if build.get("reason") != "schedule" and parameters.get("oneBranchType") != "Official":
+        reasons.append("wheel producer did not use Official mode")
+    for name in ("runSdlTasks", "signWindowsBinaries"):
+        if parameters.get(name) is not True:
+            reasons.append(f"wheel producer {name} was not enabled")
+    if reasons:
+        return reasons
+
+    expected_jobs = {"ODBC_BuildAll.BuildWheel.__default"}
+    for parameter, prefix, fields, job in (
+        ("windowsConfigs", "Win_py", ("pyVer", "arch"), "BuildWheel"),
+        ("macosConfigs", "MacOS_py", ("pyVer",), "BuildWheel"),
+        ("linuxConfigs", "Linux_", ("tag", "arch"), "BuildWheels"),
+    ):
+        configs = parameters.get(parameter)
+        if not isinstance(configs, list) or not configs:
+            return [f"wheel producer {parameter} evidence is missing"]
+        for config in configs:
+            if not isinstance(config, dict) or any(
+                not isinstance(config.get(field), str)
+                or not re.fullmatch(r"[a-zA-Z0-9_]+", config[field])
+                for field in fields
+            ):
+                return [f"wheel producer {parameter} evidence is invalid"]
+            identifier = prefix + "_".join(config[field] for field in fields) + f".{job}.__default"
+            if identifier in expected_jobs:
+                return [f"wheel producer {parameter} contains duplicate jobs"]
+            expected_jobs.add(identifier)
+
+    timeline = get_json(f"build/builds/{build['id']}/timeline?api-version=7.1").get("records")
+    if not isinstance(timeline, list) or not all(isinstance(record, dict) for record in timeline):
+        return ["wheel producer security timeline is missing or invalid"]
+    for identifier in sorted(expected_jobs):
+        jobs = [
+            record
+            for record in timeline
+            if record.get("type") == "Job" and record.get("identifier") == identifier
+        ]
+        if (
+            len(jobs) != 1
+            or not isinstance(jobs[0].get("id"), str)
+            or not jobs[0]["id"]
+            or jobs[0].get("state") != "completed"
+            or jobs[0].get("result") != "succeeded"
+            or type(jobs[0].get("attempt")) is not int
+            or jobs[0]["attempt"] < 1
+        ):
+            reasons.append(f"wheel producer job {identifier} is missing or did not succeed")
+            continue
+        job_record = jobs[0]
+        wheel_kind = "ODBC" if identifier.startswith("ODBC_") else "Python"
+        required_tasks = [
+            (f"ESRP MalwareScanning - {wheel_kind} Wheels (Official)", "EsrpMalwareScanning"),
+            ("Component Governance Detection", "ComponentGovernanceComponentDetection"),
+        ]
+        if identifier.startswith("Win_"):
+            required_tasks.extend(
+                [
+                    ("ESRP MalwareScanning - Native extension", "EsrpMalwareScanning"),
+                    ("ESRP CodeSigning - Native extension (.pyd)", "EsrpCodeSigning"),
+                    ("Verify Authenticode signature (native extension)", "PowerShell"),
+                    ("Verify signed .pyd inside built wheel", "PowerShell"),
+                ]
+            )
+        for name, task_type in required_tasks:
+            tasks = [
+                record
+                for record in timeline
+                if record.get("type") == "Task"
+                and record.get("parentId") == job_record["id"]
+                and record.get("name") == name
+                and record.get("attempt") == job_record["attempt"]
+            ]
+            if (
+                len(tasks) != 1
+                or tasks[0].get("state") != "completed"
+                or tasks[0].get("result") != "succeeded"
+                or not isinstance(tasks[0].get("task"), dict)
+                or tasks[0]["task"].get("name") != task_type
+            ):
+                reasons.append(f"wheel producer {identifier} lacks completed/succeeded {name}")
+    return reasons
 
 
 def verify_provenance(
@@ -130,12 +212,8 @@ def verify_provenance(
         "buildNumber"
     ):
         raise ValueError("Recorded upstream wheel version differs from its Build API build number.")
-    wheel = _verify_run(
-        wheel_build,
-        get_json(f"pipelines/{_WHEEL_PIPELINE_ID}/runs/{wheel_run_id}?api-version=7.1"),
-        _WHEEL_PIPELINE_ID,
-        wheel_run_id,
-    )
+    wheel_run = get_json(f"pipelines/{_WHEEL_PIPELINE_ID}/runs/{wheel_run_id}?api-version=7.1")
+    wheel = _verify_run(wheel_build, wheel_run, _WHEEL_PIPELINE_ID, wheel_run_id)
     reasons = [
         f"{name} source is {branch}, not {_MAIN}"
         for name, branch in (
@@ -145,6 +223,7 @@ def verify_provenance(
         )
         if branch != _MAIN
     ]
+    reasons.extend(_wheel_security_reasons(get_json, wheel_build, wheel_run))
     if publish and reasons:
         raise ValueError("Production publication is ineligible: " + "; ".join(reasons))
     return {
@@ -202,10 +281,8 @@ def execute() -> None:
     print(f"##vso[task.setvariable variable=mssqlPythonVersion;isOutput=true]{version}")
     versions = json.dumps(result["versions"], sort_keys=True)
     print(f"##vso[task.setvariable variable=releaseVersions;isOutput=true]{versions}")
-    transport = result["rsTransportVersion"]
-    print(f"##vso[task.setvariable variable=rsTransportVersion;isOutput=true]{transport}")
     if publish == "false":
-        print("Validate-only: provenance verified; package readiness is gated separately.")
+        print("Non-publishing run: provenance verified; publisher rehearsal is gated separately.")
 
 
 def cli() -> int:
