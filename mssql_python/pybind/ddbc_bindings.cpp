@@ -3458,7 +3458,12 @@ py::object FetchLobColumnData(SQLHSTMT hStmt, SQLUSMALLINT colIndex, SQLSMALLINT
                 buffer.swap(chunk);
                 buffer.resize(bytesRead);
             } else {
-                buffer.insert(buffer.end(), chunk.begin(), chunk.begin() + bytesRead);
+                if (bytesRead > buffer.max_size() - buffer.size()) {
+                    ThrowStdException("SQLGetData LOB exceeds the maximum buffer size");
+                }
+                const size_t offset = buffer.size();
+                buffer.resize(offset + bytesRead);
+                std::memcpy(buffer.data() + offset, chunk.data(), bytesRead);
             }
             LOG("FetchLobColumnData: Appended %zu bytes at loop %d", bytesRead, loopCount);
         }
