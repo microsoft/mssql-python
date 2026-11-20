@@ -103,40 +103,62 @@ def Binary(value: Union[str, bytes, bytearray, memoryview]) -> bytes: ...
 # DB-API 2.0 Exception Hierarchy
 # https://www.python.org/dev/peps/pep-0249/#exceptions
 class Warning(Exception):
-    def __init__(self, driver_error: str, ddbc_error: str) -> None: ...
+    def __init__(
+        self, driver_error: str, ddbc_error: str, *, sqlstate: Optional[str] = None
+    ) -> None: ...
     driver_error: str
     ddbc_error: str
     message: str
+    sqlstate: Optional[str]
 
 class Error(Exception):
-    def __init__(self, driver_error: str, ddbc_error: str) -> None: ...
+    def __init__(
+        self, driver_error: str, ddbc_error: str, *, sqlstate: Optional[str] = None
+    ) -> None: ...
     driver_error: str
     ddbc_error: str
     message: str
+    sqlstate: Optional[str]
 
 class InterfaceError(Error):
-    def __init__(self, driver_error: str, ddbc_error: str) -> None: ...
+    def __init__(
+        self, driver_error: str, ddbc_error: str, *, sqlstate: Optional[str] = None
+    ) -> None: ...
 
 class DatabaseError(Error):
-    def __init__(self, driver_error: str, ddbc_error: str) -> None: ...
+    def __init__(
+        self, driver_error: str, ddbc_error: str, *, sqlstate: Optional[str] = None
+    ) -> None: ...
 
 class DataError(DatabaseError):
-    def __init__(self, driver_error: str, ddbc_error: str) -> None: ...
+    def __init__(
+        self, driver_error: str, ddbc_error: str, *, sqlstate: Optional[str] = None
+    ) -> None: ...
 
 class OperationalError(DatabaseError):
-    def __init__(self, driver_error: str, ddbc_error: str) -> None: ...
+    def __init__(
+        self, driver_error: str, ddbc_error: str, *, sqlstate: Optional[str] = None
+    ) -> None: ...
 
 class IntegrityError(DatabaseError):
-    def __init__(self, driver_error: str, ddbc_error: str) -> None: ...
+    def __init__(
+        self, driver_error: str, ddbc_error: str, *, sqlstate: Optional[str] = None
+    ) -> None: ...
 
 class InternalError(DatabaseError):
-    def __init__(self, driver_error: str, ddbc_error: str) -> None: ...
+    def __init__(
+        self, driver_error: str, ddbc_error: str, *, sqlstate: Optional[str] = None
+    ) -> None: ...
 
 class ProgrammingError(DatabaseError):
-    def __init__(self, driver_error: str, ddbc_error: str) -> None: ...
+    def __init__(
+        self, driver_error: str, ddbc_error: str, *, sqlstate: Optional[str] = None
+    ) -> None: ...
 
 class NotSupportedError(DatabaseError):
-    def __init__(self, driver_error: str, ddbc_error: str) -> None: ...
+    def __init__(
+        self, driver_error: str, ddbc_error: str, *, sqlstate: Optional[str] = None
+    ) -> None: ...
 
 # Row Object
 class Row:

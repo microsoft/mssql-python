@@ -151,6 +151,31 @@ The Microsoft **mssql-python** module is designed to be fully compliant with the
  
 By adhering to the DB API 2.0 specification, the mssql-python module ensures compatibility with a wide range of Python applications and frameworks, making it a versatile choice for developers working with Microsoft SQL Server, Azure SQL Database, and Azure SQL Managed Instance.
  
+### Error classification with SQLSTATE
+
+DB-API exceptions expose `sqlstate: str | None`. Synchronous ODBC errors retain
+their diagnostic SQLSTATE, including codes not recognized by the driver's
+exception mapping. When no SQLSTATE is available, the attribute is `None`.
+Python-created errors and async Rust/TDS errors default to `None`.
+
+```python
+from mssql_python import Error
+
+try:
+    cursor.execute("SELECT * FROM missing_table")
+except Error as exc:
+    # getattr also supports driver versions without the sqlstate attribute.
+    if getattr(exc, "sqlstate", None) == "42S02":
+        print("The requested table was not found.")
+    raise
+```
+
+Existing exception types, two-argument constructors, messages, and `args` are
+unchanged. Constructors also accept the optional keyword-only `sqlstate` argument,
+and SQLSTATE metadata survives pickling and copying. A SQLSTATE alone does not
+guarantee that retrying an operation is safe. Native SQL Server error numbers are
+not exposed by this attribute.
+
 ### Enhanced Pythonic Features
  
 The driver offers a suite of Pythonic enhancements that streamline database interactions, making it easier for developers to execute queries, manage connections, and handle data more efficiently.

@@ -36,6 +36,7 @@ def test_translates_each_native_dbapi_exception(name):
     assert isinstance(translated, getattr(public_exceptions, name))
     assert translated.driver_error == "Async operation failed"
     assert translated.ddbc_error == "native failure"
+    assert translated.sqlstate is None
 
 
 def test_translation_normalizes_native_detail_as_backend_error():

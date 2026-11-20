@@ -17,6 +17,38 @@ from mssql_python.exceptions import (
 )
 from mssql_python import ConnectionStringParseError
 
+EXCEPTION_CLASSES = (
+    Exception,
+    Warning,
+    Error,
+    InterfaceError,
+    DatabaseError,
+    DataError,
+    OperationalError,
+    IntegrityError,
+    InternalError,
+    ProgrammingError,
+    NotSupportedError,
+)
+
+
+@pytest.mark.parametrize("cls", EXCEPTION_CLASSES)
+@pytest.mark.parametrize("ddbc_error", ["ddbc msg", ""])
+def test_exception_sqlstate_constructor_compatibility(cls, ddbc_error):
+    original = cls("driver msg", ddbc_error)
+    keyword = cls(driver_error="driver msg", ddbc_error=ddbc_error)
+    diagnostic = cls("driver msg", ddbc_error, sqlstate="42000")
+
+    assert original.sqlstate is None
+    assert keyword.sqlstate is None
+    assert diagnostic.sqlstate == "42000"
+    for error in (keyword, diagnostic):
+        assert error.driver_error == original.driver_error
+        assert error.ddbc_error == original.ddbc_error
+        assert error.message == original.message
+        assert str(error) == str(original)
+        assert error.args == original.args == (original.message,)
+
 
 def drop_table_if_exists(cursor, table_name):
     """Drop the table if it exists"""
@@ -42,12 +74,14 @@ def test_raise_exception():
         str(excinfo.value)
         == "Driver Error: Syntax error or access violation; DDBC Error: Syntax error or access violation"
     )
+    assert excinfo.value.sqlstate == "42000"
 
 
 def test_warning_exception():
     with pytest.raises(Warning) as excinfo:
         raise_exception("01000", "General warning")
     assert str(excinfo.value) == "Driver Error: General warning; DDBC Error: General warning"
+    assert excinfo.value.sqlstate == "01000"
 
 
 def test_data_error_exception():
@@ -57,6 +91,7 @@ def test_data_error_exception():
         str(excinfo.value)
         == "Driver Error: Numeric value out of range; DDBC Error: Numeric value out of range"
     )
+    assert excinfo.value.sqlstate == "22003"
 
 
 def test_operational_error_exception():
@@ -66,6 +101,7 @@ def test_operational_error_exception():
         str(excinfo.value)
         == "Driver Error: Client unable to establish connection; DDBC Error: Client unable to establish connection"
     )
+    assert excinfo.value.sqlstate == "08001"
 
 
 def test_integrity_error_exception():
@@ -75,6 +111,7 @@ def test_integrity_error_exception():
         str(excinfo.value)
         == "Driver Error: Integrity constraint violation; DDBC Error: Integrity constraint violation"
     )
+    assert excinfo.value.sqlstate == "23000"
 
 
 def test_internal_error_exception():
@@ -84,6 +121,7 @@ def test_internal_error_exception():
         str(excinfo.value)
         == "Driver Error: Integrity constraint violation; DDBC Error: Integrity constraint violation"
     )
+    assert excinfo.value.sqlstate == "40002"
 
 
 def test_programming_error_exception():
@@ -93,6 +131,7 @@ def test_programming_error_exception():
         str(excinfo.value)
         == "Driver Error: Base table or view not found; DDBC Error: Base table or view not found"
     )
+    assert excinfo.value.sqlstate == "42S02"
 
 
 def test_not_supported_error_exception():
@@ -102,6 +141,7 @@ def test_not_supported_error_exception():
         str(excinfo.value)
         == "Driver Error: Driver does not support this function; DDBC Error: Driver does not support this function"
     )
+    assert excinfo.value.sqlstate == "IM001"
 
 
 def test_unknown_error_exception():
@@ -111,18 +151,44 @@ def test_unknown_error_exception():
         str(excinfo.value)
         == "Driver Error: An error occurred with SQLSTATE code: 99999; DDBC Error: Unknown error"
     )
+    assert excinfo.value.sqlstate == "99999"
+
+
+@pytest.mark.parametrize(
+    "sqlstate, expected_type",
+    [("42000", ProgrammingError), ("99999", DatabaseError), ("", DatabaseError)],
+)
+def test_check_error_preserves_diagnostic_sqlstate(monkeypatch, sqlstate, expected_type):
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    from mssql_python import helpers
+
+    diagnostic = SimpleNamespace(sqlState=sqlstate, ddbcErrorMsg="diagnostic message")
+    read_error = Mock(return_value=diagnostic)
+    monkeypatch.setattr(helpers.ddbc_bindings, "DDBCSQLCheckError", read_error)
+    handle = object()
+
+    with pytest.raises(expected_type) as caught:
+        helpers.check_error(3, handle, -1)
+
+    assert type(caught.value) is expected_type
+    assert caught.value.sqlstate == (sqlstate or None)
+    assert caught.value.ddbc_error == "diagnostic message"
+    read_error.assert_called_once_with(3, handle, -1)
 
 
 def test_syntax_error(cursor):
     with pytest.raises(ProgrammingError) as excinfo:
         cursor.execute("SELEC * FROM non_existent_table")
     assert "Syntax error or access violation" in str(excinfo.value)
+    assert excinfo.value.sqlstate == "42000"
 
 
 def test_table_not_found_error(cursor):
     with pytest.raises(ProgrammingError) as excinfo:
         cursor.execute("SELECT * FROM non_existent_table")
     assert "Base table or view not found" in str(excinfo.value)
+    assert excinfo.value.sqlstate == "42S02"
 
 
 def test_data_truncation_error(cursor, db_connection):
@@ -150,6 +216,7 @@ def test_unique_constraint_error(cursor, db_connection):
         with pytest.raises(IntegrityError) as excinfo:
             cursor.execute("INSERT INTO #pytest_test_unique (id, name) VALUES (?, ?)", [1, "Name2"])
         assert "Integrity constraint violation" in str(excinfo.value)
+        assert excinfo.value.sqlstate == "23000"
     except Exception as e:
         pytest.fail(f"Test failed: {e}")
     finally:
@@ -208,6 +275,7 @@ def test_connect_runtime_error_mapped_to_correct_dbapi_exception():
         with pytest.raises(OperationalError) as exc_info:
             connect("Server=testserver;Database=mydb;Trusted_Connection=yes;")
     assert "Login failed for user" in exc_info.value.ddbc_error
+    assert exc_info.value.sqlstate == "28000"
     assert not isinstance(exc_info.value, RuntimeError)
 
     # SQLSTATE IM002 = driver not found -> OperationalError (per SQLSTATE mapping)
@@ -220,6 +288,7 @@ def test_connect_runtime_error_mapped_to_correct_dbapi_exception():
         with pytest.raises(OperationalError) as exc_info:
             connect("Server=testserver;Database=mydb;Trusted_Connection=yes;")
     assert "no default driver" in exc_info.value.ddbc_error
+    assert exc_info.value.sqlstate == "IM002"
     assert not isinstance(exc_info.value, RuntimeError)
 
     # No SQLSTATE prefix -> fallback OperationalError
@@ -230,6 +299,7 @@ def test_connect_runtime_error_mapped_to_correct_dbapi_exception():
         with pytest.raises(OperationalError) as exc_info:
             connect("Server=testserver;Database=mydb;Trusted_Connection=yes;")
     assert "Connection handle not allocated" in exc_info.value.ddbc_error
+    assert exc_info.value.sqlstate is None
     assert not isinstance(exc_info.value, RuntimeError)
 
     # Unmapped SQLSTATE (sqlstate_to_exception returns None) -> DatabaseError
@@ -241,6 +311,7 @@ def test_connect_runtime_error_mapped_to_correct_dbapi_exception():
             connect("Server=testserver;Database=mydb;Trusted_Connection=yes;")
     assert "Unknown error with unmapped code" in exc_info.value.ddbc_error
     assert "SQLSTATE code: 99999" in exc_info.value.driver_error
+    assert exc_info.value.sqlstate == "99999"
     assert not isinstance(exc_info.value, RuntimeError)
 
     # Malformed SQLSTATE (empty code) -> OperationalError
@@ -251,6 +322,7 @@ def test_connect_runtime_error_mapped_to_correct_dbapi_exception():
         with pytest.raises(OperationalError) as exc_info:
             connect("Server=testserver;Database=mydb;Trusted_Connection=yes;")
     assert "Invalid handle!" in exc_info.value.ddbc_error
+    assert exc_info.value.sqlstate is None
     assert not isinstance(exc_info.value, RuntimeError)
 
     # commit() failure -> OperationalError via same _raise_connection_error path
@@ -262,6 +334,7 @@ def test_connect_runtime_error_mapped_to_correct_dbapi_exception():
     with pytest.raises(OperationalError) as exc_info:
         conn.commit()
     assert "Communication link failure" in exc_info.value.ddbc_error
+    assert exc_info.value.sqlstate == "08S01"
     assert not isinstance(exc_info.value, RuntimeError)
 
     # rollback() failure -> OperationalError via same _raise_connection_error path
@@ -273,6 +346,7 @@ def test_connect_runtime_error_mapped_to_correct_dbapi_exception():
     with pytest.raises(OperationalError) as exc_info:
         conn2.rollback()
     assert "Communication link failure" in exc_info.value.ddbc_error
+    assert exc_info.value.sqlstate == "08S01"
     assert not isinstance(exc_info.value, RuntimeError)
 
 
@@ -287,9 +361,10 @@ def test_close_cleans_up_after_rollback_failure():
     with patch("mssql_python.connection.ddbc_bindings.Connection", return_value=mock_conn):
         conn = connect("Server=testserver;Database=mydb;Trusted_Connection=yes;")
 
-    with pytest.raises(OperationalError, match="Communication link failure"):
+    with pytest.raises(OperationalError, match="Communication link failure") as caught:
         conn.close()
 
+    assert caught.value.sqlstate == "08S01"
     mock_conn.rollback.assert_not_called()
     mock_conn.close.assert_called_once_with(rollback_before_disconnect=True)
     assert conn._conn is None
@@ -587,39 +662,66 @@ def test_truncate_error_message_return_paths():
 # ---------------------------------------------------------------------------
 
 
-def test_exception_pickle_roundtrip():
+@pytest.mark.parametrize("cls", EXCEPTION_CLASSES)
+@pytest.mark.parametrize("sqlstate", [None, "42000"])
+def test_exception_pickle_roundtrip(cls, sqlstate):
     """All DB-API exception subclasses must survive a pickle round-trip."""
     import pickle
     import copy
 
-    exception_classes = [
-        Warning,
-        Error,
-        InterfaceError,
-        DatabaseError,
-        DataError,
-        OperationalError,
-        IntegrityError,
-        InternalError,
-        ProgrammingError,
-        NotSupportedError,
-    ]
+    original = cls("driver msg", "ddbc msg", sqlstate=sqlstate)
 
-    for cls in exception_classes:
-        original = cls("driver msg", "ddbc msg")
+    restored = pickle.loads(pickle.dumps(original))
+    for result in (restored, copy.copy(original), copy.deepcopy(original)):
+        assert type(result) is cls
+        assert result.driver_error == original.driver_error
+        assert result.ddbc_error == original.ddbc_error
+        assert result.message == original.message
+        assert result.sqlstate == sqlstate
+        assert str(result) == str(original)
+        assert result.args == original.args
 
-        # pickle round-trip
-        restored = pickle.loads(pickle.dumps(original))
 
-        assert type(restored) is cls, f"{cls.__name__}: type mismatch after unpickle"
-        assert restored.driver_error == "driver msg", f"{cls.__name__}: driver_error mismatch"
-        assert restored.ddbc_error == "ddbc msg", f"{cls.__name__}: ddbc_error mismatch"
-        assert str(restored) == str(original), f"{cls.__name__}: str() mismatch"
+def test_exception_legacy_pickle_defaults_to_no_sqlstate():
+    import pickle
 
-        # copy.deepcopy also uses __reduce__
-        deep = copy.deepcopy(original)
-        assert type(deep) is cls
-        assert deep.driver_error == "driver msg"
+    class LegacyPayload:
+        def __reduce__(self):
+            return (
+                Exception._unpickle,
+                (ProgrammingError, "driver msg", "ddbc msg", "original message"),
+            )
+
+    restored = pickle.loads(pickle.dumps(LegacyPayload()))
+
+    assert type(restored) is ProgrammingError
+    assert restored.sqlstate is None
+    assert restored.driver_error == "driver msg"
+    assert restored.ddbc_error == "ddbc msg"
+    assert restored.message == "original message"
+    assert restored.args == ("original message",)
+
+
+def test_exception_pickle_does_not_retruncate_diagnostics(monkeypatch):
+    import copy
+    import pickle
+    from unittest.mock import Mock
+    from mssql_python import exceptions
+
+    original = ProgrammingError(
+        "driver msg",
+        "[Microsoft][ODBC Driver 18 for SQL Server][SQL Server]query failed",
+        sqlstate="42000",
+    )
+    payload = pickle.dumps(original)
+    truncate = Mock(side_effect=AssertionError("Diagnostics must not be truncated again"))
+    monkeypatch.setattr(exceptions, "truncate_error_message", truncate)
+
+    for result in (pickle.loads(payload), copy.deepcopy(original)):
+        assert result.sqlstate == "42000"
+        assert result.ddbc_error == original.ddbc_error
+        assert result.args == original.args
+    truncate.assert_not_called()
 
 
 def test_exception_pickle_empty_ddbc_error():
@@ -632,6 +734,7 @@ def test_exception_pickle_empty_ddbc_error():
     assert type(restored) is ProgrammingError
     assert restored.driver_error == "cursor is closed"
     assert restored.ddbc_error == ""
+    assert restored.sqlstate is None
     assert str(restored) == str(original)
 
 
