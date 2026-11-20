@@ -3463,7 +3463,7 @@ py::object FetchLobColumnData(SQLHSTMT hStmt, SQLUSMALLINT colIndex, SQLSMALLINT
                 }
                 const size_t offset = buffer.size();
                 buffer.resize(offset + bytesRead);
-                std::memcpy(buffer.data() + offset, chunk.data(), bytesRead);
+                std::copy_n(chunk.data(), bytesRead, buffer.data() + offset);
             }
             LOG("FetchLobColumnData: Appended %zu bytes at loop %d", bytesRead, loopCount);
         }

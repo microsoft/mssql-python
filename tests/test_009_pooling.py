@@ -1708,6 +1708,7 @@ def test_native_destructor_rolls_back_pending_dml(conn_str, use_pool, autocommit
             import uuid
 
             from mssql_python import connect, ddbc_bindings as ddbc, pooling
+            from mssql_python.constants import ConstantsDDBC
 
             conn_str = os.environ["DB_CONNECTION_STRING"]
             pool_key = "pytest_native_cleanup_" + uuid.uuid4().hex
@@ -1717,12 +1718,26 @@ def test_native_destructor_rolls_back_pending_dml(conn_str, use_pool, autocommit
             native = ddbc.Connection(conn_str, use_pool, {}, pool_key, None)
             statement = native.alloc_statement_handle()
             try:
-                assert ddbc.DDBCSQLExecDirect(
+                ret = ddbc.DDBCSQLExecDirect(
                     statement,
                     "SELECT CONVERT(nvarchar(36), connection_id) "
                     "FROM sys.dm_exec_connections "
                     "WHERE session_id = @@SPID AND parent_connection_id IS NULL",
-                ) in (0, 1)
+                )
+                if ret not in (0, 1):
+                    error = ddbc.DDBCSQLCheckError(
+                        ConstantsDDBC.SQL_HANDLE_STMT.value, statement, ret
+                    )
+                    if error.sqlState == "42000" and "permission" in error.ddbcErrorMsg.lower():
+                        print(
+                            "Native identity query requires VIEW SERVER STATE / "
+                            "VIEW SERVER PERFORMANCE STATE",
+                            file=sys.stderr,
+                        )
+                        sys.exit(77)
+                    raise AssertionError(
+                        f"Native identity query failed ({error.sqlState}): {error.ddbcErrorMsg}"
+                    )
                 row = []
                 assert ddbc.DDBCSQLFetchOne(statement, row) in (0, 1)
                 connection_id = row[0]
