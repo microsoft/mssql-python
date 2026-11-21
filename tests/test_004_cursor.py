@@ -16793,6 +16793,22 @@ def test_gh745_batch_decimal_precision_scale_covers_all_rows():
     assert precision >= 9
 
 
+@pytest.mark.parametrize(
+    "column",
+    [
+        [decimal.Decimal("0"), decimal.Decimal("1E-38")],
+        [decimal.Decimal("1E-38"), decimal.Decimal("0")],
+        [decimal.Decimal("0"), None, decimal.Decimal("1E-38")],
+    ],
+    ids=["zero-then-tiny", "tiny-then-zero", "zero-null-tiny"],
+)
+def test_gh745_batch_decimal_zero_adds_no_integer_digits(column):
+    """Decimal("0") must not bump integer digits over 38 (jahnvi480)."""
+    cur = _make_bare_cursor()
+    precision, scale = cur._batch_decimal_precision_scale(column)
+    assert (precision, scale) == (38, 38)
+
+
 def test_gh745_executemany_money_range_binds_as_numeric(monkeypatch):
     """executemany auto-detect binds money-range Decimals as SQL_NUMERIC (GH-745)."""
     from unittest.mock import MagicMock
@@ -16890,6 +16906,49 @@ def test_gh745_executemany_near_max_precision_stays_within_38(monkeypatch):
     assert len(encoded) == 40
     assert pt.bufferSize >= len(encoded)
     assert captured["columnwise_params"][0][0] == encoded
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        [(decimal.Decimal("0"),), (decimal.Decimal("1E-38"),)],
+        [(decimal.Decimal("1E-38"),), (decimal.Decimal("0"),)],
+        [(decimal.Decimal("0"),), (None,), (decimal.Decimal("1E-38"),)],
+    ],
+    ids=["zero-then-tiny", "tiny-then-zero", "zero-null-tiny"],
+)
+def test_gh745_executemany_zero_and_tiny_stays_within_38(monkeypatch, data):
+    """Zero plus Decimal("1E-38") must stay NUMERIC(38,38) (jahnvi480)."""
+    from unittest.mock import MagicMock
+    from mssql_python import ddbc_bindings
+    from mssql_python.cursor import Cursor
+
+    cur = Cursor.__new__(Cursor)
+    cur._inputsizes = None
+    cur._timeout = 0
+    cur.closed = False
+    cur.hstmt = MagicMock()
+    cur.messages = []
+    cur.is_stmt_prepared = [False]
+    cur._connection = MagicMock()
+    cur._connection._encoding = "utf-8"
+    cur._connection._conn = MagicMock()
+    captured = {}
+
+    def fake_sql_execute_many(hstmt, op, col_params, param_types, row_count, enc):
+        captured["parameters_type"] = param_types
+        return 0
+
+    monkeypatch.setattr(cur, "_check_closed", lambda: None)
+    monkeypatch.setattr(cur, "_reset_cursor", lambda: None)
+    monkeypatch.setattr(ddbc_bindings, "SQLExecuteMany", fake_sql_execute_many)
+    monkeypatch.setattr(ddbc_bindings, "DDBCSQLGetAllDiagRecords", lambda h: [])
+    monkeypatch.setattr(ddbc_bindings, "DDBCSQLRowCount", lambda h: len(data))
+    cur.executemany("UPDATE t SET x = 1 WHERE v = ?", data)
+    pt = captured["parameters_type"][0]
+    assert pt.paramSQLType == _C.SQL_NUMERIC.value
+    assert pt.columnSize == 38
+    assert pt.decimalDigits == 38
 
 
 def test_gh745_executemany_buffer_fits_mixed_sign_short_precision(monkeypatch):

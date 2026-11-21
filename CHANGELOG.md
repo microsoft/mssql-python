@@ -149,6 +149,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
   `decimalDigits`; the CHAR array stride uses a separate `bufferSize`
   sized from the longest fixed-point encoding (e.g. `Decimal("1E-38")`),
   so near-max precision values are not rejected by the array buffer.
+  Zero contributes no integer digits to the batch precision, so
+  `Decimal("0")` plus `Decimal("1E-38")` stays `NUMERIC(38,38)`.
   The `setinputsizes` DECIMAL/NUMERIC string path uses the same buffer-width
   split; buffer width is derived from text produced by the protected
   conversion path so failed conversions still raise a sanitized `ValueError`

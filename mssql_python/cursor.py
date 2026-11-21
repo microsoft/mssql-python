@@ -2492,6 +2492,19 @@ class Cursor:
             scale = exponent * -1
         return precision, scale
 
+    @staticmethod
+    def _decimal_batch_int_digits(
+        value: decimal.Decimal, precision: int, scale: int
+    ) -> int:
+        """Integer digits this Decimal contributes to a batch NUMERIC type.
+
+        ``Decimal("0")`` reports precision 1, but zero has no integer digits and
+        must not push a high-scale sibling (``Decimal("1E-38")``) over precision 38.
+        """
+        if value.is_zero():
+            return 0
+        return precision - scale
+
     def _batch_decimal_precision_scale(self, column: Sequence[Any]) -> Tuple[int, int]:
         """Derive one NUMERIC(precision, scale) that fits every Decimal in a column.
 
@@ -2511,7 +2524,9 @@ class Cursor:
             precision, scale = self._decimal_sql_precision_scale(value)
             found = True
             max_scale = max(max_scale, scale)
-            max_int_digits = max(max_int_digits, precision - scale)
+            max_int_digits = max(
+                max_int_digits, self._decimal_batch_int_digits(value, precision, scale)
+            )
         if not found:
             return 0, 0
         return max(max_int_digits + max_scale, 1), max_scale
@@ -3015,7 +3030,10 @@ class Cursor:
                     precision, scale = self._decimal_sql_precision_scale(as_decimal)
                     found_numeric_text = True
                     max_scale = max(max_scale, scale)
-                    max_int_digits = max(max_int_digits, precision - scale)
+                    max_int_digits = max(
+                        max_int_digits,
+                        self._decimal_batch_int_digits(as_decimal, precision, scale),
+                    )
                 if max_encoded:
                     prior = getattr(ptype, "bufferSize", 0) or 0
                     ptype.bufferSize = max(prior, max_encoded, 1)

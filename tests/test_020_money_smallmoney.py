@@ -898,6 +898,38 @@ def test_gh745_executemany_tiny_scale38_roundtrip(cursor, db_connection):
         db_connection.commit()
 
 
+@pytest.mark.parametrize(
+    "data",
+    [
+        [(Decimal("0"),), (Decimal("1E-38"),)],
+        [(Decimal("1E-38"),), (Decimal("0"),)],
+        [(Decimal("0"),), (None,), (Decimal("1E-38"),)],
+    ],
+    ids=["zero-then-tiny", "tiny-then-zero", "zero-null-tiny"],
+)
+def test_gh745_executemany_zero_and_tiny_scale38(cursor, db_connection, data):
+    """Decimal("0") plus Decimal("1E-38") must insert into NUMERIC(38,38).
+
+    Zero used to contribute one integer digit, so the batch was inferred as
+    precision 39 and rejected (jahnvi480).
+    """
+    table_name = "#pytest_gh745_zero_tiny"
+    try:
+        drop_table_if_exists(cursor, table_name)
+        cursor.execute(f"CREATE TABLE {table_name} (v NUMERIC(38,38))")
+        cursor.executemany(f"INSERT INTO {table_name} VALUES (?)", data)
+        db_connection.commit()
+        cursor.execute(f"SELECT COUNT(*) FROM {table_name} WHERE v IS NOT NULL")
+        assert cursor.fetchone()[0] == 2
+        cursor.execute(f"SELECT v FROM {table_name} WHERE v IS NOT NULL ORDER BY v")
+        rows = [r[0] for r in cursor.fetchall()]
+        assert Decimal("0") in rows
+        assert Decimal("1E-38") in rows
+    finally:
+        drop_table_if_exists(cursor, table_name)
+        db_connection.commit()
+
+
 def test_gh745_executemany_mixed_decimal_string_precision(cursor, db_connection):
     """Decimal + numeric-string batch must fit DECIMAL(38,14) (bewithgaurav).
 
