@@ -69,6 +69,7 @@ from .cursor import Cursor
 
 # Row Objects
 from .row import Row, RowMapping
+from .table_valued_parameter import TableValuedParameter
 
 # Logging Configuration (Simplified single-level DEBUG system)
 from .logging import logger, setup_logging, driver_logger
@@ -327,6 +328,7 @@ from .constants import (  # noqa: F401
 )
 
 __all__ = [
+    "TableValuedParameter",
     # Exception classes
     "Warning",
     "Error",
