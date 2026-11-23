@@ -49,7 +49,7 @@ def test_cursor_consumer_call_shapes(tmp_path: Path, module: str) -> None:
     usage = tmp_path / "cursor_consumer.py"
     usage.write_text(
         f"""\
-from {module} import Cursor
+from {module} import Cursor, SQL_INTEGER, TableValuedParameter
 
 def supported_calls(cursor: Cursor) -> None:
     cursor.setinputsizes(None)
@@ -59,6 +59,8 @@ def supported_calls(cursor: Cursor) -> None:
         "INSERT INTO example VALUES (%(id)s, %(name)s)",
         [{{"id": 1, "name": "one"}}, {{"id": 2, "name": "two"}}],
     )
+    rows: list[tuple[int]] = [(1,), (2,)]
+    TableValuedParameter("dbo.IntValues", [("value", SQL_INTEGER)], rows)
 """,
         encoding="utf-8",
     )

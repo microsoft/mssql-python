@@ -38,6 +38,13 @@
 // Parameter description types
 //-------------------------------------------------------------------------------------------------
 
+// External linkage for ParamInfo ownership; match its pybind11 members' visibility.
+#ifdef __GNUC__
+struct __attribute__((visibility("hidden"))) TableParamState;
+#else
+struct TableParamState;
+#endif
+
 // This struct is shared between C++ & Python code.
 // Suppress -Wattributes warning for ParamInfo struct
 // The warning is triggered because pybind11 handles visibility attributes automatically,
@@ -54,6 +61,8 @@ struct ParamInfo {
     SQLSMALLINT decimalDigits = 0;
     SQLLEN strLenOrInd = 0;  // Required for DAE
     bool isDAE = false;      // Indicates if we need to stream
+    bool isTVP = false;
+    std::shared_ptr<TableParamState> table;
     // Strong reference to the Python object for DAE (data-at-execution) streaming.
     // py::object owns the refcount, so the compiler-generated destructor, copy and
     // move operations are all correct and this struct needs no rule-of-five.
@@ -310,6 +319,7 @@ inline std::vector<ParamInfo> DetectParamTypes(PyObject* params, PyObject* input
         ParamInfo& info = infos[i];
         info.inputOutputType = SQL_PARAM_INPUT;
         info.isDAE = false;
+        info.isTVP = false;
 
         if (i < inputSizeCount) {
             ApplyInputSizeOverride(params, PyList_GET_ITEM(inputSizes, i), i, info);
@@ -632,6 +642,15 @@ inline std::vector<ParamInfo> DetectParamTypes(PyObject* params, PyObject* input
                 // PyList_SetItem steals (decrefs) the item even on failure.
                 throw py::error_already_set();
             }
+            continue;
+        }
+
+        py::object tvpType = py::module_::import("mssql_python.table_valued_parameter")
+                                 .attr("TableValuedParameter");
+        if (py::isinstance(borrow(obj), tvpType)) {
+            info.paramSQLType = SQL_SS_TABLE;
+            info.paramCType = SQL_C_BINARY;
+            info.isTVP = true;
             continue;
         }
 
