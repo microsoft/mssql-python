@@ -3073,24 +3073,8 @@ class Cursor:
 
         procedure_rows: deque[list[Any]] | None = getattr(self, "_procedure_rows", None)
         if procedure_rows is not None:
-            if not self.description:
-                raise ProgrammingError("The current procedure result has no rows", "")
-            if not procedure_rows:
-                self.rowcount = self._next_row_index
-                return None
-            buffered_row = procedure_rows.popleft()
-            self._increment_rownumber()
-            self.rowcount = self._next_row_index
-            column_map, converter_map, lower_map = self._get_column_and_converter_maps()
-            return Row(
-                buffered_row,
-                column_map,
-                cursor=self,
-                converter_map=converter_map,
-                uuid_str_indices=self._uuid_str_indices,
-                column_map_lower=lower_map,
-                column_names=self._cached_result_columns,
-            )
+            rows = self._fetch_procedure_rows(procedure_rows, 1)
+            return rows[0] if rows else None
 
         if self._cached_decoding_generation != self._connection._decoding_generation:
             self._refresh_decoding_cache()
@@ -3225,14 +3209,9 @@ class Cursor:
         if size <= 0:
             return []
 
-        if getattr(self, "_procedure_rows", None) is not None:
-            rows = []
-            for _ in range(size):
-                row = self.fetchone()
-                if row is None:
-                    break
-                rows.append(row)
-            return rows
+        procedure_rows: deque[list[Any]] | None = getattr(self, "_procedure_rows", None)
+        if procedure_rows is not None:
+            return self._fetch_procedure_rows(procedure_rows, size)
 
         if self._cached_decoding_generation != self._connection._decoding_generation:
             self._refresh_decoding_cache()
@@ -3291,6 +3270,34 @@ class Cursor:
             return self._wrap_fetchmany(rows_data, deferred_text=True)
         return self._wrap_fetchmany(rows_data)
 
+    def _fetch_procedure_rows(self, procedure_rows: deque[list[Any]], size: int) -> list[Row]:
+        if not self.description:
+            raise ProgrammingError("The current procedure result has no rows", "")
+        if not procedure_rows:
+            self.rowcount = self._next_row_index
+            return []
+
+        column_map, converter_map, lower_map = self._get_column_and_converter_maps()
+        uuid_indices = self._uuid_str_indices
+        column_names = self._cached_result_columns
+        rows = []
+        for _ in range(min(size, len(procedure_rows))):
+            buffered_row = procedure_rows.popleft()
+            self._increment_rownumber()
+            self.rowcount = self._next_row_index
+            rows.append(
+                Row(
+                    buffered_row,
+                    column_map,
+                    cursor=self,
+                    converter_map=converter_map,
+                    uuid_str_indices=uuid_indices,
+                    column_map_lower=lower_map,
+                    column_names=column_names,
+                )
+            )
+        return rows
+
     def _wrap_fetchmany(self, rows_data: list[list[Any]], deferred_text: bool = False) -> list[Row]:
         column_map, converter_map, column_map_lower = self._get_column_and_converter_maps()
         if deferred_text and not converter_map:
@@ -3341,8 +3348,8 @@ class Cursor:
         self._check_closed()  # Check if the cursor is closed
         procedure_rows: deque[list[Any]] | None = getattr(self, "_procedure_rows", None)
         if procedure_rows is not None:
-            # Request one extra row so exhaustion finalizes rowcount, even when empty.
-            return self.fetchmany(len(procedure_rows) + 1)
+            # Use a positive size so fetchmany handles empty and non-row results too.
+            return self.fetchmany(max(1, len(procedure_rows)))
         if not self._has_result_set and self.description:
             self._reset_rownumber()
 

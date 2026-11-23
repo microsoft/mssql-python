@@ -400,6 +400,42 @@ def test_callproc_skip_and_scroll_consume_buffered_rows(unit_cursor, monkeypatch
     assert unit_cursor.fetchone() is None
 
 
+@pytest.mark.parametrize("method", ["fetchmany", "fetchall"])
+@pytest.mark.parametrize("mutation", ["replace", "remove"])
+def test_callproc_batch_keeps_converter_snapshot(unit_cursor, monkeypatch, method, mutation):
+    value = Vector([1, 2, 3])
+    connection = unit_cursor._connection
+    seen_positions = []
+
+    def original(_):
+        seen_positions.append(unit_cursor.rownumber)
+        if mutation == "replace":
+            connection._output_converters[mssql_python.SQL_SS_VECTOR] = lambda _: "new"
+        else:
+            connection._output_converters.pop(mssql_python.SQL_SS_VECTOR, None)
+        connection._converters_generation += 1
+        return "old"
+
+    connection._output_converters[mssql_python.SQL_SS_VECTOR] = original
+    monkeypatch.setattr(
+        ddbc_bindings,
+        "DDBCCallProc",
+        lambda *args: ([], [(vector_metadata(), [[value] for _ in range(3)], -1)]),
+    )
+    unit_cursor.callproc("p")
+    rows = unit_cursor.fetchmany(2) if method == "fetchmany" else unit_cursor.fetchall()
+    batch_size = 2 if method == "fetchmany" else 3
+    assert [row.embedding for row in rows] == ["old"] * batch_size
+    assert seen_positions == list(range(batch_size))
+    if method == "fetchmany":
+        assert len(rows) == unit_cursor.rowcount == 2
+        assert unit_cursor.rownumber == 1
+        assert unit_cursor.fetchone().embedding == ("new" if mutation == "replace" else value)
+    assert unit_cursor.fetchone() is None
+    assert unit_cursor.rowcount == 3
+    assert unit_cursor.rownumber == 2
+
+
 def test_callproc_refreshes_decoding_after_connection_change(unit_cursor, monkeypatch):
     seen = []
 

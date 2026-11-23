@@ -15,7 +15,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
   validation; unhinted lists keep their existing meanings. Added buffered
   `callproc()` (1-3 part names, optionally bracket-quoted) with
   `OutputParameter(sql_type, size, scale)` / `InputOutputParameter` wrappers;
-  output parameters currently support `SQL_SS_VECTOR`. Procedure calls invalidate
+  output parameters currently support `SQL_SS_VECTOR`. Buffered `fetchmany()` and
+  `fetchall()` calls use one output-converter snapshot per batch. Procedure calls invalidate
   the previous prepared-query cache even when the procedure fails; overwritten
   non-vector INPUT_OUTPUT values are rejected before binding. FLOAT16 requires
   Microsoft ODBC Driver 18.7.1.1+ (not supplied by the current bundled driver); ODBC
