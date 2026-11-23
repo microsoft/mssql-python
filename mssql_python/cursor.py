@@ -4485,20 +4485,33 @@ class Cursor:
                 if value == 0:
                     return
 
-                # For forward-only cursors, use multiple SQL_FETCH_NEXT calls
-                # This matches pyodbc's approach for skip operations
-                for i in range(value):
-                    ret = ddbc_bindings.DDBCSQLFetchScroll(
-                        self.hstmt, ddbc_sql_const.SQL_FETCH_NEXT.value, 0, row_data
-                    )
-                    if ret == ddbc_sql_const.SQL_NO_DATA.value:
+                # callproc() buffered this result and already drained its native rows.
+                procedure_rows: deque[list[Any]] | None = getattr(self, "_procedure_rows", None)
+                if procedure_rows is not None:
+                    if value > len(procedure_rows):
+                        procedure_rows.clear()
                         raise IndexError(
                             "Cannot scroll to specified position: end of result set reached"
                         )
+                    for _ in range(value):
+                        procedure_rows.popleft()
+                else:
+                    # For forward-only cursors, use multiple SQL_FETCH_NEXT calls
+                    # This matches pyodbc's approach for skip operations
+                    for i in range(value):
+                        ret = ddbc_bindings.DDBCSQLFetchScroll(
+                            self.hstmt, ddbc_sql_const.SQL_FETCH_NEXT.value, 0, row_data
+                        )
+                        if ret == ddbc_sql_const.SQL_NO_DATA.value:
+                            raise IndexError(
+                                "Cannot scroll to specified position: end of result set reached"
+                            )
 
                 # Update position tracking
                 self._rownumber = self._rownumber + value
                 self._next_row_index = self._rownumber + 1
+                if procedure_rows is not None:
+                    self.rowcount = self._next_row_index
                 logger.debug(
                     "scroll: Scroll complete - new_rownumber=%d, next_row_index=%d",
                     self._rownumber,

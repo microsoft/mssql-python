@@ -198,7 +198,8 @@ upgrade the bundled driver or add support to the alternate Rust ODBC provider.
 | `VectorTypeSupport=v2` | Yes | Yes |
 
 `Vector(values, base_type="float16")` selects the value's SQL base type; it does not upgrade a
-connection from v1 to v2. The connection setting is passed through to ODBC for
+connection from v1 to v2, and on a v1 connection it is not sent as FLOAT32
+instead: ODBC rejects it with an error. The connection setting is passed through to ODBC for
 negotiation rather than emulated in Python.
 
 The driver never converts between FLOAT32 and FLOAT16. A `Vector` is sent with
@@ -255,9 +256,9 @@ Non-NULL values must match the hinted dimensions and base type. A conflicting
 dimensions/base type; hinted columns may mix lists, matching Vectors, and None.
 
 Both subtypes are marshaled to ODBC as `SQL_C_SS_VECTOR` structures containing
-C float32 arrays and bound with SQL type `SQL_SS_VECTOR`. ODBC owns conversion
-to/from FLOAT16, including half-precision rounding and backend diagnostics;
-Python performs only the early finite/range checks above. Python does not
+C float32 arrays and bound with SQL type `SQL_SS_VECTOR`. ODBC encodes and
+decodes FLOAT16 elements (half-precision rounding) and reports backend
+diagnostics; Python performs only the early finite/range checks above. Python does not
 pack TDS headers, encode half floats, or serialize vectors as binary/JSON.
 
 **Stored procedures:** `callproc()` accepts ordinary input parameters and
@@ -293,7 +294,8 @@ Arrow vector fetches and Arrow access to
 buffered procedure results are not supported; use row fetch methods instead.
 **Vector bulk copy is pending the pycore vector input contract.** `bulkcopy()`
 explicitly rejects `Vector` cells rather than guessing a serialization format.
-Once that backend contract is available, pycore will own its FLOAT16 conversion.
+Once that backend contract is available, pycore will encode FLOAT16 for bulk
+copy, and SQL Server will convert between base types as it does for parameters.
 
 Vector unit tests run without SQL Server. End-to-end tests in
 `tests/test_025_vector.py` exercise v1/FLOAT32, v2/FLOAT32, and v2/FLOAT16:

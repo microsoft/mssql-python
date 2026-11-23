@@ -10,6 +10,7 @@ import json
 import math
 import os
 import struct
+import sys
 import uuid
 from collections import deque
 from itertools import repeat
@@ -368,6 +369,35 @@ def test_callproc_buffered_results_and_cursor_reuse(unit_cursor, monkeypatch):
     unit_cursor._soft_reset_cursor()
     assert unit_cursor._procedure_rows is None
     assert unit_cursor._procedure_results is None
+
+
+def test_callproc_skip_and_scroll_consume_buffered_rows(unit_cursor, monkeypatch):
+    vectors = [Vector([i, 2, 3]) for i in range(5)]
+
+    def callproc(handle, sql, params, settings, messages, *decoding):
+        return [], [
+            (vector_metadata(), [[value] for value in vectors], -1),
+            (vector_metadata(), [[value] for value in vectors[:2]], -1),
+        ]
+
+    def native_scroll(*args):
+        raise AssertionError("buffered procedure results must not fetch from ODBC")
+
+    monkeypatch.setattr(ddbc_bindings, "DDBCCallProc", callproc)
+    monkeypatch.setattr(ddbc_bindings, "DDBCSQLFetchScroll", native_scroll)
+    unit_cursor.callproc("p")
+    unit_cursor.skip(1)
+    assert unit_cursor.rownumber == 0
+    assert unit_cursor.fetchone()[0] == vectors[1]
+    unit_cursor.scroll(2)
+    assert unit_cursor.rownumber == 3
+    assert unit_cursor.rowcount == 4
+    assert unit_cursor.fetchone()[0] == vectors[4]
+    assert unit_cursor.fetchone() is None
+    assert unit_cursor.nextset()
+    with pytest.raises(IndexError, match="end of result set"):
+        unit_cursor.skip(3)
+    assert unit_cursor.fetchone() is None
 
 
 def test_callproc_refreshes_decoding_after_connection_change(unit_cursor, monkeypatch):
@@ -1075,16 +1105,25 @@ def test_live_callproc_bracketed_names(live_vector_connection, name):
 
 def test_live_callproc_uses_decoding_changed_after_cursor_creation(live_vector_connection):
     connection, _ = live_vector_connection
+    query = "SELECT CAST(0x80 AS VARCHAR(1)) COLLATE SQL_Latin1_General_CP1_CI_AS AS value"
     with connection.cursor() as cursor:
-        cursor.execute(
-            "CREATE PROCEDURE #varchar_probe AS BEGIN SET NOCOUNT ON; "
-            "SELECT CAST(0x80 AS VARCHAR(1)) COLLATE SQL_Latin1_General_CP1_CI_AS AS value; END"
-        )
+        cursor.execute(f"CREATE PROCEDURE #varchar_probe AS BEGIN SET NOCOUNT ON; {query}; END")
         connection.setdecoding(
             mssql_python.SQL_CHAR, encoding="latin-1", ctype=mssql_python.SQL_CHAR
         )
         assert cursor.callproc("#varchar_probe") == []
-        assert cursor.fetchone()[0] == "\x80"
+        actual = cursor.fetchone()[0]
+        assert (cursor._cached_char_encoding, cursor._cached_char_ctype) == (
+            "latin-1",
+            mssql_python.SQL_CHAR,
+        )
+    # A cursor created after setdecoding() is the reference. On Windows, the driver
+    # returns the raw byte, which latin-1 decodes to '\x80'.
+    with connection.cursor() as fresh:
+        fresh.execute(query)
+        assert actual == fresh.fetchone()[0]
+    if sys.platform == "win32":
+        assert actual == "\x80"
 
 
 def test_live_fetch_and_outputs_use_trusted_vector_construction(
