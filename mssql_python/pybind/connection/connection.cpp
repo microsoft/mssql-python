@@ -1007,6 +1007,13 @@ void ConnectionHandle::close(bool rollbackBeforeDisconnect) {
     _conn = nullptr;
 }
 
+void ConnectionHandle::discard() {
+    if (_conn) {
+        ConnectionPoolManager::getInstance().discardConnection(_originPool, _conn);
+        _conn = nullptr;
+    }
+}
+
 void ConnectionHandle::commit() {
     PERF_TIMER("ConnectionHandle::commit");
     if (!_conn) {

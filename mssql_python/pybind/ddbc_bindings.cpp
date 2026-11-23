@@ -6779,6 +6779,14 @@ PYBIND11_MODULE(ddbc_bindings, m) {
 
     py::class_<SqlHandle, SqlHandlePtr>(m, "SqlHandle")
         .def("free", &SqlHandle::free, "Free the handle")
+        .def("_free_checked", [](const SqlHandlePtr& handle) {
+            SQLRETURN result = handle->freeHandle();
+            if (!SQL_SUCCEEDED(result)) {
+                auto error = SQLReadError(handle->type(), handle->get(), result);
+                py::module_::import("mssql_python.exceptions").attr("raise_exception")(
+                    error.sqlState.empty() ? "HY000" : error.sqlState, error.ddbcErrorMsg);
+            }
+        }, "Internal: free an idle handle, raising on failure; caller must serialize use")
         .def("_close_cursor", &SqlHandle::close_cursor,
              "Internal: close the cursor without freeing the prepared statement")
         .def("_cancel", &SqlHandle::cancel,
@@ -6795,6 +6803,7 @@ PYBIND11_MODULE(ddbc_bindings, m) {
     arrowTestPointers["SQLFetch_ptr"] = reinterpret_cast<std::uintptr_t>(&SQLFetch_ptr);
     arrowTestPointers["SQLCancel_ptr"] = reinterpret_cast<std::uintptr_t>(&SQLCancel_ptr);
     arrowTestPointers["SQLGetDiagRec_ptr"] = reinterpret_cast<std::uintptr_t>(&SQLGetDiagRec_ptr);
+    arrowTestPointers["SQLFreeHandle_ptr"] = reinterpret_cast<std::uintptr_t>(&SQLFreeHandle_ptr);
     m.attr("_arrow_test_pointer_addresses") = std::move(arrowTestPointers);
 #endif
 
@@ -6805,6 +6814,8 @@ PYBIND11_MODULE(ddbc_bindings, m) {
              py::arg("pool_key") = std::u16string(), py::arg("token_factory") = py::none())
         .def("close", &ConnectionHandle::close,
              py::arg("rollback_before_disconnect") = false, "Close the connection")
+        .def("discard", &ConnectionHandle::discard,
+             "Internal: retire an idle connection without returning it to the pool")
         .def("commit", &ConnectionHandle::commit, "Commit the current transaction")
         .def("rollback", &ConnectionHandle::rollback, "Rollback the current transaction")
         .def("set_autocommit", &ConnectionHandle::setAutocommit)

@@ -893,6 +893,45 @@ int main() {
                 }
             });
         }
+        for (bool pooled : {false, true}) {
+            for (bool autocommit : {false, true}) {
+                run("explicit discard reclaims children and releases capacity without check-in",
+                    [pooled, autocommit] {
+                    auto connection = acquire(pooled);
+                    connection->setAutocommit(autocommit);
+                    auto statement = connection->allocStatementHandle();
+                    startWork(statement);
+                    const auto nativeStatement = statement->get();
+                    const auto dbc = handles.at(nativeStatement)->parent;
+                    calls.clear();
+                    connection->discard();
+                    expectCalls({"off", "rollback", "disconnect", "free"});
+                    require(handles.count(nativeStatement) == 0 && handles.count(dbc) == 0,
+                            "Explicit discard retained native handles");
+                    require(statement->isImplicitlyFreed(), "Discard retained a usable alias");
+                    require(commits == 0, "Explicit discard committed pending work");
+                    calls.clear();
+                    connection->discard();
+                    statement.reset();
+                    connection.reset();
+                    expectCalls({});
+                    connection = acquire(pooled);
+                    require(logins == 2, "Discard did not replace the physical connection");
+                    connection->close();
+                });
+            }
+            run("explicit discard retires a connection after failed child release", [pooled] {
+                auto connection = acquire(pooled);
+                auto statement = connection->allocStatementHandle();
+                failNext = "free";
+                require(statement->freeHandle() == SQL_ERROR, "Expected failed child release");
+                connection->discard();
+                require(statement->isImplicitlyFreed(), "Failed child survived explicit discard");
+                connection = acquire(pooled);
+                require(logins == 2, "Failed child prevented release of pool capacity");
+                connection->close();
+            });
+        }
         run("failed cursor free discards the connection and invalidates surviving aliases", [] {
             warm();
             auto connection = acquire();
