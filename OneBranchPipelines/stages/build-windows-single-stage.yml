@@ -3,6 +3,9 @@
 # Supports both x64 (AMD64) and ARM64 cross-compilation
 # Tests x64 builds with pytest (ARM64 binaries can't run on x64 host)
 parameters:
+  - name: odbcArtifactName
+    type: string
+    default: 'drop_ConsolidateOdbc_ConsolidateArtifacts'
   # Stage identifier (e.g., 'Win_py312_x64')
   - name: stageName
     type: string
@@ -71,6 +74,7 @@ stages:
           shortPyVer: ${{ parameters.shortPyVer }}
           # Target architecture (can differ from host for cross-compilation)
           targetArch: ${{ parameters.architecture }}
+          PIP_CACHE_DIR: '$(Pipeline.Workspace)\.pip-cache'
           # Arch suffix used in the built extension's file name. build.bat maps the
           # target arch to the wheel/PE tag: x64 -> amd64, arm64 -> arm64, x86 -> win32.
           # Used to name the exact .pyd for signing (no wildcards).
@@ -160,6 +164,12 @@ stages:
               python -c "import platform; print(platform.machine())"
             displayName: 'Verify Python installation'
           
+          - task: Cache@2
+            displayName: 'Cache Windows pip downloads'
+            inputs:
+              key: 'release-pip-v1 | "$(Agent.OS)" | "$(Agent.OSArchitecture)" | "${{ parameters.pythonVersion }}" | "${{ parameters.architecture }}" | eng/requirements-build-windows.txt'
+              path: '$(PIP_CACHE_DIR)'
+
           - powershell: |
               $ErrorActionPreference = "Stop"
               Write-Host "Installing Python dependencies..."
@@ -336,7 +346,7 @@ stages:
               condition: ne(variables['targetArch'], 'arm64')
               inputs:
                 buildType: 'current'
-                artifactName: 'drop_ConsolidateOdbc_ConsolidateArtifacts'
+                artifactName: '${{ parameters.odbcArtifactName }}'
                 itemPattern: '**/*.whl'
                 targetPath: '$(Pipeline.Workspace)/odbc_wheels'
             - powershell: |
