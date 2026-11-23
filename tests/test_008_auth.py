@@ -1554,8 +1554,13 @@ class TestCustomTokenProviderConnect:
     @patch("mssql_python.connection.ddbc_bindings.Connection")
     def test_concurrent_connections_with_same_token_provider(self, mock_ddbc_conn):
         """Concurrent connect() calls with one token provider should succeed."""
-        # Real connections do not share one lazily initialized native mock.
-        mock_ddbc_conn.side_effect = lambda *args, **kwargs: MagicMock()
+
+        def create_native_connection(*_args, **_kwargs):
+            native_connection = MagicMock()
+            native_connection.get_autocommit.return_value = True
+            return native_connection
+
+        mock_ddbc_conn.side_effect = create_native_connection
         token_calls = []
         token_lock = threading.Lock()
 
