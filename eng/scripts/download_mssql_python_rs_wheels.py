@@ -171,6 +171,10 @@ def download_wheels(
                 temporary = Path(target.name)
                 try:
                     shutil.copyfileobj(response, target)
+                    # Sized HTTPResponse reads can silently stop before Content-Length.
+                    remaining = getattr(response, "length", None)
+                    if remaining is not None and remaining > 0:
+                        raise http.client.IncompleteRead(b"", remaining)
                     target.close()
                     if file_sha256(temporary) != expected_hash:
                         raise ValueError(f"SHA-256 mismatch for {filename}")

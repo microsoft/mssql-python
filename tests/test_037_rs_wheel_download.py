@@ -1,4 +1,5 @@
 import hashlib
+import http.client
 import io
 import json
 import os
@@ -205,6 +206,57 @@ def test_transient_download_retries_cleanly(tmp_path, monkeypatch, target, failu
     assert sleeps == [2]
     assert (output / name).read_bytes() == content
     assert not list(output.glob("*.part"))
+
+
+@pytest.mark.parametrize(
+    "failure", ["truncated-once", "truncated-always", "complete-hash", "complete-metadata"]
+)
+def test_http_response_length_controls_transport_retries(tmp_path, monkeypatch, failure):
+    options = (
+        {"hash_value": "0" * 64}
+        if failure == "complete-hash"
+        else {"content": _wheel(metadata_version="0.4.0")} if failure == "complete-metadata" else {}
+    )
+    name, content, _ = _index(monkeypatch, **options)
+    original = downloader.urllib.request.urlopen
+    calls, sleeps = [], []
+
+    def urlopen(url, timeout):
+        if url.endswith("/mssql-python-rs/"):
+            return original(url, timeout)
+        calls.append(url)
+        truncated = failure == "truncated-always" or (
+            failure == "truncated-once" and len(calls) == 1
+        )
+        payload = content[: len(content) // 2] if truncated else content
+
+        class Socket:
+            def makefile(self, *args, **kwargs):
+                return io.BytesIO(
+                    f"HTTP/1.1 200 OK\r\nContent-Length: {len(content)}\r\n\r\n".encode() + payload
+                )
+
+        response = http.client.HTTPResponse(Socket())
+        response.begin()
+        return response
+
+    monkeypatch.setattr(downloader.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(downloader.time, "sleep", sleeps.append)
+    output = tmp_path / "out"
+    pin = _pin(tmp_path)
+    if failure == "truncated-once":
+        downloader.download_wheels(None, pin, output)
+        assert (output / name).read_bytes() == content
+        assert len(calls) == 2
+        assert sleeps == [2]
+        assert not list(output.glob("*.part"))
+    else:
+        error = http.client.IncompleteRead if failure == "truncated-always" else ValueError
+        with pytest.raises(error):
+            downloader.download_wheels(None, pin, output)
+        assert len(calls) == (3 if failure == "truncated-always" else 1)
+        assert sleeps == ([2, 4] if failure == "truncated-always" else [])
+        assert list(output.iterdir()) == []
 
 
 @pytest.mark.parametrize("code", [400, 401, 403, 404])

@@ -116,13 +116,22 @@ def _wheel_security_reasons(get_json: Callable[[str], dict], build: dict, run: d
         if not isinstance(configs, list) or not configs:
             return [f"wheel producer {parameter} evidence is missing"]
         for config in configs:
-            if not isinstance(config, dict) or any(
+            if not isinstance(config, dict):
+                return [f"wheel producer {parameter} evidence is invalid"]
+            identity_fields = (
+                (*fields, "shard")
+                if parameter == "linuxConfigs" and "shard" in config
+                else fields
+            )
+            if any(
                 not isinstance(config.get(field), str)
                 or not re.fullmatch(r"[a-zA-Z0-9_]+", config[field])
-                for field in fields
+                for field in identity_fields
             ):
                 return [f"wheel producer {parameter} evidence is invalid"]
-            identifier = prefix + "_".join(config[field] for field in fields) + f".{job}.__default"
+            identifier = (
+                prefix + "_".join(config[field] for field in identity_fields) + f".{job}.__default"
+            )
             if identifier in expected_jobs:
                 return [f"wheel producer {parameter} contains duplicate jobs"]
             expected_jobs.add(identifier)
