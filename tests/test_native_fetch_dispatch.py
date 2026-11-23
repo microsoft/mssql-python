@@ -128,6 +128,54 @@ def _assert_fetchone_counts(observation, *, prepare, native, fallback, sql):
             assert observation["native"].get("ddbc::" + name, 0) == expected, name
 
 
+@pytest.mark.parametrize("retain_request", [False, True])
+def test_native_admission_reuses_only_uncaptured_tokens(connection, retain_request):
+    if ddbc_bindings._fetch_observer is None:
+        pytest.skip("Requires supported CPython watchers")
+    from mssql_python._query_operation import QueryOperation
+
+    calls = {}
+    requests = []
+    with connection.cursor() as cursor:
+
+        def observe(frame, event, argument):
+            if event == "call":
+                code = frame.f_code
+                calls[code] = calls.get(code, 0) + 1
+                if retain_request and code is Row._fast_create.__code__:
+                    if requests:
+                        # The old token must not be reactivated for this row.
+                        requests[0].cancel()
+                    else:
+                        requests.append(cursor._query_slot.active)
+
+        gc.collect()
+        enabled = gc.isenabled()
+        gc.disable()
+        try:
+            warm(cursor, "iterator")
+            previous = sys.getprofile()
+            with _native_fetch_counters() as profiling:
+                sys.setprofile(observe)
+                try:
+                    assert [next(cursor)[0] for _ in range(3)] == [3, 4, 5]
+                finally:
+                    sys.setprofile(previous)
+            assert calls.get(QueryOperation.__init__.__code__, 0) == 0
+            assert calls.get(QueryOperation._end.__code__, 0) == 0
+            assert cursor._query_slot.active is None
+            assert not connection._query_state.busy
+            if profiling is not None:
+                stats = profiling.get_stats()
+                assert stats["ddbc::NativeCursor::fetch"]["calls"] == 3
+                assert stats.get("ddbc::NativeCursor::new_operation", {}).get("calls", 0) == int(
+                    retain_request
+                )
+        finally:
+            if enabled:
+                gc.enable()
+
+
 def test_repeated_negative_fetchone_skips_prepare(connection):
     if ddbc_bindings._fetch_observer is None:
         pytest.skip("Requires supported CPython watchers")
@@ -1802,7 +1850,8 @@ class Loader:
                      policy=policy, abort=abort, disable=disable)
 
         def capture(cursor_type, functions):
-            namespace = functions[0].__globals__
+            import inspect
+            namespace = inspect.unwrap(functions[0]).__globals__
             saved.update(cursor_type=cursor_type, functions=functions, namespace=namespace,
                          row_type=namespace["Row"])
             return begin(cursor_type, functions)

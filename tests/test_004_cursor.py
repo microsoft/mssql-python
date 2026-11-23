@@ -16815,6 +16815,7 @@ def test_executemany_decimal_numeric_override_coverage(monkeypatch):
     from unittest.mock import MagicMock
     from mssql_python import ddbc_bindings
     from mssql_python.cursor import Cursor
+    from mssql_python._query_operation import QueryConnectionState, QuerySlot
 
     cur = Cursor.__new__(Cursor)
     cur._inputsizes = None
@@ -16826,6 +16827,12 @@ def test_executemany_decimal_numeric_override_coverage(monkeypatch):
     cur._connection = MagicMock()
     cur._connection._encoding = "utf-8"
     cur._connection._conn = MagicMock()
+    cur._connection.closed = False
+    cur._connection._query_state = QueryConnectionState()
+    cur._query_slot = QuerySlot()
+    operation = MagicMock()
+    operation.return_value.finish.return_value = False
+    monkeypatch.setattr(ddbc_bindings, "_StatementOperation", operation)
     captured = {}
 
     def fake_sql_execute_many(hstmt, op, col_params, param_types, row_count, enc):

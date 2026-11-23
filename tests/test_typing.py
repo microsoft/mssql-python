@@ -52,6 +52,7 @@ def test_cursor_consumer_call_shapes(tmp_path: Path, module: str) -> None:
 from {module} import Cursor
 
 def supported_calls(cursor: Cursor) -> None:
+    cursor.cancel()
     cursor.setinputsizes(None)
     cursor.executemany("INSERT INTO example VALUES (?, ?)", [(1, "one"), (2, "two")])
     cursor.executemany("INSERT INTO example VALUES (?, ?)", [[1, "one"], [2, "two"]])

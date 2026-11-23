@@ -1939,10 +1939,17 @@ def test_cursor_cyclic_finalizer_with_concurrent_native_disconnect(conn_str, exp
 
                     cleanup_barrier.wait()
                     if explicit_close:
-                        connection.close()
+                        try:
+                            connection.close()
+                        except mssql_python.ProgrammingError as exc:
+                            assert "operation in progress" in str(exc)
+                            assert not connection.closed
+                            assert connection._conn is not None
                     else:
                         native = None
                     collect_barrier.wait()
+                    if explicit_close:
+                        connection.close()
 
                     remaining_cursor = cursor_ref()
                     if remaining_cursor is not None:

@@ -976,6 +976,7 @@ void ConnectionHandle::close(bool rollbackBeforeDisconnect) {
     if (!_conn) {
         ThrowStdException("Connection object is not initialized");
     }
+
     try {
         if (_usePool) {
             _conn->prepareForPool();
@@ -1005,6 +1006,13 @@ void ConnectionHandle::close(bool rollbackBeforeDisconnect) {
         ConnectionPoolManager::getInstance().returnConnection(_poolKey, _originPool, _conn);
     }
     _conn = nullptr;
+}
+
+void ConnectionHandle::discard() {
+    if (_conn) {
+        ConnectionPoolManager::getInstance().discardConnection(_originPool, _conn);
+        _conn = nullptr;
+    }
 }
 
 void ConnectionHandle::commit() {

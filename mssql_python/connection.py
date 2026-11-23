@@ -25,6 +25,7 @@ import threading
 
 import mssql_python
 from mssql_python.cursor import Cursor
+from mssql_python._query_operation import QueryConnectionState, connection_operation
 from mssql_python.helpers import (
     _resolve_app_name,
     sanitize_user_input,
@@ -838,6 +839,7 @@ class Connection:
         # TODO: Think and implement scenarios for multi-threaded access
         # to cursors
         self._cursors: weakref.WeakSet[Cursor] = weakref.WeakSet()
+        self._query_state = QueryConnectionState()
 
         # Initialize output converters dictionary and its lock for thread safety
         self._output_converters: dict[int | type, OutputConverter] = {}
@@ -1763,6 +1765,7 @@ class Connection:
                 self._searchescape = "\\"
         return self._searchescape
 
+    @connection_operation
     def cursor(self) -> Cursor:
         """
         Return a new Cursor object using the connection.
@@ -2245,6 +2248,7 @@ class Connection:
 
         return raw_result  # Return as-is
 
+    @connection_operation
     def commit(self) -> None:
         """
         Commit the current transaction.
@@ -2272,6 +2276,7 @@ class Connection:
             _raise_connection_error(e)
         logger.info("Transaction committed successfully.")
 
+    @connection_operation
     def rollback(self) -> None:
         """
         Roll back the current transaction.
@@ -2298,6 +2303,7 @@ class Connection:
             _raise_connection_error(e)
         logger.info("Transaction rolled back successfully.")
 
+    @connection_operation
     def close(self) -> None:
         """
         Close the connection now (rather than whenever .__del__() is called).
@@ -2324,7 +2330,7 @@ class Connection:
             for cursor in cursors_to_close:
                 try:
                     if not cursor.closed:
-                        cursor.close()
+                        cursor._close()
                 except Exception as e:  # pylint: disable=broad-exception-caught
                     # Collect errors but continue closing other cursors
                     close_errors.append(f"Error closing cursor: {e}")
