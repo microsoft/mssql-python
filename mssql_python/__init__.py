@@ -70,6 +70,7 @@ from .cursor import Cursor
 # Row Objects
 from .row import Row, RowMapping
 from .vector import Vector, OutputParameter, InputOutputParameter
+from .table_valued_parameter import TableValuedParameter
 
 # Logging Configuration (Simplified single-level DEBUG system)
 from .logging import logger, setup_logging, driver_logger
@@ -333,6 +334,7 @@ __all__ = [
     "OutputParameter",
     "InputOutputParameter",
     "SQL_SS_VECTOR",
+    "TableValuedParameter",
     # Exception classes
     "Warning",
     "Error",
