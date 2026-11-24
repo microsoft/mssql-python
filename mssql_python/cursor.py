@@ -20,6 +20,7 @@ import datetime
 import warnings
 import threading
 import weakref
+from collections import deque
 from collections.abc import Callable
 from types import FrameType, GeneratorType
 from importlib import import_module
@@ -37,6 +38,7 @@ from mssql_python.exceptions import (
     DatabaseError,
 )
 from mssql_python.row import Row, OutputConverter, _ColumnNames
+from mssql_python.vector import Vector, _vector_from_hint
 from mssql_python.table_valued_parameter import TableValuedParameter
 from mssql_python.perf_timer import perf_phase
 from mssql_python import get_settings
@@ -49,7 +51,7 @@ from mssql_python.parameter_helper import (
 
 if TYPE_CHECKING:
     import pyarrow
-    from mssql_python._ddbc_types import ColumnMetadata, EncodingSettings
+    from mssql_python._ddbc_types import ColumnMetadata, EncodingSettings, ProcedureResult
     from mssql_python._pycore_types import (
         BulkCopyResult,
         CoreContext,
@@ -119,6 +121,51 @@ def _normalize_time_param(value: object, c_type: int) -> str | None:
     ):
         return value.isoformat(timespec="microseconds")
     return None
+
+
+def _quote_procedure_name(procname: str) -> str:
+    """Bracket-quote a 1-3 part procedure name, accepting already bracketed parts.
+
+    Unquoted parts split on ".". A part starting with "[" runs to its closing "]"
+    ("]]" escapes "]"), so it may contain ".". Malformed brackets raise ValueError.
+    """
+    shape = "procname must be a procedure, schema.procedure or database.schema.procedure"
+    parts: list[str] = []
+    index = 0
+    while True:
+        if procname.startswith("[", index):
+            chunks = []
+            start = index + 1
+            while True:
+                close = procname.find("]", start)
+                if close < 0:
+                    raise ValueError("procname has an unterminated [bracketed] part")
+                if procname.startswith("]", close + 1):
+                    chunks.append(procname[start : close + 1])
+                    start = close + 2
+                    continue
+                chunks.append(procname[start:close])
+                index = close + 1
+                break
+            part = "".join(chunks)
+            if index < len(procname) and procname[index] != ".":
+                raise ValueError("procname has characters after a closing ]")
+        else:
+            end = procname.find(".", index)
+            end = len(procname) if end < 0 else end
+            part = procname[index:end]
+            index = end
+        if not part:
+            raise ValueError(shape)
+        parts.append(part)
+        if index == len(procname):
+            break
+        index += 1  # skip "."
+        if index == len(procname):
+            raise ValueError(shape)
+    if len(parts) > 3:
+        raise ValueError(shape)
+    return ".".join("[" + part.replace("]", "]]") + "]" for part in parts)
 
 
 def _format_numeric_batch_parameter(value: Any, row_index: int, column_index: int) -> str:
@@ -489,6 +536,8 @@ class Cursor:
         self._timeout: int = timeout
         self._executing = False
         self._inputsizes: Optional[List[Tuple[int, int, int, int]]] = None
+        self._procedure_results: deque[ProcedureResult] | None = None
+        self._procedure_rows: deque[list[Any]] | None = None
         # self.connection.autocommit = False
         self._initialize_cursor()
         self.description: _Description | None = None
@@ -798,6 +847,15 @@ class Cursor:
             - A tuple containing the SQL type, C type, column size, and decimal digits.
         """
         logger.debug("_map_sql_type: Mapping param index=%d, type=%s", i, type(param).__name__)
+        if isinstance(param, Vector):
+            info = ddbc_bindings._detect_param_types([param])[0]
+            return (
+                info.paramSQLType,
+                info.paramCType,
+                info.columnSize,
+                info.decimalDigits,
+                False,
+            )
         if param is None:
             logger.debug("_map_sql_type: NULL parameter - index=%d", i)
             # GH-610: Send SQL_UNKNOWN_TYPE to C++ where the describe-cache
@@ -1147,6 +1205,8 @@ class Cursor:
         """
         Reset the DDBC statement handle.
         """
+        self._procedure_results = None
+        self._procedure_rows = None
         if self.hstmt:
             self.hstmt.free()
             self.hstmt = None
@@ -1167,6 +1227,8 @@ class Cursor:
         parameter definitions are unchanged (so the driver keeps its prepared
         handle and sends sp_execute) and resets them otherwise.
         """
+        self._procedure_results = None
+        self._procedure_rows = None
         if self.hstmt:
             ret = ddbc_bindings.DDBCSQLResetStmt(self.hstmt)
             try:
@@ -1201,6 +1263,8 @@ class Cursor:
 
         # Clear messages per DBAPI
         self.messages = []
+        self._procedure_results = None
+        self._procedure_rows = None
 
         # Remove this cursor from the connection's tracking
         if hasattr(self, "connection") and self.connection and hasattr(self.connection, "_cursors"):
@@ -1280,6 +1344,11 @@ class Cursor:
         cursor.executemany(sql, params)
 
         Note:
+            SQL_SS_VECTOR hints use size as dimensions and decimal_digits as
+            base type (0=FLOAT32, 1=FLOAT16). They accept Vector, list, or None.
+            Lists use the same validation as Vector; a hint never changes an
+            existing Vector's base type. Successful execution consumes hints.
+
             SQL_SS_UDT parameters require a statement whose parameter metadata
             SQL Server can describe. The driver discovers the UDT identity before
             binding; this may require a metadata round trip. Temporary tables and
@@ -1412,6 +1481,7 @@ class Cursor:
                 ddbc_sql_const.SQL_GUID.value: ddbc_sql_const.SQL_C_GUID.value,
                 ddbc_sql_const.SQL_SS_XML.value: ddbc_sql_const.SQL_C_WCHAR.value,
                 ddbc_sql_const.SQL_SS_VARIANT.value: ddbc_sql_const.SQL_C_BINARY.value,
+                ddbc_sql_const.SQL_SS_VECTOR.value: ddbc_sql_const.SQL_C_SS_VECTOR.value,
             }
         return cls._SQL_TO_C_TYPE
 
@@ -1665,6 +1735,7 @@ class Cursor:
             ddbc_sql_const.SQL_FLOAT.value: float,
             ddbc_sql_const.SQL_DOUBLE.value: float,
             ddbc_sql_const.SQL_REAL.value: float,
+            ddbc_sql_const.SQL_SS_VECTOR.value: Vector,
             # Exact numeric types
             ddbc_sql_const.SQL_DECIMAL.value: decimal.Decimal,
             ddbc_sql_const.SQL_NUMERIC.value: decimal.Decimal,
@@ -1869,6 +1940,8 @@ class Cursor:
             # the cursor associated with hstmt without destroying the
             # prepared statement, which is the standard ODBC pattern for
             # re-executing a prepared query.
+            self._procedure_results = None
+            self._procedure_rows = None
             if self.hstmt:
                 logger.debug("execute: Closing cursor for re-execution (reset_cursor=False)")
                 self.hstmt._close_cursor()
@@ -2535,11 +2608,24 @@ class Cursor:
         non_nulls = [v for v in column if v is not None]
         if not non_nulls:
             return None, None, None, 0
+        # A vector-only column needs shape validation, not scalar inference.
+        if type(non_nulls[0]) is Vector:
+            sample = non_nulls[0]
+            if any(type(v) is not Vector for v in non_nulls):
+                raise TypeError("Vector batch columns must contain only Vector or None")
+            if any(
+                v.dimensions != sample.dimensions or v.base_type != sample.base_type
+                for v in non_nulls
+            ):
+                raise ValueError("Vector batch dimensions and subtype must agree")
+            return sample, None, None, 0
 
         int_values: list[int] = []
         for v in non_nulls:
             if isinstance(v, int):
                 int_values.append(v)
+            elif type(v) is Vector:
+                raise TypeError("Vector batch columns must contain only Vector or None")
             elif isinstance(v, decimal.Decimal) and not v.is_finite():
                 raise ValueError(
                     "Cannot infer precision/scale from non-finite Decimal (NaN/Infinity)"
@@ -2715,6 +2801,24 @@ class Cursor:
                 )
 
         # Prepare parameter type information
+        if self._inputsizes:
+            vector_hints = [
+                (index, size, scale)
+                for index, (sql_type, _, size, scale) in enumerate(self._inputsizes)
+                if sql_type == ddbc_sql_const.SQL_SS_VECTOR.value and index < param_count
+            ]
+            if vector_hints:
+                normalized_rows = []
+                for row in seq_of_parameters:
+                    normalized_row = list(row)
+                    for index, size, scale in vector_hints:
+                        normalized_row[index] = _vector_from_hint(
+                            normalized_row[index], size, scale
+                        )
+                    normalized_rows.append(normalized_row)
+                seq_of_parameters = normalized_rows
+                sample_row = seq_of_parameters[0]
+
         with perf_phase("py::executemany::param_type_detection"):
             for col_index in range(param_count):
                 column = (
@@ -2786,6 +2890,13 @@ class Cursor:
                     paraminfo.inputOutputType = ddbc_sql_const.SQL_PARAM_INPUT.value
                     paraminfo.columnSize = column_size
                     paraminfo.decimalDigits = decimal_digits
+                    if sql_type == ddbc_sql_const.SQL_SS_VECTOR.value:
+                        from mssql_python.vector import _check_shape
+
+                        if decimal_digits not in (0, 1):
+                            raise ValueError("Vector subtype must be 0 (FLOAT32) or 1 (FLOAT16)")
+                        _check_shape(column_size, "float16" if decimal_digits else "float32")
+                        paraminfo.columnSize = ddbc_bindings._vector_buffer_size(column_size)
                     paraminfo.isDAE = is_dae
 
                     # Ensure we never have SQL_C_DEFAULT (0) for C-type
@@ -3047,6 +3158,11 @@ class Cursor:
         """
         self._check_closed()  # Check if the cursor is closed
 
+        procedure_rows: deque[list[Any]] | None = getattr(self, "_procedure_rows", None)
+        if procedure_rows is not None:
+            rows = self._fetch_procedure_rows(procedure_rows, 1)
+            return rows[0] if rows else None
+
         if self._cached_decoding_generation != self._connection._decoding_generation:
             self._refresh_decoding_cache()
         char_enc = self._cached_char_encoding
@@ -3180,6 +3296,10 @@ class Cursor:
         if size <= 0:
             return []
 
+        procedure_rows: deque[list[Any]] | None = getattr(self, "_procedure_rows", None)
+        if procedure_rows is not None:
+            return self._fetch_procedure_rows(procedure_rows, size)
+
         if self._cached_decoding_generation != self._connection._decoding_generation:
             self._refresh_decoding_cache()
         char_enc = self._cached_char_encoding
@@ -3237,6 +3357,34 @@ class Cursor:
             return self._wrap_fetchmany(rows_data, deferred_text=True)
         return self._wrap_fetchmany(rows_data)
 
+    def _fetch_procedure_rows(self, procedure_rows: deque[list[Any]], size: int) -> list[Row]:
+        if not self.description:
+            raise ProgrammingError("The current procedure result has no rows", "")
+        if not procedure_rows:
+            self.rowcount = self._next_row_index
+            return []
+
+        column_map, converter_map, lower_map = self._get_column_and_converter_maps()
+        uuid_indices = self._uuid_str_indices
+        column_names = self._cached_result_columns
+        rows = []
+        for _ in range(min(size, len(procedure_rows))):
+            buffered_row = procedure_rows.popleft()
+            self._increment_rownumber()
+            self.rowcount = self._next_row_index
+            rows.append(
+                Row(
+                    buffered_row,
+                    column_map,
+                    cursor=self,
+                    converter_map=converter_map,
+                    uuid_str_indices=uuid_indices,
+                    column_map_lower=lower_map,
+                    column_names=column_names,
+                )
+            )
+        return rows
+
     def _wrap_fetchmany(self, rows_data: list[list[Any]], deferred_text: bool = False) -> list[Row]:
         column_map, converter_map, column_map_lower = self._get_column_and_converter_maps()
         if deferred_text and not converter_map:
@@ -3285,6 +3433,10 @@ class Cursor:
             List of Row objects.
         """
         self._check_closed()  # Check if the cursor is closed
+        procedure_rows: deque[list[Any]] | None = getattr(self, "_procedure_rows", None)
+        if procedure_rows is not None:
+            # Use a positive size so fetchmany handles empty and non-row results too.
+            return self.fetchmany(max(1, len(procedure_rows)))
         if not self._has_result_set and self.description:
             self._reset_rownumber()
 
@@ -3398,6 +3550,13 @@ class Cursor:
         self, batch_size: int, reader_state: ddbc_bindings._ArrowReaderState | None = None
     ) -> Optional["pyarrow.RecordBatch"]:
         self._check_closed()  # Check if the cursor is closed
+        if getattr(self, "_procedure_rows", None) is not None or any(
+            column[1] is Vector for column in (self.description or ())
+        ):
+            raise NotSupportedError(
+                driver_error="Use row fetch methods for vectors and buffered callproc results",
+                ddbc_error="Arrow vector conversion is not implemented",
+            )
         pa = self._ensure_pyarrow()
 
         if not self._has_result_set and self.description:
@@ -3604,6 +3763,10 @@ class Cursor:
         """
         logger.debug("nextset: Moving to next result set")
         self._check_closed()  # Check if the cursor is closed
+
+        if getattr(self, "_procedure_results", None) is not None:
+            self.messages = []
+            return self._next_procedure_result()
 
         # Clear messages per DBAPI
         self.messages = []
@@ -3988,6 +4151,18 @@ class Cursor:
 
         pycore_connection = None
         pycore_cursor = None
+        vector_validation_error: NotSupportedError | None = None
+
+        def _validated_vector_rows(
+            rows: Iterable[tuple[Any, ...]],
+        ) -> Iterator[tuple[Any, ...]]:
+            nonlocal vector_validation_error
+            try:
+                yield from self._validate_bulkcopy_vectors(rows)
+            except NotSupportedError as error:
+                vector_validation_error = error
+                raise
+
         try:
             # Only pass logger to Rust if logging is enabled (performance optimization)
             pycore_connection = mssql_py_core.PyCoreConnection(
@@ -4013,11 +4188,13 @@ class Cursor:
                 if first is None:
                     return iter(())
                 if isinstance(first, tuple):
-                    return chain((first,), cast("Iterator[tuple[Any, ...]]", it))
+                    rows = chain((first,), cast("Iterator[tuple[Any, ...]]", it))
+                    return _validated_vector_rows(rows)
                 if isinstance(first, Row):
-                    return (
+                    row_values = (
                         tuple(item._values) for item in chain((first,), cast("Iterator[Row]", it))
                     )
+                    return _validated_vector_rows(row_values)
                 raise TypeError(
                     f"bulkcopy data rows must be tuples or Row objects, "
                     f"got {type(first).__name__}"
@@ -4039,6 +4216,8 @@ class Cursor:
                 use_internal_transaction=use_internal_transaction,
                 python_logger=logger if is_logging_enabled else None,  # Only pass logger if enabled
             )
+            if vector_validation_error is not None:
+                raise vector_validation_error
 
             logger.info(
                 "_bulkcopy: Bulk copy completed successfully - rows_copied=%s, batch_count=%s, elapsed_time=%s",
@@ -4057,6 +4236,9 @@ class Cursor:
                 type(e).__name__,
                 str(e),
             )
+            # Rust can replace Python iterator exceptions with RuntimeError.
+            if vector_validation_error is not None and vector_validation_error is not e:
+                raise vector_validation_error from e
             # Re-raise the original exception, preserving its type, args, and
             # traceback. The finally block scrubs credentials, and Python
             # tracebacks don't expose local values, so no reconstruction is needed.
@@ -4397,20 +4579,33 @@ class Cursor:
                 if value == 0:
                     return
 
-                # For forward-only cursors, use multiple SQL_FETCH_NEXT calls
-                # This matches pyodbc's approach for skip operations
-                for i in range(value):
-                    ret = ddbc_bindings.DDBCSQLFetchScroll(
-                        self.hstmt, ddbc_sql_const.SQL_FETCH_NEXT.value, 0, row_data
-                    )
-                    if ret == ddbc_sql_const.SQL_NO_DATA.value:
+                # callproc() buffered this result and already drained its native rows.
+                procedure_rows: deque[list[Any]] | None = getattr(self, "_procedure_rows", None)
+                if procedure_rows is not None:
+                    if value > len(procedure_rows):
+                        procedure_rows.clear()
                         raise IndexError(
                             "Cannot scroll to specified position: end of result set reached"
                         )
+                    for _ in range(value):
+                        procedure_rows.popleft()
+                else:
+                    # For forward-only cursors, use multiple SQL_FETCH_NEXT calls
+                    # This matches pyodbc's approach for skip operations
+                    for i in range(value):
+                        ret = ddbc_bindings.DDBCSQLFetchScroll(
+                            self.hstmt, ddbc_sql_const.SQL_FETCH_NEXT.value, 0, row_data
+                        )
+                        if ret == ddbc_sql_const.SQL_NO_DATA.value:
+                            raise IndexError(
+                                "Cannot scroll to specified position: end of result set reached"
+                            )
 
                 # Update position tracking
                 self._rownumber = self._rownumber + value
                 self._next_row_index = self._rownumber + 1
+                if procedure_rows is not None:
+                    self.rowcount = self._next_row_index
                 logger.debug(
                     "scroll: Scroll complete - new_rownumber=%d, next_row_index=%d",
                     self._rownumber,
@@ -4540,6 +4735,40 @@ class Cursor:
             logger.error(f"Error executing tables query: {e}")
             raise
 
+    @staticmethod
+    def _validate_bulkcopy_vectors(
+        rows: Iterable[tuple[Any, ...]],
+    ) -> Iterator[tuple[Any, ...]]:
+        for row in rows:
+            if any(type(value) is Vector for value in row):
+                raise NotSupportedError(
+                    driver_error="Vector bulk copy requires the developing pycore vector contract",
+                    ddbc_error="No vector serialization is performed by the Python wrapper",
+                )
+            yield row
+
+    def _next_procedure_result(self) -> bool:
+        self._cached_column_map = None
+        self._cached_column_map_lower = None
+        self._cached_converter_map = None
+        self._cached_converters_generation = -1
+        self._uuid_str_indices = None
+        self._clear_rownumber()
+        if not self._procedure_results:
+            self.description = None
+            self._column_sql_types = None
+            self._procedure_rows = deque()
+            self.rowcount = -1
+            return False
+        metadata, rows, rowcount = self._procedure_results.popleft()
+        self._initialize_description(metadata)
+        self._procedure_rows = deque(rows)
+        self.rowcount = rowcount
+        if self.description:
+            self._reset_rownumber()
+            self._uuid_str_indices = self._compute_uuid_str_indices()
+        return True
+
     def callproc(
         self, procname: str, parameters: Optional[Sequence[Any]] = None
     ) -> Optional[Sequence[Any]]:
@@ -4554,13 +4783,49 @@ class Cursor:
             A sequence containing the result parameters (input parameters unchanged,
             output parameters with their new values)
 
-        Raises:
-            NotSupportedError: This method is not yet implemented
+        Vector outputs use OutputParameter(SQL_SS_VECTOR, dimensions, subtype) or
+        InputOutputParameter(Vector(...)). Results are buffered so output values
+        are available on return; fetch methods and nextset() expose those results.
+        procname may be 1-3 parts; parts may already be bracket-quoted.
+        Use execute() to pass table-valued parameters.
         """
-        raise NotSupportedError(
-            driver_error="callproc() is not yet implemented",
-            ddbc_error="Stored procedure calls are not currently supported",
-        )
+        self._check_closed()
+        self._executing = True
+        try:
+            if not isinstance(procname, str) or not procname or "\0" in procname:
+                raise ValueError("procname must be a non-empty procedure name")
+            name = _quote_procedure_name(procname)
+            if isinstance(parameters, (str, bytes, bytearray)):
+                raise TypeError("parameters must be a sequence of parameter values")
+            values = list(parameters) if parameters is not None else []
+            if any(isinstance(value, TableValuedParameter) for value in values):
+                raise NotSupportedError(
+                    "callproc() does not support table-valued parameters",
+                    "Use execute() for statements that pass table-valued parameters",
+                )
+            query = "{CALL " + name + "(" + ",".join("?" for _ in values) + ")}"
+            self._soft_reset_cursor()
+            self.messages = []
+            if self._cached_decoding_generation != self._connection._decoding_generation:
+                self._refresh_decoding_cache()
+            self.last_executed_stmt = ""
+            self.is_stmt_prepared = [False]
+            outputs, results = ddbc_bindings.DDBCCallProc(
+                self.hstmt,
+                query,
+                values,
+                self._get_encoding_settings(),
+                self.messages,
+                self._cached_char_encoding,
+                self._cached_wchar_encoding,
+                self._cached_char_ctype,
+            )
+            self._reset_inputsizes()
+            self._procedure_results = deque(results)
+            self._next_procedure_result()
+            return outputs
+        finally:
+            self._executing = False
 
     def setoutputsize(self, size: int, column: Optional[int] = None) -> None:
         """
