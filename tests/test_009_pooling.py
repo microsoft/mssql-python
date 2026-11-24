@@ -1766,10 +1766,10 @@ def test_native_checked_cleanup_failure_diagnostics(conn_str, use_pool):
     from mssql_python import ddbc_bindings
 
     addresses = getattr(ddbc_bindings.module, "_arrow_test_pointer_addresses", {})
-    if sys.platform == "win32" and "SQLFreeHandle_ptr" not in addresses:
+    if "SQLFreeHandle_ptr" not in addresses:
         if os.getenv("MSSQL_ARROW_TEST_INTERPOSITION", "").upper() in ("1", "ON"):
             pytest.fail("Requested native cleanup pointer interposition is unavailable")
-        pytest.skip("Requires a test-interposition build on Windows")
+        pytest.skip("Requires a test-interposition build")
     _run_in_subprocess(
         f"use_pool = {use_pool!r}\n" + textwrap.dedent("""
             import ctypes as ct
@@ -1845,6 +1845,27 @@ def test_native_checked_cleanup_failure_diagnostics(conn_str, use_pool):
             """),
         conn_str,
     )
+
+
+@pytest.mark.parametrize("platform", ["win32", "linux", "darwin"])
+@pytest.mark.parametrize("requested", [None, "1", "ON"])
+def test_native_checked_cleanup_requires_compiled_controls(monkeypatch, platform, requested):
+    from mssql_python import ddbc_bindings
+
+    monkeypatch.delattr(ddbc_bindings.module, "_arrow_test_pointer_addresses", raising=False)
+    monkeypatch.setattr(sys, "platform", platform)
+    if requested is None:
+        monkeypatch.delenv("MSSQL_ARROW_TEST_INTERPOSITION", raising=False)
+    else:
+        monkeypatch.setenv("MSSQL_ARROW_TEST_INTERPOSITION", requested)
+
+    def unexpected_subprocess(*args):
+        pytest.fail("Exported ODBC globals must not bypass compiled test controls")
+
+    monkeypatch.setitem(globals(), "_run_in_subprocess", unexpected_subprocess)
+    expected = pytest.skip.Exception if requested is None else pytest.fail.Exception
+    with pytest.raises(expected, match="test-interposition build|interposition is unavailable"):
+        test_native_checked_cleanup_failure_diagnostics("", False)
 
 
 @pytest.mark.parametrize("use_pool", [False, True])
