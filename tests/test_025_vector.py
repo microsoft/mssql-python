@@ -544,6 +544,44 @@ def test_callproc_propagates_backend_errors(unit_cursor, monkeypatch):
     assert unit_cursor._procedure_rows is None
 
 
+@pytest.mark.parametrize("operation", ["close", "execute"])
+def test_callproc_blocks_cursor_reentry_during_parameter_conversion(
+    unit_cursor, monkeypatch, operation
+):
+    class Parameter:
+        def __str__(self):
+            if operation == "close":
+                unit_cursor.close()
+            else:
+                unit_cursor.execute("SELECT 1")
+            return "parameter"
+
+    def native_call(_statement, _query, values, *_args):
+        str(values[0])
+        return values, []
+
+    monkeypatch.setattr(ddbc_bindings, "DDBCCallProc", native_call)
+    with pytest.raises(mssql_python.ProgrammingError, match="while it is executing"):
+        unit_cursor.callproc("dbo.p", [Parameter()])
+
+    assert unit_cursor.callproc("dbo.p", [1]) == [1]
+    unit_cursor.close()
+
+
+def test_callproc_rejects_tvp_before_native_execution(unit_cursor, monkeypatch):
+    native_call = Mock(return_value=([], []))
+    monkeypatch.setattr(ddbc_bindings, "DDBCCallProc", native_call)
+
+    def rows():
+        pytest.fail("callproc must not consume TVP rows")
+        yield (1,)
+
+    tvp = mssql_python.TableValuedParameter("dbo.Items", [("id", mssql_python.SQL_INTEGER)], rows())
+    with pytest.raises(mssql_python.NotSupportedError, match="callproc.*table-valued parameters"):
+        unit_cursor.callproc("dbo.p", [tvp])
+    native_call.assert_not_called()
+
+
 def test_failing_callproc_invalidates_prepared_query(unit_cursor, monkeypatch):
     unit_cursor.hstmt = Mock()
     monkeypatch.setattr(ddbc_bindings, "DDBCSQLResetStmt", lambda *args: 0)

@@ -4785,35 +4785,45 @@ class Cursor:
         InputOutputParameter(Vector(...)). Results are buffered so output values
         are available on return; fetch methods and nextset() expose those results.
         procname may be 1-3 parts; parts may already be bracket-quoted.
+        Use execute() to pass table-valued parameters.
         """
         self._check_closed()
-        if not isinstance(procname, str) or not procname or "\0" in procname:
-            raise ValueError("procname must be a non-empty procedure name")
-        name = _quote_procedure_name(procname)
-        if isinstance(parameters, (str, bytes, bytearray)):
-            raise TypeError("parameters must be a sequence of parameter values")
-        values = list(parameters) if parameters is not None else []
-        query = "{CALL " + name + "(" + ",".join("?" for _ in values) + ")}"
-        self._soft_reset_cursor()
-        self.messages = []
-        if self._cached_decoding_generation != self._connection._decoding_generation:
-            self._refresh_decoding_cache()
-        self.last_executed_stmt = ""
-        self.is_stmt_prepared = [False]
-        outputs, results = ddbc_bindings.DDBCCallProc(
-            self.hstmt,
-            query,
-            values,
-            self._get_encoding_settings(),
-            self.messages,
-            self._cached_char_encoding,
-            self._cached_wchar_encoding,
-            self._cached_char_ctype,
-        )
-        self._reset_inputsizes()
-        self._procedure_results = deque(results)
-        self._next_procedure_result()
-        return outputs
+        self._executing = True
+        try:
+            if not isinstance(procname, str) or not procname or "\0" in procname:
+                raise ValueError("procname must be a non-empty procedure name")
+            name = _quote_procedure_name(procname)
+            if isinstance(parameters, (str, bytes, bytearray)):
+                raise TypeError("parameters must be a sequence of parameter values")
+            values = list(parameters) if parameters is not None else []
+            if any(isinstance(value, TableValuedParameter) for value in values):
+                raise NotSupportedError(
+                    "callproc() does not support table-valued parameters",
+                    "Use execute() for statements that pass table-valued parameters",
+                )
+            query = "{CALL " + name + "(" + ",".join("?" for _ in values) + ")}"
+            self._soft_reset_cursor()
+            self.messages = []
+            if self._cached_decoding_generation != self._connection._decoding_generation:
+                self._refresh_decoding_cache()
+            self.last_executed_stmt = ""
+            self.is_stmt_prepared = [False]
+            outputs, results = ddbc_bindings.DDBCCallProc(
+                self.hstmt,
+                query,
+                values,
+                self._get_encoding_settings(),
+                self.messages,
+                self._cached_char_encoding,
+                self._cached_wchar_encoding,
+                self._cached_char_ctype,
+            )
+            self._reset_inputsizes()
+            self._procedure_results = deque(results)
+            self._next_procedure_result()
+            return outputs
+        finally:
+            self._executing = False
 
     def setoutputsize(self, size: int, column: Optional[int] = None) -> None:
         """

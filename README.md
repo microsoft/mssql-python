@@ -178,7 +178,8 @@ supported defaults. `setdecoding()` independently controls how result data is re
 
 The synchronous ODBC API accepts and returns immutable `Vector` values. SQL NULL
 is represented by `None`. FLOAT32 supports 1–1998 dimensions; FLOAT16 supports
-1–3996. A vector's dimensions and subtype must match its SQL column or parameter.
+1–3996. A vector's dimensions must match its SQL column or parameter. Where
+supported, SQL Server converts between FLOAT32 and FLOAT16 base types.
 
 Enable native vector negotiation **when connecting**: `VectorTypeSupport=v1`
 for FLOAT32, or `VectorTypeSupport=v2` for both subtypes. The default remains
@@ -263,7 +264,8 @@ pack TDS headers, encode half floats, or serialize vectors as binary/JSON.
 
 **Stored procedures:** `callproc()` accepts ordinary input parameters and
 `OutputParameter(sql_type, size, scale)` / `InputOutputParameter(vector)`
-wrappers. `OutputParameter` takes the same triple as `setinputsizes()`; today
+wrappers. Use `execute()` to pass table-valued parameters. `OutputParameter`
+takes the same triple as `setinputsizes()`; today
 only `SQL_SS_VECTOR` is supported (size is dimensions, scale is 0 for FLOAT32 or
 1 for FLOAT16), and other SQL types raise `NotSupportedError`.
 `InputOutputParameter` infers its type from the initial `Vector`; if its
