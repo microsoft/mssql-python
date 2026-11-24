@@ -1977,10 +1977,20 @@ class Cursor:
             else:
                 bound_parameters = []
 
-        if any(isinstance(value, Json) for value in bound_parameters) or (
-            self._inputsizes
-            and any(
-                size and size[0] == ddbc_sql_const.SQL_SS_JSON.value for size in self._inputsizes
+        # Classic-provider JSON validation belongs to the native binder. Only the
+        # alternate provider needs this pre-dispatch scan to reject JSON routing.
+        if (
+            (bound_parameters or self._inputsizes)
+            and ProviderManager.effective() != "msodbcsql18"
+            and (
+                any(isinstance(value, Json) for value in bound_parameters)
+                or (
+                    self._inputsizes
+                    and any(
+                        size and size[0] == ddbc_sql_const.SQL_SS_JSON.value
+                        for size in self._inputsizes
+                    )
+                )
             )
         ):
             self._require_json_provider()

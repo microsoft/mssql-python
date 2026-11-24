@@ -531,14 +531,53 @@ def test_json_result_reinsertion_in_either_mode(json_connection, mode):
         assert [row[0] for row in cursor.fetchall()] == [{"v": [1, None]}, ["\u03bb"], None]
 
 
-def test_json_provider_rejection_does_not_switch(json_connection, monkeypatch):
+@pytest.mark.parametrize("hinted", [False, True])
+def test_classic_execute_does_not_scan_json_values_or_hints(db_connection, monkeypatch, hinted):
+    import mssql_python.cursor as cursor_module
+    from mssql_python.odbc_provider import ProviderManager
+
+    checks = []
+    hint_scans = []
+    original_isinstance = isinstance
+
+    def counted_isinstance(value, cls):
+        if cls is Json:
+            checks.append(value)
+        return original_isinstance(value, cls)
+
+    class CountedHints(list):
+        def __iter__(self):
+            hint_scans.append(True)
+            return super().__iter__()
+
+    with db_connection.cursor() as cursor:
+        if hinted:
+            cursor.setinputsizes([4, 12])
+            cursor._inputsizes = CountedHints(cursor._inputsizes)
+        monkeypatch.setattr(ProviderManager, "effective", lambda: "msodbcsql18")
+        monkeypatch.setattr(cursor_module, "isinstance", counted_isinstance, raising=False)
+        cursor.execute("SELECT ?, ?", 42, "ordinary")
+        assert checks == []
+        assert hint_scans == []
+        assert tuple(cursor.fetchone()) == (42, "ordinary")
+
+
+@pytest.mark.parametrize("hinted_null", [False, True])
+def test_json_provider_rejection_does_not_switch(db_connection, monkeypatch, hinted_null):
+    from mssql_python import ddbc_bindings
     from mssql_python.odbc_provider import ProviderManager
 
     monkeypatch.setattr(ProviderManager, "effective", lambda: "mssql-odbc")
-    with json_connection.cursor() as cursor:
+    with db_connection.cursor() as cursor:
+        dispatch = Mock(wraps=ddbc_bindings.DDBCSQLExecute)
+        monkeypatch.setattr(ddbc_bindings, "DDBCSQLExecute", dispatch)
+        if hinted_null:
+            cursor.setinputsizes([4, SQL_JSON])
         with pytest.raises(NotSupportedError, match="msodbcsql18"):
-            cursor.execute("SELECT ?", Json({}))
-        cursor.execute("SELECT 42")
+            cursor.execute("SELECT ?, ?", 42, None if hinted_null else Json({}))
+        dispatch.assert_not_called()
+        cursor.setinputsizes(None)
+        cursor.execute("SELECT ?", 42)
         assert cursor.fetchval() == 42
 
 
