@@ -792,6 +792,77 @@ def test_exact_recorded_wheel_run_is_verified_not_packaging_mode_or_build_number
     assert result["versions"] == {"mssql-python": "1.15.0", "mssql-python-odbc": "18.6.2.1"}
 
 
+@pytest.mark.parametrize("selection", ["all", "x64"])
+@pytest.mark.parametrize("problem", [None, "missing-job", "missing-scan"])
+def test_sharded_linux_matrix_requires_each_selected_jobs_security(chain, selection, problem):
+    yaml = pytest.importorskip("yaml")
+    pipeline = yaml.safe_load(
+        (_PATH.parents[2] / "OneBranchPipelines/build-release-package-pipeline.yml").read_text(
+            encoding="utf-8"
+        )
+    )
+    configs = next(p["default"] for p in pipeline["parameters"] if p["name"] == "linuxConfigs")
+    if selection == "x64":
+        configs = [c for c in configs if c["arch"] == "x86_64"]
+    chain["pipelines/2199/runs/173176?api-version=7.1"]["templateParameters"][
+        "linuxConfigs"
+    ] = configs
+    timeline = chain["build/builds/173176/timeline?api-version=7.1"]["records"]
+    legacy = "Linux_manylinux_2_28_aarch64.BuildWheels.__default"
+    linux_records = [r for r in timeline if r.get("id") == legacy or r.get("parentId") == legacy]
+    timeline[:] = [r for r in timeline if r not in linux_records]
+    for config in configs:
+        identifier = (
+            f"Linux_{config['tag']}_{config['arch']}_{config['shard']}.BuildWheels.__default"
+        )
+        timeline.extend(
+            {
+                key: (
+                    value.replace(legacy, identifier)
+                    if key in {"id", "identifier", "parentId"}
+                    else value
+                )
+                for key, value in record.items()
+            }
+            for record in linux_records
+        )
+    if problem:
+        timeline.remove(
+            next(
+                r
+                for r in timeline
+                if (
+                    r.get("id") == identifier
+                    if problem == "missing-job"
+                    else r.get("parentId") == identifier
+                )
+            )
+        )
+        with pytest.raises(ValueError, match="missing or did not succeed|lacks completed"):
+            _verify(chain)
+    else:
+        assert _verify(chain)["productionEligible"] is True
+
+
+@pytest.mark.parametrize("shard", [None, "", "invalid-shard", 1])
+def test_invalid_linux_shard_is_not_treated_as_legacy(chain, shard):
+    chain["pipelines/2199/runs/173176?api-version=7.1"]["templateParameters"]["linuxConfigs"][0][
+        "shard"
+    ] = shard
+    with pytest.raises(ValueError, match="linuxConfigs evidence is invalid"):
+        _verify(chain)
+
+
+def test_duplicate_linux_shards_are_rejected(chain):
+    configs = chain["pipelines/2199/runs/173176?api-version=7.1"]["templateParameters"][
+        "linuxConfigs"
+    ]
+    configs[0]["shard"] = "py310_312"
+    configs.append(dict(configs[0]))
+    with pytest.raises(ValueError, match="linuxConfigs contains duplicate jobs"):
+        _verify(chain)
+
+
 @pytest.mark.parametrize(
     "problem",
     [

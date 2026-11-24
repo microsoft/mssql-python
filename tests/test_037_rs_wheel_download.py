@@ -1,8 +1,11 @@
 import hashlib
+import http.client
 import io
 import json
 import os
 import subprocess
+import sys
+import urllib.error
 import zipfile
 from pathlib import Path
 
@@ -169,3 +172,205 @@ def test_ignores_yanked_wheels(tmp_path, monkeypatch):
     )
     with pytest.raises(ValueError, match="No mssql-python-rs"):
         downloader.download_wheels(None, _pin(tmp_path), tmp_path / "out")
+
+
+@pytest.mark.parametrize("target", ["index", "wheel"])
+@pytest.mark.parametrize("failure", ["timeout", "503", "incomplete"])
+def test_transient_download_retries_cleanly(tmp_path, monkeypatch, target, failure):
+    name, content, requested = _index(monkeypatch)
+    original = downloader.urllib.request.urlopen
+    calls = []
+    sleeps = []
+
+    class Interrupted(io.BytesIO):
+        def read(self, *args):
+            super().read(10)
+            raise downloader.http.client.IncompleteRead(b"partial")
+
+    def flaky(url, timeout):
+        selected = url.endswith("/mssql-python-rs/") == (target == "index")
+        if selected:
+            calls.append(url)
+            if len(calls) == 1:
+                if failure == "timeout":
+                    raise urllib.error.URLError(TimeoutError("fixture timeout"))
+                if failure == "503":
+                    raise urllib.error.HTTPError(url, 503, "fixture unavailable", {}, None)
+                return Interrupted(content)
+        return original(url, timeout)
+
+    monkeypatch.setattr(downloader.urllib.request, "urlopen", flaky)
+    monkeypatch.setattr(downloader.time, "sleep", sleeps.append)
+    output = tmp_path / "out"
+    downloader.download_wheels(None, _pin(tmp_path), output)
+    assert len(calls) == 2
+    assert sleeps == [2]
+    assert (output / name).read_bytes() == content
+    assert not list(output.glob("*.part"))
+
+
+@pytest.mark.parametrize(
+    "failure", ["truncated-once", "truncated-always", "complete-hash", "complete-metadata"]
+)
+def test_http_response_length_controls_transport_retries(tmp_path, monkeypatch, failure):
+    options = (
+        {"hash_value": "0" * 64}
+        if failure == "complete-hash"
+        else {"content": _wheel(metadata_version="0.4.0")} if failure == "complete-metadata" else {}
+    )
+    name, content, _ = _index(monkeypatch, **options)
+    original = downloader.urllib.request.urlopen
+    calls, sleeps = [], []
+
+    def urlopen(url, timeout):
+        if url.endswith("/mssql-python-rs/"):
+            return original(url, timeout)
+        calls.append(url)
+        truncated = failure == "truncated-always" or (
+            failure == "truncated-once" and len(calls) == 1
+        )
+        payload = content[: len(content) // 2] if truncated else content
+
+        class Socket:
+            def makefile(self, *args, **kwargs):
+                return io.BytesIO(
+                    f"HTTP/1.1 200 OK\r\nContent-Length: {len(content)}\r\n\r\n".encode() + payload
+                )
+
+        response = http.client.HTTPResponse(Socket())
+        response.begin()
+        return response
+
+    monkeypatch.setattr(downloader.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(downloader.time, "sleep", sleeps.append)
+    output = tmp_path / "out"
+    pin = _pin(tmp_path)
+    if failure == "truncated-once":
+        downloader.download_wheels(None, pin, output)
+        assert (output / name).read_bytes() == content
+        assert len(calls) == 2
+        assert sleeps == [2]
+        assert not list(output.glob("*.part"))
+    else:
+        error = http.client.IncompleteRead if failure == "truncated-always" else ValueError
+        with pytest.raises(error):
+            downloader.download_wheels(None, pin, output)
+        assert len(calls) == (3 if failure == "truncated-always" else 1)
+        assert sleeps == ([2, 4] if failure == "truncated-always" else [])
+        assert list(output.iterdir()) == []
+
+
+@pytest.mark.parametrize("code", [400, 401, 403, 404])
+def test_permanent_http_error_is_not_retried(tmp_path, monkeypatch, code):
+    calls = []
+
+    def unavailable(url, timeout):
+        calls.append(url)
+        raise urllib.error.HTTPError(url, code, "fixture rejection", {}, None)
+
+    monkeypatch.setattr(downloader.urllib.request, "urlopen", unavailable)
+    with pytest.raises(urllib.error.HTTPError):
+        downloader.download_wheels(None, _pin(tmp_path), tmp_path / "out")
+    assert len(calls) == 1
+
+
+def test_retry_exhaustion_removes_partial_files_and_receipt(tmp_path, monkeypatch):
+    _index(monkeypatch)
+    original = downloader.urllib.request.urlopen
+    calls, sleeps = [], []
+
+    class Interrupted(io.BytesIO):
+        def read(self, *args):
+            raise TimeoutError("fixture interrupted stream")
+
+    def unavailable(url, timeout):
+        if url.endswith("/mssql-python-rs/"):
+            return original(url, timeout)
+        calls.append(url)
+        return Interrupted(b"partial")
+
+    monkeypatch.setattr(downloader.urllib.request, "urlopen", unavailable)
+    monkeypatch.setattr(downloader.time, "sleep", sleeps.append)
+    output = tmp_path / "out"
+    with pytest.raises(TimeoutError):
+        downloader.download_wheels(None, _pin(tmp_path), output)
+    assert len(calls) == 3
+    assert sleeps == [2, 4]
+    assert list(output.iterdir()) == []
+
+
+@pytest.mark.parametrize("failure", ["hash", "metadata"])
+def test_invalid_payload_is_not_retried_or_left_staged(tmp_path, monkeypatch, failure):
+    options = (
+        {"hash_value": "0" * 64}
+        if failure == "hash"
+        else {"content": _wheel(metadata_version="0.4.0")}
+    )
+    _, _, requested = _index(monkeypatch, **options)
+    output = tmp_path / "out"
+    with pytest.raises(ValueError):
+        downloader.download_wheels(None, _pin(tmp_path), output)
+    assert len(requested) == 2
+    assert list(output.iterdir()) == []
+
+
+@pytest.mark.parametrize("tamper", [None, "hash", "version", "extra", "override"])
+def test_rechecks_early_transport_offline(tmp_path, monkeypatch, tamper):
+    name, _, _ = _index(monkeypatch)
+    pin, output = _pin(tmp_path), tmp_path / "out"
+    downloader.download_wheels(None, pin, output)
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("Offline verification must not access the network")
+
+    monkeypatch.setattr(downloader.urllib.request, "urlopen", forbidden)
+    if tamper == "hash":
+        (output / name).write_bytes(b"corrupt")
+    elif tamper == "version":
+        pin.write_text("0.4.0\n", encoding="ascii")
+    elif tamper == "extra":
+        (output / "extra.whl").touch()
+    elif tamper == "override":
+        monkeypatch.setenv(VERSION_ENV, "0.3.0")
+    if tamper:
+        with pytest.raises(ValueError):
+            downloader.verify_staged_wheels(output, pin)
+    else:
+        assert downloader.verify_staged_wheels(output, pin) == [output / name]
+
+
+@pytest.mark.parametrize("download_slash", ["", "/"])
+@pytest.mark.parametrize("verify_slash", ["", "/"])
+def test_explicit_index_round_trip_is_verified_offline(
+    tmp_path, monkeypatch, download_slash, verify_slash
+):
+    index = "https://mirror.example.test/simple"
+    name, _, _ = _index(monkeypatch)
+    pin, output = _pin(tmp_path), tmp_path / "out"
+    downloader.download_wheels(index + download_slash, pin, output)
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("Offline verification must not access the network")
+
+    monkeypatch.setattr(downloader.urllib.request, "urlopen", forbidden)
+    assert downloader.verify_staged_wheels(output, pin, index_url=index + verify_slash) == [
+        output / name
+    ]
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "download_mssql_python_rs_wheels.py",
+            "--verify-only",
+            "--index-url",
+            index + verify_slash,
+            "--output-dir",
+            str(output),
+            "--distribution-version-file",
+            str(pin),
+        ],
+    )
+    downloader.main()
+    for wrong_index in (None, "https://different.example.test/simple"):
+        with pytest.raises(ValueError, match="effective runtime"):
+            downloader.verify_staged_wheels(output, pin, index_url=wrong_index)
