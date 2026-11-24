@@ -382,17 +382,6 @@ inline std::vector<ParamInfo> DetectParamTypes(PyObject* params, PyObject* input
 
         PyObject* obj = PyList_GET_ITEM(params, i);
 
-        int isVector = PyObject_IsInstance(obj, PyTypeCache::vector_class);
-        if (isVector < 0) throw py::error_already_set();
-        if (isVector) {
-            info.vectorBinding = std::make_shared<VectorBinding>(borrow(obj));
-            info.paramSQLType = SQL_SS_VECTOR;
-            info.paramCType = SQL_C_SS_VECTOR;
-            info.columnSize = VectorBufferSize(info.vectorBinding->elements.size());
-            info.decimalDigits = static_cast<SQLSMALLINT>(info.vectorBinding->value.type);
-            continue;
-        }
-
         // --- None ---
         if (obj == Py_None) {
             info.paramSQLType = SQL_UNKNOWN_TYPE;
@@ -698,6 +687,17 @@ inline std::vector<ParamInfo> DetectParamTypes(PyObject* params, PyObject* input
                 // PyList_SetItem steals (decrefs) the item even on failure.
                 throw py::error_already_set();
             }
+            continue;
+        }
+
+        int isVector = PyObject_IsInstance(obj, PyTypeCache::vector_class);
+        if (isVector < 0) throw py::error_already_set();
+        if (isVector) {
+            info.vectorBinding = std::make_shared<VectorBinding>(borrow(obj));
+            info.paramSQLType = SQL_SS_VECTOR;
+            info.paramCType = SQL_C_SS_VECTOR;
+            info.columnSize = VectorBufferSize(info.vectorBinding->elements.size());
+            info.decimalDigits = static_cast<SQLSMALLINT>(info.vectorBinding->value.type);
             continue;
         }
 
