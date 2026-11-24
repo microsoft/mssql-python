@@ -932,6 +932,32 @@ int main() {
                 connection->close();
             });
         }
+        for (bool retrySucceeds : {false, true}) {
+            run("checked cleanup reads poisoned handle diagnostics without releasing bound storage",
+                [retrySucceeds] {
+                auto connection = acquire();
+                auto statement = connection->allocStatementHandle();
+                auto storage = std::make_shared<int>(42);
+                std::weak_ptr<int> retained = storage;
+                statement->retainFailedParameters({storage});
+                storage.reset();
+                require(statement->get() == nullptr, "Poisoned statement remained executable");
+                failNext = "free";
+                ErrorInfo error;
+                require(statement->freeHandle(&error) == SQL_ERROR, "Expected failed cleanup retry");
+                require(error.sqlState == "HY000" && error.ddbcErrorMsg == "failed",
+                        "Checked cleanup lost the live poisoned handle's diagnostics");
+                require(statement->get() == nullptr, "Failed cleanup exposed poisoned statement");
+                require(!retained.expired(), "Failed cleanup released bound parameter storage");
+                if (retrySucceeds) {
+                    statement->freeChecked();
+                } else {
+                    connection->discard();
+                }
+                require(retained.expired(), "Successful teardown retained parameter storage");
+                connection->discard();
+            });
+        }
         run("failed cursor free discards the connection and invalidates surviving aliases", [] {
             warm();
             auto connection = acquire();
