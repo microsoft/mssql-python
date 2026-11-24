@@ -60,6 +60,8 @@ class EncodingSettings(TypedDict):
     encoding: str
     ctype: int
 
+def _batch_text_metadata(column: list[Any]) -> tuple[bool, int]: ...
+
 class ColumnMetadata(TypedDict):
     ColumnName: str
     DataType: int
@@ -108,6 +110,7 @@ class ParamInfo:
     paramCType: int
     paramSQLType: int
     columnSize: int
+    arrayBufferSize: int
     decimalDigits: int
     strLenOrInd: int
     dataPtr: object

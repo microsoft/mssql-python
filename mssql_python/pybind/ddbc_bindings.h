@@ -542,7 +542,7 @@ struct ColumnInfoExt {
 // outside namespace
 py::object FetchLobColumnData(SQLHSTMT hStmt, SQLUSMALLINT col, SQLSMALLINT cType, bool isWideChar,
                               bool isBinary, const std::string& charEncoding = "utf-8",
-                              py::handle messages = {});
+                              py::handle messages = {}, bool sizeWideConversion = false);
 
 // Specialized column processors for each data type (eliminates switch in hot
 // loop)
@@ -724,7 +724,7 @@ inline void ProcessChar(PyObject* row, ColumnBuffers& buffers, const void* colIn
             // LOB / truncated: stream with SQL_C_WCHAR
             PyList_SET_ITEM(row, col - 1,
                             FetchLobColumnData(hStmt, col, SQL_C_WCHAR, true, false, "utf-16le",
-                                               py::handle(colInfo->messages))
+                                               py::handle(colInfo->messages), true)
                                 .release()
                                 .ptr());
         }
