@@ -6,12 +6,15 @@ Live tests require the Microsoft ODBC provider and a server advertising the
 vector type. No live operation is mocked; connection/backend errors fail.
 """
 
+import datetime
+import decimal
 import json
 import math
 import os
 import struct
 import sys
 import uuid
+from abc import ABCMeta
 from collections import deque
 from itertools import repeat
 from types import SimpleNamespace
@@ -164,6 +167,39 @@ def test_native_vector_detection(dtype, dimensions, subtype):
     assert not info.isDAE
     if dtype == "float16":
         assert info.columnSize > 8000
+
+
+def test_native_scalar_detection_skips_vector_instance_checks(monkeypatch):
+    checks = []
+    original_instancecheck = ABCMeta.__instancecheck__
+
+    def count_vector_checks(cls, value):
+        if cls is Vector:
+            checks.append(type(value).__name__)
+        return original_instancecheck(cls, value)
+
+    monkeypatch.setattr(ABCMeta, "__instancecheck__", count_vector_checks)
+    scalars = [
+        None,
+        True,
+        42,
+        1.25,
+        "text",
+        b"bytes",
+        bytearray(b"bytes"),
+        datetime.datetime(2026, 1, 1),
+        datetime.date(2026, 1, 1),
+        datetime.time(12, 30),
+        decimal.Decimal("1.25"),
+        uuid.UUID(int=1),
+    ]
+    vector = Vector([1, 2, 3], "float16")
+    *scalar_infos, vector_info = ddbc_bindings._detect_param_types([*scalars, vector])
+
+    assert checks == []
+    assert all(info.paramSQLType != mssql_python.SQL_SS_VECTOR for info in scalar_infos)
+    assert vector_info.paramSQLType == mssql_python.SQL_SS_VECTOR
+    assert vector_info.decimalDigits == 1
 
 
 @pytest.mark.parametrize("value", [None, Vector([1, 2, 3], "float16"), [1, 2, 3]])
