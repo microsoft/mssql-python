@@ -932,6 +932,31 @@ int main() {
                 connection->close();
             });
         }
+        for (bool disconnectParent : {false, true}) {
+            run("successful statement teardown releases ordinary parameter storage",
+                [disconnectParent] {
+                auto connection = acquire(false);
+                auto statement = connection->allocStatementHandle();
+                auto storage = std::make_shared<int>(42);
+                std::weak_ptr<int> retained = storage;
+                statement->boundParamBuffers.push_back(storage);
+                storage.reset();
+                failNext = "free";
+                require(statement->freeHandle() == SQL_ERROR, "Expected failed statement free");
+                require(!retained.expired(), "Failed free released bound parameter storage");
+                if (disconnectParent) {
+                    connection->discard();
+                } else {
+                    CallbackScope callback(duringFree, [&] {
+                        require(!retained.expired(), "Storage released before native free completed");
+                    });
+                    statement->freeChecked();
+                }
+                require(retained.expired(), "Retained statement wrapper kept freed parameter storage");
+                require(statement->boundParamBuffers.empty(), "Freed statement retained bindings");
+                connection->discard();
+            });
+        }
         for (bool retrySucceeds : {false, true}) {
             run("checked cleanup reads poisoned handle diagnostics without releasing bound storage",
                 [retrySucceeds] {

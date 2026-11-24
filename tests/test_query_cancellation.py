@@ -79,6 +79,18 @@ def test_cancel_active_execute(prepared, pooling):
     _run("_execute_probe", prepared, pooling)
 
 
+@pytest.mark.parametrize("prepared", ["direct", "executemany"])
+def test_cancel_active_execute_python_fallback(prepared):
+    _run("_execute_fallback_probe", prepared)
+
+
+def _execute_fallback_probe(prepared):
+    from mssql_python import _query_operation
+
+    _query_operation._NATIVE_QUERY_RUNTIME = False
+    _execute_probe(prepared, "off")
+
+
 @pytest.mark.parametrize("operation", ["execute", "fetchall", "connection", "catalog"])
 def test_native_query_guard_preserves_protocol_without_python_owner(operation):
     from mssql_python._query_operation import QueryOperation, QueryConnectionState
@@ -254,7 +266,9 @@ def _execute_probe(prepared, pooling):
                 lambda: sibling.execute("select 2"),
                 lambda: cursor.execute("select 2"),
             ):
-                with pytest.raises(ProgrammingError, match="operation in progress"):
+                with pytest.raises(
+                    ProgrammingError, match="operation in progress|while it is executing"
+                ):
                     competing()
             assert not sibling.closed and not connection.closed and not cursor.closed
             cancel_threads = [_worker(cursor.cancel), _worker(cursor.cancel)]
@@ -879,7 +893,8 @@ def _arrow_close_probe():
             reader = cursor.arrow_reader(batch_size=1)
             worker, done, errors = _worker(lambda: cursor.execute(query, "00:00:20"))
             _blocked(control, session)
-            reader.close()
+            with pytest.raises(ProgrammingError, match="operation in progress"):
+                reader.close()
             assert not done.is_set(), "stale reader close reached new work"
             _blocked(control, session)
             cursor.cancel()

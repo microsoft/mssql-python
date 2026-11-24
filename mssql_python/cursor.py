@@ -387,7 +387,8 @@ class _ArrowReader:
         Most of the actual cleanup work lives in the generator's ``finally``
         clause (see ``Cursor.arrow_reader``); this method just unblocks any
         in-flight fetch and closes the generator, which triggers that
-        ``finally`` block.
+        ``finally`` block. If a sibling cursor owns the connection, raises
+        ``ProgrammingError`` and retains pending cleanup for a later retry.
         """
         # Fast path: cleanup already completed on a previous call.  We use
         # the *generator* reference — not ``_closed`` — as the completion
@@ -420,6 +421,10 @@ class _ArrowReader:
                     self._cursor = None
                     self._inner = None
                     return
+            except ProgrammingError:
+                # Admission can fail after generator finalization. The iterator
+                # still owns the cleanup callback, so retain it for a retry.
+                raise
             except Exception as e:  # pylint: disable=broad-exception-caught
                 logger.debug("arrow_reader.close: generator.close raised: %s", e)
                 if getattr(gen, "gi_frame", None) is not None:
@@ -3541,6 +3546,9 @@ class Cursor:
         is **not** closed and can be re-executed; old readers cannot consume or
         clean up its newer result. A close called reentrantly on the reading
         thread defers cleanup until that advancement exits. ``close()`` is idempotent.
+        If a sibling cursor owns the connection, ``close()`` raises
+        ``ProgrammingError``; retry after that operation finishes to release
+        the pending server-side resources.
 
         Args:
             batch_size: Size of the Record Batches produced by the reader.

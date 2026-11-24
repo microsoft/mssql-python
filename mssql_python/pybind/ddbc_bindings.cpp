@@ -1926,6 +1926,9 @@ void SqlHandle::markImplicitlyFreed() {
     }
     resultMetadata.clear();
     _implicitly_freed = true;
+    paramsBound = false;
+    boundParamSignature.clear();
+    boundParamBuffers.clear();
 }
 
 /*
@@ -1978,6 +1981,9 @@ SQLRETURN SqlHandle::freeHandle(ErrorInfo* error) {
         }
         if (SQL_SUCCEEDED(ret)) {
             _handle = nullptr;
+            paramsBound = false;
+            boundParamSignature.clear();
+            boundParamBuffers.clear();
             if (_failedParameterBuffers) _failedParameterBuffers->release();
         } else {
             if (_type == SQL_HANDLE_STMT && _cleanupState) {
