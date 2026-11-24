@@ -1,7 +1,7 @@
 # Consolidate Artifacts Job Template
 # Downloads artifacts from all platform build stages and consolidates into single dist/ folder
-# Works with individual stage artifacts (21 stages total: 11 Windows + 6 macOS + 4 Linux)
-# Each Linux stage builds 6 Python versions (3.10-3.15), resulting in 41 total wheels
+# Collects 11 Windows + 6 macOS + 6 Linux stages (ARM64 split into two shards).
+# The wheel matrix remains 41: 11 Windows + 6 macOS + 24 Linux.
 parameters:
   - name: oneBranchType
     type: string
@@ -126,10 +126,18 @@ jobs:
         continueOnError: true
       
       # Carry the effective runtime selection with the artifact, including test overrides.
+      # Reuse the exact early transport; no late network download/version fallback.
+      - task: DownloadPipelineArtifact@2
+        displayName: 'Download early validated runtime transport'
+        inputs:
+          buildType: 'current'
+          artifactName: 'drop_RuntimeWheels_StageWheels'
+          itemPattern: 'rs-wheels/**'
+          targetPath: '$(ob_outputDirectory)'
       - bash: |
-          set -e
+          set -euo pipefail
           python3 "$(Build.SourcesDirectory)/eng/scripts/download_mssql_python_rs_wheels.py" \
-            --output-dir "$(ob_outputDirectory)/rs-wheels"
+            --verify-only --output-dir "$(ob_outputDirectory)/rs-wheels"
           python3 -c "import json,pathlib; root=pathlib.Path('$(ob_outputDirectory)'); receipt=json.loads((root/'rs-wheels/transport.json').read_text()); (root/'dist/mssql-python-rs.version').write_text(receipt['distribution_version']+'\n'); (root/'dist/transport.json').write_bytes((root/'rs-wheels/transport.json').read_bytes())"
           echo "mssql-python-rs version: $(cat "$(ob_outputDirectory)/dist/mssql-python-rs.version")"
         displayName: 'Stage effective mssql-python-rs wheels, version and receipt'

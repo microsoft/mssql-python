@@ -38,9 +38,10 @@ from mssql_python.exceptions import (
 )
 from mssql_python.row import Row, OutputConverter, _ColumnNames
 from mssql_python.json import Json, _decode_json, _reject_json_parameters
-from mssql_python.odbc_provider import ProviderManager
+from mssql_python.table_valued_parameter import TableValuedParameter
 from mssql_python.perf_timer import perf_phase
 from mssql_python import get_settings
+from mssql_python.odbc_provider import ProviderManager, PROVIDER_MSSQL_ODBC
 from mssql_python.parameter_helper import (
     detect_and_convert_parameters,
     parse_pyformat_params,
@@ -119,6 +120,26 @@ def _normalize_time_param(value: object, c_type: int) -> str | None:
     ):
         return value.isoformat(timespec="microseconds")
     return None
+
+
+def _format_numeric_batch_parameter(value: Any, row_index: int, column_index: int) -> str:
+    if isinstance(value, decimal.Decimal):
+        return format(value, "f")
+
+    formatted = ""
+    conversion_failed = False
+    try:
+        formatted = format(decimal.Decimal(str(value)), "f")
+    except Exception:  # pylint: disable=broad-exception-caught
+        # User-defined str() can raise value-bearing exceptions of any type.
+        conversion_failed = True
+    if conversion_failed:
+        # Raise outside the handler so neither context nor message exposes values.
+        raise ValueError(
+            f"Failed to convert parameter to Decimal at row "
+            f"{row_index}, column {column_index} (value type: {type(value).__name__})"
+        ) from None
+    return formatted
 
 
 class _ArrowBatchIterator:
@@ -467,6 +488,7 @@ class Cursor:
 
         self._connection: "Connection" = connection  # Store as private attribute
         self._timeout: int = timeout
+        self._executing = False
         self._inputsizes: list[tuple[int, int, int, int] | None] | None = None
         self._json_output: Literal["text", "objects"] = "text"
         self._execution_json_output: Literal["text", "objects"] = "text"
@@ -790,9 +812,8 @@ class Cursor:
             - i: The index of the parameter in the list.
             - decimal_as_numeric: When True, bind a Decimal as SQL_NUMERIC regardless of
               value, skipping the MONEY/SMALLMONEY-range VARCHAR shortcut. The execute()
-              path sets this so a money-range Decimal compared against a numeric column
-              does not overflow (GH-740). executemany() leaves it False because it
-              string-binds Decimals for the whole batch (GH-503).
+              and executemany() paths set this so a money-range Decimal compared
+              against a numeric column does not overflow (GH-740, GH-745).
         Returns:
             - A tuple containing the SQL type, C type, column size, and decimal digits.
         """
@@ -928,11 +949,9 @@ class Cursor:
                     f"The maximum precision supported by SQL Server is 38, but got {precision}."
                 )
 
-            # Detect MONEY / SMALLMONEY range. Skipped on the execute() path
-            # (decimal_as_numeric=True), where a money-range Decimal must bind as
-            # SQL_NUMERIC so a comparison against a smaller numeric column returns no
-            # match instead of overflowing (GH-740). executemany keeps the VARCHAR
-            # shortcut because it string-binds Decimals for the batch (GH-503).
+            # Retain the legacy helper default; execution paths request NUMERIC
+            # so SQL compares numeric values rather than converting VARCHAR to
+            # the destination's potentially narrower precision (GH-740, GH-745).
             if not decimal_as_numeric and SMALLMONEY_MIN <= param <= SMALLMONEY_MAX:
                 logger.debug("_map_sql_type: DECIMAL -> SMALLMONEY - index=%d", i)
                 # smallmoney
@@ -1197,6 +1216,8 @@ class Cursor:
         if getattr(self, "closed", True):
             # Do nothing - not calling _check_closed() here since we want this to be idempotent
             return
+        if getattr(self, "_executing", False):
+            raise ProgrammingError("Cannot close a cursor while it is executing", "")
 
         # Clear messages per DBAPI
         self.messages = []
@@ -1222,6 +1243,8 @@ class Cursor:
         Raises:
             ProgrammingError: If the cursor is closed.
         """
+        if getattr(self, "_executing", False):
+            raise ProgrammingError("Cannot reuse a cursor while it is executing", "")
         if self.closed:
             raise ProgrammingError(
                 driver_error="Operation cannot be performed: The cursor is closed.",
@@ -1919,8 +1942,8 @@ class Cursor:
         #
         # Important: If you pass a tuple/list/dict as the ONLY argument,
         # it will be unwrapped for parameter binding. This means you cannot
-        # pass a tuple as a single parameter value (but SQL Server doesn't
-        # support tuple types as parameter values anyway).
+        # pass a tuple as a single scalar parameter value. A TVP is explicitly
+        # wrapped in TableValuedParameter and remains one parameter.
         with perf_phase("py::execute::param_prep"):
             if parameters:
                 # Check if single parameter is a nested container that should be unwrapped
@@ -1966,6 +1989,11 @@ class Cursor:
 
         # Validate that inputsizes matches parameter count if both are present
         if bound_parameters and self._inputsizes:
+            if any(isinstance(parameter, TableValuedParameter) for parameter in bound_parameters):
+                raise NotSupportedError(
+                    "setinputsizes does not support table-valued parameters",
+                    "Remove setinputsizes for statements that pass TVP rows",
+                )
             if len(self._inputsizes) != len(bound_parameters):
 
                 warnings.warn(
@@ -1985,28 +2013,44 @@ class Cursor:
             self.is_stmt_prepared = [False]
         effective_use_prepare = use_prepare and not same_sql
 
-        with perf_phase("py::execute::cpp_call"):
-            if bound_parameters:
-                ret = ddbc_bindings.DDBCSQLExecute(
-                    self.hstmt,
-                    operation,
-                    bound_parameters,
-                    self._inputsizes,
-                    self.is_stmt_prepared,
-                    effective_use_prepare,
-                    encoding_settings,
-                )
-            else:
-                ret = ddbc_bindings.DDBCSQLExecDirect(self.hstmt, operation)
-        # Check return code
+        self._executing = True
         try:
-
+            with perf_phase("py::execute::cpp_call"):
+                if bound_parameters:
+                    if any(
+                        isinstance(parameter, TableValuedParameter)
+                        for parameter in bound_parameters
+                    ):
+                        if ProviderManager.effective() == PROVIDER_MSSQL_ODBC:
+                            raise NotSupportedError(
+                                "Table-valued parameters are not supported by "
+                                "the mssql-odbc provider",
+                                "Use the default msodbcsql18 provider for TVP statements",
+                            )
+                    ret = ddbc_bindings.DDBCSQLExecute(
+                        self.hstmt,
+                        operation,
+                        bound_parameters,
+                        self._inputsizes,
+                        self.is_stmt_prepared,
+                        effective_use_prepare,
+                        encoding_settings,
+                    )
+                else:
+                    ret = ddbc_bindings.DDBCSQLExecDirect(self.hstmt, operation)
             # Check for errors but don't raise exceptions for info/warning messages
             check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
-        except Exception as e:  # pylint: disable=broad-exception-caught
+        except BaseException as e:  # Reset even when a TVP iterator raises KeyboardInterrupt.
             logger.warning("Execute failed, resetting cursor: %s", e)
-            self._reset_cursor()
+            try:
+                self._reset_cursor()
+            except Exception as cleanup_error:
+                # A callback may have closed the connection. Preserve its
+                # original error instead of replacing it with an allocation error.
+                logger.warning("Cursor recovery failed: %s", cleanup_error)
             raise
+        finally:
+            self._executing = False
 
         # Capture any diagnostic messages (SQL_SUCCESS_WITH_INFO, etc.)
         with perf_phase("py::execute::diag_records"):
@@ -2532,9 +2576,8 @@ class Cursor:
             max_val: Maximum for integers (None otherwise).
             max_decimal_formatted_len: Maximum len(format(d, 'f')) across all
                 Decimal values in the column (0 when no Decimals are present).
-                Used by executemany to correct the SQL_VARCHAR column size when
-                the sample value's formatted string is shorter than another
-                value's (e.g. positive sample vs negative row value) (GH-557).
+                Used by executemany to size numeric text buffers independently
+                of SQL precision (e.g. positive sample vs negative row value).
 
         Raises:
             ValueError: If any Decimal value is NaN or infinite.
@@ -2559,7 +2602,9 @@ class Cursor:
             return json_value, None, None, 0
         if int_values:
             min_val, max_val = min(int_values), max(int_values)
-            sample_value: Any = max(int_values, key=abs)
+            sample_value: Any = max(
+                int_values, key=lambda value: (abs(value), not isinstance(value, bool))
+            )
             return sample_value, min_val, max_val, 0
 
         sample_value = None
@@ -2715,7 +2760,7 @@ class Cursor:
         param_info = ddbc_bindings.ParamInfo
         parameters_type = []
         json_columns: list[int] = []
-        any_dae = False
+        requires_rowwise = False
 
         # Check if we have explicit input sizes set
         if self._inputsizes:
@@ -2735,12 +2780,17 @@ class Cursor:
                     if hasattr(seq_of_parameters, "__getitem__")
                     else []
                 )
+                if any(isinstance(value, TableValuedParameter) for value in column):
+                    raise NotSupportedError(
+                        "executemany does not support table-valued parameters",
+                        "Use execute for each TVP operation",
+                    )
                 size_override = (
                     self._inputsizes[col_index]
                     if self._inputsizes and col_index < len(self._inputsizes)
                     else None
                 )
-                sample_value, min_val, max_val, _ = self._compute_column_type(column)
+                sample_value, min_val, max_val, max_decimal_len = self._compute_column_type(column)
                 has_json = isinstance(sample_value, Json)
                 if has_json or (
                     size_override and size_override[0] == ddbc_sql_const.SQL_SS_JSON.value
@@ -2835,14 +2885,31 @@ class Cursor:
                     parameters_type.append(paraminfo)
                 else:
                     # Use auto-detection for columns without explicit types
-                    column = (
-                        [row[col_index] for row in seq_of_parameters]
-                        if hasattr(seq_of_parameters, "__getitem__")
-                        else []
+                    column_types = {type(value) for value in column if value is not None}
+                    if len(column_types) > 1:
+                        column_types = {
+                            str if issubclass(value_type, str) else value_type
+                            for value_type in column_types
+                        }
+                    mixed_types = (
+                        len(column_types) > 1
+                        and not column_types <= {int, bool}
+                        and not column_types <= {bytes, bytearray}
                     )
-                    sample_value, min_val, max_val, max_decimal_len = self._compute_column_type(
-                        column
+                    mixed_timezones = (
+                        isinstance(sample_value, datetime.datetime)
+                        and len(
+                            {
+                                value.tzinfo is not None
+                                for value in column
+                                if isinstance(value, datetime.datetime)
+                            }
+                        )
+                        > 1
                     )
+                    if mixed_types or mixed_timezones:
+                        requires_rowwise = True
+                        continue
 
                     dummy_row = list(sample_row)
                     paraminfo = self._create_parameter_types_list(
@@ -2852,37 +2919,52 @@ class Cursor:
                         col_index,
                         min_val=min_val,
                         max_val=max_val,
+                        decimal_as_numeric=isinstance(sample_value, decimal.Decimal),
                     )
+
+                    if isinstance(sample_value, str):
+                        # The longest Python string need not require Unicode or
+                        # have the largest UTF-16 representation (GH-906).
+                        needs_unicode, max_utf16_len = ddbc_bindings._batch_text_metadata(column)
+                        if needs_unicode:
+                            paraminfo.paramSQLType = ddbc_sql_const.SQL_WVARCHAR.value
+                        paraminfo.isDAE = max_utf16_len > MAX_INLINE_CHAR
+                        paraminfo.columnSize = 0 if paraminfo.isDAE else max_utf16_len
 
                     # GH-610: all-NULL columns now pass SQL_UNKNOWN_TYPE to C++,
                     # where BindParameterArray resolves the correct type via the
                     # SQLDescribeParam cache.  The previous SQL_VARCHAR hardcoded
                     # fallback was removed because it broke VARBINARY columns.
 
-                    # Override DECIMAL/NUMERIC to use SQL_C_CHAR string binding.
-                    # _map_sql_type may return SQL_C_NUMERIC (expecting NumericData structs)
-                    # but the conversion loop below converts all Decimal values to strings.
-                    # The C type must match the actual data to avoid:
-                    #   RuntimeError: Parameter's object type does not match parameter's C type
-                    if paraminfo.paramSQLType in (
-                        ddbc_sql_const.SQL_DECIMAL.value,
-                        ddbc_sql_const.SQL_NUMERIC.value,
-                    ):
+                    if isinstance(sample_value, decimal.Decimal):
+                        max_integer_digits = 0
+                        max_scale = 0
+                        for value in column:
+                            if value is None:
+                                continue
+                            value_tuple = value.as_tuple()
+                            exponent = cast(int, value_tuple.exponent)
+                            integer_digits = max(0, len(value_tuple.digits) + exponent)
+                            scale = max(0, -exponent)
+                            if max(1, integer_digits + scale) > 38:
+                                raise ValueError(
+                                    "Precision of the numeric value is too high. "
+                                    "The maximum precision supported by SQL Server is 38."
+                                )
+                            if not any(value_tuple.digits):
+                                integer_digits = 0
+                            max_integer_digits = max(max_integer_digits, integer_digits)
+                            max_scale = max(max_scale, scale)
+                        precision = max(1, max_integer_digits + max_scale)
+                        if precision > 38:
+                            requires_rowwise = True
+                            continue
+                        # SQL precision is not the text buffer capacity: signs,
+                        # decimal points and leading zeros occupy extra space.
+                        paraminfo.columnSize = precision
+                        paraminfo.decimalDigits = max_scale
                         paraminfo.paramCType = ddbc_sql_const.SQL_C_CHAR.value
-                        # Ensure columnSize accommodates the longest string representation
-                        if max_decimal_len > paraminfo.columnSize:
-                            paraminfo.columnSize = max_decimal_len
-
-                    # Correct column size for Decimal columns sent as SQL_VARCHAR (GH-557).
-                    # The sample value's formatted string may be shorter than another
-                    # row's (e.g. positive sample "1.0" = 3 chars vs negative "-0.1" = 4).
-                    # max_decimal_len was already computed during _compute_column_type
-                    # so no extra iteration is needed.
-                    if (
-                        paraminfo.paramSQLType == ddbc_sql_const.SQL_VARCHAR.value
-                        and max_decimal_len > paraminfo.columnSize
-                    ):
-                        paraminfo.columnSize = max_decimal_len
+                        paraminfo.arrayBufferSize = max_decimal_len
 
                     # Special handling for binary data in auto-detected types
                     if paraminfo.paramSQLType in (
@@ -2908,35 +2990,54 @@ class Cursor:
 
                     parameters_type.append(paraminfo)
                 if paraminfo.isDAE:
-                    any_dae = True
+                    requires_rowwise = True
 
-        if any_dae:
+        if requires_rowwise:
             logger.debug(
-                "DAE parameters detected. Falling back to row-by-row execution with streaming.",
+                "Batch parameters require row-by-row execution to preserve their types and sizes.",
             )
             input_sizes = self._inputsizes
-            if any(
-                info.paramSQLType == ddbc_sql_const.SQL_SS_JSON.value for info in parameters_type
-            ):
+            if json_columns:
                 if any(len(row) != param_count for row in seq_of_parameters):
                     raise ValueError("Inconsistent parameter row size in executemany()")
-                # Preserve inferred JSON NULLs when a companion LOB requires scalar execution.
+                # Preserve inferred JSON NULLs during row-wise fallback.
                 # None entries leave companion parameters on their ordinary detection path.
                 input_sizes = [
                     (
                         (ddbc_sql_const.SQL_SS_JSON.value, ddbc_sql_const.SQL_C_WCHAR.value, 0, 0)
-                        if info.paramSQLType == ddbc_sql_const.SQL_SS_JSON.value
+                        if i in json_columns
                         else input_sizes[i] if input_sizes and i < len(input_sizes) else None
                     )
-                    for i, info in enumerate(parameters_type)
+                    for i in range(param_count)
                 ]
+            numeric_overrides = [
+                i
+                for i, size in enumerate(input_sizes or [])
+                if i < param_count
+                and size is not None
+                and size[0] in (ddbc_sql_const.SQL_DECIMAL.value, ddbc_sql_const.SQL_NUMERIC.value)
+            ]
+            total_rowcount = 0
             try:
-                for row in seq_of_parameters:
-                    # execute() consumes overrides; every streamed row needs them.
+                for row_index, row in enumerate(seq_of_parameters):
+                    if numeric_overrides:
+                        processed_row = list(row)
+                        for i in numeric_overrides:
+                            if processed_row[i] is not None:
+                                processed_row[i] = _format_numeric_batch_parameter(
+                                    processed_row[i], row_index, i
+                                )
+                        row = processed_row
+                    # execute() consumes overrides; every row needs them.
                     self._inputsizes = input_sizes
-                    self.execute(operation, row)
+                    self.execute(operation, tuple(row))
+                    if self.rowcount < 0:
+                        total_rowcount = -1
+                    elif total_rowcount >= 0:
+                        total_rowcount += self.rowcount
             finally:
                 self._reset_inputsizes()
+            self.rowcount = total_rowcount
             return
 
         # Process parameters into column-wise format with possible type conversions
@@ -2962,28 +3063,10 @@ class Cursor:
                         ddbc_sql_const.SQL_DECIMAL.value,
                         ddbc_sql_const.SQL_NUMERIC.value,
                     ):
-                        if isinstance(val, decimal.Decimal):
-                            processed_row[i] = format(val, "f")
-                        else:
-                            # Do not embed the parameter value or the full row in the
-                            # message: rows may contain PII (SSNs, emails, balances)
-                            # that would leak into caller error handlers, tracebacks,
-                            # and log/APM stores. Report metadata only (row index,
-                            # column index, value type).
-                            err_msg = (
-                                f"Failed to convert parameter to Decimal at row "
-                                f"{row_index}, column {i} (value type: {type(val).__name__})"
-                            )
-                            # Raise outside the handler so conversion exceptions are
-                            # not retained as context with rejected input.
-                            conversion_failed = False
-                            try:
-                                val_text = str(val)
-                                processed_row[i] = format(decimal.Decimal(val_text), "f")
-                            except Exception:  # pylint: disable=broad-exception-caught
-                                conversion_failed = True
-                            if conversion_failed:
-                                raise ValueError(err_msg) from None
+                        processed_row[i] = _format_numeric_batch_parameter(val, row_index, i)
+                        parameters_type[i].arrayBufferSize = max(
+                            parameters_type[i].arrayBufferSize, len(processed_row[i])
+                        )
                 for i in json_columns:
                     value = processed_row[i]
                     if value is not None:

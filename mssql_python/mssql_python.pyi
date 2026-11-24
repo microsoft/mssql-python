@@ -26,6 +26,26 @@ import datetime
 import logging
 import pyarrow
 
+_TVPRow = Union[List[Any], Tuple[Any, ...]]
+
+class TableValuedParameter:
+    def __init__(
+        self,
+        type_name: str,
+        columns: Sequence[Union[Tuple[str, int], Tuple[str, int, int], Tuple[str, int, int, int]]],
+        rows: Union[Sequence[_TVPRow], Iterator[_TVPRow]],
+        *,
+        schema: Optional[str] = None,
+    ) -> None: ...
+    @property
+    def type_name(self) -> str: ...
+    @property
+    def schema(self) -> str: ...
+    @property
+    def columns(self) -> Tuple[Tuple[str, int, int, int], ...]: ...
+    @property
+    def rows(self) -> Union[Sequence[_TVPRow], Iterator[_TVPRow]]: ...
+
 # GLOBALS - DB-API 2.0 Required Module Globals
 # https://www.python.org/dev/peps/pep-0249/#module-interface
 apilevel: str  # "2.0"
@@ -104,40 +124,62 @@ def Binary(value: Union[str, bytes, bytearray, memoryview]) -> bytes: ...
 # DB-API 2.0 Exception Hierarchy
 # https://www.python.org/dev/peps/pep-0249/#exceptions
 class Warning(Exception):
-    def __init__(self, driver_error: str, ddbc_error: str) -> None: ...
+    def __init__(
+        self, driver_error: str, ddbc_error: str, *, sqlstate: Optional[str] = None
+    ) -> None: ...
     driver_error: str
     ddbc_error: str
     message: str
+    sqlstate: Optional[str]
 
 class Error(Exception):
-    def __init__(self, driver_error: str, ddbc_error: str) -> None: ...
+    def __init__(
+        self, driver_error: str, ddbc_error: str, *, sqlstate: Optional[str] = None
+    ) -> None: ...
     driver_error: str
     ddbc_error: str
     message: str
+    sqlstate: Optional[str]
 
 class InterfaceError(Error):
-    def __init__(self, driver_error: str, ddbc_error: str) -> None: ...
+    def __init__(
+        self, driver_error: str, ddbc_error: str, *, sqlstate: Optional[str] = None
+    ) -> None: ...
 
 class DatabaseError(Error):
-    def __init__(self, driver_error: str, ddbc_error: str) -> None: ...
+    def __init__(
+        self, driver_error: str, ddbc_error: str, *, sqlstate: Optional[str] = None
+    ) -> None: ...
 
 class DataError(DatabaseError):
-    def __init__(self, driver_error: str, ddbc_error: str) -> None: ...
+    def __init__(
+        self, driver_error: str, ddbc_error: str, *, sqlstate: Optional[str] = None
+    ) -> None: ...
 
 class OperationalError(DatabaseError):
-    def __init__(self, driver_error: str, ddbc_error: str) -> None: ...
+    def __init__(
+        self, driver_error: str, ddbc_error: str, *, sqlstate: Optional[str] = None
+    ) -> None: ...
 
 class IntegrityError(DatabaseError):
-    def __init__(self, driver_error: str, ddbc_error: str) -> None: ...
+    def __init__(
+        self, driver_error: str, ddbc_error: str, *, sqlstate: Optional[str] = None
+    ) -> None: ...
 
 class InternalError(DatabaseError):
-    def __init__(self, driver_error: str, ddbc_error: str) -> None: ...
+    def __init__(
+        self, driver_error: str, ddbc_error: str, *, sqlstate: Optional[str] = None
+    ) -> None: ...
 
 class ProgrammingError(DatabaseError):
-    def __init__(self, driver_error: str, ddbc_error: str) -> None: ...
+    def __init__(
+        self, driver_error: str, ddbc_error: str, *, sqlstate: Optional[str] = None
+    ) -> None: ...
 
 class NotSupportedError(DatabaseError):
-    def __init__(self, driver_error: str, ddbc_error: str) -> None: ...
+    def __init__(
+        self, driver_error: str, ddbc_error: str, *, sqlstate: Optional[str] = None
+    ) -> None: ...
 
 # Row Object
 class Row:

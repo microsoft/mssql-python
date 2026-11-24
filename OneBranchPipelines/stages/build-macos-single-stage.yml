@@ -3,6 +3,9 @@
 # Universal2 = combined x86_64 + ARM64 binary in single .so file
 # Tests with Docker-based SQL Server (using Colima as Docker runtime)
 parameters:
+  - name: odbcArtifactName
+    type: string
+    default: 'drop_ConsolidateOdbc_ConsolidateArtifacts'
   # Stage identifier (e.g., 'MacOS_py312')
   - name: stageName
     type: string
@@ -69,6 +72,10 @@ stages:
           # Python version as 3-digit string (e.g., '312') for file naming
           - name: shortPyVer
             value: ${{ parameters.shortPyVer }}
+          - name: DOCKER_CONTEXT
+            value: colima
+          - name: PIP_CACHE_DIR
+            value: '$(Pipeline.Workspace)/.pip-cache'
         
         steps:
           # =========================
@@ -96,6 +103,14 @@ stages:
               addToPath: true
             displayName: 'Use Python ${{ parameters.pythonVersion }}'
             continueOnError: false
+
+          - task: Cache@2
+            inputs:
+              key: 'release-pip-v1 | "$(Agent.OS)" | "$(Agent.OSArchitecture)" | "${{ parameters.pythonVersion }}" | eng/requirements-build-macos.txt'
+              restoreKeys: |
+                release-pip-v1 | "$(Agent.OS)" | "$(Agent.OSArchitecture)" | "${{ parameters.pythonVersion }}"
+              path: $(PIP_CACHE_DIR)
+            displayName: 'Cache release pip downloads'
           
           # =========================
           # BUILD TOOLS
@@ -104,34 +119,67 @@ stages:
           # Do not run brew update: hosted runners already provide bottle metadata,
           # while updating can select formulae that compile Go and Lima from source.
           - script: |
+              set -euo pipefail
               brew uninstall cmake --ignore-dependencies || echo "CMake not installed"
               brew install cmake docker colima
             displayName: 'Install build & container tooling (Homebrew)'
           
-          # =========================
-          # PYTHON DEPENDENCIES
-          # =========================
-          # Install build dependencies:
-          # - requirements-build-macos.txt: tested, hash-locked build and test dependencies
+          # Match PR validation: keep setup in the same task so it is joined and
+          # cleaned up on build failure rather than outliving the task.
           - script: |
+              set -euo pipefail
+              SQL_LOG="$(Agent.TempDirectory)/sql-setup-$(System.JobId).log"
+              SQL_HELPER="$(Build.SourcesDirectory)/eng/scripts/setup_sql_container.py"
+              SQL_OWNER="$(Build.BuildId).$(System.JobId)"
+              SQL_PID=
+              finish_setup() {
+                status=$?
+                trap - EXIT INT TERM
+                if [ -n "$SQL_PID" ]; then
+                  if kill -0 "$SQL_PID" 2>/dev/null; then
+                    kill -TERM "$SQL_PID" || echo "[sql] Background setup already stopped"
+                  fi
+                  wait "$SQL_PID" || echo "[sql] Background setup stopped or failed"
+                fi
+                if [ -f "$SQL_LOG" ]; then
+                  cat "$SQL_LOG"
+                  rm -f "$SQL_LOG"
+                fi
+                if [ "$status" -ne 0 ]; then
+                  python3 "$SQL_HELPER" --name sqlserver --owner "$SQL_OWNER" --colima --cleanup \
+                    || echo "[sql] Cleanup failed; final job cleanup will also run"
+                fi
+                exit "$status"
+              }
+              trap finish_setup EXIT
+              trap 'exit 130' INT
+              trap 'exit 143' TERM
+
+              ( umask 077; : > "$SQL_LOG" )
+              python3 "$SQL_HELPER" --name sqlserver --owner "$SQL_OWNER" \
+                --image mcr.microsoft.com/mssql/server:2022-latest --colima --retry-colima > "$SQL_LOG" 2>&1 &
+              SQL_PID=$!
+
               python --version
               python -m pip --version
               python -m pip install --require-hashes -r eng/requirements-build-macos.txt
-            displayName: 'Install dependencies'
-          
-          # =========================
-          # NATIVE EXTENSION BUILD
-          # =========================
-          # Build universal2 .so binary (x86_64 + ARM64 in single file)
-          # build.sh sets ARCHFLAGS="-arch x86_64 -arch arm64" for clang
-          # Output: mssql_python.cpython-3XX-darwin.so (Mach-O universal binary)
-          - script: |
+
               echo "Python Version: ${{ parameters.pythonVersion }}"
               echo "Building Universal2 Binary"
-              cd "$(Build.SourcesDirectory)/mssql_python/pybind"
-              ./build.sh
-            displayName: 'Build .so file'
-            continueOnError: false
+              ( cd "$(Build.SourcesDirectory)/mssql_python/pybind" && ./build.sh )
+
+              SQL_STATUS=0
+              wait "$SQL_PID" || SQL_STATUS=$?
+              SQL_PID=
+              if [ "$SQL_STATUS" -ne 0 ]; then
+                exit "$SQL_STATUS"
+              fi
+            displayName: 'Build universal2 bindings alongside SQL setup'
+            timeoutInMinutes: 50
+            env:
+              DB_PASSWORD: $(DB_PASSWORD)
+              MSSQL_SA_PASSWORD: $(DB_PASSWORD)
+              SQLCMDPASSWORD: $(DB_PASSWORD)
           
           # Copy native extension to artifact directory for later inspection
           # .so file will be packaged into wheel in later step
@@ -141,44 +189,6 @@ stages:
               Contents: '*.so'
               TargetFolder: '$(ob_outputDirectory)/bindings/macOS'
             displayName: 'Copy .so files'
-          
-          # Start Colima (macOS Docker runtime). Tooling is installed above so the
-          # 15-minute timeout covers only VM startup, not Homebrew compilation.
-          # Colima = lightweight Docker Desktop alternative using macOS virtualization
-          # 4 CPU cores + 8GB RAM needed for SQL Server container
-          - script: |
-              colima start --cpu 4 --memory 8 --disk 50
-              docker context use colima >/dev/null || true
-              docker version
-            displayName: 'Start Docker (Colima)'
-            timeoutInMinutes: 15
-          
-          # =========================
-          # SQL SERVER CONTAINER
-          # =========================
-          # Start SQL Server 2022 Docker container for pytest execution
-          # macOS uses host networking (localhost:1433) vs Linux uses container IP
-          # Container runs in background (-d) and accepts connections on port 1433
-          - script: |
-              docker pull mcr.microsoft.com/mssql/server:2022-latest
-              docker run --name sqlserver \
-                -e ACCEPT_EULA=Y \
-                -e MSSQL_SA_PASSWORD \
-                -p 1433:1433 -d \
-                mcr.microsoft.com/mssql/server:2022-latest
-              
-              # Wait for SQL Server to accept connections (up to 60 seconds)
-              # sqlcmd -C flag = trust server certificate (for TLS connection)
-              for i in {1..30}; do
-                docker exec -e SQLCMDPASSWORD sqlserver /opt/mssql-tools18/bin/sqlcmd \
-                  -S localhost -U SA -C -Q "SELECT 1" && break
-                sleep 2
-              done
-            displayName: 'Start SQL Server (Docker)'
-            env:
-              DB_PASSWORD: $(DB_PASSWORD)
-              MSSQL_SA_PASSWORD: $(DB_PASSWORD)
-              SQLCMDPASSWORD: $(DB_PASSWORD)
           
           # =========================
           # MSSQL-PYTHON-RS INSTALLATION
@@ -199,7 +209,7 @@ stages:
               displayName: 'Download consolidated ODBC wheels'
               inputs:
                 buildType: 'current'
-                artifactName: 'drop_ConsolidateOdbc_ConsolidateArtifacts'
+                artifactName: '${{ parameters.odbcArtifactName }}'
                 itemPattern: '**/*.whl'
                 targetPath: '$(Pipeline.Workspace)/odbc_wheels'
             - script: |
@@ -232,6 +242,15 @@ stages:
               # Connection string uses localhost (SQL Server container exposed on port 1433)
               # TrustServerCertificate=yes bypasses SSL cert validation (test env only)
               DB_CONNECTION_STRING: 'Server=tcp:127.0.0.1,1433;Database=master;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
+
+          - script: |
+              python3 eng/scripts/setup_sql_container.py --cleanup --colima \
+                --name sqlserver --owner "$(Build.BuildId).$(System.JobId)"
+            displayName: 'Clean up macOS SQL container'
+            condition: always()
+            timeoutInMinutes: 3
+            env:
+              DB_PASSWORD: $(DB_PASSWORD)
           
           # =========================
           # WHEEL BUILD

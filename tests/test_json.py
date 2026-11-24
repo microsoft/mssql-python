@@ -308,6 +308,49 @@ def test_json_text_mixed_wrappers_hints_and_nulls(json_connection, streamed):
         ]
 
 
+@pytest.mark.parametrize("json_first", [False, True])
+def test_json_rowwise_mixed_companion_preserves_column_positions(json_connection, json_first):
+    rows = [
+        (None, None, None),
+        (1, Json("{}"), Json("[]")),
+        ("two", None, Json({"v": 1})),
+        (2.5, Json([]), None),
+    ]
+    expected = [(None, None, None), (1, {}, []), ("two", None, {"v": 1}), (2.5, [], None)]
+    columns = "value SQL_VARIANT, doc JSON, other JSON"
+    if json_first:
+        rows = [(doc, value, other) for value, doc, other in rows]
+        expected = [(doc, value, other) for value, doc, other in expected]
+        columns = "doc JSON, value SQL_VARIANT, other JSON"
+    with json_connection.cursor() as cursor:
+        cursor.execute(f"CREATE TABLE #json_rowwise (id INT IDENTITY, {columns})")
+        cursor.executemany("INSERT INTO #json_rowwise VALUES (?, ?, ?)", rows)
+        assert cursor.rowcount == len(rows)
+        cursor.json_output = "objects"
+        cursor.execute("SELECT * FROM #json_rowwise ORDER BY id")
+        assert [tuple(row)[1:] for row in cursor.fetchall()] == expected
+
+
+def test_json_rowwise_numeric_override_preserves_normalization(json_connection):
+    with json_connection.cursor() as cursor:
+        cursor.execute(
+            "CREATE TABLE #json_numeric (id INT IDENTITY, doc JSON, n DECIMAL(6,2), "
+            "txt NVARCHAR(MAX))"
+        )
+        cursor.setinputsizes([SQL_JSON, (3, 6, 2), (-10, 12000, 0)])
+        cursor.executemany(
+            "INSERT INTO #json_numeric VALUES (?, ?, ?)",
+            [(None, "1.25", "x" * 12000), (Json("{}"), Decimal("-2.5"), "y" * 12000)],
+        )
+        assert cursor.rowcount == 2
+        cursor.json_output = "objects"
+        cursor.execute("SELECT doc, n, LEN(txt) FROM #json_numeric ORDER BY id")
+        assert [tuple(row) for row in cursor.fetchall()] == [
+            (None, Decimal("1.25"), 12000),
+            ({}, Decimal("-2.50"), 12000),
+        ]
+
+
 @pytest.mark.parametrize("streamed", [False, True])
 def test_json_invalid_text_batch_explicit_rollback(json_connection, streamed):
     from mssql_python import DatabaseError
