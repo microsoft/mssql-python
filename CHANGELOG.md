@@ -11,6 +11,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
   alongside `sqlstate` for synchronous ODBC errors. Native numbers come from the
   same diagnostic record as SQLSTATE; zero is retained and unavailable metadata
   is `None`. Async Rust/TDS errors still use `None`.
+- Opt-in synchronous native vector support with immutable `Vector` values,
+  FLOAT32/FLOAT16 subtype metadata, scalar/array parameter binding, and row
+  fetches. `base_type` selects SQL storage; values are normalized to float32 at
+  construction, with early finite/float32 and conservative FLOAT16 range checks.
+  Explicit vector hints accept numeric lists with the same
+  validation; unhinted lists keep their existing meanings. Added buffered
+  `callproc()` (1-3 part names, optionally bracket-quoted) with
+  `OutputParameter(sql_type, size, scale)` / `InputOutputParameter` wrappers;
+  output parameters currently support `SQL_SS_VECTOR`. Buffered `fetchmany()` and
+  `fetchall()` calls use one output-converter snapshot per batch. Procedure calls invalidate
+  the previous prepared-query cache even when the procedure fails; overwritten
+  non-vector INPUT_OUTPUT values are rejected before binding. FLOAT16 requires
+  Microsoft ODBC Driver 18.7.1.1+ (not supplied by the current bundled driver); ODBC
+  encodes/decodes FLOAT16 elements and SQL Server converts between base types.
+  Vector bulk copy remains pending pycore's contract,
+  and Arrow vector fetches are not supported.
+
 - **AB#48177:** Added explicit `TableValuedParameter(type_name, columns, rows,
   schema=...)` input values. Sync `execute()` streams lists, tuples and iterators
   through native ODBC data-at-execution using one row of additional storage and

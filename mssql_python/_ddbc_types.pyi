@@ -11,6 +11,7 @@ __all__ = [
     "ARCHITECTURE",
     "Connection",
     "DDBCSQLCheckError",
+    "DDBCCallProc",
     "DDBCSQLColumns",
     "DDBCSQLDescribeCol",
     "DDBCSQLExecDirect",
@@ -68,6 +69,8 @@ class ColumnMetadata(TypedDict):
     ColumnSize: int
     DecimalDigits: int
     Nullable: int
+
+ProcedureResult = tuple[list[ColumnMetadata], list[list[Any]], int]
 
 class InfoResult(TypedDict):
     data: bytes
@@ -210,6 +213,20 @@ def DDBCSetDecimalSeparator(separator: str) -> None: ...
 def DDBCSQLCheckError(handle_type: int, handle: SqlHandle | None, ret: int) -> ErrorInfo: ...
 def DDBCSQLGetAllDiagRecords(handle: SqlHandle | None) -> list[tuple[str, str]]: ...
 def DDBCSQLExecDirect(handle: SqlHandle | None, query: str) -> int: ...
+def _vector_buffer_size(dimensions: int) -> int: ...
+def _detect_param_types(
+    params: list[Any], sizes: list[tuple[int, int, int, int]] | None = None
+) -> list[ParamInfo]: ...
+def DDBCCallProc(
+    statement: SqlHandle | None,
+    query: str,
+    parameters: list[Any],
+    encodingSettings: EncodingSettings,
+    messages: list[tuple[str, str]],
+    charEncoding: str,
+    wcharEncoding: str,
+    charCtype: int,
+) -> tuple[list[Any], list[ProcedureResult]]: ...
 def DDBCSQLExecute(
     statementHandle: SqlHandle | None,
     query: str,
