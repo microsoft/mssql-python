@@ -37,11 +37,16 @@ class ConnectionStringParseError(builtins.Exception):
 class Exception(builtins.Exception):
     """
     Base class for all DB API 2.0 exceptions.
+
+    sqlstate is the diagnostic SQLSTATE when available, otherwise None.
     """
 
-    def __init__(self, driver_error: str, ddbc_error: str) -> None:
+    def __init__(
+        self, driver_error: str, ddbc_error: str, *, sqlstate: Optional[str] = None
+    ) -> None:
         self.driver_error = driver_error
         self.ddbc_error = truncate_error_message(ddbc_error)
+        self.sqlstate = sqlstate or None
         if self.ddbc_error:
             # Both driver and DDBC errors are present
             self.message = f"Driver Error: {self.driver_error}; DDBC Error: {self.ddbc_error}"
@@ -55,12 +60,14 @@ class Exception(builtins.Exception):
     ) -> tuple[
         Callable[[type["Exception"], str, str, str], "Exception"],
         tuple[type["Exception"], str, str, str],
+        dict[str, Optional[str]],
     ]:
         # Reconstruct without re-running __init__/truncate_error_message() to avoid
         # emitting warnings for already-truncated "[Microsoft]..." messages.
         return (
             Exception._unpickle,
             (self.__class__, self.driver_error, self.ddbc_error, self.message),
+            {"sqlstate": self.sqlstate},
         )
 
     @staticmethod
@@ -71,6 +78,7 @@ class Exception(builtins.Exception):
         obj.driver_error = driver_error
         obj.ddbc_error = ddbc_error
         obj.message = message
+        obj.sqlstate = None
         builtins.Exception.__init__(obj, message)
         return obj
 
@@ -80,8 +88,10 @@ class Warning(Exception):
     Exception raised for important warnings like data truncations while inserting, etc.
     """
 
-    def __init__(self, driver_error: str, ddbc_error: str) -> None:
-        super().__init__(driver_error, ddbc_error)
+    def __init__(
+        self, driver_error: str, ddbc_error: str, *, sqlstate: Optional[str] = None
+    ) -> None:
+        super().__init__(driver_error, ddbc_error, sqlstate=sqlstate)
 
 
 class Error(Exception):
@@ -89,8 +99,10 @@ class Error(Exception):
     Base class for errors.
     """
 
-    def __init__(self, driver_error: str, ddbc_error: str) -> None:
-        super().__init__(driver_error, ddbc_error)
+    def __init__(
+        self, driver_error: str, ddbc_error: str, *, sqlstate: Optional[str] = None
+    ) -> None:
+        super().__init__(driver_error, ddbc_error, sqlstate=sqlstate)
 
 
 class InterfaceError(Error):
@@ -99,8 +111,10 @@ class InterfaceError(Error):
     interface rather than the database itself.
     """
 
-    def __init__(self, driver_error: str, ddbc_error: str) -> None:
-        super().__init__(driver_error, ddbc_error)
+    def __init__(
+        self, driver_error: str, ddbc_error: str, *, sqlstate: Optional[str] = None
+    ) -> None:
+        super().__init__(driver_error, ddbc_error, sqlstate=sqlstate)
 
 
 class DatabaseError(Error):
@@ -108,8 +122,10 @@ class DatabaseError(Error):
     Exception raised for errors that are related to the database.
     """
 
-    def __init__(self, driver_error: str, ddbc_error: str) -> None:
-        super().__init__(driver_error, ddbc_error)
+    def __init__(
+        self, driver_error: str, ddbc_error: str, *, sqlstate: Optional[str] = None
+    ) -> None:
+        super().__init__(driver_error, ddbc_error, sqlstate=sqlstate)
 
 
 class DataError(DatabaseError):
@@ -118,8 +134,10 @@ class DataError(DatabaseError):
     processed data like division by zero, numeric value out of range, etc.
     """
 
-    def __init__(self, driver_error: str, ddbc_error: str) -> None:
-        super().__init__(driver_error, ddbc_error)
+    def __init__(
+        self, driver_error: str, ddbc_error: str, *, sqlstate: Optional[str] = None
+    ) -> None:
+        super().__init__(driver_error, ddbc_error, sqlstate=sqlstate)
 
 
 class OperationalError(DatabaseError):
@@ -128,8 +146,10 @@ class OperationalError(DatabaseError):
     and not necessarily under the control of the programmer.
     """
 
-    def __init__(self, driver_error: str, ddbc_error: str) -> None:
-        super().__init__(driver_error, ddbc_error)
+    def __init__(
+        self, driver_error: str, ddbc_error: str, *, sqlstate: Optional[str] = None
+    ) -> None:
+        super().__init__(driver_error, ddbc_error, sqlstate=sqlstate)
 
 
 class IntegrityError(DatabaseError):
@@ -138,8 +158,10 @@ class IntegrityError(DatabaseError):
     e.g., a foreign key check fails.
     """
 
-    def __init__(self, driver_error: str, ddbc_error: str) -> None:
-        super().__init__(driver_error, ddbc_error)
+    def __init__(
+        self, driver_error: str, ddbc_error: str, *, sqlstate: Optional[str] = None
+    ) -> None:
+        super().__init__(driver_error, ddbc_error, sqlstate=sqlstate)
 
 
 class InternalError(DatabaseError):
@@ -148,8 +170,10 @@ class InternalError(DatabaseError):
     e.g., the cursor is not valid anymore, the transaction is out of sync, etc.
     """
 
-    def __init__(self, driver_error: str, ddbc_error: str) -> None:
-        super().__init__(driver_error, ddbc_error)
+    def __init__(
+        self, driver_error: str, ddbc_error: str, *, sqlstate: Optional[str] = None
+    ) -> None:
+        super().__init__(driver_error, ddbc_error, sqlstate=sqlstate)
 
 
 class ProgrammingError(DatabaseError):
@@ -159,8 +183,10 @@ class ProgrammingError(DatabaseError):
     wrong number of parameters specified, etc.
     """
 
-    def __init__(self, driver_error: str, ddbc_error: str) -> None:
-        super().__init__(driver_error, ddbc_error)
+    def __init__(
+        self, driver_error: str, ddbc_error: str, *, sqlstate: Optional[str] = None
+    ) -> None:
+        super().__init__(driver_error, ddbc_error, sqlstate=sqlstate)
 
 
 class NotSupportedError(DatabaseError):
@@ -170,8 +196,10 @@ class NotSupportedError(DatabaseError):
     on a connection that does not support transaction or has transactions turned off.
     """
 
-    def __init__(self, driver_error: str, ddbc_error: str) -> None:
-        super().__init__(driver_error, ddbc_error)
+    def __init__(
+        self, driver_error: str, ddbc_error: str, *, sqlstate: Optional[str] = None
+    ) -> None:
+        super().__init__(driver_error, ddbc_error, sqlstate=sqlstate)
 
 
 # Mapping SQLSTATE codes to custom exception classes
@@ -550,7 +578,10 @@ def sqlstate_to_exception(sqlstate: str, ddbc_error: str) -> Optional[Exception]
             driver_error="Corrupt file data source", ddbc_error=ddbc_error
         ),  # Corrupt file data source
     }
-    return mapping.get(sqlstate, None)
+    exception = mapping.get(sqlstate)
+    if exception is not None:
+        exception.sqlstate = sqlstate or None
+    return exception
 
 
 def truncate_error_message(error_message: str) -> str:
@@ -592,4 +623,5 @@ def raise_exception(sqlstate: str, ddbc_error: str) -> None:
     raise DatabaseError(
         driver_error=f"An error occurred with SQLSTATE code: {sqlstate}",
         ddbc_error=f"{ddbc_error}" if ddbc_error else "Unknown DDBC error",
+        sqlstate=sqlstate,
     )
