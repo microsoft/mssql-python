@@ -26,6 +26,7 @@
 #include <iostream>
 #include <limits>
 #include <mutex>
+#include <stdexcept>
 #include <utility>  // std::forward
 #include <datetime.h>  // CPython datetime API (PyDateTime_IMPORT, PyDateTime_GET_*, etc.)
 
@@ -565,7 +566,7 @@ static void PrepareParamBuffer(const py::handle& param, ParamInfo& paramInfo,
             case SQL_C_SS_VECTOR: {
                 if (!paramInfo.vectorBinding) {
                     if (param.is_none())
-                        throw py::value_error("NULL vector parameters require dimensions and subtype");
+                        throw std::logic_error("Internal error: missing binding for a typed NULL vector parameter");
                     paramInfo.vectorBinding = std::make_shared<VectorBinding>(param);
                 }
                 auto binding = paramInfo.vectorBinding;
@@ -2558,7 +2559,7 @@ SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list&
                     }
                     if (dimensions == 0) {
                         if (info.columnSize < sizeof(SQL_SS_VECTOR_STRUCT))
-                            throw py::value_error("NULL vector arrays require vector metadata");
+                            throw std::logic_error("Internal error: missing metadata for an all-NULL vector array");
                         dimensions = (info.columnSize - sizeof(SQL_SS_VECTOR_STRUCT)) / sizeof(float);
                     }
                     ValidateVectorShape(dimensions, subtype);
