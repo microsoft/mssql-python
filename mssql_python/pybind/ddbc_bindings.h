@@ -334,6 +334,8 @@ struct ConnectionCleanupState {
     std::atomic<bool> childFreeFailed{false};  // Sticky for this physical connection.
 };
 
+struct ErrorInfo;
+
 class SqlHandle {
   public:
     SqlHandle(SQLSMALLINT type, SQLHANDLE rawHandle,
@@ -342,7 +344,8 @@ class SqlHandle {
     SQLHANDLE get() const;
     SQLSMALLINT type() const;
     void free();
-    SQLRETURN freeHandle();
+    void freeChecked();
+    SQLRETURN freeHandle(ErrorInfo* error = nullptr);
     void close_cursor();
     // Cancel an in-progress statement (SQLCancel). Safe to call from a
     // thread other than the one running the fetch — this is the *only*
