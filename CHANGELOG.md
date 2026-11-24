@@ -7,6 +7,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 ## [Unreleased]
 
 ### Added
+- **AB#50711:** DB-API exceptions now expose optional `native_error` metadata
+  alongside `sqlstate` for synchronous ODBC errors. Native numbers come from the
+  same diagnostic record as SQLSTATE; zero is retained and unavailable metadata
+  is `None`. Async Rust/TDS errors still use `None`.
 - **AB#48177:** Added explicit `TableValuedParameter(type_name, columns, rows,
   schema=...)` input values. Sync `execute()` streams lists, tuples and iterators
   through native ODBC data-at-execution using one row of additional storage and
