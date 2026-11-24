@@ -20,6 +20,7 @@ if TYPE_CHECKING:
         _abort_native_fetch_install as _abort_native_fetch_install,
         _activate_native_fetch_install as _activate_native_fetch_install,
         _begin_native_fetch_install as _begin_native_fetch_install,
+        _batch_text_metadata as _batch_text_metadata,
         _disable_native_fetch_install as _disable_native_fetch_install,
         _fetch_conversion_ineligible as _fetch_conversion_ineligible,
         _fetch_observer as _fetch_observer,
