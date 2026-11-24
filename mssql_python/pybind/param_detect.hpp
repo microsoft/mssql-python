@@ -32,11 +32,19 @@
 #include <cstdio>  // snprintf
 #include <cstring>  // std::memcpy
 #include <string>
+#include <utility>
 #include <vector>
 
 //-------------------------------------------------------------------------------------------------
 // Parameter description types
 //-------------------------------------------------------------------------------------------------
+
+// External linkage for ParamInfo ownership; match its pybind11 members' visibility.
+#ifdef __GNUC__
+struct __attribute__((visibility("hidden"))) TableParamState;
+#else
+struct TableParamState;
+#endif
 
 // This struct is shared between C++ & Python code.
 // Suppress -Wattributes warning for ParamInfo struct
@@ -51,16 +59,13 @@ struct ParamInfo {
     SQLSMALLINT paramCType = SQL_C_DEFAULT;
     SQLSMALLINT paramSQLType = SQL_UNKNOWN_TYPE;
     SQLULEN columnSize = 0;
-    // Character/binary array element width for BindParameterArray (bytes for
-    // SQL_C_CHAR/BINARY, code units for SQL_C_WCHAR). Distinct from columnSize:
-    // for SQL_NUMERIC/SQL_DECIMAL, columnSize is SQL precision (digit count)
-    // while the SQL_C_CHAR buffer must also fit sign, decimal point, leading
-    // zero, and the encoded digits (e.g. Decimal("1E-38") -> 40 chars).
-    // 0 means "derive from columnSize" (with a NUMERIC/DECIMAL fallback).
-    SQLULEN bufferSize = 0;
+    // Array text capacity excludes the terminator and is independent of SQL precision.
+    SQLULEN arrayBufferSize = 0;
     SQLSMALLINT decimalDigits = 0;
     SQLLEN strLenOrInd = 0;  // Required for DAE
     bool isDAE = false;      // Indicates if we need to stream
+    bool isTVP = false;
+    std::shared_ptr<TableParamState> table;
     // Strong reference to the Python object for DAE (data-at-execution) streaming.
     // py::object owns the refcount, so the compiler-generated destructor, copy and
     // move operations are all correct and this struct needs no rule-of-five.
@@ -279,6 +284,36 @@ inline void ApplyInputSizeOverride(PyObject* params, PyObject* inputSize, Py_ssi
     }
 }
 
+inline Py_ssize_t UnicodeUtf16Length(PyObject* obj) {
+    const Py_ssize_t length = PyUnicode_GET_LENGTH(obj);
+    if (PyUnicode_KIND(obj) <= PyUnicode_2BYTE_KIND) {
+        return length;
+    }
+    Py_ssize_t utf16Length = length;
+    const Py_UCS4* data = PyUnicode_4BYTE_DATA(obj);
+    for (Py_ssize_t i = 0; i < length; ++i) {
+        utf16Length += data[i] > 0xFFFF;
+    }
+    return utf16Length;
+}
+
+inline std::pair<bool, Py_ssize_t> BatchTextMetadata(const py::list& column) {
+    bool needsUnicode = false;
+    Py_ssize_t maxLength = 0;
+    for (Py_ssize_t i = 0; i < PyList_GET_SIZE(column.ptr()); ++i) {
+        PyObject* value = PyList_GET_ITEM(column.ptr(), i);
+        if (value == Py_None) {
+            continue;
+        }
+        if (!PyUnicode_Check(value)) {
+            throw py::type_error("Batch text metadata requires str or None values");
+        }
+        needsUnicode = needsUnicode || !PyUnicode_IS_ASCII(value);
+        maxLength = std::max(maxLength, UnicodeUtf16Length(value));
+    }
+    return {needsUnicode, maxLength};
+}
+
 // ---------------------------------------------------------------------------
 // DetectParamTypes: Raw CPython parameter type detection for the primary execute path.
 //
@@ -317,6 +352,7 @@ inline std::vector<ParamInfo> DetectParamTypes(PyObject* params, PyObject* input
         ParamInfo& info = infos[i];
         info.inputOutputType = SQL_PARAM_INPUT;
         info.isDAE = false;
+        info.isTVP = false;
 
         if (i < inputSizeCount) {
             ApplyInputSizeOverride(params, PyList_GET_ITEM(inputSizes, i), i, info);
@@ -405,16 +441,7 @@ inline std::vector<ParamInfo> DetectParamTypes(PyObject* params, PyObject* input
             unsigned int kind = PyUnicode_KIND(obj);
             const void* udata = PyUnicode_DATA(obj);
 
-            Py_ssize_t utf16_len;
-            if (kind <= PyUnicode_2BYTE_KIND) {
-                utf16_len = length;
-            } else {
-                utf16_len = 0;
-                const Py_UCS4* data = PyUnicode_4BYTE_DATA(obj);
-                for (Py_ssize_t j = 0; j < length; ++j) {
-                    utf16_len += (data[j] > 0xFFFF) ? 2 : 1;
-                }
-            }
+            Py_ssize_t utf16_len = UnicodeUtf16Length(obj);
 
             // Detect whether the string needs wide-char (NVARCHAR) or narrow (VARCHAR) binding.
             // PyUnicode_IS_COMPACT_ASCII is a struct field check (O(1)), not a content scan.
@@ -639,6 +666,15 @@ inline std::vector<ParamInfo> DetectParamTypes(PyObject* params, PyObject* input
                 // PyList_SetItem steals (decrefs) the item even on failure.
                 throw py::error_already_set();
             }
+            continue;
+        }
+
+        py::object tvpType = py::module_::import("mssql_python.table_valued_parameter")
+                                 .attr("TableValuedParameter");
+        if (py::isinstance(borrow(obj), tvpType)) {
+            info.paramSQLType = SQL_SS_TABLE;
+            info.paramCType = SQL_C_BINARY;
+            info.isTVP = true;
             continue;
         }
 

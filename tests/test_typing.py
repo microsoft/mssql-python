@@ -49,7 +49,7 @@ def test_cursor_consumer_call_shapes(tmp_path: Path, module: str) -> None:
     usage = tmp_path / "cursor_consumer.py"
     usage.write_text(
         f"""\
-from {module} import Cursor
+from {module} import Cursor, SQL_INTEGER, TableValuedParameter
 
 def supported_calls(cursor: Cursor) -> None:
     cursor.setinputsizes(None)
@@ -59,6 +59,37 @@ def supported_calls(cursor: Cursor) -> None:
         "INSERT INTO example VALUES (%(id)s, %(name)s)",
         [{{"id": 1, "name": "one"}}, {{"id": 2, "name": "two"}}],
     )
+    rows: list[tuple[int]] = [(1,), (2,)]
+    TableValuedParameter("dbo.IntValues", [("value", SQL_INTEGER)], rows)
+""",
+        encoding="utf-8",
+    )
+    _check_typing(tmp_path, str(usage))
+
+
+@pytest.mark.parametrize(
+    "module", ["mssql_python", "mssql_python.mssql_python", "mssql_python.exceptions"]
+)
+def test_exception_consumer_call_shapes(tmp_path: Path, module: str) -> None:
+    usage = tmp_path / "exception_consumer.py"
+    usage.write_text(
+        f"""\
+from {module} import (
+    Warning, Error, InterfaceError, DatabaseError, DataError, OperationalError,
+    IntegrityError, InternalError, ProgrammingError, NotSupportedError,
+)
+
+def supported_calls() -> None:
+    for exception_type in (
+        Warning, Error, InterfaceError, DatabaseError, DataError, OperationalError,
+        IntegrityError, InternalError, ProgrammingError, NotSupportedError,
+    ):
+        legacy = exception_type("driver msg", "ddbc msg")
+        diagnostic = exception_type(
+            driver_error="driver msg", ddbc_error="ddbc msg", sqlstate="42000"
+        )
+        state: str | None = diagnostic.sqlstate
+        legacy_state: str | None = legacy.sqlstate
 """,
         encoding="utf-8",
     )

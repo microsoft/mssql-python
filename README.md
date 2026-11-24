@@ -151,6 +151,31 @@ The Microsoft **mssql-python** module is designed to be fully compliant with the
  
 By adhering to the DB API 2.0 specification, the mssql-python module ensures compatibility with a wide range of Python applications and frameworks, making it a versatile choice for developers working with Microsoft SQL Server, Azure SQL Database, and Azure SQL Managed Instance.
  
+### Error classification with SQLSTATE
+
+DB-API exceptions expose `sqlstate: str | None`. Synchronous ODBC errors retain
+their diagnostic SQLSTATE, including codes not recognized by the driver's
+exception mapping. When no SQLSTATE is available, the attribute is `None`.
+Python-created errors and async Rust/TDS errors default to `None`.
+
+```python
+from mssql_python import Error
+
+try:
+    cursor.execute("SELECT * FROM missing_table")
+except Error as exc:
+    # getattr also supports driver versions without the sqlstate attribute.
+    if getattr(exc, "sqlstate", None) == "42S02":
+        print("The requested table was not found.")
+    raise
+```
+
+Existing exception types, two-argument constructors, messages, and `args` are
+unchanged. Constructors also accept the optional keyword-only `sqlstate` argument,
+and SQLSTATE metadata survives pickling and copying. A SQLSTATE alone does not
+guarantee that retrying an operation is safe. Native SQL Server error numbers are
+not exposed by this attribute.
+
 ### Enhanced Pythonic Features
  
 The driver offers a suite of Pythonic enhancements that streamline database interactions, making it easier for developers to execute queries, manage connections, and handle data more efficiently.
@@ -173,6 +198,38 @@ raise `ProgrammingError` before any warning is emitted or settings are stored.
 example, requesting ASCII with `SQL_CHAR` does not cause non-ASCII parameters to
 raise encoding errors. Use `setencoding()` with no arguments to restore the
 supported defaults. `setdecoding()` independently controls how result data is read.
+
+### Batch parameter inference
+
+For automatically inferred `executemany()` text columns, any non-ASCII value
+makes the entire parameter column `NVARCHAR`; ASCII-only columns retain `VARCHAR`
+inference. Buffer sizes and the streaming threshold use the maximum UTF-16
+code-unit length across all rows, not just the longest Python string. Embedded
+NUL characters are preserved using explicit text lengths. Batch text metadata
+is computed natively without allocating encoded copies of each string; BMP-only
+strings do not require a character-by-character scan.
+Wide-character retrieval of `VARCHAR(MAX)` values uses a non-consuming binary
+length probe to size the conversion buffer, avoiding character loss at truncated
+UTF-16 conversion boundaries while preserving embedded and trailing NULs.
+Explicit `setinputsizes()` SQL types and sizes still take precedence. An explicit
+`VARCHAR` parameter can lose characters outside the database collation's code
+page even when inserting into an `NVARCHAR` destination; use `SQL_WVARCHAR` when
+Unicode preservation is required.
+
+Automatically inferred Decimal columns use a `NUMERIC` precision and scale
+covering every row. Their formatted text buffer capacity is separate from SQL
+precision, so signs and decimal points do not change the declared numeric type.
+If individually valid Decimals cannot share a lossless precision/scale within SQL
+Server's 38-digit limit, the batch uses individual `execute()` calls. Columns
+mixing incompatible Python types (for example, integers and Decimals, or dates
+and datetimes) or naive and timezone-aware datetimes also use individual calls
+rather than coercing every value through one sample's type. Boolean/integer and
+bytes/bytearray mixtures, and mixtures of strings with `str` subclasses remain
+eligible for array binding. Explicit `setinputsizes()` overrides retain their
+specified SQL types, precision and scale, including numeric normalization during
+individual execution.
+Individual execution is slower than array binding; known affected-row counts are
+summed across the batch, or `rowcount` is `-1` if any execution's count is unknown.
 
 ## Getting Started Examples
 Connect to SQL Server and execute a simple query:
@@ -212,6 +269,58 @@ connection.close()
  
 ```
  
+### Table-valued parameters
+
+Declare a table type and an input `READONLY` parameter on SQL Server:
+
+```sql
+CREATE TYPE dbo.ItemBatch AS TABLE (id int, label nvarchar(100));
+GO
+CREATE PROCEDURE dbo.ProcessItems @items dbo.ItemBatch READONLY
+AS SELECT id, label FROM @items;
+```
+
+Pass one explicit value to synchronous `execute()`; ordinary nested lists/tuples are **not**
+implicitly treated as TVPs:
+
+```python
+from mssql_python import TableValuedParameter, SQL_INTEGER, SQL_WVARCHAR
+
+items = TableValuedParameter(
+    type_name="dbo.ItemBatch",
+    columns=[("id", SQL_INTEGER), ("label", SQL_WVARCHAR, 100)],
+    rows=[(1, "Keyboard"), (2, None)],
+)
+cursor.execute("EXEC dbo.ProcessItems ?", items)
+```
+
+Column tuples are `(name, sql_type[, size_or_precision[, scale]])`. Use the
+driver's integer `SQL_*` constants. Columns bind **positionally**; names are
+diagnostic labels, not a schema lookup. Character and binary columns require a
+size; `0` means MAX for variable-length types. Decimal columns require both
+precision and scale, e.g. `("amount", SQL_DECIMAL, 20, 6)`. Precision is 1–38;
+scale is 0–precision. Temporal scale defaults to 7 (0–7 supported).
+Sizes for Unicode columns are UTF-16 code units; binary sizes are bytes.
+Rows must contain one cell per column. Supported cells include integers, floats,
+bools, `Decimal`, strings, bytes/bytearray, date/time/datetime, UUID and `None`.
+
+Use an unquoted `schema.Type` or `type_name="ItemBatch", schema="dbo"` (default
+schema: `dbo`); SQL quoting/bracket syntax and database-qualified names are not
+parsed. The constructor does not consume rows. `rows=None` is invalid: use `[]`
+for an empty table; individual cells may be `None`.
+
+With the default **msodbcsql18** sync provider, `rows` can also be a synchronous
+iterator/generator. It is pulled during `execute()`, with one row of additional
+driver-side binding storage regardless of total input length. A large cell still
+occupies memory for that cell. This is one SQL execution, **not** `executemany()`;
+multiple TVPs, scalar parameters and named parameters can be combined. The
+native row-count descriptor permits up to 2,147,483,647 rows. Materialized sources
+can be reused; iterators are one-shot and may be partially consumed on failure.
+Iterator exceptions, including `KeyboardInterrupt`, cancel/reset the statement
+before releasing its buffers. `executemany()` and `setinputsizes()` overrides
+for statements containing TVPs are not supported. The `mssql-odbc` provider does
+not currently support this ODBC TVP path.
+
 ## Still have questions?
  
 Check out our [FAQ](https://github.com/microsoft/mssql-python/wiki/Frequently-Asked-Questions). Still not answered? Create an [issue](https://github.com/microsoft/mssql-python/issues/new/choose) to ask a question.

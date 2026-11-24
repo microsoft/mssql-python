@@ -242,6 +242,7 @@ def _raise_connection_error(e: RuntimeError) -> NoReturn:
             raise DatabaseError(
                 driver_error=f"An error occurred with SQLSTATE code: {sqlstate}",
                 ddbc_error=ddbc_error,
+                sqlstate=sqlstate,
             ) from None
         logger.error("Connection error (SQLSTATE %s): %s", sqlstate, ddbc_error)
         raise exc from None

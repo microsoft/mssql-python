@@ -1,8 +1,18 @@
 # Linux Single Configuration Stage Template
 # Builds Python wheels for a specific Linux distribution and architecture
-# Builds for Python 3.10, 3.11, 3.12, 3.13, 3.14, 3.15 within single job
+# Builds/tests the explicit Python shard in its own job, workspace and SQL instance.
 # Tests each wheel after building with isolated pytest execution
 parameters:
+  - name: pythonBins
+    type: string
+    default: 'cp310 cp311 cp312 cp313 cp314 cp315'
+  - name: buildParallelLevel
+    type: string
+    default: '1'
+    values: ['1', '2']
+  - name: odbcArtifactName
+    type: string
+    default: 'drop_ConsolidateOdbc_ConsolidateArtifacts'
   # Stage identifier (e.g., 'Linux_manylinux_2_28_x86_64')
   - name: stageName
     type: string
@@ -70,6 +80,8 @@ stages:
           # Docker platform for QEMU-based cross-compilation
           - name: DOCKER_PLATFORM
             value: ${{ parameters.dockerPlatform }}
+          - name: PIP_CACHE_DIR
+            value: '$(Pipeline.Workspace)/.pip-cache'
         
         steps:
           - checkout: self
@@ -84,6 +96,12 @@ stages:
                   filePath: OneBranchPipelines/scripts/validate-release-versions.ps1
                   arguments: '-BuildOnly'
           
+          - task: Cache@2
+            displayName: 'Cache Linux pip downloads'
+            inputs:
+              key: 'release-pip-v1 | "$(Agent.OS)" | "${{ parameters.linuxTag }}" | "${{ parameters.arch }}" | "${{ parameters.pythonBins }}" | eng/requirements-build-linux.txt | eng/requirements-test-linux.txt'
+              path: '$(PIP_CACHE_DIR)'
+
           # Docker is pre-installed now
           # Verify it's working and start the daemon
           - bash: |
@@ -122,6 +140,8 @@ stages:
             displayName: 'Prepare artifact directories'
           
           - script: |
+              set -euo pipefail
+              mkdir -p "$(PIP_CACHE_DIR)"
               # Determine image based on LINUX_TAG and ARCH
               # Pull the public PyPA images directly because GHCR is not reliably
               # reachable from the hosted 1ES agents.
@@ -138,7 +158,8 @@ stages:
               
               docker run -e MSSQL_PYTHON_RS_VERSION -d --name build-$(LINUX_TAG)-$(ARCH) \
                 --platform $(DOCKER_PLATFORM) \
-                -v $(Build.SourcesDirectory):/workspace \
+                -v "$(Build.SourcesDirectory):/workspace" \
+                -v "$(PIP_CACHE_DIR):/pip-cache" \
                 -w /workspace \
                 $IMAGE \
                 tail -f /dev/null
@@ -179,6 +200,25 @@ stages:
               # for any other deps and must NOT fail the job if the in-container package
               # manager is flaky under emulation (the header gate below is the real check).
               if [[ "$(LINUX_TAG)" == "manylinux_2_28" ]]; then
+                # ODBC requires CP949 conversion modules for Korean VARCHAR columns.
+                docker exec "$CONTAINER" bash -lc '
+                  set -euo pipefail
+                  if command -v dnf >/dev/null 2>&1; then
+                    dnf -y install glibc-gconv-extra
+                  elif command -v yum >/dev/null 2>&1; then
+                    yum -y install glibc-gconv-extra
+                  else
+                    echo "ERROR: Cannot install required glibc-gconv-extra" >&2
+                    exit 1
+                  fi
+                  actual=$(printf "\xbe\xc8\xb3\xe7\xc7\xcf\xbc\xbc\xbf\xe4" | iconv -f CP949 -t UTF-8)
+                  expected=$(printf "\xec\x95\x88\xeb\x85\x95\xed\x95\x98\xec\x84\xb8\xec\x9a\x94")
+                  if [ "$actual" != "$expected" ]; then
+                    echo "ERROR: CP949 to UTF-8 conversion failed fidelity check" >&2
+                    exit 1
+                  fi
+                  echo "CP949 conversion verified"
+                '
                 docker exec "$CONTAINER" bash -lc '
                   set -uo pipefail
                   if command -v dnf >/dev/null 2>&1; then
@@ -211,33 +251,23 @@ stages:
           - script: |
               set -euo pipefail
               
-              echo "Starting SQL Server 2022 container for testing..."
-              docker run -d --name sqlserver-$(LINUX_TAG)-$(ARCH) \
-                --platform linux/amd64 \
-                -e ACCEPT_EULA=Y \
-                -e MSSQL_SA_PASSWORD \
-                -p 1433:1433 \
-                mcr.microsoft.com/mssql/server:2022-latest
-              
-              echo "Waiting for SQL Server to be ready..."
-              for i in {1..30}; do
-                if docker exec -e SQLCMDPASSWORD sqlserver-$(LINUX_TAG)-$(ARCH) /opt/mssql-tools18/bin/sqlcmd \
-                  -S localhost -U SA -C -Q "SELECT 1" >/dev/null 2>&1; then
-                  echo "✓ SQL Server is ready!"
-                  break
-                fi
-                sleep 2
-              done
+              python3 eng/scripts/setup_sql_container.py \
+                --name "sqlserver-$(LINUX_TAG)-$(ARCH)" \
+                --owner "$(Build.BuildId).$(System.JobId)" \
+                --image mcr.microsoft.com/mssql/server:2022-latest
               
               # Get SQL Server container IP for build container to connect
               SQL_IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' sqlserver-$(LINUX_TAG)-$(ARCH))
+              if [ -z "$SQL_IP" ]; then
+                echo "ERROR: Ready SQL container has no bridge IP" >&2
+                exit 1
+              fi
               echo "SQL Server IP: $SQL_IP"
               echo "##vso[task.setvariable variable=SQL_IP]$SQL_IP"
             displayName: 'Start SQL Server container for testing'
+            timeoutInMinutes: 23
             env:
               DB_PASSWORD: $(DB_PASSWORD)
-              MSSQL_SA_PASSWORD: $(DB_PASSWORD)
-              SQLCMDPASSWORD: $(DB_PASSWORD)
           
           # =========================
           # PHASE 2: EXTERNAL ODBC DRIVER PACKAGE
@@ -245,7 +275,7 @@ stages:
           # Phase 2 removed the bundled ODBC driver from the mssql-python wheel, so the
           # isolated-install pytest below must obtain the driver from the external
           # mssql-python-odbc package. Download the wheels built earlier this run
-          # (ConsolidateOdbc) into the repo dir (bind-mounted at /workspace in the build
+          # (the selected successful ODBC producer) into the repo dir (bind-mounted at /workspace in the build
           # container) and flatten them so PIP_FIND_LINKS=/workspace/odbc_wheels lets the
           # in-container `pip install <mssql_python wheel>` resolve the pinned
           # mssql-python-odbc==18.6.2 dependency locally (no PyPI needed for it).
@@ -254,7 +284,7 @@ stages:
               displayName: 'Download consolidated ODBC wheels'
               inputs:
                 buildType: 'current'
-                artifactName: 'drop_ConsolidateOdbc_ConsolidateArtifacts'
+                artifactName: '${{ parameters.odbcArtifactName }}'
                 itemPattern: '**/*.whl'
                 targetPath: '$(Build.SourcesDirectory)/odbc_wheels'
             - bash: |
@@ -271,9 +301,18 @@ stages:
               set -euo pipefail
               if [[ "$(LINUX_TAG)" == "manylinux_2_28" ]]; then SHELL_EXE=bash; else SHELL_EXE=sh; fi
               docker exec build-$(LINUX_TAG)-$(ARCH) $SHELL_EXE -lc 'mkdir -p /workspace/dist'
+              # Cap the experiment at two compiler processes and available host resources.
+              # Keep ~2 GiB available per compiler; SQL Server runs in its own container.
+              CPU_COUNT=$(getconf _NPROCESSORS_ONLN)
+              MEMORY_GIB=$(awk '/MemAvailable/ {print int($2/1024/1024)}' /proc/meminfo)
+              CMAKE_BUILD_PARALLEL_LEVEL=${{ parameters.buildParallelLevel }}
+              if [ "$CPU_COUNT" -lt "$CMAKE_BUILD_PARALLEL_LEVEL" ]; then CMAKE_BUILD_PARALLEL_LEVEL=$CPU_COUNT; fi
+              if [ "$MEMORY_GIB" -lt 4 ]; then CMAKE_BUILD_PARALLEL_LEVEL=1; fi
+              export CMAKE_BUILD_PARALLEL_LEVEL
+              echo "Compiler experiment: parallel=$CMAKE_BUILD_PARALLEL_LEVEL CPUs=$CPU_COUNT availableGiB=$MEMORY_GIB"
               
               # Loop through all Python versions: build wheel -> test wheel -> repeat
-              for PYBIN in cp310 cp311 cp312 cp313 cp314 cp315; do
+              for PYBIN in ${{ parameters.pythonBins }}; do
                 echo ""
                 echo "====================================================="
                 echo "Building and testing $PYBIN on $(LINUX_TAG)/$(ARCH)"
@@ -281,12 +320,12 @@ stages:
                 
                 if [[ "$(LINUX_TAG)" == "manylinux_2_28" ]]; then
                   # Manylinux (glibc-based) - use bash
-                  docker exec -e PYBIN=$PYBIN -e SQL_IP=$(SQL_IP) -e DB_PASSWORD -e MANYLINUX_TAG="$(LINUX_TAG)" -e PIP_FIND_LINKS="/workspace/odbc_wheels" build-$(LINUX_TAG)-$(ARCH) bash -lc '
+                  docker exec -e CMAKE_BUILD_PARALLEL_LEVEL -e PYBIN=$PYBIN -e PIP_CACHE_DIR=/pip-cache/$PYBIN -e SQL_IP=$(SQL_IP) -e DB_PASSWORD -e MANYLINUX_TAG="$(LINUX_TAG)" -e PIP_FIND_LINKS="/workspace/odbc_wheels" build-$(LINUX_TAG)-$(ARCH) bash -lc '
                     set -euo pipefail;
                     
                     # Step 1: Setup Python environment
                     PY=/opt/python/${PYBIN}-${PYBIN}/bin/python;
-                    test -x $PY || { echo "Python $PY missing - skipping"; exit 0; };
+                    test -x $PY || { echo "ERROR: Required Python $PY missing"; exit 1; };
                     ln -sf $PY /usr/local/bin/python;
                     echo "Using: $(python --version)";
                     
@@ -296,7 +335,9 @@ stages:
                     # Step 3: Build native extension (.so)
                     echo "Building native extension...";
                     cd /workspace/mssql_python/pybind;
+                    BUILD_STARTED=$(date +%s);
                     bash build.sh;
+                    echo "NATIVE_BUILD_SECONDS=$(( $(date +%s) - BUILD_STARTED )) parallel=$CMAKE_BUILD_PARALLEL_LEVEL python=$PYBIN";
                     
                     # Step 3.5: Install mssql-python-rs for this Python version
                     bash /workspace/eng/scripts/install-mssql-py-core.sh;
@@ -365,12 +406,12 @@ stages:
                   '
                 else
                   # Musllinux (musl libc-based) - use sh
-                  docker exec -e PYBIN=$PYBIN -e SQL_IP=$(SQL_IP) -e DB_PASSWORD -e MANYLINUX_TAG="$(LINUX_TAG)" -e PIP_FIND_LINKS="/workspace/odbc_wheels" build-$(LINUX_TAG)-$(ARCH) sh -lc '
+                  docker exec -e CMAKE_BUILD_PARALLEL_LEVEL -e PYBIN=$PYBIN -e PIP_CACHE_DIR=/pip-cache/$PYBIN -e SQL_IP=$(SQL_IP) -e DB_PASSWORD -e MANYLINUX_TAG="$(LINUX_TAG)" -e PIP_FIND_LINKS="/workspace/odbc_wheels" build-$(LINUX_TAG)-$(ARCH) sh -lc '
                     set -euo pipefail;
                     
                     # Step 1: Setup Python environment
                     PY=/opt/python/${PYBIN}-${PYBIN}/bin/python;
-                    test -x $PY || { echo "Python $PY missing - skipping"; exit 0; };
+                    test -x $PY || { echo "ERROR: Required Python $PY missing"; exit 1; };
                     ln -sf $PY /usr/local/bin/python;
                     echo "Using: $(python --version)";
                     
@@ -380,7 +421,9 @@ stages:
                     # Step 3: Build native extension (.so)
                     echo "Building native extension...";
                     cd /workspace/mssql_python/pybind;
+                    BUILD_STARTED=$(date +%s);
                     bash build.sh;
+                    echo "NATIVE_BUILD_SECONDS=$(( $(date +%s) - BUILD_STARTED )) parallel=$CMAKE_BUILD_PARALLEL_LEVEL python=$PYBIN";
                     
                     # Step 3.5: Install mssql-python-rs for this Python version
                     bash /workspace/eng/scripts/install-mssql-py-core.sh;
@@ -458,7 +501,7 @@ stages:
               echo "====================================================="
               echo "✓ All Python versions built and tested successfully!"
               echo "====================================================="
-            displayName: 'Build and test wheels for Python 3.10-3.15'
+            displayName: 'Build and test wheels for ${{ parameters.pythonBins }}'
             env:
               DB_PASSWORD: $(DB_PASSWORD)
           
@@ -485,11 +528,19 @@ stages:
               echo "✓ Artifacts copied successfully"
             displayName: 'Copy artifacts to host'
           
-          # Cleanup: Stop and remove Docker containers
+          - script: |
+              python3 eng/scripts/setup_sql_container.py --cleanup \
+                --name "sqlserver-$(LINUX_TAG)-$(ARCH)" \
+                --owner "$(Build.BuildId).$(System.JobId)"
+            displayName: 'Clean up Linux SQL container'
+            condition: always()
+            timeoutInMinutes: 3
+
+          # Cleanup: Stop and remove the build container
           - script: |
               echo "Stopping and removing containers..."
-              docker stop build-$(LINUX_TAG)-$(ARCH) sqlserver-$(LINUX_TAG)-$(ARCH) || true
-              docker rm build-$(LINUX_TAG)-$(ARCH) sqlserver-$(LINUX_TAG)-$(ARCH) || true
+              docker stop build-$(LINUX_TAG)-$(ARCH) || true
+              docker rm build-$(LINUX_TAG)-$(ARCH) || true
               echo "✓ Containers cleaned up"
             displayName: 'Cleanup containers'
             condition: always()  # Always run cleanup, even if build/test fails

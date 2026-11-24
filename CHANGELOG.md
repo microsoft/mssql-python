@@ -7,6 +7,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 ## [Unreleased]
 
 ### Added
+- **AB#48177:** Added explicit `TableValuedParameter(type_name, columns, rows,
+  schema=...)` input values. Sync `execute()` streams lists, tuples and iterators
+  through native ODBC data-at-execution using one row of additional storage and
+  one procedure invocation, without discovering table metadata.
 - New feature: Support for macOS and Linux.
 - Documentation: Added API documentation in the Wiki.
 - New `token_provider=` parameter on `connect()` / `Connection` for Microsoft
@@ -146,7 +150,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
   values as `SQL_NUMERIC` with a batch-wide precision/scale (still via
   `SQL_C_CHAR` string values), so a comparison against a smaller numeric
   column no longer overflows. SQL precision/scale stay on `columnSize` /
-  `decimalDigits`; the CHAR array stride uses a separate `bufferSize`
+  `decimalDigits`; the CHAR array stride uses a separate `arrayBufferSize`
   sized from the longest fixed-point encoding (e.g. `Decimal("1E-38")`),
   so near-max precision values are not rejected by the array buffer.
   Zero contributes no integer digits to the batch precision, so
