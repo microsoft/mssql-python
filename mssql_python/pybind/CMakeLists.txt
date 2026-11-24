@@ -122,6 +122,25 @@ message(STATUS "msodbcsql driver version (from mssql_python_odbc.__version__): $
 add_definitions(-DMSODBCSQL_VERSION_MAJOR="${MSODBCSQL_VERSION_MAJOR}")
 add_definitions(-DMSODBCSQL_VERSION_MAJOR_MINOR="${MSODBCSQL_VERSION_MAJOR_MINOR}")
 
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    file(GLOB_RECURSE _msodbcsql_libraries
+        "${CMAKE_CURRENT_SOURCE_DIR}/../../mssql_python_odbc/libs/linux/libmsodbcsql-${MSODBCSQL_VERSION_MAJOR_MINOR}.so.*")
+    set(_msodbcsql_filenames "")
+    foreach(_library IN LISTS _msodbcsql_libraries)
+        get_filename_component(_filename "${_library}" NAME)
+        list(APPEND _msodbcsql_filenames "${_filename}")
+    endforeach()
+    list(REMOVE_DUPLICATES _msodbcsql_filenames)
+    list(LENGTH _msodbcsql_filenames _msodbcsql_filename_count)
+    if(NOT _msodbcsql_filename_count EQUAL 1)
+        message(FATAL_ERROR
+            "Expected one Linux ODBC driver filename across staged architectures; "
+            "found '${_msodbcsql_filenames}'.")
+    endif()
+    list(GET _msodbcsql_filenames 0 MSODBCSQL_LINUX_DRIVER_FILENAME)
+    add_definitions(-DMSODBCSQL_LINUX_DRIVER_FILENAME="${MSODBCSQL_LINUX_DRIVER_FILENAME}")
+endif()
+
 # For macOS, always set universal build
 if(APPLE)
     set(CMAKE_OSX_ARCHITECTURES "arm64;x86_64" CACHE STRING "Build architectures for macOS" FORCE)

@@ -8,6 +8,22 @@ model: Claude Sonnet 4.5 (copilot)
 
 You are a development assistant helping run pytest for the mssql-python driver.
 
+## Opt-in ODBC 18.7 qualification in PR validation
+
+The existing `MSSQL-Python-PR-Validation` pipeline (2128, ADO project `public`)
+accepts `odbcQualification=true` on a candidate GitHub branch. Pair it with
+`rsVersionOverride=0.5.0` to use the committed Rust companion rather than a nightly.
+The default remains the committed ODBC payload.
+
+Qualification stages the SHA-256-pinned official 18.7.1.1 inputs, resources and
+license terms, then overlays them before native builds in the existing PR matrix.
+The pytest plugin enables all markers, including stress and typing, and verifies
+package version, staged hashes, native driver version, actual OS-mapped driver path
+and source revision before each test session. Runtime identity artifacts also
+record the SQL Server major version. Standard test assertions, SQL setup,
+system-ODBC removal and coverage steps are retained. This is testing only, not a
+package publication or proof of compatibility before results are available.
+
 ## PREREQUISITES
 
 Before running tests, you MUST complete these checks **in order**:

@@ -7,16 +7,53 @@ trigger:
       - main
 
 parameters:
+  - name: odbcQualification
+    displayName: 'Test the pinned official ODBC 18.7.1.1 candidate'
+    type: boolean
+    default: false
+
   - name: rsVersionOverride
     displayName: 'Exact mssql-python-rs test version (empty uses latest published nightly)'
     type: string
     default: ''
 
 variables:
+  ${{ if eq(parameters.odbcQualification, true) }}:
+    MSSQL_PYTHON_QUALIFY_ODBC_187: '1'
+    MSSQL_PYTHON_NATIVE_PROVIDER: msodbcsql18
+    MSSQL_PYTHON_ODBC_187_EVIDENCE: odbc-187-driver.json
+    ODBC187_PYTEST_ARGS: '-p eng.scripts.run_odbc_187_tests'
+  ${{ else }}:
+    ODBC187_PYTEST_ARGS: ''
   # QEMU 10.2.3, qualified against the ARM64 GCC startup crash and shutdown tests.
   arm64QemuImage: 'tonistiigi/binfmt@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0'
 
 jobs:
+- ${{ if eq(parameters.odbcQualification, true) }}:
+  - job: StageOdbc187
+    displayName: 'Stage official ODBC 18.7.1.1 candidate'
+    timeoutInMinutes: 60
+    pool:
+      vmImage: windows-latest
+    steps:
+    - checkout: self
+    - task: UsePythonVersion@0
+      inputs:
+        versionSpec: '3.13'
+        addToPath: true
+    - powershell: |
+        $ErrorActionPreference = 'Stop'
+        New-Item -ItemType Directory -Force "$(Build.ArtifactStagingDirectory)/odbc-187" | Out-Null
+        $package = "$(Build.ArtifactStagingDirectory)/odbc-187/mssql_python_odbc"
+        Copy-Item -Recurse mssql_python_odbc $package
+        python eng/scripts/stage_odbc_187.py --destination "$package/libs" --cache "$(Agent.TempDirectory)/odbc-187-inputs" --version-file "$package/__init__.py"
+        if ($LASTEXITCODE -ne 0) { throw 'Pinned ODBC candidate staging failed' }
+      displayName: 'Verify official archives, driver resources and licenses'
+    - task: PublishPipelineArtifact@1
+      inputs:
+        targetPath: '$(Build.ArtifactStagingDirectory)/odbc-187/mssql_python_odbc'
+        artifact: odbc-187-pr-inputs
+
 - job: SelectRsRuntime
   displayName: 'Select one published Rust nightly for the validation run'
   pool:
@@ -78,7 +115,10 @@ jobs:
     displayName: 'Build and run native pool sanitation tests'
 
 - job: CodeQLAnalysis
-  dependsOn: SelectRsRuntime
+  dependsOn:
+  - SelectRsRuntime
+  - ${{ if eq(parameters.odbcQualification, true) }}:
+    - StageOdbc187
   variables:
     MSSQL_PYTHON_RS_VERSION: $[ dependencies.SelectRsRuntime.outputs['select.version'] ]
   displayName: 'CodeQL Security Analysis'
@@ -86,6 +126,14 @@ jobs:
     vmImage: 'ubuntu-latest'
 
   steps:
+  - ${{ if eq(parameters.odbcQualification, true) }}:
+    - task: DownloadPipelineArtifact@2
+      displayName: 'Use pinned ODBC 18.7.1.1 input artifact'
+      inputs:
+        buildType: current
+        artifactName: odbc-187-pr-inputs
+        targetPath: '$(Build.SourcesDirectory)/mssql_python_odbc'
+
   - script: |
       sudo apt-get update
       sudo apt-get install -y build-essential cmake curl git python3 python3-pip python3-dev python3-venv unixodbc-dev
@@ -130,8 +178,20 @@ jobs:
     condition: always()
     displayName: 'Finalize CodeQL'
 
+  - ${{ if eq(parameters.odbcQualification, true) }}:
+    - task: PublishPipelineArtifact@1
+      displayName: 'Publish actual ODBC candidate runtime identity'
+      condition: succeededOrFailed()
+      inputs:
+        targetPath: '$(Build.SourcesDirectory)/odbc-187-driver.json'
+        artifact: 'odbc-187-runtime-$(System.JobId)'
+
+
 - job: pytestonwindows
-  dependsOn: SelectRsRuntime
+  dependsOn:
+  - SelectRsRuntime
+  - ${{ if eq(parameters.odbcQualification, true) }}:
+    - StageOdbc187
   variables:
     MSSQL_PYTHON_RS_VERSION: $[ dependencies.SelectRsRuntime.outputs['select.version'] ]
     MSSQL_ARROW_TEST_INTERPOSITION: '1'
@@ -158,6 +218,15 @@ jobs:
   steps:
   - checkout: self
     fetchDepth: 0
+
+  - ${{ if eq(parameters.odbcQualification, true) }}:
+    - task: DownloadPipelineArtifact@2
+      displayName: 'Use pinned ODBC 18.7.1.1 input artifact'
+      inputs:
+        buildType: current
+        artifactName: odbc-187-pr-inputs
+        targetPath: '$(Build.SourcesDirectory)/mssql_python_odbc'
+
   - task: UsePythonVersion@0
     inputs:
       versionSpec: '$(pythonVersion)'
@@ -443,7 +512,7 @@ jobs:
 
   # Run tests for LocalDB
   - script: |
-      python eng/scripts/mssql_python_rs.py --verify && python -m pytest -v --junitxml=test-results-localdb.xml --cov=. --cov-report=xml:coverage-localdb.xml --capture=tee-sys --cache-clear
+      python eng/scripts/mssql_python_rs.py --verify && python -m eng.scripts.stage_odbc_187 --register-runtime && python -m pytest -v $(ODBC187_PYTEST_ARGS) --junitxml=test-results-localdb.xml --cov=. --cov-report=xml:coverage-localdb.xml --capture=tee-sys --cache-clear
     displayName: 'Run tests with coverage on LocalDB'
     condition: and(succeeded(), eq(variables['sqlVersion'], 'LocalDB'))
     env:
@@ -451,7 +520,7 @@ jobs:
 
   # Run tests for SQL Server 2022
   - script: |
-      python eng/scripts/mssql_python_rs.py --verify && python -m pytest -v --junitxml=test-results-sql2022.xml --cov=. --cov-report=xml:coverage-sql2022.xml --capture=tee-sys --cache-clear
+      python eng/scripts/mssql_python_rs.py --verify && python -m eng.scripts.stage_odbc_187 --register-runtime && python -m pytest -v $(ODBC187_PYTEST_ARGS) --junitxml=test-results-sql2022.xml --cov=. --cov-report=xml:coverage-sql2022.xml --capture=tee-sys --cache-clear
     displayName: 'Run tests with coverage on SQL Server 2022'
     condition: and(succeeded(), eq(variables['sqlVersion'], 'SQL2022'))
     env:
@@ -459,7 +528,7 @@ jobs:
 
   # Run tests for SQL Server 2025
   - script: |
-      python eng/scripts/mssql_python_rs.py --verify && python -m pytest -v --junitxml=test-results-sql2025.xml --cov=. --cov-report=xml:coverage-sql2025.xml --capture=tee-sys --cache-clear
+      python eng/scripts/mssql_python_rs.py --verify && python -m eng.scripts.stage_odbc_187 --register-runtime && python -m pytest -v $(ODBC187_PYTEST_ARGS) --junitxml=test-results-sql2025.xml --cov=. --cov-report=xml:coverage-sql2025.xml --capture=tee-sys --cache-clear
     displayName: 'Run tests with coverage on SQL Server 2025'
     condition: and(succeeded(), eq(variables['sqlVersion'], 'SQL2025'))
     env:
@@ -648,8 +717,20 @@ jobs:
   #     summaryFileLocation: 'coverage.xml'
   #   displayName: 'Publish code coverage results'
 
+  - ${{ if eq(parameters.odbcQualification, true) }}:
+    - task: PublishPipelineArtifact@1
+      displayName: 'Publish actual ODBC candidate runtime identity'
+      condition: succeededOrFailed()
+      inputs:
+        targetPath: '$(Build.SourcesDirectory)/odbc-187-driver.json'
+        artifact: 'odbc-187-runtime-$(System.JobId)'
+
+
 - job: PytestOnMacOS
-  dependsOn: SelectRsRuntime
+  dependsOn:
+  - SelectRsRuntime
+  - ${{ if eq(parameters.odbcQualification, true) }}:
+    - StageOdbc187
   displayName: 'macOS x86_64'
   timeoutInMinutes: 90
   pool:
@@ -684,6 +765,15 @@ jobs:
   steps:
   - checkout: self
     fetchDepth: 0
+
+  - ${{ if eq(parameters.odbcQualification, true) }}:
+    - task: DownloadPipelineArtifact@2
+      displayName: 'Use pinned ODBC 18.7.1.1 input artifact'
+      inputs:
+        buildType: current
+        artifactName: odbc-187-pr-inputs
+        targetPath: '$(Build.SourcesDirectory)/mssql_python_odbc'
+
 
   - task: UsePythonVersion@0
     inputs:
@@ -806,7 +896,7 @@ jobs:
 
   - script: |
       echo "Build successful, running tests now"
-      python eng/scripts/mssql_python_rs.py --verify && python -m pytest -v --junitxml=test-results.xml --cov=. --cov-report=xml --capture=tee-sys --cache-clear
+      python eng/scripts/mssql_python_rs.py --verify && python -m eng.scripts.stage_odbc_187 --register-runtime && python -m pytest -v $(ODBC187_PYTEST_ARGS) --junitxml=test-results.xml --cov=. --cov-report=xml --capture=tee-sys --cache-clear
     displayName: 'Run pytest with coverage'
     env:
       DB_CONNECTION_STRING: 'Server=tcp:127.0.0.1,1433;Database=master;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
@@ -831,8 +921,20 @@ jobs:
     env:
       DB_PASSWORD: $(DB_PASSWORD)
 
+  - ${{ if eq(parameters.odbcQualification, true) }}:
+    - task: PublishPipelineArtifact@1
+      displayName: 'Publish actual ODBC candidate runtime identity'
+      condition: succeededOrFailed()
+      inputs:
+        targetPath: '$(Build.SourcesDirectory)/odbc-187-driver.json'
+        artifact: 'odbc-187-runtime-$(System.JobId)'
+
+
 - job: PytestOnLinux
-  dependsOn: SelectRsRuntime
+  dependsOn:
+  - SelectRsRuntime
+  - ${{ if eq(parameters.odbcQualification, true) }}:
+    - StageOdbc187
   variables:
     MSSQL_PYTHON_RS_VERSION: $[ dependencies.SelectRsRuntime.outputs['select.version'] ]
   displayName: 'Linux x86_64'
@@ -879,6 +981,15 @@ jobs:
   steps:
   - checkout: self
     fetchDepth: 0
+
+  - ${{ if eq(parameters.odbcQualification, true) }}:
+    - task: DownloadPipelineArtifact@2
+      displayName: 'Use pinned ODBC 18.7.1.1 input artifact'
+      inputs:
+        buildType: current
+        artifactName: odbc-187-pr-inputs
+        targetPath: '$(Build.SourcesDirectory)/mssql_python_odbc'
+
 
   - script: |
       # Create a Docker container for testing
@@ -1028,7 +1139,7 @@ jobs:
         odbcinst -u -d -n 'ODBC Driver 18 for SQL Server' || true
         echo 'Uninstalled ODBC Driver and cleaned up libraries'
         echo 'Verifying x86_64 debian_ubuntu driver library signatures:'
-        ldd mssql_python_odbc/libs/linux/debian_ubuntu/x86_64/lib/libmsodbcsql-${DRIVER_MAJOR_MINOR}.so.2.1
+        ldd mssql_python_odbc/libs/linux/debian_ubuntu/x86_64/lib/libmsodbcsql-${DRIVER_MAJOR_MINOR}.so.*
       "
     displayName: 'Uninstall ODBC Driver before running tests in $(distroName) container'
 
@@ -1039,12 +1150,12 @@ jobs:
         echo "Testing against Azure SQL Database"
         
         docker exec \
-          -e DB_CONNECTION_STRING \
+          -e BUILD_SOURCEVERSION -e MSSQL_PYTHON_QUALIFY_ODBC_187 -e MSSQL_PYTHON_ODBC_187_EVIDENCE -e MSSQL_PYTHON_NATIVE_PROVIDER -e DB_CONNECTION_STRING \
           test-container-$(distroName) bash -c "
           source /opt/venv/bin/activate
           echo 'Build successful, running tests now on $(distroName) with Azure SQL'
           echo 'Using Azure SQL connection string'
-          python eng/scripts/mssql_python_rs.py --verify && python -m pytest -v --junitxml=test-results-$(distroName).xml --cov=. --cov-report=xml:coverage-$(distroName).xml --capture=tee-sys --cache-clear
+          python eng/scripts/mssql_python_rs.py --verify && python -m eng.scripts.stage_odbc_187 --register-runtime && python -m pytest -v $(ODBC187_PYTEST_ARGS) --junitxml=test-results-$(distroName).xml --cov=. --cov-report=xml:coverage-$(distroName).xml --capture=tee-sys --cache-clear
         "
       else
         # Local SQL Server testing
@@ -1053,13 +1164,13 @@ jobs:
         export DB_CONNECTION_STRING="Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=$DB_PASSWORD;TrustServerCertificate=yes"
         
         docker exec \
-          -e DB_CONNECTION_STRING \
+          -e BUILD_SOURCEVERSION -e MSSQL_PYTHON_QUALIFY_ODBC_187 -e MSSQL_PYTHON_ODBC_187_EVIDENCE -e MSSQL_PYTHON_NATIVE_PROVIDER -e DB_CONNECTION_STRING \
           -e DB_PASSWORD \
           test-container-$(distroName) bash -c "
           source /opt/venv/bin/activate
           echo 'Build successful, running tests now on $(distroName)'
           echo 'Using connection string: Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=***;TrustServerCertificate=yes'
-          python eng/scripts/mssql_python_rs.py --verify && python -m pytest -v --junitxml=test-results-$(distroName).xml --cov=. --cov-report=xml:coverage-$(distroName).xml --capture=tee-sys --cache-clear
+          python eng/scripts/mssql_python_rs.py --verify && python -m eng.scripts.stage_odbc_187 --register-runtime && python -m pytest -v $(ODBC187_PYTEST_ARGS) --junitxml=test-results-$(distroName).xml --cov=. --cov-report=xml:coverage-$(distroName).xml --capture=tee-sys --cache-clear
         "
       fi
     displayName: 'Run pytest with coverage in $(distroName) container'
@@ -1177,8 +1288,20 @@ jobs:
       testResultsFiles: '**/test-results-$(distroName).xml'
       testRunTitle: 'Publish pytest results on $(distroName)'
 
+  - ${{ if eq(parameters.odbcQualification, true) }}:
+    - task: PublishPipelineArtifact@1
+      displayName: 'Publish actual ODBC candidate runtime identity'
+      condition: succeededOrFailed()
+      inputs:
+        targetPath: '$(Build.SourcesDirectory)/odbc-187-driver.json'
+        artifact: 'odbc-187-runtime-$(System.JobId)'
+
+
 - job: PytestOnLinux_ARM64
-  dependsOn: SelectRsRuntime
+  dependsOn:
+  - SelectRsRuntime
+  - ${{ if eq(parameters.odbcQualification, true) }}:
+    - StageOdbc187
   variables:
     MSSQL_PYTHON_RS_VERSION: $[ dependencies.SelectRsRuntime.outputs['select.version'] ]
   displayName: 'Linux ARM64'
@@ -1205,6 +1328,14 @@ jobs:
         archName: 'arm64'
 
   steps:
+  - ${{ if eq(parameters.odbcQualification, true) }}:
+    - task: DownloadPipelineArtifact@2
+      displayName: 'Use pinned ODBC 18.7.1.1 input artifact'
+      inputs:
+        buildType: current
+        artifactName: odbc-187-pr-inputs
+        targetPath: '$(Build.SourcesDirectory)/mssql_python_odbc'
+
   - script: |
       set -euo pipefail
       # Set up Docker buildx for multi-architecture support
@@ -1369,7 +1500,7 @@ jobs:
         odbcinst -u -d -n 'ODBC Driver 11 for SQL Server' || true
         echo 'Uninstalled ODBC Driver and cleaned up libraries'
         echo 'Verifying arm64 debian_ubuntu driver library signatures:'
-        ldd mssql_python_odbc/libs/linux/debian_ubuntu/arm64/lib/libmsodbcsql-${DRIVER_MAJOR_MINOR}.so.2.1
+        ldd mssql_python_odbc/libs/linux/debian_ubuntu/arm64/lib/libmsodbcsql-${DRIVER_MAJOR_MINOR}.so.*
       "
     displayName: 'Uninstall ODBC Driver before running tests in $(distroName) ARM64 container'
 
@@ -1381,7 +1512,7 @@ jobs:
       export DB_CONNECTION_STRING="Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=$DB_PASSWORD;TrustServerCertificate=yes"
       
       docker exec \
-        -e DB_CONNECTION_STRING \
+        -e BUILD_SOURCEVERSION -e MSSQL_PYTHON_QUALIFY_ODBC_187 -e MSSQL_PYTHON_ODBC_187_EVIDENCE -e MSSQL_PYTHON_NATIVE_PROVIDER -e DB_CONNECTION_STRING \
         -e DB_PASSWORD \
         test-container-$(distroName)-$(archName) bash -c "
         source /opt/venv/bin/activate
@@ -1389,7 +1520,7 @@ jobs:
         echo 'Architecture:' \$(uname -m)
         echo 'Using connection string: Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=***;TrustServerCertificate=yes'
         python main.py
-        python eng/scripts/mssql_python_rs.py --verify && python -m pytest -v --junitxml=test-results-$(distroName)-$(archName).xml --cov=. --cov-report=xml:coverage-$(distroName)-$(archName).xml --capture=tee-sys --cache-clear
+        python eng/scripts/mssql_python_rs.py --verify && python -m eng.scripts.stage_odbc_187 --register-runtime && python -m pytest -v $(ODBC187_PYTEST_ARGS) --junitxml=test-results-$(distroName)-$(archName).xml --cov=. --cov-report=xml:coverage-$(distroName)-$(archName).xml --capture=tee-sys --cache-clear
       "
     displayName: 'Run pytest with coverage in $(distroName) ARM64 container'
     env:
@@ -1423,8 +1554,20 @@ jobs:
       testResultsFiles: '**/test-results-$(distroName)-$(archName).xml'
       testRunTitle: 'Publish pytest results on $(distroName) ARM64'
 
+  - ${{ if eq(parameters.odbcQualification, true) }}:
+    - task: PublishPipelineArtifact@1
+      displayName: 'Publish actual ODBC candidate runtime identity'
+      condition: succeededOrFailed()
+      inputs:
+        targetPath: '$(Build.SourcesDirectory)/odbc-187-driver.json'
+        artifact: 'odbc-187-runtime-$(System.JobId)'
+
+
 - job: PytestOnLinux_RHEL9
-  dependsOn: SelectRsRuntime
+  dependsOn:
+  - SelectRsRuntime
+  - ${{ if eq(parameters.odbcQualification, true) }}:
+    - StageOdbc187
   variables:
     MSSQL_PYTHON_RS_VERSION: $[ dependencies.SelectRsRuntime.outputs['select.version'] ]
   displayName: 'Linux RedHat x86_64'
@@ -1432,6 +1575,14 @@ jobs:
     vmImage: 'ubuntu-latest'
 
   steps:
+  - ${{ if eq(parameters.odbcQualification, true) }}:
+    - task: DownloadPipelineArtifact@2
+      displayName: 'Use pinned ODBC 18.7.1.1 input artifact'
+      inputs:
+        buildType: current
+        artifactName: odbc-187-pr-inputs
+        targetPath: '$(Build.SourcesDirectory)/mssql_python_odbc'
+
   - script: |
       # Create a Docker container for testing
       docker run -e MSSQL_PYTHON_RS_VERSION -d --name test-container-rhel9 \
@@ -1575,7 +1726,7 @@ jobs:
         odbcinst -u -d -n 'ODBC Driver 11 for SQL Server' || true
         echo 'Uninstalled ODBC Driver and cleaned up libraries'
         echo 'Verifying x86_64 rhel driver library signatures:'
-        ldd mssql_python_odbc/libs/linux/rhel/x86_64/lib/libmsodbcsql-${DRIVER_MAJOR_MINOR}.so.2.1
+        ldd mssql_python_odbc/libs/linux/rhel/x86_64/lib/libmsodbcsql-${DRIVER_MAJOR_MINOR}.so.*
       "
     displayName: 'Uninstall ODBC Driver before running tests in RHEL 9 container'
 
@@ -1587,14 +1738,14 @@ jobs:
       export DB_CONNECTION_STRING="Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=$DB_PASSWORD;TrustServerCertificate=yes"
       
       docker exec \
-        -e DB_CONNECTION_STRING \
+        -e BUILD_SOURCEVERSION -e MSSQL_PYTHON_QUALIFY_ODBC_187 -e MSSQL_PYTHON_ODBC_187_EVIDENCE -e MSSQL_PYTHON_NATIVE_PROVIDER -e DB_CONNECTION_STRING \
         -e DB_PASSWORD \
         test-container-rhel9 bash -c "
         source myvenv/bin/activate
         echo 'Build successful, running tests now on RHEL 9'
         echo 'Using connection string: Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=***;TrustServerCertificate=yes'
         python main.py
-        python eng/scripts/mssql_python_rs.py --verify && python -m pytest -v --junitxml=test-results-rhel9.xml --cov=. --cov-report=xml:coverage-rhel9.xml --capture=tee-sys --cache-clear
+        python eng/scripts/mssql_python_rs.py --verify && python -m eng.scripts.stage_odbc_187 --register-runtime && python -m pytest -v $(ODBC187_PYTEST_ARGS) --junitxml=test-results-rhel9.xml --cov=. --cov-report=xml:coverage-rhel9.xml --capture=tee-sys --cache-clear
       "
     displayName: 'Run pytest with coverage in RHEL 9 container'
     env:
@@ -1628,8 +1779,20 @@ jobs:
       testResultsFiles: '**/test-results-rhel9.xml'
       testRunTitle: 'Publish pytest results on RHEL 9'
 
+  - ${{ if eq(parameters.odbcQualification, true) }}:
+    - task: PublishPipelineArtifact@1
+      displayName: 'Publish actual ODBC candidate runtime identity'
+      condition: succeededOrFailed()
+      inputs:
+        targetPath: '$(Build.SourcesDirectory)/odbc-187-driver.json'
+        artifact: 'odbc-187-runtime-$(System.JobId)'
+
+
 - job: PytestOnLinux_RHEL9_ARM64
-  dependsOn: SelectRsRuntime
+  dependsOn:
+  - SelectRsRuntime
+  - ${{ if eq(parameters.odbcQualification, true) }}:
+    - StageOdbc187
   variables:
     MSSQL_PYTHON_RS_VERSION: $[ dependencies.SelectRsRuntime.outputs['select.version'] ]
   displayName: 'Linux RedHat ARM64'
@@ -1637,6 +1800,14 @@ jobs:
     vmImage: 'ubuntu-latest'
 
   steps:
+  - ${{ if eq(parameters.odbcQualification, true) }}:
+    - task: DownloadPipelineArtifact@2
+      displayName: 'Use pinned ODBC 18.7.1.1 input artifact'
+      inputs:
+        buildType: current
+        artifactName: odbc-187-pr-inputs
+        targetPath: '$(Build.SourcesDirectory)/mssql_python_odbc'
+
   - script: |
       set -euo pipefail
       # Set up Docker buildx for multi-architecture support
@@ -1795,7 +1966,7 @@ jobs:
         odbcinst -u -d -n 'ODBC Driver 18 for SQL Server' || true
         echo 'Uninstalled ODBC Driver and cleaned up libraries'
         echo 'Verifying arm64 rhel driver library signatures:'
-        ldd mssql_python_odbc/libs/linux/rhel/arm64/lib/libmsodbcsql-${DRIVER_MAJOR_MINOR}.so.2.1
+        ldd mssql_python_odbc/libs/linux/rhel/arm64/lib/libmsodbcsql-${DRIVER_MAJOR_MINOR}.so.*
       "
     displayName: 'Uninstall ODBC Driver before running tests in RHEL 9 ARM64 container'
 
@@ -1807,14 +1978,14 @@ jobs:
       export DB_CONNECTION_STRING="Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=$DB_PASSWORD;TrustServerCertificate=yes"
       
       docker exec \
-        -e DB_CONNECTION_STRING \
+        -e BUILD_SOURCEVERSION -e MSSQL_PYTHON_QUALIFY_ODBC_187 -e MSSQL_PYTHON_ODBC_187_EVIDENCE -e MSSQL_PYTHON_NATIVE_PROVIDER -e DB_CONNECTION_STRING \
         -e DB_PASSWORD \
         test-container-rhel9-arm64 bash -c "
         source myvenv/bin/activate
         echo 'Build successful, running tests now on RHEL 9 ARM64'
         echo 'Architecture:' \$(uname -m)
         echo 'Using connection string: Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=***;TrustServerCertificate=yes'
-        python eng/scripts/mssql_python_rs.py --verify && python -m pytest -v --junitxml=test-results-rhel9-arm64.xml --cov=. --cov-report=xml:coverage-rhel9-arm64.xml --capture=tee-sys --cache-clear
+        python eng/scripts/mssql_python_rs.py --verify && python -m eng.scripts.stage_odbc_187 --register-runtime && python -m pytest -v $(ODBC187_PYTEST_ARGS) --junitxml=test-results-rhel9-arm64.xml --cov=. --cov-report=xml:coverage-rhel9-arm64.xml --capture=tee-sys --cache-clear
       "
     displayName: 'Run pytest with coverage in RHEL 9 ARM64 container'
     env:
@@ -1848,8 +2019,20 @@ jobs:
       testResultsFiles: '**/test-results-rhel9-arm64.xml'
       testRunTitle: 'Publish pytest results on RHEL 9 ARM64'
 
+  - ${{ if eq(parameters.odbcQualification, true) }}:
+    - task: PublishPipelineArtifact@1
+      displayName: 'Publish actual ODBC candidate runtime identity'
+      condition: succeededOrFailed()
+      inputs:
+        targetPath: '$(Build.SourcesDirectory)/odbc-187-driver.json'
+        artifact: 'odbc-187-runtime-$(System.JobId)'
+
+
 - job: PytestOnLinux_Alpine
-  dependsOn: SelectRsRuntime
+  dependsOn:
+  - SelectRsRuntime
+  - ${{ if eq(parameters.odbcQualification, true) }}:
+    - StageOdbc187
   variables:
     MSSQL_PYTHON_RS_VERSION: $[ dependencies.SelectRsRuntime.outputs['select.version'] ]
   displayName: 'Linux Alpine x86_64'
@@ -1857,6 +2040,14 @@ jobs:
     vmImage: 'ubuntu-latest'
 
   steps:
+  - ${{ if eq(parameters.odbcQualification, true) }}:
+    - task: DownloadPipelineArtifact@2
+      displayName: 'Use pinned ODBC 18.7.1.1 input artifact'
+      inputs:
+        buildType: current
+        artifactName: odbc-187-pr-inputs
+        targetPath: '$(Build.SourcesDirectory)/mssql_python_odbc'
+
   - script: |
       # Set up Docker buildx for multi-architecture support
       docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
@@ -2020,7 +2211,7 @@ jobs:
         odbcinst -u -d -n 'ODBC Driver 18 for SQL Server' || true
         echo 'Uninstalled system ODBC Driver and cleaned up libraries'
         echo 'Verifying x86_64 alpine driver library signatures:'
-        ldd mssql_python_odbc/libs/linux/alpine/x86_64/lib/libmsodbcsql-${DRIVER_MAJOR_MINOR}.so.2.1 || echo 'Driver library not found'
+        ldd mssql_python_odbc/libs/linux/alpine/x86_64/lib/libmsodbcsql-${DRIVER_MAJOR_MINOR}.so.* || echo 'Driver library not found'
       "
     displayName: 'Uninstall system ODBC Driver before running tests in Alpine x86_64 container'
 
@@ -2032,7 +2223,7 @@ jobs:
       export DB_CONNECTION_STRING="Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=$DB_PASSWORD;TrustServerCertificate=yes"
       
       docker exec \
-        -e DB_CONNECTION_STRING \
+        -e BUILD_SOURCEVERSION -e MSSQL_PYTHON_QUALIFY_ODBC_187 -e MSSQL_PYTHON_ODBC_187_EVIDENCE -e MSSQL_PYTHON_NATIVE_PROVIDER -e DB_CONNECTION_STRING \
         -e DB_PASSWORD \
         test-container-alpine bash -c "
         echo 'Build successful, running tests now on Alpine x86_64'
@@ -2053,7 +2244,7 @@ jobs:
         fi
         
         # Run pytest
-        python eng/scripts/mssql_python_rs.py --verify && python -m pytest -v --junitxml=test-results-alpine.xml --cov=. --cov-report=xml:coverage-alpine.xml --capture=tee-sys --cache-clear
+        python eng/scripts/mssql_python_rs.py --verify && python -m eng.scripts.stage_odbc_187 --register-runtime && python -m pytest -v $(ODBC187_PYTEST_ARGS) --junitxml=test-results-alpine.xml --cov=. --cov-report=xml:coverage-alpine.xml --capture=tee-sys --cache-clear
       "
     displayName: 'Run pytest with coverage in Alpine x86_64 container'
     env:
@@ -2087,8 +2278,20 @@ jobs:
       testResultsFiles: '**/test-results-alpine.xml'
       testRunTitle: 'Publish pytest results on Alpine x86_64'
 
+  - ${{ if eq(parameters.odbcQualification, true) }}:
+    - task: PublishPipelineArtifact@1
+      displayName: 'Publish actual ODBC candidate runtime identity'
+      condition: succeededOrFailed()
+      inputs:
+        targetPath: '$(Build.SourcesDirectory)/odbc-187-driver.json'
+        artifact: 'odbc-187-runtime-$(System.JobId)'
+
+
 - job: PytestOnLinux_Alpine_ARM64
-  dependsOn: SelectRsRuntime
+  dependsOn:
+  - SelectRsRuntime
+  - ${{ if eq(parameters.odbcQualification, true) }}:
+    - StageOdbc187
   variables:
     MSSQL_PYTHON_RS_VERSION: $[ dependencies.SelectRsRuntime.outputs['select.version'] ]
   displayName: 'Linux Alpine ARM64'
@@ -2096,6 +2299,14 @@ jobs:
     vmImage: 'ubuntu-latest'
 
   steps:
+  - ${{ if eq(parameters.odbcQualification, true) }}:
+    - task: DownloadPipelineArtifact@2
+      displayName: 'Use pinned ODBC 18.7.1.1 input artifact'
+      inputs:
+        buildType: current
+        artifactName: odbc-187-pr-inputs
+        targetPath: '$(Build.SourcesDirectory)/mssql_python_odbc'
+
   - script: |
       set -euo pipefail
       # Set up Docker buildx for multi-architecture support
@@ -2265,7 +2476,7 @@ jobs:
         odbcinst -u -d -n 'ODBC Driver 18 for SQL Server' || true
         echo 'Uninstalled system ODBC Driver and cleaned up libraries'
         echo 'Verifying arm64 alpine driver library signatures:'
-        ldd mssql_python_odbc/libs/linux/alpine/arm64/lib/libmsodbcsql-${DRIVER_MAJOR_MINOR}.so.2.1 || echo 'Driver library not found'
+        ldd mssql_python_odbc/libs/linux/alpine/arm64/lib/libmsodbcsql-${DRIVER_MAJOR_MINOR}.so.* || echo 'Driver library not found'
       "
     displayName: 'Uninstall system ODBC Driver before running tests in Alpine ARM64 container'
 
@@ -2277,7 +2488,7 @@ jobs:
       export DB_CONNECTION_STRING="Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=$DB_PASSWORD;TrustServerCertificate=yes"
       
       docker exec \
-        -e DB_CONNECTION_STRING \
+        -e BUILD_SOURCEVERSION -e MSSQL_PYTHON_QUALIFY_ODBC_187 -e MSSQL_PYTHON_ODBC_187_EVIDENCE -e MSSQL_PYTHON_NATIVE_PROVIDER -e DB_CONNECTION_STRING \
         -e DB_PASSWORD \
         test-container-alpine-arm64 bash -c "
         echo 'Build successful, running tests now on Alpine ARM64'
@@ -2298,7 +2509,7 @@ jobs:
         fi
         
         # Run pytest
-        python eng/scripts/mssql_python_rs.py --verify && python -m pytest -v --junitxml=test-results-alpine-arm64.xml --cov=. --cov-report=xml:coverage-alpine-arm64.xml --capture=tee-sys --cache-clear
+        python eng/scripts/mssql_python_rs.py --verify && python -m eng.scripts.stage_odbc_187 --register-runtime && python -m pytest -v $(ODBC187_PYTEST_ARGS) --junitxml=test-results-alpine-arm64.xml --cov=. --cov-report=xml:coverage-alpine-arm64.xml --capture=tee-sys --cache-clear
       "
     displayName: 'Run pytest with coverage in Alpine ARM64 container'
     env:
@@ -2331,6 +2542,15 @@ jobs:
     inputs:
       testResultsFiles: '**/test-results-alpine-arm64.xml'
       testRunTitle: 'Publish pytest results on Alpine ARM64'
+
+
+  - ${{ if eq(parameters.odbcQualification, true) }}:
+    - task: PublishPipelineArtifact@1
+      displayName: 'Publish actual ODBC candidate runtime identity'
+      condition: succeededOrFailed()
+      inputs:
+        targetPath: '$(Build.SourcesDirectory)/odbc-187-driver.json'
+        artifact: 'odbc-187-runtime-$(System.JobId)'
 
 # ===========================================================================================
 # ===========================================================================================
@@ -2391,7 +2611,7 @@ jobs:
 #       platform: windows
 # 
 #   - script: |
-#       python -m pytest -v --junitxml=test-results-azuresql.xml --cov=. --cov-report=xml:coverage-azuresql.xml --capture=tee-sys --cache-clear
+#       python -m eng.scripts.stage_odbc_187 --register-runtime && python -m pytest -v $(ODBC187_PYTEST_ARGS) --junitxml=test-results-azuresql.xml --cov=. --cov-report=xml:coverage-azuresql.xml --capture=tee-sys --cache-clear
 #     displayName: 'Run tests on Azure SQL Database'
 #     env:
 #       DB_CONNECTION_STRING: $(AZURE_CONNECTION_STRING)
@@ -2437,7 +2657,7 @@ jobs:
 #       platform: unix
 # 
 #   - script: |
-#       python -m pytest -v --junitxml=test-results-azuresql.xml --cov=. --cov-report=xml:coverage-azuresql.xml --capture=tee-sys --cache-clear
+#       python -m eng.scripts.stage_odbc_187 --register-runtime && python -m pytest -v $(ODBC187_PYTEST_ARGS) --junitxml=test-results-azuresql.xml --cov=. --cov-report=xml:coverage-azuresql.xml --capture=tee-sys --cache-clear
 #     displayName: 'Run tests on Azure SQL Database'
 #     env:
 #       DB_CONNECTION_STRING: $(AZURE_CONNECTION_STRING)
@@ -2530,11 +2750,11 @@ jobs:
 # 
 #   - script: |
 #       docker exec \
-#         -e DB_CONNECTION_STRING \
+#         -e BUILD_SOURCEVERSION -e MSSQL_PYTHON_QUALIFY_ODBC_187 -e MSSQL_PYTHON_ODBC_187_EVIDENCE -e MSSQL_PYTHON_NATIVE_PROVIDER -e DB_CONNECTION_STRING \
 #         test-container-ubuntu-azuresql bash -c "
 #         source /opt/venv/bin/activate
 #         echo 'Running tests on Ubuntu against Azure SQL Database'
-#         python -m pytest -v --junitxml=test-results-ubuntu-azuresql.xml --cov=. --cov-report=xml:coverage-ubuntu-azuresql.xml --capture=tee-sys --cache-clear
+#         python -m eng.scripts.stage_odbc_187 --register-runtime && python -m pytest -v $(ODBC187_PYTEST_ARGS) --junitxml=test-results-ubuntu-azuresql.xml --cov=. --cov-report=xml:coverage-ubuntu-azuresql.xml --capture=tee-sys --cache-clear
 #       "
 #     displayName: 'Run pytest on Azure SQL in Ubuntu container'
 #     env:
@@ -2559,7 +2779,10 @@ jobs:
 #       testRunTitle: 'Publish pytest results on Ubuntu AzureSQL'
 
 - job: CodeCoverageReport
-  dependsOn: SelectRsRuntime
+  dependsOn:
+  - SelectRsRuntime
+  - ${{ if eq(parameters.odbcQualification, true) }}:
+    - StageOdbc187
   variables:
     MSSQL_PYTHON_RS_VERSION: $[ dependencies.SelectRsRuntime.outputs['select.version'] ]
   displayName: 'Full Code Coverage Report in Ubuntu x86_64'
@@ -2567,6 +2790,14 @@ jobs:
     vmImage: 'ubuntu-latest'
 
   steps:
+  - ${{ if eq(parameters.odbcQualification, true) }}:
+    - task: DownloadPipelineArtifact@2
+      displayName: 'Use pinned ODBC 18.7.1.1 input artifact'
+      inputs:
+        buildType: current
+        artifactName: odbc-187-pr-inputs
+        targetPath: '$(Build.SourcesDirectory)/mssql_python_odbc'
+
   - task: UsePythonVersion@0
     inputs:
       versionSpec: '3.12'
@@ -2642,3 +2873,11 @@ jobs:
     timeoutInMinutes: 3
     env:
       DB_PASSWORD: $(DB_PASSWORD)
+
+  - ${{ if eq(parameters.odbcQualification, true) }}:
+    - task: PublishPipelineArtifact@1
+      displayName: 'Publish actual ODBC candidate runtime identity'
+      condition: succeededOrFailed()
+      inputs:
+        targetPath: '$(Build.SourcesDirectory)/odbc-187-driver.json'
+        artifact: 'odbc-187-runtime-$(System.JobId)'

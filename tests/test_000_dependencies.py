@@ -207,8 +207,14 @@ class DependencyTester:
             raise AssertionError(
                 f"Linux driver filename needs a minor version but none was derived (major={major!r})"
             )
-        # Linux embeds the major.minor plus the ELF soname suffix.
-        return f"libmsodbcsql-{major}.{minor}.so.2.1"
+        import mssql_python.ddbc_bindings as ddbc
+
+        filename = os.path.basename(ddbc.GetDriverPathCpp("base"))
+        if not filename.startswith(f"libmsodbcsql-{major}.{minor}.so."):
+            raise AssertionError(
+                f"Native Linux driver filename {filename!r} does not match {major}.{minor}"
+            )
+        return filename
 
     def get_expected_dependencies(self):
         """Get expected dependencies for the current platform and architecture."""

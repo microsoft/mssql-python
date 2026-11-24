@@ -53,7 +53,13 @@ mkdir -p "$(pwd)/profraw"
 export LLVM_PROFILE_FILE="$(pwd)/profraw/default-%p-%m.profraw"
 
 # Run pytest with Python coverage (XML + HTML output)
+ODBC_QUALIFICATION_ARGS=()
+if [ "${MSSQL_PYTHON_QUALIFY_ODBC_187:-0}" = "1" ]; then
+  python -m eng.scripts.stage_odbc_187 --register-runtime
+  ODBC_QUALIFICATION_ARGS=(-p eng.scripts.run_odbc_187_tests)
+fi
 python -m pytest -v \
+  "${ODBC_QUALIFICATION_ARGS[@]}" \
   --junitxml=test-results.xml \
   --cov=mssql_python \
   --cov-report=xml:coverage.xml \

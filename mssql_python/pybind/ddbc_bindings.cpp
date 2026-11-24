@@ -1467,10 +1467,11 @@ std::string GetDriverPathForProviderCpp(const std::string& moduleDir,
     // CMakeLists.txt. This keeps the native resolver and the Python package
     // version from ever drifting: GetOdbcLibsBaseDir() calls fs::exists() on this
     // exact path to decide whether the external package is "complete", so a stale
-    // name would fail that completeness check and raise a hard error. (The
-    // ".so.2.1" suffix is the driver's ELF soname, independent of the product version.)
+    // name would fail that completeness check and raise a hard error. CMake
+    // reads the Linux filename from the staged payload because its ELF suffix
+    // is independent of the package's revision.
     fs::path driverPath = basePath / "libs" / "linux" / platform / arch / "lib" /
-                          ("libmsodbcsql-" MSODBCSQL_VERSION_MAJOR_MINOR ".so.2.1");
+                          MSODBCSQL_LINUX_DRIVER_FILENAME;
     return driverPath.string();
 
 #elif defined(__APPLE__)

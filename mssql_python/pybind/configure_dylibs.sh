@@ -1,12 +1,14 @@
 #!/bin/bash
 # Script to configure dylib paths for macOS
 # This script fixes the library paths in the ODBC driver dylibs and codesigns them
+set -euo pipefail
 
 # Directory structure setup
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 
-ODBC_VERSION_FILE="$PROJECT_DIR/../mssql_python_odbc/__init__.py"
+ODBC_PACKAGE_DIR="${ODBC_PACKAGE_DIR:-$PROJECT_DIR/../mssql_python_odbc}"
+ODBC_VERSION_FILE="$ODBC_PACKAGE_DIR/__init__.py"
 if [ ! -f "$ODBC_VERSION_FILE" ]; then
   echo "Error: SSOT version file not found: $ODBC_VERSION_FILE"
   exit 1
@@ -28,11 +30,12 @@ for ARCH in arm64 x86_64; do
 # Post-split the driver dylibs ship in the standalone mssql_python_odbc package
 # (a pure-data sibling of mssql_python), so configure them there. Mirrors the
 # ODBC_VERSION_FILE path above.
-LIB_DIR="$PROJECT_DIR/../mssql_python_odbc/libs/macos/$ARCH/lib"
+LIB_DIR="$ODBC_PACKAGE_DIR/libs/macos/$ARCH/lib"
 LIBMSODBCSQL_PATH="$LIB_DIR/$DRIVER_DYLIB_NAME"
 LIBMSODBCSQL_NAME="$DRIVER_DYLIB_NAME"
 LIBODBCINST_PATH="$LIB_DIR/libodbcinst.2.dylib"
 LIBLTDL_PATH="$LIB_DIR/libltdl.7.dylib"
+MANIFEST="$LIB_DIR/../odbc-187-driver.json"
 
 # Check if the directories and files exist
 if [ ! -d "$LIB_DIR" ]; then
@@ -58,6 +61,22 @@ if [ -f "$LIBLTDL_PATH" ]; then
 fi
 
 echo "Configuring dylibs in: $LIB_DIR"
+
+if [ -f "$MANIFEST" ]; then
+  python - "$MANIFEST" "$LIBMSODBCSQL_PATH" <<'PY'
+import hashlib
+import json
+from pathlib import Path
+import sys
+
+manifest = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+driver = manifest["driver"]
+expected = driver.get("prepared_sha256", driver["sha256"])
+actual = hashlib.sha256(Path(sys.argv[2]).read_bytes()).hexdigest()
+if manifest["version"] != "18.7.1.1" or actual != expected:
+    raise RuntimeError("ODBC candidate changed before macOS relocation")
+PY
+fi
 
 # Get the existing library paths which are linked to the dylibs
 echo "Reading dependencies from $LIBMSODBCSQL_NAME..."
@@ -119,14 +138,28 @@ if [ -f "$LIBLTDL_PATH" ]; then
 fi
 
 echo "Codesigning $LIBMSODBCSQL_NAME..."
-codesign -s - -f "$LIBMSODBCSQL_PATH" 2>/dev/null
+codesign -s - -f "$LIBMSODBCSQL_PATH"
 
 echo "Codesigning libodbcinst.2.dylib..."
-codesign -s - -f "$LIBODBCINST_PATH" 2>/dev/null
+codesign -s - -f "$LIBODBCINST_PATH"
 
 if [ -f "$LIBLTDL_PATH" ]; then
   echo "Codesigning libltdl.7.dylib..."
-  codesign -s - -f "$LIBLTDL_PATH" 2>/dev/null
+  codesign -s - -f "$LIBLTDL_PATH"
+fi
+
+if [ -f "$MANIFEST" ]; then
+  python - "$MANIFEST" "$LIBMSODBCSQL_PATH" <<'PY'
+import hashlib
+import json
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+manifest = json.loads(path.read_text(encoding="utf-8"))
+manifest["driver"]["prepared_sha256"] = hashlib.sha256(Path(sys.argv[2]).read_bytes()).hexdigest()
+path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+PY
 fi
 
 echo "Library configuration complete for $ARCH!"
