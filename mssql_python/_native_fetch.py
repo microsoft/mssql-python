@@ -209,6 +209,8 @@ class _Policy:
         return True
 
     def __call__(self, cursor: Cursor, data: dict[str, Any]) -> tuple[object, ...] | None:
+        if data.get("_procedure_rows") is not None:
+            return None
         # Watch even an ineligible cursor so restoring its state can re-enable it.
         connection = data.get("_connection")
         if type(cursor) is not self.cursor_type or connection is None:

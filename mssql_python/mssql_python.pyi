@@ -24,6 +24,13 @@ from .logging import MSSQLLogger
 import datetime
 import logging
 import pyarrow
+from .vector import (
+    Vector as Vector,
+    OutputParameter as OutputParameter,
+    InputOutputParameter as InputOutputParameter,
+)
+
+SQL_SS_VECTOR: int
 
 _TVPRow = Union[List[Any], Tuple[Any, ...]]
 

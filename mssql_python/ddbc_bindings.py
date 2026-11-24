@@ -31,6 +31,7 @@ if TYPE_CHECKING:
         _disable_native_fetch_install as _disable_native_fetch_install,
         _fetch_conversion_ineligible as _fetch_conversion_ineligible,
         _fetch_observer as _fetch_observer,
+        _detect_param_types as _detect_param_types,
         _get_odbc_driver_path as _get_odbc_driver_path,
         _invalidate_native_fetch as _invalidate_native_fetch,
         _make_row_mapping_base as _make_row_mapping_base,
@@ -38,6 +39,7 @@ if TYPE_CHECKING:
         _native_fetch_methods as _native_fetch_methods,
         _set_odbc_provider as _set_odbc_provider,
         _watch_fetch_dependencies as _watch_fetch_dependencies,
+        _vector_buffer_size as _vector_buffer_size,
     )
 
 
