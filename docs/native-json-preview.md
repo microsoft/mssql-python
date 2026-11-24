@@ -193,9 +193,15 @@ Then run (substitute your actual `JSON_SOURCE` path):
 python -m pytest <JSON_SOURCE>/tests/test_json.py -q -ra --tb=short
 ```
 
-The fixture skips live tests only when `MSSQL_TEST_NATIVE_JSON` is not enabled.
+The `json_connection` fixture skips native success cases when
+`MSSQL_TEST_NATIVE_JSON` is not enabled.
 Once enabled, missing credentials, connection errors, unsupported metadata, and
 provider failures must fail the run, not be reclassified as skips.
+The separate unsupported-bind regressions use the ordinary database fixture and
+run against the shipped classic driver with this flag unset, including in normal
+CI. They cover scalar and array-bound input, original `HY004` diagnostics, no
+writes, and same-statement cursor reuse. They intentionally skip on preview legs
+and alternate providers, whose Python-level rejection is tested separately.
 
 Record Python/OS/architecture, source revision plus dirty changes, native build
 flags and binary hash, actual driver provenance, server version, exact command,

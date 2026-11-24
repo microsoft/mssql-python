@@ -1,6 +1,6 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT license.
-"""Native JSON tests. Live cases require an explicitly qualified preview runtime."""
+"""Native JSON success cases need a preview; rejection cases use the shipped driver."""
 
 import json
 import os
@@ -186,6 +186,57 @@ def json_connection(conn_str):
             cursor.execute("SELECT CAST(N'{}' AS JSON)")
             assert cursor._column_sql_types == [SQL_SS_JSON], "Provider must report native JSON"
         yield connection
+
+
+@pytest.mark.skipif(
+    os.environ.get("MSSQL_TEST_NATIVE_JSON") == "1",
+    reason="Unsupported-bind regression requires the shipped driver, not the JSON preview",
+)
+@pytest.mark.parametrize("operation", ["execute", "executemany"])
+def test_json_unsupported_bind_preserves_diagnostics_and_cursor_reuse(
+    db_connection, monkeypatch, operation
+):
+    from mssql_python import ddbc_bindings, get_native_provider_info
+
+    if get_native_provider_info()["id"] != "msodbcsql18":
+        pytest.skip("Tests native HY004 translation, not the alternate-provider Python guard")
+
+    with db_connection.cursor() as cursor:
+        cursor.execute("CREATE TABLE #json_hy004 (id INT, doc NVARCHAR(MAX))")
+        try:
+            scalar = Mock(wraps=ddbc_bindings.DDBCSQLExecute)
+            array = Mock(wraps=ddbc_bindings.SQLExecuteMany)
+            monkeypatch.setattr(ddbc_bindings, "DDBCSQLExecute", scalar)
+            monkeypatch.setattr(ddbc_bindings, "SQLExecuteMany", array)
+            sql = "INSERT INTO #json_hy004 VALUES (?, ?)"
+            with pytest.raises(NotSupportedError) as caught:
+                if operation == "execute":
+                    cursor.execute(sql, 1, Json({}))
+                else:
+                    cursor.executemany(sql, [(1, Json({})), (2, Json([])), (3, None)])
+
+            error = caught.value
+            assert error.sqlstate == "HY004"
+            assert error.ddbc_error == "[Microsoft]Invalid SQL data type"
+            assert error.ddbc_error in str(error)
+            assert "does not support native JSON binding" in str(error)
+            assert scalar.call_count == (1 if operation == "execute" else 0)
+            assert array.call_count == (1 if operation == "executemany" else 0)
+            with db_connection.cursor() as verifier:
+                assert verifier.execute("SELECT COUNT(*) FROM #json_hy004").fetchval() == 0
+
+            # Reuse the same statement before a different query can reset its binding state.
+            if operation == "execute":
+                cursor.execute(sql, 4, "recovered")
+            else:
+                cursor.executemany(sql, [(4, "recovered"), (5, None)])
+            cursor.execute("SELECT id, doc FROM #json_hy004 ORDER BY id")
+            expected = [(4, "recovered")]
+            if operation == "executemany":
+                expected.append((5, None))
+            assert [tuple(row) for row in cursor.fetchall()] == expected
+        finally:
+            cursor.execute("DROP TABLE #json_hy004")
 
 
 @pytest.mark.parametrize("fetch", ["fetchone", "fetchmany", "fetchall", "fetchval", "iteration"])
