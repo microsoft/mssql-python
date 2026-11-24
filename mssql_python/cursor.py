@@ -37,7 +37,7 @@ from mssql_python.exceptions import (
     DatabaseError,
 )
 from mssql_python.row import Row, OutputConverter, _ColumnNames
-from mssql_python.json import Json, _decode_json, _reject_json_parameters
+from mssql_python.json import Json, _decode_json
 from mssql_python.table_valued_parameter import TableValuedParameter
 from mssql_python.perf_timer import perf_phase
 from mssql_python import get_settings
@@ -1825,6 +1825,7 @@ class Cursor:
         This should be called when the result set is cleared or when the cursor is reset.
         """
         ddbc_bindings._invalidate_native_fetch(self)
+        self._json_decode_indices = ()
         self._rownumber = -1
         self._has_result_set = False
         self._skip_increment_for_next_fetch = False
@@ -2808,13 +2809,15 @@ class Cursor:
                             continue
                         if not isinstance(value, Json):
                             raise TypeError("SQL_JSON requires Json or None")
-                        text = value._text
-                        max_units = max(max_units, len(text.encode("utf-16-le")) // 2)
+                        max_units = max(max_units, value._utf16_length)
                     paraminfo = param_info()
                     paraminfo.paramSQLType = ddbc_sql_const.SQL_SS_JSON.value
                     paraminfo.paramCType = ddbc_sql_const.SQL_C_WCHAR.value
                     paraminfo.columnSize = max_units
                     paraminfo.inputOutputType = ddbc_sql_const.SQL_PARAM_INPUT.value
+                    paraminfo.isDAE = max_units > MAX_INLINE_CHAR
+                    if paraminfo.isDAE:
+                        requires_rowwise = True
                     parameters_type.append(paraminfo)
                     json_columns.append(col_index)
                     continue
@@ -3727,6 +3730,7 @@ class Cursor:
         self.messages = []
 
         # Clear cached column and converter maps for the new result set
+        self._json_decode_indices = ()
         self._cached_column_map = None
         self._cached_column_map_lower = None
         self._cached_converter_map = None
@@ -4119,7 +4123,7 @@ class Cursor:
             # Rust (mssql_py_core) requires PyTuple via cast::<PyTuple>() and
             # rejects all other types including list. Row objects are converted
             # using direct _values access (4x faster than __iter__ protocol).
-            # Validate Json cells lazily to preserve the ordinary streaming contract.
+            # itertools.chain avoids a Python generator frame for ordinary tuple rows.
             def _prepare_row_iterator(
                 iterable: Iterable[tuple[Any, ...]] | Iterable[Row],
             ) -> Iterator[tuple[Any, ...]]:
@@ -4130,21 +4134,15 @@ class Cursor:
                 if first is None:
                     return iter(())
                 if isinstance(first, tuple):
-                    rows = chain((first,), cast("Iterator[tuple[Any, ...]]", it))
-                    return _checked_json_rows(rows)
+                    return chain((first,), cast("Iterator[tuple[Any, ...]]", it))
                 if isinstance(first, Row):
-                    return _checked_json_rows(
+                    return (
                         tuple(item._values) for item in chain((first,), cast("Iterator[Row]", it))
                     )
                 raise TypeError(
                     f"bulkcopy data rows must be tuples or Row objects, "
                     f"got {type(first).__name__}"
                 )
-
-            def _checked_json_rows(rows: Iterable[tuple[Any, ...]]) -> Iterator[tuple[Any, ...]]:
-                for row in rows:
-                    _reject_json_parameters(row, "bulk copy")
-                    yield row
 
             # Call bulkcopy with explicit keyword arguments
             # The API signature: bulkcopy(table_name, data_source, batch_size=0, timeout=30, ...)
@@ -4180,6 +4178,15 @@ class Cursor:
                 type(e).__name__,
                 str(e),
             )
+            # The pinned Rust core validates every cell, including later iterator rows.
+            # Translate only its exact unsupported-Json diagnostic; do not scan rows twice.
+            if (
+                isinstance(e, ValueError)
+                and str(e) == "Unsupported Python type for bulk copy: Json"
+            ):
+                raise NotSupportedError(
+                    "Json parameters are not supported by bulk copy", str(e)
+                ) from e
             # Re-raise the original exception, preserving its type, args, and
             # traceback. The finally block scrubs credentials, and Python
             # tracebacks don't expose local values, so no reconstruction is needed.

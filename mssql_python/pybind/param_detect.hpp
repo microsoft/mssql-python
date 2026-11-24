@@ -342,6 +342,9 @@ inline std::vector<ParamInfo> DetectParamTypes(PyObject* params, PyObject* input
     PyTypeCache::initialize();
 
     const Py_ssize_t n = PyList_GET_SIZE(params);
+    if (inputSizes != Py_None && !PyList_Check(inputSizes)) {
+        throw py::type_error("input_sizes must be a list or None");
+    }
     const Py_ssize_t inputSizeCount = inputSizes == Py_None ? 0 : PyList_GET_SIZE(inputSizes);
     std::vector<ParamInfo> infos(n);
 
@@ -358,6 +361,10 @@ inline std::vector<ParamInfo> DetectParamTypes(PyObject* params, PyObject* input
         const bool isJson =
             PyObject_TypeCheck(obj, reinterpret_cast<PyTypeObject*>(PyTypeCache::get_json_class()));
         PyObject* inputSize = i < inputSizeCount ? PyList_GET_ITEM(inputSizes, i) : Py_None;
+        if (inputSize != Py_None &&
+            (!PyTuple_Check(inputSize) || PyTuple_GET_SIZE(inputSize) != 4)) {
+            throw py::type_error("Each input size must be a four-item tuple or None");
+        }
         const bool jsonOverride = inputSize != Py_None &&
             PyLong_AsLong(PyTuple_GET_ITEM(inputSize, 0)) == SQL_SS_JSON;
         if (PyErr_Occurred()) throw py::error_already_set();
@@ -379,9 +386,7 @@ inline std::vector<ParamInfo> DetectParamTypes(PyObject* params, PyObject* input
             if (obj != Py_None) {
                 if (!PyUnicode_Check(obj))
                     throw py::type_error("Json snapshot must be text");
-                py::object encoded = steal(PyUnicode_AsEncodedString(obj, "utf-16-le", "strict"));
-                if (!encoded) throw py::error_already_set();
-                info.utf16Len = PyBytes_GET_SIZE(encoded.ptr()) / sizeof(SQLWCHAR);
+                info.utf16Len = UnicodeUtf16Length(obj);
                 info.isDAE = info.utf16Len > MAX_INLINE_CHAR;
                 if (info.isDAE) info.dataPtr = borrow(obj);
             }

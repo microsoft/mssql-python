@@ -43,6 +43,7 @@ class Json:
     """
 
     _text: str = field(repr=False)
+    _utf16_length: int = field(repr=False)
 
     def __init__(self, value: dict[str, Any] | list[Any] | str) -> None:
         if type(value) is str:
@@ -52,8 +53,9 @@ class Json:
             text = json.dumps(value, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
         else:
             raise TypeError("Json requires a dict, list or str; use bare None for SQL NULL")
-        text.encode("utf-16-le", "strict")
+        units = len(text.encode("utf-16-le", "strict")) // 2
         object.__setattr__(self, "_text", text)
+        object.__setattr__(self, "_utf16_length", units)
 
     def __repr__(self) -> str:
         return "Json(<serialized>)"

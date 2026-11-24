@@ -5,6 +5,9 @@
 import json
 import os
 import asyncio
+import subprocess
+import sys
+import uuid
 from dataclasses import FrozenInstanceError
 from datetime import date
 from decimal import Decimal
@@ -248,6 +251,94 @@ def test_json_array_native_binding_contract(json_connection, monkeypatch):
         cursor.json_output = "objects"
         cursor.execute("SELECT doc FROM #json_contract")
         assert [row[0] for row in cursor.fetchall()] == [None, {}, [], {"u": "\x00\u03bb"}]
+
+
+@pytest.mark.parametrize("units", [4000, 4001, 1000008])
+def test_json_batch_streaming_selection(json_connection, monkeypatch, units):
+    from mssql_python import ddbc_bindings
+
+    text = '{"v":"' + "\U0001f600" * ((units - 8) // 2) + "x" * ((units - 8) % 2) + '"}'
+    assert len(text.encode("utf-16-le")) // 2 == units
+    dispatch = Mock(wraps=ddbc_bindings.SQLExecuteMany)
+    if units > 4000:
+        dispatch.side_effect = AssertionError("Oversized JSON must not use padded array binding")
+    monkeypatch.setattr(ddbc_bindings, "SQLExecuteMany", dispatch)
+    with json_connection.cursor() as cursor:
+        cursor.execute("CREATE TABLE #json_stream (id INT, doc JSON)")
+        values = [None, Json({}), Json(text), Json([])]
+        if units > 1000000:
+            values.extend([Json({})] * 1020)
+        cursor.executemany(
+            "INSERT INTO #json_stream VALUES (?, ?)",
+            list(enumerate(values)),
+        )
+        assert dispatch.call_count == (1 if units == 4000 else 0)
+        assert cursor.rowcount == len(values)
+        cursor.json_output = "objects"
+        cursor.execute("SELECT doc FROM #json_stream ORDER BY id")
+        assert [row[0] for row in cursor.fetchall()] == [
+            None if value is None else json.loads(value._text) for value in values
+        ]
+
+
+def test_json_reuse_does_not_reencode_for_sizing(json_connection):
+    class NoEncoding(str):
+        def encode(self, *args, **kwargs):
+            raise AssertionError("Validated JSON must not be encoded again merely for sizing")
+
+    parameter = Json({"v": "\U0001f600"})
+    # Keep identical validated content; native buffer conversion need not call str.encode().
+    object.__setattr__(parameter, "_text", NoEncoding(parameter._text))
+    with json_connection.cursor() as cursor:
+        cursor.execute("CREATE TABLE #json_reuse (doc JSON)")
+        cursor.executemany("INSERT INTO #json_reuse VALUES (?)", [(parameter,), (None,)])
+        cursor.execute("INSERT INTO #json_reuse VALUES (?)", parameter)
+        cursor.json_output = "objects"
+        cursor.execute("SELECT doc FROM #json_reuse")
+        assert [row[0] for row in cursor.fetchall()] == [
+            {"v": "\U0001f600"},
+            None,
+            {"v": "\U0001f600"},
+        ]
+
+
+def test_json_decode_state_cleared_on_no_results(json_connection):
+    with json_connection.cursor() as cursor:
+        cursor.json_output = "objects"
+        cursor.execute("SELECT CAST(N'{}' AS JSON)")
+        assert cursor._json_decode_indices == (0,)
+        cursor.execute("CREATE TABLE #json_no_results (id INT)")
+        assert cursor._json_decode_indices == ()
+        cursor.execute("SELECT CAST(N'{}' AS JSON); INSERT INTO #json_no_results VALUES(1)")
+        assert cursor.fetchone()[0] == {}
+        assert cursor.nextset()
+        assert cursor._json_decode_indices == ()
+        assert not cursor.nextset()
+        assert cursor._json_decode_indices == ()
+
+
+def test_native_malformed_hints_raise_without_crashing(db_connection):
+    script = """
+import os
+from mssql_python import connect, ddbc_bindings
+with connect(os.environ["DB_CONNECTION_STRING"]) as connection:
+    with connection.cursor() as cursor:
+        for hints in [(), [()], [42], [[]], [(4,)], [(-157,)]]:
+            try:
+                ddbc_bindings.DDBCSQLExecute(
+                    cursor.hstmt, "SELECT ?", [1], hints, [False], True,
+                    cursor._get_encoding_settings()
+                )
+            except TypeError:
+                pass
+            else:
+                raise AssertionError("Malformed native hint accepted")
+        assert cursor.execute("SELECT ?", 42).fetchval() == 42
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script], capture_output=True, text=True, timeout=30
+    )
+    assert result.returncode == 0, result.stderr
 
 
 @pytest.mark.parametrize(
@@ -879,11 +970,14 @@ def test_ordinary_numeric_batch_checks_json_per_column_not_per_cell(
         cursor.execute("CREATE TABLE #json_check_counts (a DECIMAL(12,2), b DECIMAL(12,2), c BIT)")
         values = [i if numeric == "integer" else Decimal(i) / 10 for i in range(64)]
         monkeypatch.setattr(cursor_module, "isinstance", counted_isinstance, raising=False)
+        inference = Mock(wraps=cursor._compute_column_type)
+        monkeypatch.setattr(cursor, "_compute_column_type", inference)
         cursor.executemany(
             "INSERT INTO #json_check_counts VALUES (?, ?, ?)",
             [(value, value + 1, bool(i % 2)) for i, value in enumerate(values)],
         )
         assert len(checks) == 3
+        assert inference.call_count == 3
         assert cursor.execute("SELECT COUNT(*) FROM #json_check_counts").fetchval() == 64
 
 
@@ -933,7 +1027,12 @@ def test_json_bulk_guard_preserves_iterator_boundary(json_connection, monkeypatc
         yield (1,)
 
     def consume(_table, parameters, **_kwargs):
-        list(parameters)
+        from itertools import chain
+
+        assert isinstance(parameters, chain)
+        for row in parameters:
+            if any(isinstance(value, Json) for value in row):
+                raise ValueError("Unsupported Python type for bulk copy: Json")
 
     core = Mock()
     native_cursor = core.PyCoreConnection.return_value.cursor.return_value
@@ -946,3 +1045,43 @@ def test_json_bulk_guard_preserves_iterator_boundary(json_connection, monkeypatc
     assert consumed == ["first"]
     native_cursor.close.assert_called_once()
     core.PyCoreConnection.return_value.close.assert_called_once()
+
+
+@pytest.mark.parametrize("later_row", [False, True])
+def test_json_bulk_core_rejects_without_consuming_tail(json_connection, later_row):
+    name = "json_bulk_" + uuid.uuid4().hex
+    consumed = []
+
+    def rows():
+        if later_row:
+            yield ("ordinary",)
+        yield (Json({"private": "do not log"}),)
+        consumed.append("tail")
+        yield ("not consumed",)
+
+    with json_connection.cursor() as cursor:
+        cursor.execute(f"CREATE TABLE dbo.{name} (value NVARCHAR(MAX))")
+        json_connection.commit()
+        try:
+            with pytest.raises(NotSupportedError, match="bulk copy") as error:
+                cursor.bulkcopy(name, rows(), batch_size=1, timeout=10)
+            assert isinstance(error.value.__cause__, ValueError)
+            assert "private" not in str(error.value)
+            assert consumed == []
+            if not later_row:
+                assert cursor.execute(f"SELECT COUNT(*) FROM dbo.{name}").fetchval() == 0
+        finally:
+            cursor.execute(f"DROP TABLE dbo.{name}")
+            json_connection.commit()
+
+
+def test_bulk_unrelated_value_error_is_preserved(json_connection, monkeypatch):
+    error = ValueError("Unsupported Python type for bulk copy: CustomType")
+    core = Mock()
+    core.PyCoreConnection.return_value.cursor.return_value.bulkcopy.side_effect = error
+    with json_connection.cursor() as cursor:
+        monkeypatch.setattr(cursor, "_bulkcopy_core_and_validate", lambda *args: core)
+        monkeypatch.setattr(cursor, "_build_pycore_context", dict)
+        with pytest.raises(ValueError) as caught:
+            cursor.bulkcopy("unused", [(object(),)])
+        assert caught.value is error

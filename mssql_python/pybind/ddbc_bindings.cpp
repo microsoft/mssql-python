@@ -496,6 +496,20 @@ static SQLRETURN PreResolveUnknownNullTypes(SqlHandle& handle, SQLHANDLE hStmt,
     return SQL_SUCCESS;
 }
 
+static void CheckJsonBindError(SQLHANDLE hStmt, SQLRETURN rc) {
+    const ErrorInfo error = SQLReadError(SQL_HANDLE_STMT, hStmt, rc);
+    if (error.sqlState == "HY004") {
+        py::object exceptionType =
+            py::module_::import("mssql_python.exceptions").attr("NotSupportedError");
+        py::object exception = exceptionType(
+            "The selected ODBC driver does not support native JSON binding; "
+            "use a qualified JSON-capable driver",
+            error.ddbcErrorMsg, py::arg("sqlstate") = error.sqlState);
+        PyErr_SetObject(exceptionType.ptr(), exception.ptr());
+        throw py::error_already_set();
+    }
+}
+
 [[noreturn]] static void ThrowParameterError(const SqlHandlePtr& statementHandle, SQLRETURN rc,
                                         const std::string& operation) {
     ErrorInfo error = SQLCheckError_Wrap(SQL_HANDLE_STMT, statementHandle, rc);
@@ -1027,6 +1041,7 @@ SQLRETURN BindParameters(const SqlHandlePtr& statementHandle, SQLHANDLE hStmt, c
             LOG("BindParameters: SQLBindParameter failed for param[%d] - "
                 "SQLRETURN=%d, C_Type=%d, SQL_Type=%d",
                 paramIndex, rc, paramInfo.paramCType, paramInfo.paramSQLType);
+            if (paramInfo.paramSQLType == SQL_SS_JSON) CheckJsonBindError(hStmt, rc);
             return rc;
         }
         // Special handling for Numeric type -
@@ -3135,6 +3150,7 @@ SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list&
                 LOG("BindParameterArray: SQLBindParameter failed - "
                     "param_index=%d, SQLRETURN=%d",
                     paramIndex, rc);
+                if (info.paramSQLType == SQL_SS_JSON) CheckJsonBindError(hStmt, rc);
                 return rc;
             }
         }
@@ -5152,6 +5168,7 @@ size_t calculateRowSize(py::list& columnNames, SQLUSMALLINT numCols) {
             case SQL_LONGVARCHAR:
                 rowSize += columnSize;
                 break;
+            case SQL_SS_JSON:
             case SQL_SS_XML:
             case SQL_WCHAR:
             case SQL_WVARCHAR:

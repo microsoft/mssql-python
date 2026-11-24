@@ -5,6 +5,47 @@ provider. Obtain a preview through your authorized distribution channel and veri
 its supplied checksums. Do not commit, publish, or install preview binaries
 system-wide. Do not change the repository's dependency pins or bundled binaries.
 
+## Qualified artifacts and remaining release gates
+
+The locally qualified development preview is **18.7.1.1**, not the shipped
+18.6 provider. The actual Windows DLL reports `18.07.0001`. The tested artifacts
+have these SHA-256 identities:
+
+| Platform | Driver artifact | SHA-256 |
+| --- | --- | --- |
+| Windows x64 | `msodbcsql18.dll` | `e373fd476d97d4870c1adbac65d0590dd5d7624ddef43c0b7ae5d4711654f635` |
+| Linux x64 | `libmsodbcsql-18.7.so.1.1` | `85a667eb8e237015d0de2691055ea4c0b0c9235262f68a27f8b7f501f20fe1d0` |
+
+These identify tested binaries, **not a minimum supported release version**.
+Earlier previews may lack the driver fix for chunked UTF-8-to-WCHAR reads at
+non-BMP character boundaries. Obtain a build containing that fix and run the
+Unicode/chunk-boundary tests below. macOS has not been qualified for this milestone;
+do not infer macOS support from Linux results or the shared version number.
+The provider owner must confirm the minimum supported build before release.
+
+The repository's normal CI currently uses shipped providers and does not set
+`MSSQL_TEST_NATIVE_JSON`; native JSON integration cases therefore skip there.
+Local preview results are not CI coverage. A preview CI leg requires an
+authorized, checksum-pinned artifact source, access controls that do not expose
+development binaries to untrusted PRs, and SQL Server 2025. Once that runtime is
+provisioned, set the flag and run `python -m pytest tests/test_json.py -q` using
+the isolated runtime below. A configured native leg must fail on unsupported
+metadata or execution errors, not silently skip them.
+
+Release follow-ups remain: authorize and provision that CI leg, qualify the
+platform/server matrix, and replace the production Linux loader's hard-coded
+`.so.2.1` suffix with the actual shipping artifact contract before adopting 18.7.
+The development symlink below is not that production fix.
+
+Compatibility qualification also found a separate legacy-provider limitation:
+with the shipped Windows driver `18.06.0002` and SQL Server `17.0.5005.3`,
+`SELECT CAST(N'{}' AS JSON)` reports SQL type `12`, then fetching raises
+`SQLGetData returned an invalid UTF-16 LOB source length`. The same failure
+reproduces with a rebuilt pre-JSON main revision (`389a318a`); an ordinary
+`VARCHAR(MAX)` control succeeds. This PR does not fix that legacy fetch path
+or promise JSON text retrieval through it. The qualified preview reports
+native `-157` metadata and passes the JSON retrieval tests.
+
 Use an owned SQL Server 2025 instance (or a qualified Azure SQL database), a
 development virtual environment, and the repository's
 [build guide](../.github/prompts/build-ddbc.prompt.md). Set `DB_CONNECTION_STRING`
@@ -100,6 +141,9 @@ Set `MSSQL_PYTHON_NATIVE_PROVIDER=msodbcsql18` and
 by `JSON_SOURCE` (semicolon-separated on Windows, colon-separated on Linux).
 Run from `JSON_RUN`, not from a checkout containing another provider package.
 This keeps subprocess tests on the same runtime.
+Install the project's pinned `mssql-python-rs` dependency in the disposable
+environment as well: the bulk-copy rejection regressions exercise the actual
+core, not a substitute or an older preinstalled package.
 
 Using the selected venv's Python, verify provenance and native metadata before
 running tests:

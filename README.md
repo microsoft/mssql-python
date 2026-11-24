@@ -256,6 +256,12 @@ for each execution, including subsequent `nextset()` results; changing it while
 fetching affects only the next execution. Only native `SQL_SS_JSON` (`-157`)
 metadata triggers decoding: ordinary VARCHAR/NVARCHAR is never inspected or
 parsed. `description` continues to report `str` as the underlying type.
+An older driver can report a server JSON column as VARCHAR; selecting `"objects"`
+cannot turn that metadata into native JSON. A native JSON bind rejected with
+SQLSTATE `HY004` raises `NotSupportedError` with the original driver diagnostic.
+Other provider/server errors retain their normal DB-API classification. With the
+qualified preview on SQL Server 2022, native JSON input raises `ProgrammingError`
+(`42000`); the connection remains usable. No statement is replayed as text.
 `Row` remains the outer container; each decoded dict/list is an independent
 column value. SQL NULL remains `None`, and registered output converters take
 precedence. Invalid native JSON raises `DataError`, without returning text as a
@@ -266,7 +272,9 @@ For isolated preview setup, provenance checks, and the live JSON test command,
 see [Testing native JSON](docs/native-json-preview.md).
 
 Native JSON uses UTF-16 buffers, complete LOB retrieval, and scalar streaming for
-large inputs. Array binding supports mixed Json/NULL and explicitly typed
+large inputs, including oversized documents in `executemany()`. Such batches
+use row-wise streaming rather than padding every row to the largest document.
+Array binding supports mixed Json/NULL and explicitly typed
 all-NULL columns; use `setinputsizes([SQL_JSON])` when SQL Server cannot infer
 a NULL parameter's type (for example, temporary tables). Native JSON hints accept
 only `Json` or `None`, not bare pre-serialized strings. JSON-bound batch columns likewise
@@ -296,6 +304,10 @@ of this synchronous constant; type codes must not be passed between backends.
 full design's Arrow text-retrieval release gate. JSON support for Arrow, TVPs,
 async execution, and bulk copy remains deferred; row fetch APIs are the supported
 output path and `Json` is a synchronous input type.
+Bulk copy retains its ordinary row iterator and relies on the Rust core's cell
+validation. Its specific unsupported-`Json` diagnostic becomes `NotSupportedError`;
+later invalid rows are rejected when consumed, not prevalidated ahead of earlier
+batches. Other core errors propagate unchanged.
 
 ### Batch parameter inference
 
