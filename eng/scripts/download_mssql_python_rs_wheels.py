@@ -62,7 +62,11 @@ def _fetch(url: str, consume):
 
 
 def verify_staged_wheels(
-    output_dir: Path, distribution_version_file: Path, *, version: str | None = None
+    output_dir: Path,
+    distribution_version_file: Path,
+    *,
+    version: str | None = None,
+    index_url: str | None = None,
 ) -> list[Path]:
     """Recheck early-stage transport without a network fallback or version re-resolution."""
     runtime = resolve_runtime(distribution_version_file, version=version)
@@ -70,7 +74,7 @@ def verify_staged_wheels(
     if (
         receipt["distribution_version"] != runtime.version
         or receipt["version_override"] != runtime.version_override
-        or receipt["index_url"] != runtime.index_url
+        or receipt["index_url"].rstrip("/") != (index_url or runtime.index_url).rstrip("/")
     ):
         raise ValueError("Staged runtime selection does not match the effective runtime")
     hashes = receipt["wheel_sha256"]
@@ -213,7 +217,10 @@ def main() -> None:
     args = parser.parse_args()
     if args.verify_only:
         wheels = verify_staged_wheels(
-            args.output_dir, args.distribution_version_file, version=args.version
+            args.output_dir,
+            args.distribution_version_file,
+            version=args.version,
+            index_url=args.index_url,
         )
     else:
         wheels = download_wheels(

@@ -4,6 +4,7 @@ import io
 import json
 import os
 import subprocess
+import sys
 import urllib.error
 import zipfile
 from pathlib import Path
@@ -336,3 +337,40 @@ def test_rechecks_early_transport_offline(tmp_path, monkeypatch, tamper):
             downloader.verify_staged_wheels(output, pin)
     else:
         assert downloader.verify_staged_wheels(output, pin) == [output / name]
+
+
+@pytest.mark.parametrize("download_slash", ["", "/"])
+@pytest.mark.parametrize("verify_slash", ["", "/"])
+def test_explicit_index_round_trip_is_verified_offline(
+    tmp_path, monkeypatch, download_slash, verify_slash
+):
+    index = "https://mirror.example.test/simple"
+    name, _, _ = _index(monkeypatch)
+    pin, output = _pin(tmp_path), tmp_path / "out"
+    downloader.download_wheels(index + download_slash, pin, output)
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("Offline verification must not access the network")
+
+    monkeypatch.setattr(downloader.urllib.request, "urlopen", forbidden)
+    assert downloader.verify_staged_wheels(output, pin, index_url=index + verify_slash) == [
+        output / name
+    ]
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "download_mssql_python_rs_wheels.py",
+            "--verify-only",
+            "--index-url",
+            index + verify_slash,
+            "--output-dir",
+            str(output),
+            "--distribution-version-file",
+            str(pin),
+        ],
+    )
+    downloader.main()
+    for wrong_index in (None, "https://different.example.test/simple"):
+        with pytest.raises(ValueError, match="effective runtime"):
+            downloader.verify_staged_wheels(output, pin, index_url=wrong_index)
