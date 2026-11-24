@@ -893,6 +893,71 @@ int main() {
                 }
             });
         }
+        for (bool pooled : {false, true}) {
+            for (bool autocommit : {false, true}) {
+                run("explicit discard reclaims children and releases capacity without check-in",
+                    [pooled, autocommit] {
+                    auto connection = acquire(pooled);
+                    connection->setAutocommit(autocommit);
+                    auto statement = connection->allocStatementHandle();
+                    startWork(statement);
+                    const auto nativeStatement = statement->get();
+                    const auto dbc = handles.at(nativeStatement)->parent;
+                    calls.clear();
+                    connection->discard();
+                    expectCalls({"off", "rollback", "disconnect", "free"});
+                    require(handles.count(nativeStatement) == 0 && handles.count(dbc) == 0,
+                            "Explicit discard retained native handles");
+                    require(statement->isImplicitlyFreed(), "Discard retained a usable alias");
+                    require(commits == 0, "Explicit discard committed pending work");
+                    calls.clear();
+                    connection->discard();
+                    statement.reset();
+                    connection.reset();
+                    expectCalls({});
+                    connection = acquire(pooled);
+                    require(logins == 2, "Discard did not replace the physical connection");
+                    connection->close();
+                });
+            }
+            run("explicit discard retires a connection after failed child release", [pooled] {
+                auto connection = acquire(pooled);
+                auto statement = connection->allocStatementHandle();
+                failNext = "free";
+                require(statement->freeHandle() == SQL_ERROR, "Expected failed child release");
+                connection->discard();
+                require(statement->isImplicitlyFreed(), "Failed child survived explicit discard");
+                connection = acquire(pooled);
+                require(logins == 2, "Failed child prevented release of pool capacity");
+                connection->close();
+            });
+        }
+        for (bool retrySucceeds : {false, true}) {
+            run("checked cleanup reads poisoned handle diagnostics without releasing bound storage",
+                [retrySucceeds] {
+                auto connection = acquire();
+                auto statement = connection->allocStatementHandle();
+                auto storage = std::make_shared<int>(42);
+                std::weak_ptr<int> retained = storage;
+                statement->retainFailedParameters({storage});
+                storage.reset();
+                require(statement->get() == nullptr, "Poisoned statement remained executable");
+                failNext = "free";
+                ErrorInfo error;
+                require(statement->freeHandle(&error) == SQL_ERROR, "Expected failed cleanup retry");
+                require(error.sqlState == "HY000" && error.ddbcErrorMsg == "failed",
+                        "Checked cleanup lost the live poisoned handle's diagnostics");
+                require(statement->get() == nullptr, "Failed cleanup exposed poisoned statement");
+                require(!retained.expired(), "Failed cleanup released bound parameter storage");
+                if (retrySucceeds) {
+                    statement->freeChecked();
+                } else {
+                    connection->discard();
+                }
+                require(retained.expired(), "Successful teardown retained parameter storage");
+                connection->discard();
+            });
+        }
         run("failed cursor free discards the connection and invalidates surviving aliases", [] {
             warm();
             auto connection = acquire();

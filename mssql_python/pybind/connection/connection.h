@@ -161,6 +161,7 @@ class ConnectionHandle {
     ~ConnectionHandle();
 
     void close(bool rollbackBeforeDisconnect = false);
+    void discard();
     void commit();
     void rollback();
     void setAutocommit(bool enabled);
