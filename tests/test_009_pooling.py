@@ -1696,6 +1696,179 @@ def test_unclosed_native_handle_destructor_releases_pool_capacity(conn_str):
 
 
 @pytest.mark.parametrize("use_pool", [False, True])
+def test_native_checked_cleanup_and_discard(conn_str, use_pool):
+    """Checked release reports invalid handles; discard retires rather than parks a DBC."""
+    _run_in_subprocess(
+        f"use_pool = {use_pool!r}\n" + textwrap.dedent("""
+            import os
+            import uuid
+            from mssql_python import ddbc_bindings as ddbc, pooling, OperationalError
+
+            pooling(max_size=1, idle_timeout=30)
+            key = "checked_cleanup_" + uuid.uuid4().hex
+            conn_str = os.environ["DB_CONNECTION_STRING"]
+            native = ddbc.Connection(conn_str, use_pool, {}, key, None)
+
+            def connection_id(connection):
+                statement = connection.alloc_statement_handle()
+                try:
+                    assert ddbc.DDBCSQLExecDirect(
+                        statement,
+                        "SELECT connection_id FROM sys.dm_exec_connections "
+                        "WHERE session_id = @@SPID",
+                    ) in (0, 1)
+                    row = []
+                    assert ddbc.DDBCSQLFetchOne(statement, row) in (0, 1)
+                    assert len(row) == 1
+                    return row[0]
+                finally:
+                    statement._free_checked()
+
+            try:
+                original_id = connection_id(native)
+                statement = native.alloc_statement_handle()
+                statement._free_checked()
+                try:
+                    statement._free_checked()
+                except OperationalError as error:
+                    assert "Invalid handle!" in str(error)
+                else:
+                    raise AssertionError("Checked release suppressed SQL_INVALID_HANDLE")
+
+                native.set_autocommit(False)
+                pending = native.alloc_statement_handle()
+                assert ddbc.DDBCSQLExecDirect(
+                    pending, "CREATE TABLE #discard_pending (id INT); "
+                    "INSERT INTO #discard_pending VALUES (1)"
+                ) in (0, 1)
+                native.discard()
+                native.discard()
+                pending._free_checked()
+                del pending
+                replacement = ddbc.Connection(conn_str, use_pool, {}, key, None)
+                try:
+                    assert connection_id(replacement) != original_id, "Discard parked the DBC"
+                    # The size-one pool must remain usable after explicit retirement.
+                    replacement.close()
+                finally:
+                    replacement.discard()
+            finally:
+                native.discard()
+                pooling(enabled=False)
+            """),
+        conn_str,
+    )
+
+
+@pytest.mark.parametrize("use_pool", [False, True])
+def test_native_checked_cleanup_failure_diagnostics(conn_str, use_pool):
+    """Failure injection stays isolated and never frees a live handle prematurely."""
+    from mssql_python import ddbc_bindings
+
+    addresses = getattr(ddbc_bindings.module, "_arrow_test_pointer_addresses", {})
+    if "SQLFreeHandle_ptr" not in addresses:
+        if os.getenv("MSSQL_ARROW_TEST_INTERPOSITION", "").upper() in ("1", "ON"):
+            pytest.fail("Requested native cleanup pointer interposition is unavailable")
+        pytest.skip("Requires a test-interposition build")
+    _run_in_subprocess(
+        f"use_pool = {use_pool!r}\n" + textwrap.dedent("""
+            import ctypes as ct
+            import os
+            from mssql_python import ddbc_bindings as ddbc, pooling, OperationalError
+
+            pooling(max_size=1, idle_timeout=30)
+            native = ddbc.Connection(os.environ["DB_CONNECTION_STRING"], use_pool)
+            addresses = getattr(ddbc.module, "_arrow_test_pointer_addresses", {})
+            library = ct.CDLL(ddbc.module.__file__)
+            def pointer(name):
+                if name in addresses:
+                    return ct.c_void_p.from_address(addresses[name])
+                return ct.c_void_p.in_dll(library, name)
+            free_pointer = pointer("SQLFreeHandle_ptr")
+            diag_pointer = pointer("SQLGetDiagRec_ptr")
+            original_free, original_diag = free_pointer.value, diag_pointer.value
+            callback = ct.WINFUNCTYPE if os.name == "nt" else ct.CFUNCTYPE
+            free_type = callback(ct.c_short, ct.c_short, ct.c_void_p)
+            diag_type = callback(
+                ct.c_short, ct.c_short, ct.c_void_p, ct.c_short,
+                ct.POINTER(ct.c_uint16), ct.POINTER(ct.c_int),
+                ct.POINTER(ct.c_uint16), ct.c_short, ct.POINTER(ct.c_short),
+            )
+            try:
+                for result, has_record in [(-1, True), (-1, False), (-2, False)]:
+                    statement = native.alloc_statement_handle()
+                    diag_calls = []
+                    @free_type
+                    def fail_free(handle_type, handle):
+                        return result
+                    @diag_type
+                    def diagnostic(handle_type, handle, record, state, number, message,
+                                   capacity, length):
+                        diag_calls.append((handle_type, record))
+                        if not has_record:
+                            return 100
+                        for index, value in enumerate("HY008\\0"):
+                            state[index] = ord(value)
+                        text = "injected cleanup failure"
+                        for index, value in enumerate(text + "\\0"):
+                            message[index] = ord(value)
+                        number[0] = 0
+                        length[0] = len(text)
+                        return 0
+                    free_pointer.value = ct.cast(fail_free, ct.c_void_p).value
+                    diag_pointer.value = ct.cast(diagnostic, ct.c_void_p).value
+                    try:
+                        try:
+                            statement._free_checked()
+                        except OperationalError as error:
+                            if has_record:
+                                assert error.driver_error == "Operation canceled"
+                                assert error.ddbc_error == "injected cleanup failure"
+                            else:
+                                assert error.driver_error == "General error"
+                                assert error.ddbc_error == (
+                                    "Invalid handle!" if result == -2 else ""
+                                )
+                        else:
+                            raise AssertionError("Checked release suppressed a native failure")
+                        assert diag_calls == ([] if result == -2 else [(3, 1)])
+                    finally:
+                        free_pointer.value, diag_pointer.value = original_free, original_diag
+                        statement._free_checked()
+                native.discard()
+                replacement = ddbc.Connection(os.environ["DB_CONNECTION_STRING"], use_pool)
+                replacement.close()
+            finally:
+                free_pointer.value, diag_pointer.value = original_free, original_diag
+                native.discard()
+                pooling(enabled=False)
+            """),
+        conn_str,
+    )
+
+
+@pytest.mark.parametrize("platform", ["win32", "linux", "darwin"])
+@pytest.mark.parametrize("requested", [None, "1", "ON"])
+def test_native_checked_cleanup_requires_compiled_controls(monkeypatch, platform, requested):
+    from mssql_python import ddbc_bindings
+
+    monkeypatch.delattr(ddbc_bindings.module, "_arrow_test_pointer_addresses", raising=False)
+    monkeypatch.setattr(sys, "platform", platform)
+    if requested is None:
+        monkeypatch.delenv("MSSQL_ARROW_TEST_INTERPOSITION", raising=False)
+    else:
+        monkeypatch.setenv("MSSQL_ARROW_TEST_INTERPOSITION", requested)
+
+    def unexpected_subprocess(*args):
+        pytest.fail("Exported ODBC globals must not bypass compiled test controls")
+
+    monkeypatch.setitem(globals(), "_run_in_subprocess", unexpected_subprocess)
+    expected = pytest.skip.Exception if requested is None else pytest.fail.Exception
+    with pytest.raises(expected, match="test-interposition build|interposition is unavailable"):
+        test_native_checked_cleanup_failure_diagnostics("", False)
+
+
+@pytest.mark.parametrize("use_pool", [False, True])
 @pytest.mark.parametrize("autocommit", [False, True])
 def test_native_destructor_rolls_back_pending_dml(conn_str, use_pool, autocommit):
     """Native destruction must release transactions, locks, and the server session."""
