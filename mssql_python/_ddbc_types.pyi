@@ -40,6 +40,7 @@ __all__ = [
     "ErrorInfo",
     "GetDriverPathCpp",
     "NumericData",
+    "NativeDatabaseError",
     "ParamInfo",
     "SQLExecuteMany",
     "SQL_NO_TOTAL",
@@ -127,6 +128,13 @@ class NumericData:
 class ErrorInfo:
     sqlState: str
     ddbcErrorMsg: str
+    nativeError: int | None
+
+class NativeDatabaseError(RuntimeError):
+    sqlstate: str | None
+    native_error: int | None
+    ddbc_error: str
+    map_sqlstate: bool
 
 class _RowMappingBase:
     _row: Row

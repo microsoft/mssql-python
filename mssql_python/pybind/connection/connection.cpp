@@ -253,21 +253,10 @@ void Connection::abandonDuringFinalization() noexcept {
     _dbcHandle.reset();
 }
 
-// TODO(microsoft): Add an exception class in C++ for error handling,
-// DB spec compliant
 void Connection::checkError(SQLRETURN ret) const {
     if (!SQL_SUCCEEDED(ret)) {
-        // Format: "SQLSTATE:XXXXX:<odbc_error_message>" — parsed by _raise_connection_error()
         ErrorInfo err = SQLCheckError_Wrap(SQL_HANDLE_DBC, _dbcHandle, ret);
-        std::string sqlState = err.sqlState;
-        std::string errorMsg = err.ddbcErrorMsg;
-        // Only add SQLSTATE prefix if we have a valid 5-character code
-        if (sqlState.length() == 5) {
-            ThrowStdException("SQLSTATE:" + sqlState + ":" + errorMsg);
-        } else {
-            // No valid SQLSTATE (e.g., SQL_INVALID_HANDLE) — throw clean error message
-            ThrowStdException(errorMsg);
-        }
+        throw NativeDatabaseError(err);
     }
 }
 
@@ -408,9 +397,7 @@ SqlHandlePtr Connection::allocStatementHandle() {
         if (!SQL_SUCCEEDED(ret)) {
             // Snapshot diagnostics before disconnect can overwrite/free the DBC.
             ErrorInfo err = SQLReadError(SQL_HANDLE_DBC, _dbcHandle->get(), ret);
-            ThrowStdException(err.sqlState.length() == 5
-                                  ? "SQLSTATE:" + err.sqlState + ":" + err.ddbcErrorMsg
-                                  : err.ddbcErrorMsg);
+            throw NativeDatabaseError(err);
         }
         stmtHandle = std::make_shared<SqlHandle>(static_cast<SQLSMALLINT>(SQL_HANDLE_STMT),
                                                 stmt, _cleanupState);
@@ -649,7 +636,8 @@ void Connection::applyAttrsBefore(const py::dict& attrs) {
         if (!SQL_SUCCEEDED(ret)) {
             std::string attrName = std::to_string(key);
             std::string errorMsg = "Failed to set attribute " + attrName + " before connect";
-            ThrowStdException(errorMsg);
+            ErrorInfo error = SQLCheckError_Wrap(SQL_HANDLE_DBC, _dbcHandle, ret);
+            throw NativeDatabaseError(error, errorMsg);
         }
     }
 }
@@ -782,7 +770,7 @@ void Connection::prepareForPool() {
     _poolSessionReset = false;
     clearResultMetadata();
     SQLRETURN ret;
-    std::string statementError;
+    std::optional<ErrorInfo> statementError;
     bool sessionReset = false;
     {
         // One GIL release and metadata invalidation for the whole sequence.
@@ -817,17 +805,11 @@ void Connection::prepareForPool() {
                     ret = SQLExecDirect_ptr(statement,
                                             reinterpretU16stringAsSqlWChar(rollbackQuery), SQL_NTS);
                     if (!SQL_SUCCEEDED(ret)) {
-                        ErrorInfo error = SQLReadError(SQL_HANDLE_STMT, statement, ret);
-                        statementError = error.sqlState.length() == 5
-                            ? "SQLSTATE:" + error.sqlState + ":" + error.ddbcErrorMsg
-                            : error.ddbcErrorMsg;
+                        statementError = SQLReadError(SQL_HANDLE_STMT, statement, ret);
                     }
                     SQLRETURN freeRet = SQLFreeHandle_ptr(SQL_HANDLE_STMT, statement);
                     if (SQL_SUCCEEDED(ret) && !SQL_SUCCEEDED(freeRet)) {
-                        ErrorInfo error = SQLReadError(SQL_HANDLE_STMT, statement, freeRet);
-                        statementError = error.sqlState.length() == 5
-                            ? "SQLSTATE:" + error.sqlState + ":" + error.ddbcErrorMsg
-                            : error.ddbcErrorMsg;
+                        statementError = SQLReadError(SQL_HANDLE_STMT, statement, freeRet);
                         ret = freeRet;
                     }
                     sessionReset = SQL_SUCCEEDED(ret);
@@ -845,8 +827,8 @@ void Connection::prepareForPool() {
             }
         }
     }
-    if (!statementError.empty()) {
-        ThrowStdException(statementError);
+    if (statementError) {
+        throw NativeDatabaseError(*statementError);
     }
     checkError(ret);
     // A weak_ptr expires before its destructor finishes. Read the count before
@@ -1125,7 +1107,7 @@ SQLULEN ConnectionHandle::getConnectionTimeout() const {
                                          &timeout, 0, nullptr);
     if (!SQL_SUCCEEDED(ret)) {
         ErrorInfo error = SQLCheckError_Wrap(SQL_HANDLE_DBC, handle, ret);
-        ThrowStdException("Failed to read connection timeout: " + error.ddbcErrorMsg);
+        throw NativeDatabaseError(error, "Failed to read connection timeout: " + error.ddbcErrorMsg);
     }
     return timeout;
 }
@@ -1147,24 +1129,17 @@ void ConnectionHandle::setAttr(int attribute, py::object value) {
     // Use existing setAttribute with better error handling
     SQLRETURN ret = _conn->setAttribute(static_cast<SQLINTEGER>(attribute), value);
     if (!SQL_SUCCEEDED(ret)) {
-        // Get detailed error information from ODBC
+        const std::string errorMsg =
+            "Failed to set connection attribute " + std::to_string(attribute);
+        ErrorInfo errorInfo;
         try {
-            ErrorInfo errorInfo = SQLCheckError_Wrap(SQL_HANDLE_DBC, _conn->getDbcHandle(), ret);
-
-            std::string errorMsg =
-                "Failed to set connection attribute " + std::to_string(attribute);
-            if (!errorInfo.ddbcErrorMsg.empty()) {
-                errorMsg += ": " + errorInfo.ddbcErrorMsg;
-            }
-
-            LOG("Connection setAttribute failed: %s", errorMsg.c_str());
-            ThrowStdException(errorMsg);
-        } catch (...) {
-            // Fallback to generic error if detailed error retrieval fails
-            std::string errorMsg =
-                "Failed to set connection attribute " + std::to_string(attribute);
-            LOG("Connection setAttribute failed: %s", errorMsg.c_str());
+            errorInfo = SQLCheckError_Wrap(SQL_HANDLE_DBC, _conn->getDbcHandle(), ret);
+        } catch (const std::runtime_error& error) {
+            LOG("Connection setAttribute diagnostics failed: %s", error.what());
             ThrowStdException(errorMsg);
         }
+        LOG("Connection setAttribute failed: %s", errorMsg.c_str());
+        // Retain the legacy generic message and Python exception selection.
+        throw NativeDatabaseError(errorInfo, errorMsg);
     }
 }

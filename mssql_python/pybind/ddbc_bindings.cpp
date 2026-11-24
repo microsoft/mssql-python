@@ -501,7 +501,8 @@ static SQLRETURN PreResolveUnknownNullTypes(SqlHandle& handle, SQLHANDLE hStmt,
     ErrorInfo error = SQLCheckError_Wrap(SQL_HANDLE_STMT, statementHandle, rc);
     py::object raiseException =
         py::module_::import("mssql_python.exceptions").attr("raise_exception");
-    raiseException(error.sqlState, operation + ": " + error.ddbcErrorMsg);
+    raiseException(error.sqlState, operation + ": " + error.ddbcErrorMsg,
+                   "native_error"_a = error.nativeError);
     throw std::runtime_error(operation);
 }
 
@@ -2083,6 +2084,7 @@ ErrorInfo SQLReadError(SQLSMALLINT handleType, SQLHANDLE rawHandle, SQLRETURN re
 
             errorInfo.sqlState = utf16LeToUtf8Alloc(std::move(sqlStateUtf16));
             errorInfo.ddbcErrorMsg = utf16LeToUtf8Alloc(std::move(messageUtf16));
+            errorInfo.nativeError = nativeError;
         }
     }
     return errorInfo;
@@ -5841,7 +5843,8 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules,
                 LOG("Arrow fetch error: SQLSTATE=%s; message=%s",
                     error.sqlState.c_str(), error.ddbcErrorMsg.c_str());
                 py::module_::import("mssql_python.exceptions")
-                    .attr("raise_exception")(error.sqlState, error.ddbcErrorMsg);
+                    .attr("raise_exception")(error.sqlState, error.ddbcErrorMsg,
+                                             "native_error"_a = error.nativeError);
             }
         }
         fetchStateGuard.observe(ret);
@@ -6826,6 +6829,26 @@ void DDBCSetDecimalSeparator(const std::string& separator) {
 PYBIND11_MODULE(ddbc_bindings, m) {
     m.doc() = "msodbcsql driver api bindings for Python";
 
+    auto nativeErrorType = py::reinterpret_steal<py::object>(
+        PyErr_NewException("ddbc_bindings.NativeDatabaseError", PyExc_RuntimeError, nullptr));
+    if (!nativeErrorType) throw py::error_already_set();
+    m.add_object("NativeDatabaseError", std::move(nativeErrorType));
+    py::register_local_exception_translator([](std::exception_ptr p) {
+        try {
+            if (p) std::rethrow_exception(p);
+        } catch (const NativeDatabaseError& error) {
+            // Resolve per interpreter rather than retaining a static Python handle.
+            auto type = py::module_::import("ddbc_bindings").attr("NativeDatabaseError");
+            auto instance = type(error.what());
+            instance.attr("sqlstate") = error.diagnostic.sqlState.empty()
+                ? py::object(py::none()) : py::object(py::str(error.diagnostic.sqlState));
+            instance.attr("native_error") = py::cast(error.diagnostic.nativeError);
+            instance.attr("ddbc_error") = py::str(error.diagnostic.ddbcErrorMsg);
+            instance.attr("map_sqlstate") = py::bool_(error.mapSqlState);
+            PyErr_SetObject(type.ptr(), instance.ptr());
+        }
+    });
+
     PyTypeCache::initialize();
     NativeFetch::bind(m);
 
@@ -6879,7 +6902,8 @@ PYBIND11_MODULE(ddbc_bindings, m) {
     // Define error info class
     py::class_<ErrorInfo>(m, "ErrorInfo")
         .def_readwrite("sqlState", &ErrorInfo::sqlState)
-        .def_readwrite("ddbcErrorMsg", &ErrorInfo::ddbcErrorMsg);
+        .def_readwrite("ddbcErrorMsg", &ErrorInfo::ddbcErrorMsg)
+        .def_readwrite("nativeError", &ErrorInfo::nativeError);
 
     py::class_<SqlHandle, SqlHandlePtr>(m, "SqlHandle")
         .def("free", &SqlHandle::free, "Free the handle")

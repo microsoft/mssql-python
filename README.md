@@ -151,12 +151,17 @@ The Microsoft **mssql-python** module is designed to be fully compliant with the
  
 By adhering to the DB API 2.0 specification, the mssql-python module ensures compatibility with a wide range of Python applications and frameworks, making it a versatile choice for developers working with Microsoft SQL Server, Azure SQL Database, and Azure SQL Managed Instance.
  
-### Error classification with SQLSTATE
+### Error classification with SQLSTATE and native error numbers
 
-DB-API exceptions expose `sqlstate: str | None`. Synchronous ODBC errors retain
-their diagnostic SQLSTATE, including codes not recognized by the driver's
-exception mapping. When no SQLSTATE is available, the attribute is `None`.
-Python-created errors and async Rust/TDS errors default to `None`.
+DB-API exceptions expose `sqlstate: str | None` and `native_error: int | None`.
+Synchronous ODBC errors retain the SQLSTATE and native number from the same
+selected diagnostic record, including SQLSTATE codes not recognized by the
+driver's exception mapping. `native_error` is returned directly by ODBC, not
+parsed from message text: SQL Server errors commonly provide engine numbers
+(for example, 208 for a missing table), while driver errors can provide 0 or
+provider-specific numbers. A genuine 0 is retained; unavailable metadata is
+`None`. Python-created errors default to `None`. Async Rust/TDS errors do not
+currently provide this metadata and also default to `None`.
 
 ```python
 from mssql_python import Error
@@ -171,10 +176,9 @@ except Error as exc:
 ```
 
 Existing exception types, two-argument constructors, messages, and `args` are
-unchanged. Constructors also accept the optional keyword-only `sqlstate` argument,
-and SQLSTATE metadata survives pickling and copying. A SQLSTATE alone does not
-guarantee that retrying an operation is safe. Native SQL Server error numbers are
-not exposed by this attribute.
+unchanged. Constructors also accept optional keyword-only `sqlstate` and
+`native_error` arguments, and both survive pickling and copying. Neither
+attribute alone guarantees that retrying an operation is safe.
 
 ### Enhanced Pythonic Features
  
