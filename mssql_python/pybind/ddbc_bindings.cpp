@@ -7049,7 +7049,11 @@ void DDBCSetDecimalSeparator(const std::string& separator) {
 #define ARCHITECTURE "win64"  // Default to win64 if not defined during compilation
 #endif
 
+#if defined(__GNUG__) && !defined(_WIN32)
+class __attribute__((visibility("hidden"))) ScopedQueryOperation {
+#else
 class ScopedQueryOperation {
+#endif
     QueryAdmission& admission;
     QueryOperationSlot& slot;
     py::handle cursor;

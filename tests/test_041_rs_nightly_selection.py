@@ -262,7 +262,9 @@ def test_explicit_version_takes_precedence_over_environment(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "version", ["latest", ">=0.3.0", "0.3.0\n##vso[bad]", "0.3.0;echo bad", "0.3.0rc1"]
+    "version",
+    ["latest", ">=0.3.0", "0.3.0\n##vso[bad]", "0.3.0;echo bad", "0.3.0rc1"],
+    ids=["latest", "range", "logging-command-injection", "shell-injection", "prerelease"],
 )
 def test_invalid_override_fails_before_network(monkeypatch, version):
     def unexpected_network(*args, **kwargs):
@@ -320,7 +322,11 @@ def test_output_artifact_directory_is_rejected_without_partial_write(tmp_path):
     assert not (output / "runtime-selection.json").exists()
 
 
-@pytest.mark.parametrize("version", ["bad", "0.3.0\n##vso[bad]", "0.3.0\n"])
+@pytest.mark.parametrize(
+    "version",
+    ["bad", "0.3.0\n##vso[bad]", "0.3.0\n"],
+    ids=["invalid", "logging-command-injection", "trailing-newline"],
+)
 def test_artifact_writer_rejects_unvalidated_version(tmp_path, version):
     selection = replace(resolver.select_nightly(_page()), version=version)
     with pytest.raises(ValueError):

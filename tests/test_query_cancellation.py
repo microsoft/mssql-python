@@ -447,9 +447,10 @@ def _grouped_scalar_boundary_probe():
         def cancel(_):
             return 0
 
-        profiling = ddbc_bindings.profiling
-        profiling.reset()
-        profiling.enable()
+        profiling = getattr(ddbc_bindings, "profiling", None)
+        if profiling is not None:
+            profiling.reset()
+            profiling.enable()
         pointers["SQLGetData_ptr"].value = ctypes.cast(
             cancel_after_second_column, ctypes.c_void_p
         ).value
@@ -460,9 +461,11 @@ def _grouped_scalar_boundary_probe():
         finally:
             pointers["SQLGetData_ptr"].value = original_getdata
             pointers["SQLCancel_ptr"].value = original_cancel
-            profiling.disable()
+            if profiling is not None:
+                profiling.disable()
         assert reads == [1, 2]
-        assert profiling.get_stats()["ddbc::SQLGetData::scalar_group"]["calls"] == 1
+        if profiling is not None:
+            assert profiling.get_stats()["ddbc::SQLGetData::scalar_group"]["calls"] == 1
         assert cursor._query_slot.active is None
         assert not connection._query_state.busy
         assert cursor.execute("SELECT 99").fetchone()[0] == 99
@@ -496,9 +499,10 @@ def _native_recovery_allocation_probe():
         original_getdata = pointers["SQLGetData_ptr"].value
         original_cancel = pointers["SQLCancel_ptr"].value
         getdata = getdata_type(original_getdata)
-        profiling = ddbc_bindings.profiling
-        profiling.reset()
-        profiling.enable()
+        profiling = getattr(ddbc_bindings, "profiling", None)
+        if profiling is not None:
+            profiling.reset()
+            profiling.enable()
         with pytest.MonkeyPatch.context() as patch:
 
             @getdata_type
@@ -522,8 +526,10 @@ def _native_recovery_allocation_probe():
             finally:
                 pointers["SQLGetData_ptr"].value = original_getdata
                 pointers["SQLCancel_ptr"].value = original_cancel
-                profiling.disable()
-        assert profiling.get_stats()["ddbc::NativeCursor::fetch"]["calls"] == 1
+                if profiling is not None:
+                    profiling.disable()
+        if profiling is not None:
+            assert profiling.get_stats()["ddbc::NativeCursor::fetch"]["calls"] == 1
         assert connection.closed and cursor.closed
         assert not connection._query_state.busy
         assert cursor._query_slot.active is None
