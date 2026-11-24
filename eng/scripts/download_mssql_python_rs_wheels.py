@@ -5,9 +5,14 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import http.client
 import json
 import re
 import shutil
+import socket
+import tempfile
+import time
+import urllib.error
 import urllib.request
 import zipfile
 from email.parser import BytesParser
@@ -23,6 +28,69 @@ else:
     from mssql_python_rs import DEFAULT_INDEX, DEV_INDEX, VERSION_FILE, resolve_runtime
 
 PACKAGE_ID = "mssql-python-rs"
+DOWNLOAD_ATTEMPTS = 3
+
+
+def _transient(error: Exception) -> bool:
+    if isinstance(error, urllib.error.HTTPError):
+        return error.code in {408, 429, 500, 502, 503, 504}
+    if isinstance(error, urllib.error.URLError):
+        error = error.reason
+    return isinstance(
+        error,
+        (TimeoutError, socket.gaierror, ConnectionError, http.client.IncompleteRead),
+    )
+
+
+def _fetch(url: str, consume):
+    """Retry only transient transport failures; never retry invalid wheel contents."""
+    for attempt in range(DOWNLOAD_ATTEMPTS):
+        try:
+            with urllib.request.urlopen(url, timeout=120) as response:
+                return consume(response)
+        except (
+            urllib.error.URLError,
+            TimeoutError,
+            ConnectionError,
+            http.client.IncompleteRead,
+        ) as error:
+            if not _transient(error) or attempt + 1 == DOWNLOAD_ATTEMPTS:
+                raise
+            delay = 2 ** (attempt + 1)
+            print(f"Transient runtime download failure; retry {attempt + 2}/3 in {delay}s")
+            time.sleep(delay)
+
+
+def verify_staged_wheels(
+    output_dir: Path,
+    distribution_version_file: Path,
+    *,
+    version: str | None = None,
+    index_url: str | None = None,
+) -> list[Path]:
+    """Recheck early-stage transport without a network fallback or version re-resolution."""
+    runtime = resolve_runtime(distribution_version_file, version=version)
+    receipt = json.loads((output_dir / "transport.json").read_text(encoding="utf-8"))
+    if (
+        receipt["distribution_version"] != runtime.version
+        or receipt["version_override"] != runtime.version_override
+        or receipt["index_url"].rstrip("/") != (index_url or runtime.index_url).rstrip("/")
+    ):
+        raise ValueError("Staged runtime selection does not match the effective runtime")
+    hashes = receipt["wheel_sha256"]
+    actual = {path.name for path in output_dir.glob("*.whl")}
+    if not hashes or set(hashes) != actual:
+        raise ValueError("Staged runtime wheel set does not match receipt")
+    wheels = []
+    for name, digest in sorted(hashes.items()):
+        if Path(name).name != name or "/" in name or "\\" in name:
+            raise ValueError("Unsafe staged runtime wheel name")
+        path = output_dir / name
+        if path.is_symlink() or file_sha256(path) != digest:
+            raise ValueError(f"SHA-256 mismatch for {name}")
+        validate_wheel(path, runtime.version)
+        wheels.append(path)
+    return wheels
 
 
 def file_sha256(path: Path) -> str:
@@ -72,8 +140,7 @@ def download_wheels(
     if urlsplit(package_url).scheme != "https":
         raise ValueError("The runtime wheel index must use HTTPS")
     output_dir = mssql_python_build_safety.resolve_safe_output_directory(output_dir)
-    with urllib.request.urlopen(package_url, timeout=120) as response:
-        page = response.read().decode("utf-8")
+    page = _fetch(package_url, lambda response: response.read().decode("utf-8"))
     parser = _WheelLinks()
     parser.feed(page)
     candidates: dict[str, tuple[str, str]] = {}
@@ -101,12 +168,32 @@ def download_wheels(
     staged = []
     for filename, (url, expected_hash) in sorted(candidates.items()):
         destination = output_dir / filename
-        with urllib.request.urlopen(url, timeout=120) as response:
-            with destination.open("wb") as target:
-                shutil.copyfileobj(response, target)
-        if file_sha256(destination) != expected_hash:
-            raise ValueError(f"SHA-256 mismatch for {filename}")
-        validate_wheel(destination, runtime.version)
+
+        def stage(response):
+            # Each attempt starts with a new file, never appending a partial response.
+            with tempfile.NamedTemporaryFile(dir=output_dir, suffix=".part", delete=False) as target:
+                temporary = Path(target.name)
+                try:
+                    shutil.copyfileobj(response, target)
+                    # Sized HTTPResponse reads can silently stop before Content-Length.
+                    remaining = getattr(response, "length", None)
+                    if remaining is not None and remaining > 0:
+                        raise http.client.IncompleteRead(b"", remaining)
+                    target.close()
+                    if file_sha256(temporary) != expected_hash:
+                        raise ValueError(f"SHA-256 mismatch for {filename}")
+                    # Preserve the expected filename for the wheel identity check.
+                    temporary.replace(destination)
+                    try:
+                        validate_wheel(destination, runtime.version)
+                    except (ValueError, zipfile.BadZipFile):
+                        destination.unlink(missing_ok=True)
+                        raise
+                finally:
+                    target.close()
+                    temporary.unlink(missing_ok=True)
+
+        _fetch(url, stage)
         staged.append(destination)
     receipt = {
         "distribution_version": runtime.version,
@@ -126,13 +213,22 @@ def main() -> None:
     parser.add_argument("--version")
     parser.add_argument("--distribution-version-file", type=Path, default=VERSION_FILE)
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--verify-only", action="store_true")
     args = parser.parse_args()
-    wheels = download_wheels(
-        args.index_url,
-        args.distribution_version_file,
-        args.output_dir,
-        version=args.version,
-    )
+    if args.verify_only:
+        wheels = verify_staged_wheels(
+            args.output_dir,
+            args.distribution_version_file,
+            version=args.version,
+            index_url=args.index_url,
+        )
+    else:
+        wheels = download_wheels(
+            args.index_url,
+            args.distribution_version_file,
+            args.output_dir,
+            version=args.version,
+        )
     for wheel in wheels:
         print(wheel)
 
