@@ -26,6 +26,7 @@ from types import CodeType, FunctionType, GetSetDescriptorType
 from typing import Any, TYPE_CHECKING
 
 from mssql_python import ddbc_bindings, perf_timer
+from mssql_python import _query_operation
 
 if TYPE_CHECKING:
     from mssql_python.cursor import Cursor
@@ -46,14 +47,27 @@ class _Policy:
         self.namespace = namespace
         self.observer = ddbc_bindings._fetch_observer
         self._conversion_ineligible = ddbc_bindings._fetch_conversion_ineligible
+        self._policy_eligible = ddbc_bindings._query_policy_eligible
         self.logger = namespace["logger"]
         # Normal binding and warning initialization must not invalidate this snapshot.
         cursor_type._get_sql_to_c_type_map()
         namespace.setdefault("__warningregistry__", {})
         self.classes = tuple(
-            dict.fromkeys((*cursor_type.__mro__, *row_type.__mro__, *type(self.logger).__mro__))
+            dict.fromkeys(
+                (
+                    *cursor_type.__mro__,
+                    *row_type.__mro__,
+                    *type(self.logger).__mro__,
+                    _query_operation.QueryConnectionState,
+                    _query_operation.QuerySlot,
+                    _query_operation.QueryOperation,
+                    ddbc_bindings._StatementOperation,
+                    ddbc_bindings._QueryAdmission,
+                    ddbc_bindings._QueryOperationSlot,
+                )
+            )
         )
-        self.class_state = [(cls, dict(vars(cls))) for cls in self.classes]
+        self.class_state: list[tuple[type, dict[str, Any]]] = []
         self.functions: list[
             tuple[
                 FunctionType,
@@ -63,26 +77,16 @@ class _Policy:
                 dict[str, Any],
             ]
         ] = []
-        functions = [*fallbacks, namespace["check_error"]]
-        for _, attributes in self.class_state:
-            for value in attributes.values():
-                if isinstance(value, (staticmethod, classmethod)):
-                    functions.append(value.__func__)
-                elif isinstance(value, property):
-                    functions.extend((value.fget, value.fset, value.fdel))
-                else:
-                    functions.append(value)
-        for function in functions:
-            if isinstance(function, FunctionType):
-                self.functions.append(
-                    (
-                        function,
-                        function.__code__,
-                        function.__defaults__,
-                        function.__kwdefaults__,
-                        dict(function.__kwdefaults__ or {}),
-                    )
-                )
+        functions: list[object] = [
+            *fallbacks,
+            namespace["check_error"],
+            *(
+                value
+                for value in vars(_query_operation).values()
+                if isinstance(value, FunctionType)
+            ),
+        ]
+        self._record_types(self.classes, functions)
         self.globals = [
             (namespace, name, namespace[name])
             for name in (
@@ -97,12 +101,30 @@ class _Policy:
         ]
         self.globals.extend(
             (vars(ddbc_bindings), name, getattr(ddbc_bindings, name))
-            for name in ("DDBCSQLFetchOne", "DDBCSQLFetchMany", "construct_rows")
+            for name in (
+                "DDBCSQLFetchOne",
+                "DDBCSQLFetchMany",
+                "construct_rows",
+                "_StatementOperation",
+                "_QueryAdmission",
+                "_QueryOperationSlot",
+                "_run_query_operation",
+                "_query_policy_eligible",
+                "_watch_fetch_dependencies",
+                "_watch_query_policy",
+            )
         )
         self.globals.append((row_type._fast_create.__globals__, "Row", row_type))
         self.namespaces = [
-            (scope, {key: value for key, value in scope.items() if key != "_NATIVE_FETCH_RUNTIME"})
-            for scope in (namespace, row_type._fast_create.__globals__)
+            (
+                scope,
+                {
+                    key: value
+                    for key, value in scope.items()
+                    if key not in ("_NATIVE_FETCH_RUNTIME", "_NATIVE_QUERY_RUNTIME")
+                },
+            )
+            for scope in (namespace, row_type._fast_create.__globals__, vars(_query_operation))
         ]
         self.dicts = tuple(
             [
@@ -111,12 +133,80 @@ class _Policy:
                 vars(perf_timer),
                 vars(self.logger),
                 row_type._fast_create.__globals__,
+                vars(_query_operation),
             ]
             + [kwdefaults for _, _, _, kwdefaults, _ in self.functions if kwdefaults is not None]
         )
         ddbc_bindings._watch_fetch_dependencies(
             self.observer, self.dicts, self.classes + (type(self.logger),)
         )
+
+    def _record_types(self, classes: tuple[type, ...], functions: list[object]) -> None:
+        for cls in classes:
+            attributes = dict(vars(cls))
+            self.class_state.append((cls, attributes))
+            for value in attributes.values():
+                if isinstance(value, (staticmethod, classmethod)):
+                    functions.append(value.__func__)
+                elif isinstance(value, property):
+                    functions.extend((value.fget, value.fset, value.fdel))
+                else:
+                    functions.append(value)
+        known = {function for function, *_ in self.functions}
+        for function in functions:
+            if not isinstance(function, FunctionType) or function in known:
+                continue
+            known.add(function)
+            self.functions.append(
+                (
+                    function,
+                    function.__code__,
+                    function.__defaults__,
+                    function.__kwdefaults__,
+                    dict(function.__kwdefaults__ or {}),
+                )
+            )
+            wrapped = getattr(function, "__wrapped__", None)
+            if isinstance(wrapped, FunctionType):
+                functions.append(wrapped)
+
+    def query_eligible(self) -> bool:
+        return (
+            ddbc_bindings._watch_fetch_dependencies(self.observer, (), self.classes)
+            and self.unchanged()
+        )
+
+    def unchanged(self) -> bool:
+        for cls, original in self.class_state:
+            current: Mapping[str, Any] = vars(cls)
+            if len(current) != len(original) or any(
+                name not in current or current[name] is not value
+                for name, value in original.items()
+            ):
+                return False
+        for function, code, defaults, kwdefaults, keywords in self.functions:
+            current_keywords = kwdefaults or {}
+            if (
+                function.__code__ is not code
+                or function.__defaults__ is not defaults
+                or function.__kwdefaults__ is not kwdefaults
+                or len(current_keywords) != len(keywords)
+                or any(
+                    name not in current_keywords or current_keywords[name] is not value
+                    for name, value in keywords.items()
+                )
+            ):
+                return False
+        if any(namespace.get(name) is not value for namespace, name, value in self.globals):
+            return False
+        for scope, original in self.namespaces:
+            if len(scope) - ("_NATIVE_FETCH_RUNTIME" in scope) - (
+                "_NATIVE_QUERY_RUNTIME" in scope
+            ) != len(original) or any(
+                name not in scope or scope[name] is not value for name, value in original.items()
+            ):
+                return False
+        return True
 
     def __call__(self, cursor: Cursor, data: dict[str, Any]) -> tuple[object, ...] | None:
         # Watch even an ineligible cursor so restoring its state can re-enable it.
@@ -131,7 +221,6 @@ class _Policy:
         if (
             Connection.__getattribute__ is not object.__getattribute__
             or type(descriptor) is not GetSetDescriptorType
-            # CPython 3.15 shares the ordinary instance-dict descriptor on object.
             or descriptor.__objclass__ not in (Connection, object)
             or descriptor.__name__ != "__dict__"
         ):
@@ -148,35 +237,9 @@ class _Policy:
             return None
         if self._conversion_ineligible(data):
             return None
-        for cls, original in self.class_state:
-            current: Mapping[str, Any] = vars(cls)
-            if len(current) != len(original) or any(
-                name not in current or current[name] is not value
-                for name, value in original.items()
-            ):
-                return None
-        for function, code, defaults, kwdefaults, keywords in self.functions:
-            current_keywords = kwdefaults or {}
-            if (
-                function.__code__ is not code
-                or function.__defaults__ is not defaults
-                or function.__kwdefaults__ is not kwdefaults
-                or len(current_keywords) != len(keywords)
-                or any(
-                    name not in current_keywords or current_keywords[name] is not value
-                    for name, value in keywords.items()
-                )
-            ):
-                return None
-        if any(namespace.get(name) is not value for namespace, name, value in self.globals):
+        runtime = _query_operation._NATIVE_QUERY_RUNTIME
+        if not (self._policy_eligible(runtime) if isinstance(runtime, tuple) else self.unchanged()):
             return None
-        for scope, original in self.namespaces:
-            current = {key: value for key, value in scope.items() if key != "_NATIVE_FETCH_RUNTIME"}
-            if len(current) != len(original) or any(
-                name not in current or current[name] is not value
-                for name, value in original.items()
-            ):
-                return None
         if self.logger.is_debug_enabled:
             return None
         if (
@@ -214,6 +277,15 @@ class _Policy:
         ):
             return None
         description = data.get("description")
+        query_state = connection_data.get("_query_state")
+        query_slot = data.get("_query_slot")
+        if (
+            type(query_state) is not _query_operation.QueryConnectionState
+            or type(query_slot) is not _query_operation.QuerySlot
+            or type(query_state._native) is not ddbc_bindings._QueryAdmission
+            or type(query_slot._native) is not ddbc_bindings._QueryOperationSlot
+        ):
+            return None
         column_map = data.get("_cached_column_map")
         lower_map = data.get("_cached_column_map_lower")
         names = data.get("_cached_result_columns")
@@ -264,6 +336,9 @@ class _Policy:
             data["arraysize"],
             self.row_type._fast_create,
             type(connection),
+            query_state._native,
+            query_slot._native,
+            _query_operation._recover_native_query,
         )
 
 

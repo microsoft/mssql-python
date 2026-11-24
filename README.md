@@ -321,6 +321,40 @@ before releasing its buffers. `executemany()` and `setinputsizes()` overrides
 for statements containing TVPs are not supported. The `mssql-odbc` provider does
 not currently support this ODBC TVP path.
 
+## Cancelling a synchronous query
+
+`cursor.cancel()` requests cancellation of that cursor's active synchronous
+`execute`, `executemany`, `fetchone`, `fetchmany`, `fetchall`, or `nextset` operation.
+It also covers row iteration and `fetchval`. Call it from a different Python
+thread while the worker is blocked in the driver. On cancellation the worker
+raises `OperationalError` with `driver_error == "Operation canceled"`, unless
+a more specific driver or application error has already occurred.
+
+An idle or already-completed call is a no-op and preserves unread results.
+Calling it on a closed cursor or connection raises `ProgrammingError`.
+Cancellation is best effort: the driver/server may finish work before processing
+the request, and there is no fixed time bound. Once a request is accepted, the
+current result is abandoned even if server work completed. The request returns
+before the worker necessarily finishes; **wait for the worker before reusing or
+closing the cursor or connection**. A stale request never targets a later
+operation. Repeated requests for the same operation are harmless.
+
+Cancellation does not roll back a transaction or undo completed statements.
+After the worker finishes, a new execute is supported; resolve any outstanding
+transaction explicitly with `commit()` or `rollback()`. Failed cancellation or
+recovery retires the connection rather than returning uncertain state to the pool.
+Competing operations, cursor/connection close, commit, rollback, and cursor
+creation on the same connection raise `ProgrammingError` while work is active.
+This is a narrow cross-thread cancellation exception, not general thread safety;
+other connection settings must not be changed concurrently.
+
+`cancel()` does not cancel Rust/TDS async queries or bulk copy. An active bulk
+copy, catalog, scroll, or Arrow batch operation raises `NotSupportedError`;
+use the existing Arrow reader's `close()` for reader shutdown. A provider without
+`SQLCancel` also raises `NotSupportedError`. Set a query timeout **before** starting
+work as a separate fallback; changing a timeout or killing a Python thread is not
+a supported way to cancel an already-running query.
+
 ## Still have questions?
  
 Check out our [FAQ](https://github.com/microsoft/mssql-python/wiki/Frequently-Asked-Questions). Still not answered? Create an [issue](https://github.com/microsoft/mssql-python/issues/new/choose) to ask a question.

@@ -838,6 +838,7 @@ class TestManagedIdentity:
         self.connection.connection_str, OR if Connection stops persisting
         _credential_kwargs."""
         from mssql_python.cursor import Cursor
+        from mssql_python._query_operation import QueryConnectionState, QuerySlot
 
         client_id = "11111111-2222-3333-4444-555555555555"
 
@@ -851,8 +852,11 @@ class TestManagedIdentity:
         mock_conn._credential_kwargs = {"client_id": client_id}
         mock_conn._token_provider = None
         mock_conn._is_connected = True
+        mock_conn.closed = False
+        mock_conn._query_state = QueryConnectionState()
 
         cursor = Cursor.__new__(Cursor)
+        cursor._query_slot = QuerySlot()
         cursor._connection = mock_conn
         cursor._timeout = 0
         cursor.closed = False

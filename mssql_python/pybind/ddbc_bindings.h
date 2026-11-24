@@ -353,6 +353,7 @@ class SqlHandle {
     void cancel();
     bool isImplicitlyFreed() const { return _implicitly_freed; }
     void retainFailedParameters(std::vector<std::shared_ptr<void>> buffers);
+    bool cleanupFailed() const { return _cleanupState && _cleanupState->childFreeFailed; }
 
     // Mark this handle as implicitly freed (freed by parent handle)
     // This prevents double-free attempts when the ODBC driver automatically
@@ -414,6 +415,82 @@ class SqlHandle {
     std::shared_ptr<FailedParameterBuffers> _failedParameterBuffers;
 };
 using SqlHandlePtr = std::shared_ptr<SqlHandle>;
+
+// One logical Python operation can contain multiple blocking ODBC calls.
+// Only its owner changes the binding or finishes; other threads may cancel.
+class StatementOperation {
+  public:
+    explicit StatementOperation(SqlHandlePtr handle, bool cancellable = true);
+    ~StatementOperation();
+    void bind(SqlHandlePtr handle);
+    void cancel();
+    bool finish();
+    bool finishUncaptured();
+    bool failed() const { return cancelFailed || (handle && handle->cleanupFailed()); }
+    void restartUnreferenced(bool cancellable = true);
+    bool matches(const SqlHandlePtr& statement) const { return handle == statement; }
+    static StatementOperation* current(SQLHSTMT handle);
+    bool beginCall();
+    void endCall();
+    SQLRETURN checkResult(SQLHSTMT handle, SQLRETURN result, bool attempted);
+
+  private:
+    std::mutex mutex;
+    SqlHandlePtr handle;
+    StatementOperation* previous;
+    std::atomic<bool> running{false};
+    std::atomic<bool> requested{false};
+    std::atomic<bool> finished{false};
+    bool cancelFailed = false;
+    bool cancellable = true;
+};
+
+// Accessed with the GIL held, including the Python admission fallback.
+struct QueryAdmission {
+    bool busy = false;
+    bool reserve() {
+        if (busy)
+            return false;
+        busy = true;
+        return true;
+    }
+};
+
+struct QueryOperationSlot {
+    std::shared_ptr<StatementOperation> active;
+    std::shared_ptr<StatementOperation> idle;
+};
+
+template <typename Call>
+SQLRETURN CancellableCallWithoutGIL(StatementOperation* operation, Call&& call,
+                                   bool& admitted) {
+    SQLRETURN result = SQL_ERROR;
+    admitted = !operation || operation->beginCall();
+    if (admitted) {
+        try {
+            result = call();
+        } catch (...) {
+            if (operation)
+                operation->endCall();
+            throw;
+        }
+        if (operation)
+            operation->endCall();
+    }
+    return result;
+}
+
+template <typename Call>
+SQLRETURN CancellableCall(SQLHSTMT handle, Call&& call) {
+    auto* operation = StatementOperation::current(handle);
+    SQLRETURN result;
+    bool admitted;
+    {
+        py::gil_scoped_release release;
+        result = CancellableCallWithoutGIL(operation, std::forward<Call>(call), admitted);
+    }
+    return operation ? operation->checkResult(handle, result, admitted) : result;
+}
 
 // This struct is used to relay error info obtained from SQLDiagRec API to the
 // Python module
