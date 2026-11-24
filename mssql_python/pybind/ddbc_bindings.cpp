@@ -1775,7 +1775,16 @@ void SqlHandle::free() {
     freeHandle();
 }
 
-SQLRETURN SqlHandle::freeHandle() {
+void SqlHandle::freeChecked() {
+    ErrorInfo error;
+    SQLRETURN result = freeHandle(&error);
+    if (!SQL_SUCCEEDED(result)) {
+        py::module_::import("mssql_python.exceptions").attr("raise_exception")(
+            error.sqlState.empty() ? "HY000" : error.sqlState, error.ddbcErrorMsg);
+    }
+}
+
+SQLRETURN SqlHandle::freeHandle(ErrorInfo* error) {
     PERF_TIMER("SqlHandle::free");
     resultMetadata.clear();
     bool pythonShuttingDown = is_python_finalizing();
@@ -1792,9 +1801,10 @@ SQLRETURN SqlHandle::freeHandle() {
         return SQL_SUCCESS;
     }
 
-    auto freeNative = [this]() -> SQLRETURN {
+    auto freeNative = [this, error]() -> SQLRETURN {
         auto cleanupLock = lockForCleanup();
         if (!_handle) {
+            if (error) *error = SQLReadError(_type, nullptr, SQL_INVALID_HANDLE);
             return SQL_INVALID_HANDLE;
         }
         clearDescribeCache();
@@ -1805,8 +1815,12 @@ SQLRETURN SqlHandle::freeHandle() {
         if (SQL_SUCCEEDED(ret)) {
             _handle = nullptr;
             if (_failedParameterBuffers) _failedParameterBuffers->release();
-        } else if (_type == SQL_HANDLE_STMT && _cleanupState) {
-            _cleanupState->childFreeFailed = true;
+        } else {
+            if (_type == SQL_HANDLE_STMT && _cleanupState) {
+                _cleanupState->childFreeFailed = true;
+            }
+            // get() hides poisoned statements; cleanup still owns their raw handle.
+            if (error) *error = SQLReadError(_type, _handle, ret);
         }
         return ret;
     };
@@ -6883,6 +6897,8 @@ PYBIND11_MODULE(ddbc_bindings, m) {
 
     py::class_<SqlHandle, SqlHandlePtr>(m, "SqlHandle")
         .def("free", &SqlHandle::free, "Free the handle")
+        .def("_free_checked", &SqlHandle::freeChecked,
+             "Internal: free an idle handle, raising on failure; caller must serialize use")
         .def("_close_cursor", &SqlHandle::close_cursor,
              "Internal: close the cursor without freeing the prepared statement")
         .def("_cancel", &SqlHandle::cancel,
@@ -6899,6 +6915,7 @@ PYBIND11_MODULE(ddbc_bindings, m) {
     arrowTestPointers["SQLFetch_ptr"] = reinterpret_cast<std::uintptr_t>(&SQLFetch_ptr);
     arrowTestPointers["SQLCancel_ptr"] = reinterpret_cast<std::uintptr_t>(&SQLCancel_ptr);
     arrowTestPointers["SQLGetDiagRec_ptr"] = reinterpret_cast<std::uintptr_t>(&SQLGetDiagRec_ptr);
+    arrowTestPointers["SQLFreeHandle_ptr"] = reinterpret_cast<std::uintptr_t>(&SQLFreeHandle_ptr);
     m.attr("_arrow_test_pointer_addresses") = std::move(arrowTestPointers);
 #endif
 
@@ -6909,6 +6926,8 @@ PYBIND11_MODULE(ddbc_bindings, m) {
              py::arg("pool_key") = std::u16string(), py::arg("token_factory") = py::none())
         .def("close", &ConnectionHandle::close,
              py::arg("rollback_before_disconnect") = false, "Close the connection")
+        .def("discard", &ConnectionHandle::discard,
+             "Internal: retire an idle connection without returning it to the pool")
         .def("commit", &ConnectionHandle::commit, "Commit the current transaction")
         .def("rollback", &ConnectionHandle::rollback, "Rollback the current transaction")
         .def("set_autocommit", &ConnectionHandle::setAutocommit)
