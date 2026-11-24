@@ -1189,6 +1189,95 @@ def test_operation_allocation_failure_preserves_idle_result(monkeypatch):
         assert cursor.fetchone()[0] == 99
 
 
+@pytest.mark.parametrize("phase", ["reservation", "publication", "published", "token"])
+def test_interrupted_python_admission_releases_own_reservation(phase):
+    _run("_interrupted_admission_probe", phase)
+
+
+def _interrupted_admission_probe(phase):
+    from mssql_python import _query_operation
+    from mssql_python._query_operation import QueryConnectionState, QuerySlot
+
+    _query_operation._NATIVE_QUERY_RUNTIME = False
+    with _connection() as connection, connection.cursor() as cursor:
+        cursor.execute("select 99")
+        interrupted = KeyboardInterrupt("interrupted query admission")
+        reserve = QueryConnectionState.reserve
+        active = QuerySlot.active
+
+        def reserve_then_interrupt(state, *args, **kwargs):
+            assert reserve(state, *args, **kwargs)
+            raise interrupted
+
+        def publish(slot, value):
+            if slot is cursor._query_slot and value is not None:
+                if phase == "publication":
+                    raise interrupted
+                active.fset(slot, value)
+                raise interrupted
+            active.fset(slot, value)
+
+        def construct(_):
+            raise interrupted
+
+        with pytest.MonkeyPatch.context() as patch:
+            if phase == "reservation":
+                patch.setattr(QueryConnectionState, "reserve", reserve_then_interrupt)
+            elif phase in ("publication", "published"):
+                patch.setattr(QuerySlot, "active", property(active.fget, publish))
+            else:
+                patch.setattr(ddbc_bindings, "_StatementOperation", construct)
+            with pytest.raises(KeyboardInterrupt) as error:
+                cursor.execute("select 1")
+        assert error.value is interrupted
+        assert not connection._query_state.busy
+        assert cursor._query_slot.active is None
+        assert cursor.fetchone()[0] == 99
+        assert cursor.execute("select 100").fetchone()[0] == 100
+        connection.commit()
+        connection.rollback()
+
+
+@pytest.mark.parametrize("owner_kind", ["cursor", "connection"])
+def test_interrupted_python_admission_preserves_competing_owner(owner_kind):
+    _run("_interrupted_competing_admission_probe", owner_kind)
+
+
+def _interrupted_competing_admission_probe(owner_kind):
+    from mssql_python import _query_operation
+    from mssql_python._query_operation import QueryConnectionState
+
+    _query_operation._NATIVE_QUERY_RUNTIME = False
+    with (
+        _connection() as connection,
+        connection.cursor() as owner,
+        connection.cursor() as contender,
+    ):
+        reserve = QueryConnectionState.reserve
+        interrupted = KeyboardInterrupt("interrupted competing admission")
+
+        def reject_then_interrupt(state, *args, **kwargs):
+            assert not reserve(state, *args, **kwargs)
+            raise interrupted
+
+        operation = owner._query_operation() if owner_kind == "cursor" else connection._query_state
+        with operation:
+            active = owner._query_slot.active
+            with pytest.MonkeyPatch.context() as patch:
+                patch.setattr(QueryConnectionState, "reserve", reject_then_interrupt)
+                with pytest.raises(KeyboardInterrupt) as error:
+                    contender.execute("select 1")
+            assert error.value is interrupted
+            assert connection._query_state.busy
+            assert owner._query_slot.active is active
+            assert contender._query_slot.active is None
+            with pytest.raises(ProgrammingError, match="operation in progress"):
+                contender.execute("select 2")
+        assert not connection._query_state.busy
+        assert owner.execute("select 99").fetchone()[0] == 99
+        assert contender.execute("select 100").fetchone()[0] == 100
+
+
 @pytest.mark.parametrize("pooling", ["on", "off"])
 def test_cancel_storm_with_competing_cursors(pooling):
     _run("_cancel_storm_probe", pooling)

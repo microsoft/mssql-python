@@ -7209,7 +7209,13 @@ PYBIND11_MODULE(ddbc_bindings, m) {
 
     py::class_<QueryAdmission>(m, "_QueryAdmission")
         .def(py::init<>())
-        .def("reserve", &QueryAdmission::reserve)
+        .def("reserve", [](QueryAdmission& self) { return self.reserve(); })
+        .def("reserve_for", [](QueryAdmission& self, py::handle owner) {
+            return self.reserve(owner.ptr());
+        })
+        .def("release_for", [](QueryAdmission& self, py::handle owner) {
+            self.releaseFor(owner.ptr());
+        })
         .def_readwrite("busy", &QueryAdmission::busy);
     py::class_<QueryOperationSlot>(m, "_QueryOperationSlot")
         .def(py::init<>())

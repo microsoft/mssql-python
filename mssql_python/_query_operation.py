@@ -38,8 +38,8 @@ class QueryConnectionState:
     def busy(self, value: bool) -> None:
         self._native.busy = value
 
-    def reserve(self) -> bool:
-        return self._native.reserve()
+    def reserve(self, owner: object | None = None) -> bool:
+        return self._native.reserve() if owner is None else self._native.reserve_for(owner)
 
     def __enter__(self) -> None:
         with self.lock:
@@ -81,26 +81,31 @@ class QueryOperation:
 
     def __enter__(self) -> QueryOperation:
         connection = self.connection
-        with connection._query_state.lock:
-            self.cursor._check_closed()
-            if connection.closed or not connection._query_state.reserve():
-                raise ProgrammingError("Connection is closed or has an operation in progress", "")
-            self.cursor._query_slot.active = self
         try:
+            with connection._query_state.lock:
+                self.cursor._check_closed()
+                if connection.closed or not connection._query_state.reserve(self):
+                    raise ProgrammingError(
+                        "Connection is closed or has an operation in progress", ""
+                    )
+                self.cursor._query_slot.active = self
             if self.cancellable:
                 self.native = ddbc_bindings._StatementOperation(self.cursor.hstmt)
                 if self._cancel_requested:
                     self.native.cancel()
+            return self
         except BaseException:
             try:
                 if self.native is not None:
                     self.native.finish()
             finally:
                 with connection._query_state.lock:
-                    self.cursor._query_slot.active = None
-                    connection._query_state.busy = False
+                    if self.cursor._query_slot.active is self:
+                        self.cursor._query_slot.active = None
+                    # Reservation may have succeeded before Python observed its
+                    # return value or published the active slot.
+                    connection._query_state._native.release_for(self)
             raise
-        return self
 
     def cancel(self) -> None:
         if not self.cancellable:

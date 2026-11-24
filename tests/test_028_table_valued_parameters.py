@@ -546,7 +546,15 @@ def test_executemany_and_inputsizes_reject_tvps_before_consumption(cursor, tvp_s
 
 
 @pytest.mark.parametrize("operation", ["execute", "close"])
-def test_generator_cannot_reenter_its_cursor(cursor, tvp_schema, operation):
+@pytest.mark.parametrize("python_fallback", [False, True])
+def test_generator_cannot_reenter_its_cursor(
+    cursor, tvp_schema, operation, python_fallback, monkeypatch
+):
+    if python_fallback:
+        from mssql_python import _query_operation
+
+        monkeypatch.setattr(_query_operation, "_NATIVE_QUERY_RUNTIME", False)
+
     def rows():
         yield 1, "first"
         if operation == "execute":
@@ -555,7 +563,7 @@ def test_generator_cannot_reenter_its_cursor(cursor, tvp_schema, operation):
             cursor.close()
         yield 2, "second"
 
-    with pytest.raises(DatabaseError, match="operation in progress"):
+    with pytest.raises(DatabaseError, match="operation in progress|while it is executing"):
         cursor.execute(f"EXEC [{tvp_schema}].CountRows ?", items(tvp_schema, rows()))
     assert cursor.execute("SELECT 42").fetchone()[0] == 42
 

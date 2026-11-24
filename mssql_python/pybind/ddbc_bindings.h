@@ -448,12 +448,23 @@ class StatementOperation {
 // Accessed with the GIL held, including the Python admission fallback.
 struct QueryAdmission {
     bool busy = false;
-    bool reserve() {
+    bool reserve(const void* owner = nullptr) {
         if (busy)
             return false;
+        reservationOwner = owner;
         busy = true;
         return true;
     }
+    void releaseFor(const void* owner) {
+        if (busy && reservationOwner == owner) {
+            busy = false;
+            reservationOwner = nullptr;
+        }
+    }
+
+  private:
+    // Identity only; the Python admission frame or active slot keeps it alive.
+    const void* reservationOwner = nullptr;
 };
 
 struct QueryOperationSlot {
