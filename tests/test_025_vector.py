@@ -725,9 +725,18 @@ def test_executemany_hinted_lists_validate_before_execution(
         ([Vector([1]), 1], TypeError),
     ],
 )
-def test_executemany_rejects_mixed_vector_columns(unit_cursor, values, error):
-    with pytest.raises(error):
+@pytest.mark.parametrize("reverse", [False, True])
+def test_executemany_rejects_mixed_vector_columns(unit_cursor, monkeypatch, values, error, reverse):
+    execute = Mock()
+    execute_many = Mock()
+    monkeypatch.setattr(unit_cursor, "execute", execute)
+    monkeypatch.setattr(ddbc_bindings, "SQLExecuteMany", execute_many)
+    if reverse:
+        values = values[::-1]
+    with pytest.raises(error, match="Vector batch"):
         unit_cursor.executemany("INSERT INTO v VALUES (?)", [(value,) for value in values])
+    execute.assert_not_called()
+    execute_many.assert_not_called()
 
 
 def test_bulkcopy_does_not_invent_pycore_serialization():
@@ -1460,7 +1469,8 @@ def test_live_vector_negotiation_rejects_unsupported_inputs(conn_str, vector_ser
 
 
 @pytest.mark.parametrize("dtype", ["float32", "float16"])
-def test_live_vector_off_returns_json(conn_str, vector_server, dtype):
+@pytest.mark.parametrize("fetch", ["fetchone", "fetchmany", "fetchall"])
+def test_live_vector_off_returns_json(conn_str, vector_server, dtype, fetch):
     if not conn_str:
         pytest.skip("DB_CONNECTION_STRING is not configured")
     if dtype == "float16" and os.getenv("MSSQL_TEST_VECTOR_FLOAT16") != "1":
@@ -1470,11 +1480,16 @@ def test_live_vector_off_returns_json(conn_str, vector_server, dtype):
         with connection.cursor() as cursor:
             cursor.execute(f"SELECT CAST('[1.25,-2.5,0]' AS VECTOR(3, {dtype})) AS embedding")
             assert cursor.description[0][1] is str
-            value = cursor.fetchone().embedding
+
+            def read_value():
+                result = getattr(cursor, fetch)()
+                return (result if fetch == "fetchone" else result[0])[0]
+
+            value = read_value()
             assert isinstance(value, str)
             assert json.loads(value) == [1.25, -2.5, 0]
             cursor.execute(f"SELECT CAST(NULL AS VECTOR(3, {dtype}))")
-            assert cursor.fetchone()[0] is None
+            assert read_value() is None
     finally:
         connection.close()
 

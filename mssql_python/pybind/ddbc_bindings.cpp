@@ -3548,12 +3548,17 @@ py::object FetchLobColumnData(SQLHSTMT hStmt, SQLUSMALLINT colIndex, SQLSMALLINT
         if (sourceLength == SQL_NULL_DATA) {
             return py::none();
         }
-        if (sourceLength < 0 ||
+        if (sourceLength == SQL_NO_TOTAL) {
+            // VECTOR exposed as VARCHAR can report an unknown length on the binary
+            // probe. Keep streaming instead of enforcing a size we did not obtain.
+            sizeWideConversion = false;
+        } else if (sourceLength < 0 ||
             sourceLength > (std::numeric_limits<SQLLEN>::max() -
                             static_cast<SQLLEN>(sizeof(SQLWCHAR))) / 2) {
             ThrowStdException("SQLGetData returned an invalid UTF-16 LOB source length");
+        } else {
+            chunkSize = std::max(chunkSize, static_cast<size_t>(sourceLength) * 2 + sizeof(SQLWCHAR));
         }
-        chunkSize = std::max(chunkSize, static_cast<size_t>(sourceLength) * 2 + sizeof(SQLWCHAR));
     }
 
     while (true) {

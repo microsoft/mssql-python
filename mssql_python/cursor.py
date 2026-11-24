@@ -2608,7 +2608,7 @@ class Cursor:
         non_nulls = [v for v in column if v is not None]
         if not non_nulls:
             return None, None, None, 0
-        # Gate on the first value so non-vector columns skip a per-cell ABC isinstance scan.
+        # A vector-only column needs shape validation, not scalar inference.
         if type(non_nulls[0]) is Vector:
             sample = non_nulls[0]
             if any(type(v) is not Vector for v in non_nulls):
@@ -2624,6 +2624,8 @@ class Cursor:
         for v in non_nulls:
             if isinstance(v, int):
                 int_values.append(v)
+            elif type(v) is Vector:
+                raise TypeError("Vector batch columns must contain only Vector or None")
             elif isinstance(v, decimal.Decimal) and not v.is_finite():
                 raise ValueError(
                     "Cannot infer precision/scale from non-finite Decimal (NaN/Infinity)"
