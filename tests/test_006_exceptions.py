@@ -276,6 +276,12 @@ def test_connection_attribute_error_metadata(conn_str):
         assert caught.value.native_error == 911
         assert caught.value.ddbc_error == "Failed to set connection attribute 109"
 
+        with pytest.raises(ProgrammingError) as local:
+            connection.set_attr(SQL_ATTR_CURRENT_CATALOG, "\ud800")
+        assert local.value.sqlstate is None
+        assert local.value.native_error is None
+        assert local.value.args == caught.value.args
+
 
 def test_native_preconnect_attribute_failure_retains_zero(conn_str):
     from mssql_python import ddbc_bindings
@@ -292,6 +298,21 @@ def test_native_preconnect_attribute_failure_retains_zero(conn_str):
     assert caught.value.ddbc_error == "Failed to set attribute 108 before connect"
     assert caught.value.sqlstate == native.value.sqlstate
     assert caught.value.native_error == 0
+
+
+def test_native_preconnect_attribute_conversion_has_no_diagnostics(conn_str):
+    from mssql_python import SQL_ATTR_CURRENT_CATALOG, ddbc_bindings
+    from mssql_python.connection import _raise_connection_error
+
+    with pytest.raises(ddbc_bindings.NativeDatabaseError) as native:
+        ddbc_bindings.Connection(conn_str, False, {SQL_ATTR_CURRENT_CATALOG: "\ud800"})
+    assert native.value.sqlstate is None
+    assert native.value.native_error is None
+    with pytest.raises(OperationalError) as caught:
+        _raise_connection_error(native.value)
+    assert caught.value.sqlstate is None
+    assert caught.value.native_error is None
+    assert caught.value.ddbc_error == "Failed to set attribute 109 before connect"
 
 
 @pytest.mark.parametrize(

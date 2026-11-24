@@ -94,7 +94,7 @@ class Connection {
     // Get information about the driver and data source
     py::object getInfo(SQLUSMALLINT infoType) const;
 
-    SQLRETURN setAttribute(SQLINTEGER attribute, py::object value);
+    SQLRETURN setAttribute(SQLINTEGER attribute, py::object value, bool& odbcCalled);
 
     // Add getter for DBC handle for error reporting
     const SqlHandlePtr& getDbcHandle() const { return _dbcHandle; }

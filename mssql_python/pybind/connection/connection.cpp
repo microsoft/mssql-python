@@ -433,7 +433,8 @@ SqlHandlePtr Connection::allocStatementHandle() {
     return stmtHandle;
 }
 
-SQLRETURN Connection::setAttribute(SQLINTEGER attribute, py::object value) {
+SQLRETURN Connection::setAttribute(SQLINTEGER attribute, py::object value, bool& odbcCalled) {
+    odbcCalled = false;
     _poolClean = false;
     _poolSessionReset = false;
     // A scalar login timeout only bounds connection establishment; it cannot
@@ -491,6 +492,7 @@ SQLRETURN Connection::setAttribute(SQLINTEGER attribute, py::object value) {
             // Release the GIL around the ODBC call for consistency with the
             // other connection-attribute paths; some attributes can block.
             py::gil_scoped_release release;
+            odbcCalled = true;
             ret = SQLSetConnectAttr_ptr(
                 _dbcHandle->get(), attribute,
                 reinterpret_cast<SQLPOINTER>(static_cast<SQLULEN>(longValue)), SQL_IS_INTEGER);
@@ -541,6 +543,7 @@ SQLRETURN Connection::setAttribute(SQLINTEGER attribute, py::object value) {
             SQLRETURN ret;
             {
                 py::gil_scoped_release release;
+                odbcCalled = true;
                 ret = SQLSetConnectAttr_ptr(_dbcHandle->get(), attribute, ptr, length);
             }
             if (!SQL_SUCCEEDED(ret)) {
@@ -595,6 +598,7 @@ SQLRETURN Connection::setAttribute(SQLINTEGER attribute, py::object value) {
             SQLRETURN ret;
             {
                 py::gil_scoped_release release;
+                odbcCalled = true;
                 ret = SQLSetConnectAttr_ptr(_dbcHandle->get(), attribute, ptr, length);
             }
             if (!SQL_SUCCEEDED(ret)) {
@@ -629,14 +633,20 @@ void Connection::applyAttrsBefore(const py::dict& attrs) {
         const bool preservePoolProof =
             key == SQL_ATTR_AUTOCOMMIT && PyLong_CheckExact(item.second.ptr());
         const bool poolProofDisabled = _poolProofDisabled;
-        SQLRETURN ret = setAttribute(key, py::reinterpret_borrow<py::object>(item.second));
+        bool odbcCalled;
+        SQLRETURN ret = setAttribute(key, py::reinterpret_borrow<py::object>(item.second),
+                                    odbcCalled);
         if (preservePoolProof) {
             _poolProofDisabled = poolProofDisabled;
         }
         if (!SQL_SUCCEEDED(ret)) {
             std::string attrName = std::to_string(key);
             std::string errorMsg = "Failed to set attribute " + attrName + " before connect";
-            ErrorInfo error = SQLCheckError_Wrap(SQL_HANDLE_DBC, _dbcHandle, ret);
+            ErrorInfo error;
+            // Local validation/conversion failures leave previous DBC diagnostics intact.
+            if (odbcCalled) {
+                error = SQLCheckError_Wrap(SQL_HANDLE_DBC, _dbcHandle, ret);
+            }
             throw NativeDatabaseError(error, errorMsg);
         }
     }
@@ -1134,13 +1144,16 @@ void ConnectionHandle::setAttr(int attribute, py::object value) {
     }
 
     // Use existing setAttribute with better error handling
-    SQLRETURN ret = _conn->setAttribute(static_cast<SQLINTEGER>(attribute), value);
+    bool odbcCalled;
+    SQLRETURN ret = _conn->setAttribute(static_cast<SQLINTEGER>(attribute), value, odbcCalled);
     if (!SQL_SUCCEEDED(ret)) {
         const std::string errorMsg =
             "Failed to set connection attribute " + std::to_string(attribute);
         ErrorInfo errorInfo;
         try {
-            errorInfo = SQLCheckError_Wrap(SQL_HANDLE_DBC, _conn->getDbcHandle(), ret);
+            if (odbcCalled) {
+                errorInfo = SQLCheckError_Wrap(SQL_HANDLE_DBC, _conn->getDbcHandle(), ret);
+            }
         } catch (const std::runtime_error& error) {
             LOG("Connection setAttribute diagnostics failed: %s", error.what());
             ThrowStdException(errorMsg);
