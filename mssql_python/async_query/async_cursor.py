@@ -12,7 +12,8 @@ from contextlib import asynccontextmanager
 from typing import Any, Optional, TYPE_CHECKING, AsyncIterator
 import uuid
 
-from ..exceptions import OperationalError
+from ..exceptions import NotSupportedError, OperationalError
+from ..constants import SQL_SS_JSON
 from ..helpers import get_settings
 from ..logging import logger
 from ..row import Row, _ColumnNames
@@ -218,6 +219,12 @@ class _AsyncCursor:
         logger.debug("AsyncCursor.close: completed")
 
     def setinputsizes(self, sizes: Sequence[int | tuple[int, ...]] | None) -> None:
+        if sizes and any(
+            (size[0] if isinstance(size, tuple) and size else size) == SQL_SS_JSON for size in sizes
+        ):
+            raise NotSupportedError(
+                "Native JSON input sizes are not supported by async execution", ""
+            )
         with translate_py_core_exceptions():
             self._py_core_async_cursor.setinputsizes(sizes)
 

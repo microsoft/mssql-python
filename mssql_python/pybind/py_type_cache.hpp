@@ -24,6 +24,7 @@ inline PyObject* date_class = nullptr;
 inline PyObject* time_class = nullptr;
 inline PyObject* decimal_class = nullptr;
 inline PyObject* uuid_class = nullptr;
+inline PyObject* json_class = nullptr;
 inline bool cache_initialized = false;
 
 // Import a module and extract an attribute. Returns a new reference.
@@ -53,6 +54,7 @@ inline void initialize() {
 
     py::object dec_cls  = steal(import_attr("decimal", "Decimal"));
     py::object uuid_cls = steal(import_attr("uuid", "UUID"));
+    py::object json_cls = steal(import_attr("mssql_python.json", "Json"));
 
     // Commit to globals — all acquisitions succeeded.
     datetime_class = dt_cls.release().ptr();
@@ -60,6 +62,7 @@ inline void initialize() {
     time_class     = time_cls.release().ptr();
     decimal_class  = dec_cls.release().ptr();
     uuid_class     = uuid_cls.release().ptr();
+    json_class     = json_cls.release().ptr();
     cache_initialized = true;
 }
 
@@ -68,6 +71,7 @@ inline PyObject* get_date_class()     { return date_class; }
 inline PyObject* get_time_class()     { return time_class; }
 inline PyObject* get_decimal_class()  { return decimal_class; }
 inline PyObject* get_uuid_class()     { return uuid_class; }
+inline PyObject* get_json_class()     { return json_class; }
 
 inline py::object get_datetime_class_obj() { return borrow(datetime_class); }
 inline py::object get_date_class_obj()     { return borrow(date_class); }

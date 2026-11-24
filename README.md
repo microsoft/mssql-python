@@ -174,6 +174,104 @@ example, requesting ASCII with `SQL_CHAR` does not cause non-ASCII parameters to
 raise encoding errors. Use `setencoding()` with no arguments to restore the
 supported defaults. `setdecoding()` independently controls how result data is read.
 
+### Native JSON (preview)
+
+Synchronous `execute()` and `executemany()` support native SQL Server JSON with a
+JSON-capable **msodbcsql18 preview provider** and a server supporting the JSON type
+(SQL Server 2025 or a supported Azure SQL database). The shipped provider is not
+replaced by this feature. Preview binaries are for isolated development/testing,
+not production or redistribution. The `mssql-odbc` provider is not supported for
+these JSON inputs; the driver never changes providers or retries a statement as
+text. `VectorTypeSupport` is **not** a JSON requirement. The preview's JSON
+`getTypeInfo()` catalog entry can be absent even when native JSON works.
+
+```python
+from mssql_python import Json, SQL_JSON, connect
+
+with connect(connection_string) as connection:
+    with connection.cursor() as cursor:
+        cursor.json_output = "objects"  # Default is "text"
+        cursor.execute("SELECT CAST(? AS JSON) AS document", Json({"items": [1, None]}))
+        document = cursor.fetchone()[0]  # {"items": [1, None]}
+        cursor.setinputsizes([SQL_JSON])
+        cursor.execute("SELECT CAST(? AS JSON)", None)  # SQL NULL, not JSON null
+```
+
+`Json(value)` accepts exact built-in `dict`, `list`, or `str`. A dict/list is
+strictly validated and serialized once into an immutable snapshot; later mutations
+of the original input do not change the parameter. Nested `None` becomes JSON
+null. Non-string object keys, nonfinite numbers, cycles, unsupported nested Python
+values (including tuples and container/scalar subclasses), and invalid Unicode are
+rejected. `Json(None)`, numeric/bool roots, bytes and root subclasses are rejected
+at construction. Unwrapped parameter lists/tuples and named mappings keep their
+existing meaning.
+
+`Json(str)` means **already-serialized JSON text**, not a Python string to serialize.
+Python retains the text without parsing, stripping, normalization, or
+parse/reserialization; strict Unicode encodability is still checked. For example,
+`Json(' {"items":[1,null]} ')` is valid input. `Json('text')` contains malformed
+JSON, while `Json('"text"')` contains a JSON scalar; both construct successfully
+but are rejected by the provider/server at execution, as are empty text and
+`Json('null')`. Native JSON requires an object/array root. Provider/server
+diagnostics propagate; there is no fallback or retry as character data.
+This intentionally differs from psycopg's default `Json(str)`, which serializes
+the Python string as a JSON string scalar.
+
+Unchanged text means no Python JSON transformation, **not** byte-identical server
+storage or results. SQL Server may normalize representation. With duplicate keys,
+SQL Server's `JSON_VALUE` selects the first occurrence; Python object decoding
+uses `json.loads`, which keeps the last occurrence if duplicate keys are returned.
+Python's recursion limit and the server's JSON nesting/numeric limits still
+apply. Finite Python numbers are not guaranteed a lossless server round trip:
+SQL Server may normalize them (including underflow to zero) or reject values
+outside its supported range.
+
+`cursor.json_output` accepts only `"text"` and `"objects"`. Its value is captured
+for each execution, including subsequent `nextset()` results; changing it while
+fetching affects only the next execution. Only native `SQL_SS_JSON` (`-157`)
+metadata triggers decoding: ordinary VARCHAR/NVARCHAR is never inspected or
+parsed. `description` continues to report `str` as the underlying type.
+`Row` remains the outer container; each decoded dict/list is an independent
+column value. SQL NULL remains `None`, and registered output converters take
+precedence. Invalid native JSON raises `DataError`, without returning text as a
+fallback. Decoding uses the conversion-aware fetch path; text results retain
+the native fetch optimization.
+
+For isolated preview setup, provenance checks, and the live JSON test command,
+see [Testing native JSON](docs/native-json-preview.md).
+
+Native JSON uses UTF-16 buffers, complete LOB retrieval, and scalar streaming for
+large inputs. Array binding supports mixed Json/NULL and explicitly typed
+all-NULL columns; use `setinputsizes([SQL_JSON])` when SQL Server cannot infer
+a NULL parameter's type (for example, temporary tables). Native JSON hints accept
+only `Json` or `None`, not bare pre-serialized strings. JSON-bound batch columns likewise
+accept only `Json` and `None`; mixed `Json`/bare-string columns are rejected before
+dispatch. Wrap serialized strings explicitly with `Json(text)`. A batch can mix
+`Json(dict)`, `Json(list)`, `Json(str)` and SQL NULL. Ordinary unhinted string
+parameters retain their existing text binding and SQL Server conversion behavior.
+Normal batch transaction semantics apply: invalid wrapped text discovered during
+execution does not promise rollback of rows already processed. Use an explicit
+transaction and rollback when the application requires atomicity.
+
+To reinsert a native JSON result in either output mode, wrap a non-NULL value;
+preserve SQL NULL as bare `None`:
+
+```python
+value = row.payload
+parameter = None if value is None else Json(value)
+cursor.execute("INSERT INTO documents(payload) VALUES (?)", parameter)
+```
+
+The synchronous `SQL_JSON` constant maps to classic ODBC `SQL_SS_JSON` (`-157`);
+`SQL_SS_JSON` remains available as the native spelling. The existing
+`mssql_python.async_query.SQL_JSON` is a separate Rust-backed symbol, not an alias
+of this synchronous constant; type codes must not be passed between backends.
+
+**Release limitation:** this synchronous row-only milestone does not meet the
+full design's Arrow text-retrieval release gate. JSON support for Arrow, TVPs,
+async execution, and bulk copy remains deferred; row fetch APIs are the supported
+output path and `Json` is a synchronous input type.
+
 ## Getting Started Examples
 Connect to SQL Server and execute a simple query:
  

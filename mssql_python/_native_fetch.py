@@ -148,6 +148,8 @@ class _Policy:
             return None
         if self._conversion_ineligible(data):
             return None
+        if data.get("_json_decode_indices"):
+            return None
         for cls, original in self.class_state:
             current: Mapping[str, Any] = vars(cls)
             if len(current) != len(original) or any(

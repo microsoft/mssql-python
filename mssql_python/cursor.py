@@ -37,6 +37,8 @@ from mssql_python.exceptions import (
     DatabaseError,
 )
 from mssql_python.row import Row, OutputConverter, _ColumnNames
+from mssql_python.json import Json, _decode_json, _reject_json_parameters
+from mssql_python.odbc_provider import ProviderManager
 from mssql_python.perf_timer import perf_phase
 from mssql_python import get_settings
 from mssql_python.parameter_helper import (
@@ -465,7 +467,10 @@ class Cursor:
 
         self._connection: "Connection" = connection  # Store as private attribute
         self._timeout: int = timeout
-        self._inputsizes: Optional[List[Tuple[int, int, int, int]]] = None
+        self._inputsizes: list[tuple[int, int, int, int] | None] | None = None
+        self._json_output: Literal["text", "objects"] = "text"
+        self._execution_json_output: Literal["text", "objects"] = "text"
+        self._json_decode_indices: tuple[int, ...] = ()
         # self.connection.autocommit = False
         self._initialize_cursor()
         self.description: _Description | None = None
@@ -514,6 +519,22 @@ class Cursor:
             False  # Track if we need to skip incrementing the row index
         )
         self.messages: List[Tuple[str, str]] = []  # Store diagnostic messages
+
+    @property
+    def json_output(self) -> Literal["text", "objects"]:
+        """JSON result representation; changes take effect on the next execution."""
+        return self._json_output
+
+    @json_output.setter
+    def json_output(self, value: Literal["text", "objects"]) -> None:
+        if not isinstance(value, str) or value not in ("text", "objects"):
+            raise ValueError("json_output must be 'text' or 'objects'")
+        self._json_output = value
+
+    @staticmethod
+    def _require_json_provider() -> None:
+        if ProviderManager.effective() != "msodbcsql18":
+            raise NotSupportedError("Native JSON requires a JSON-capable msodbcsql18 provider", "")
 
     def _is_unicode_string(self, param: str) -> bool:
         """
@@ -1233,6 +1254,10 @@ class Cursor:
         """
         Import and return pyarrow or raise ImportError accordingly.
         """
+        if self._column_sql_types and ddbc_sql_const.SQL_SS_JSON.value in self._column_sql_types:
+            raise NotSupportedError(
+                "Native JSON Arrow results are not supported; use row fetch APIs", ""
+            )
         try:
             import pyarrow
 
@@ -1387,6 +1412,7 @@ class Cursor:
                 ddbc_sql_const.SQL_TIMESTAMP.value: ddbc_sql_const.SQL_C_TYPE_TIMESTAMP.value,
                 ddbc_sql_const.SQL_GUID.value: ddbc_sql_const.SQL_C_GUID.value,
                 ddbc_sql_const.SQL_SS_XML.value: ddbc_sql_const.SQL_C_WCHAR.value,
+                ddbc_sql_const.SQL_SS_JSON.value: ddbc_sql_const.SQL_C_WCHAR.value,
                 ddbc_sql_const.SQL_SS_VARIANT.value: ddbc_sql_const.SQL_C_BINARY.value,
             }
         return cls._SQL_TO_C_TYPE
@@ -1493,16 +1519,17 @@ class Cursor:
         This eliminates the need to look up converters for every row.
         """
         generation = self._connection._converters_generation
-        if (
-            not self.description
-            or not hasattr(self.connection, "_output_converters")
-            or not self.connection._output_converters
+        json_objects = getattr(self, "_execution_json_output", "text") == "objects"
+        self._json_decode_indices = ()
+        if not self.description or (
+            not json_objects and not getattr(self.connection, "_output_converters", None)
         ):
             self._cached_converters_generation = generation
             return ()
 
         sql_type_codes = self._column_sql_types
         converter_map: list[OutputConverter | None] = []
+        json_indices = []
 
         for i, desc in enumerate(self.description):
             if desc is None:
@@ -1524,10 +1551,23 @@ class Cursor:
                 if converter:
                     converter = _string_only_output_converter(converter)
 
+            if (
+                converter is None
+                and json_objects
+                and sql_type_codes is not None
+                and sql_type_codes[i] == ddbc_sql_const.SQL_SS_JSON.value
+            ):
+                json_indices.append(i)
             converter_map.append(converter)
 
+        self._json_decode_indices = tuple(json_indices)
         self._cached_converters_generation = generation
         return converter_map if any(converter is not None for converter in converter_map) else ()
+
+    def _decode_json_row(self, values: list[Any]) -> None:
+        for index in self._json_decode_indices:
+            if values[index] is not None:
+                values[index] = _decode_json(values[index])
 
     def _compute_uuid_str_indices(self) -> tuple[int, ...] | None:
         """
@@ -1665,6 +1705,7 @@ class Cursor:
             ddbc_sql_const.SQL_GUID.value: uuid.UUID,
             # XML — driver reports SQL_SS_XML (-152), fetched as str
             ddbc_sql_const.SQL_SS_XML.value: str,
+            ddbc_sql_const.SQL_SS_JSON.value: str,
         }
         return sql_to_python_type.get(sql_type, str)
 
@@ -1850,6 +1891,7 @@ class Cursor:
                 self.hstmt._close_cursor()
                 self._clear_rownumber()
 
+        self._execution_json_output = self._json_output
         # Clear any previous messages
         self.messages = []
 
@@ -1910,6 +1952,14 @@ class Cursor:
                     bound_parameters = list(converted_params)
             else:
                 bound_parameters = []
+
+        if any(isinstance(value, Json) for value in bound_parameters) or (
+            self._inputsizes
+            and any(
+                size and size[0] == ddbc_sql_const.SQL_SS_JSON.value for size in self._inputsizes
+            )
+        ):
+            self._require_json_provider()
 
         # Getting encoding setting
         encoding_settings = self._get_encoding_settings()
@@ -2477,6 +2527,7 @@ class Cursor:
 
         Returns:
             sample_value: Representative value for type inference and modified_row.
+                A Json value takes precedence so mixed JSON columns are validated.
             min_val: Minimum for integers (None otherwise).
             max_val: Maximum for integers (None otherwise).
             max_decimal_formatted_len: Maximum len(format(d, 'f')) across all
@@ -2493,13 +2544,19 @@ class Cursor:
             return None, None, None, 0
 
         int_values: list[int] = []
+        json_value: Json | None = None
         for v in non_nulls:
             if isinstance(v, int):
                 int_values.append(v)
-            elif isinstance(v, decimal.Decimal) and not v.is_finite():
-                raise ValueError(
-                    "Cannot infer precision/scale from non-finite Decimal (NaN/Infinity)"
-                )
+            elif isinstance(v, decimal.Decimal):
+                if not v.is_finite():
+                    raise ValueError(
+                        "Cannot infer precision/scale from non-finite Decimal (NaN/Infinity)"
+                    )
+            elif isinstance(v, Json):
+                json_value = v
+        if json_value is not None:
+            return json_value, None, None, 0
         if int_values:
             min_val, max_val = min(int_values), max(int_values)
             sample_value: Any = max(int_values, key=abs)
@@ -2589,6 +2646,7 @@ class Cursor:
 
         self._check_closed()
         self._reset_cursor()
+        self._execution_json_output = self._json_output
         self.messages = []
         logger.debug("executemany: Cursor reset complete")
 
@@ -2656,6 +2714,7 @@ class Cursor:
         param_count = len(sample_row)
         param_info = ddbc_bindings.ParamInfo
         parameters_type = []
+        json_columns: list[int] = []
         any_dae = False
 
         # Check if we have explicit input sizes set
@@ -2676,11 +2735,43 @@ class Cursor:
                     if hasattr(seq_of_parameters, "__getitem__")
                     else []
                 )
+                size_override = (
+                    self._inputsizes[col_index]
+                    if self._inputsizes and col_index < len(self._inputsizes)
+                    else None
+                )
                 sample_value, min_val, max_val, _ = self._compute_column_type(column)
+                has_json = isinstance(sample_value, Json)
+                if has_json or (
+                    size_override and size_override[0] == ddbc_sql_const.SQL_SS_JSON.value
+                ):
+                    self._require_json_provider()
+                    if (
+                        has_json
+                        and size_override
+                        and size_override[0] != ddbc_sql_const.SQL_SS_JSON.value
+                    ):
+                        raise TypeError("Json requires SQL_JSON input sizing")
+                    max_units = 1
+                    for value in column:
+                        if value is None:
+                            continue
+                        if not isinstance(value, Json):
+                            raise TypeError("SQL_JSON requires Json or None")
+                        text = value._text
+                        max_units = max(max_units, len(text.encode("utf-16-le")) // 2)
+                    paraminfo = param_info()
+                    paraminfo.paramSQLType = ddbc_sql_const.SQL_SS_JSON.value
+                    paraminfo.paramCType = ddbc_sql_const.SQL_C_WCHAR.value
+                    paraminfo.columnSize = max_units
+                    paraminfo.inputOutputType = ddbc_sql_const.SQL_PARAM_INPUT.value
+                    parameters_type.append(paraminfo)
+                    json_columns.append(col_index)
+                    continue
 
-                if self._inputsizes and col_index < len(self._inputsizes):
+                if size_override is not None:
                     # Use explicitly set input sizes
-                    sql_type, c_type, column_size, decimal_digits = self._inputsizes[col_index]
+                    sql_type, c_type, column_size, decimal_digits = size_override
 
                     # Default is_dae to False
                     is_dae = False
@@ -2824,6 +2915,21 @@ class Cursor:
                 "DAE parameters detected. Falling back to row-by-row execution with streaming.",
             )
             input_sizes = self._inputsizes
+            if any(
+                info.paramSQLType == ddbc_sql_const.SQL_SS_JSON.value for info in parameters_type
+            ):
+                if any(len(row) != param_count for row in seq_of_parameters):
+                    raise ValueError("Inconsistent parameter row size in executemany()")
+                # Preserve inferred JSON NULLs when a companion LOB requires scalar execution.
+                # None entries leave companion parameters on their ordinary detection path.
+                input_sizes = [
+                    (
+                        (ddbc_sql_const.SQL_SS_JSON.value, ddbc_sql_const.SQL_C_WCHAR.value, 0, 0)
+                        if info.paramSQLType == ddbc_sql_const.SQL_SS_JSON.value
+                        else input_sizes[i] if input_sizes and i < len(input_sizes) else None
+                    )
+                    for i, info in enumerate(parameters_type)
+                ]
             try:
                 for row in seq_of_parameters:
                     # execute() consumes overrides; every streamed row needs them.
@@ -2878,6 +2984,10 @@ class Cursor:
                                 conversion_failed = True
                             if conversion_failed:
                                 raise ValueError(err_msg) from None
+                for i in json_columns:
+                    value = processed_row[i]
+                    if value is not None:
+                        processed_row[i] = value._text
                 processed_parameters.append(processed_row)
 
         # Now transpose the processed parameters
@@ -3010,6 +3120,8 @@ class Cursor:
                 self._increment_rownumber()
             self.rowcount = self._next_row_index
             column_map, converter_map, column_map_lower = self._get_column_and_converter_maps()
+            if self._json_decode_indices:
+                self._decode_json_row(row_data)
             if deferred_text and not converter_map:
                 ddbc_bindings.restore_output_converter_text(row_data)
                 deferred_text = False
@@ -3060,6 +3172,8 @@ class Cursor:
 
     def _wrap_fetchone(self, row_data: list[Any]) -> Row:
         column_map, converter_map, column_map_lower = self._get_column_and_converter_maps()
+        if self._json_decode_indices:
+            self._decode_json_row(row_data)
         with perf_phase("py::fetchone::row_wrap"):
             if not converter_map and not self._uuid_str_indices:
                 return Row._fast_create(
@@ -3154,6 +3268,9 @@ class Cursor:
 
     def _wrap_fetchmany(self, rows_data: list[list[Any]], deferred_text: bool = False) -> list[Row]:
         column_map, converter_map, column_map_lower = self._get_column_and_converter_maps()
+        if self._json_decode_indices:
+            for row_data in rows_data:
+                self._decode_json_row(row_data)
         if deferred_text and not converter_map:
             for row_data in rows_data:
                 ddbc_bindings.restore_output_converter_text(row_data)
@@ -3252,6 +3369,9 @@ class Cursor:
 
             # Get column and converter maps
             column_map, converter_map, column_map_lower = self._get_column_and_converter_maps()
+            if self._json_decode_indices:
+                for row_data in rows_data:
+                    self._decode_json_row(row_data)
             if deferred_text and not converter_map:
                 for row_data in rows_data:
                     ddbc_bindings.restore_output_converter_text(row_data)
@@ -3916,8 +4036,7 @@ class Cursor:
             # Rust (mssql_py_core) requires PyTuple via cast::<PyTuple>() and
             # rejects all other types including list. Row objects are converted
             # using direct _values access (4x faster than __iter__ protocol).
-            # Uses itertools.chain for C-level iteration (avoids Python
-            # generator frame overhead on the tuple passthrough path).
+            # Validate Json cells lazily to preserve the ordinary streaming contract.
             def _prepare_row_iterator(
                 iterable: Iterable[tuple[Any, ...]] | Iterable[Row],
             ) -> Iterator[tuple[Any, ...]]:
@@ -3928,15 +4047,21 @@ class Cursor:
                 if first is None:
                     return iter(())
                 if isinstance(first, tuple):
-                    return chain((first,), cast("Iterator[tuple[Any, ...]]", it))
+                    rows = chain((first,), cast("Iterator[tuple[Any, ...]]", it))
+                    return _checked_json_rows(rows)
                 if isinstance(first, Row):
-                    return (
+                    return _checked_json_rows(
                         tuple(item._values) for item in chain((first,), cast("Iterator[Row]", it))
                     )
                 raise TypeError(
                     f"bulkcopy data rows must be tuples or Row objects, "
                     f"got {type(first).__name__}"
                 )
+
+            def _checked_json_rows(rows: Iterable[tuple[Any, ...]]) -> Iterator[tuple[Any, ...]]:
+                for row in rows:
+                    _reject_json_parameters(row, "bulk copy")
+                    yield row
 
             # Call bulkcopy with explicit keyword arguments
             # The API signature: bulkcopy(table_name, data_source, batch_size=0, timeout=30, ...)
