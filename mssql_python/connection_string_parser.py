@@ -106,6 +106,12 @@ class _ConnectionStringParser:
             normalized_key = _ConnectionStringParser.normalize_key(key)
 
             if normalized_key:
+                if normalized_key == "VectorTypeSupport":
+                    value = value.strip().lower()
+                    if value not in ("off", "v1", "v2"):
+                        raise ConnectionStringParseError(
+                            ["VectorTypeSupport must be off, v1 or v2"]
+                        )
                 # Driver selection is controlled by the driver.
                 if normalized_key in _RESERVED_PARAMETERS:
                     continue

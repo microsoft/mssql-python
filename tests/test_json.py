@@ -304,6 +304,17 @@ def test_json_array_native_binding_contract(json_connection, monkeypatch):
         assert [row[0] for row in cursor.fetchall()] == [None, {}, [], {"u": "\x00\u03bb"}]
 
 
+def test_json_batch_with_sparse_companion_hint(json_connection):
+    with json_connection.cursor() as cursor:
+        cursor.execute("CREATE TABLE #json_sparse (id INT, doc JSON)")
+        # Row-wise JSON binding uses this internal shape for inferred companions.
+        cursor._inputsizes = [None, (SQL_JSON, -8, 0, 0)]
+        cursor.executemany("INSERT INTO #json_sparse VALUES (?, ?)", [(1, Json({})), (2, None)])
+        cursor.json_output = "objects"
+        cursor.execute("SELECT id, doc FROM #json_sparse ORDER BY id")
+        assert [tuple(row) for row in cursor.fetchall()] == [(1, {}), (2, None)]
+
+
 @pytest.mark.parametrize("units", [4000, 4001, 1000008])
 def test_json_batch_streaming_selection(json_connection, monkeypatch, units):
     from mssql_python import ddbc_bindings
@@ -1108,7 +1119,16 @@ def test_json_streamed_batch_row_shape_rejected_before_writes(json_connection):
 
 
 def test_json_bulk_guard_preserves_iterator_boundary(json_connection, monkeypatch):
+    import mssql_python.cursor as cursor_module
+
     consumed = []
+    json_checks = []
+    original_isinstance = isinstance
+
+    def counted_isinstance(value, cls):
+        if cls is Json:
+            json_checks.append(value)
+        return original_isinstance(value, cls)
 
     def rows():
         consumed.append("first")
@@ -1117,9 +1137,6 @@ def test_json_bulk_guard_preserves_iterator_boundary(json_connection, monkeypatc
         yield (1,)
 
     def consume(_table, parameters, **_kwargs):
-        from itertools import chain
-
-        assert isinstance(parameters, chain)
         for row in parameters:
             if any(isinstance(value, Json) for value in row):
                 raise ValueError("Unsupported Python type for bulk copy: Json")
@@ -1130,9 +1147,11 @@ def test_json_bulk_guard_preserves_iterator_boundary(json_connection, monkeypatc
     with json_connection.cursor() as cursor:
         monkeypatch.setattr(cursor, "_bulkcopy_core_and_validate", lambda *args: core)
         monkeypatch.setattr(cursor, "_build_pycore_context", dict)
+        monkeypatch.setattr(cursor_module, "isinstance", counted_isinstance, raising=False)
         with pytest.raises(NotSupportedError, match="bulk copy"):
             cursor.bulkcopy("unused_json_guard", rows())
     assert consumed == ["first"]
+    assert json_checks == []
     native_cursor.close.assert_called_once()
     core.PyCoreConnection.return_value.close.assert_called_once()
 

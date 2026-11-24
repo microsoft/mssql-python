@@ -23,6 +23,7 @@
 #include "ddbc_bindings.h"    // ParamInfo consumers, SQL Server ODBC constants
 #include "py_ref.hpp"         // steal / borrow
 #include "py_type_cache.hpp"  // PyTypeCache::get_*_class
+#include "vector_support.hpp"
 
 #include <Python.h>
 #include <datetime.h>  // CPython datetime API (PyDateTime_Check, PyDateTime_GET_*, etc.)
@@ -71,6 +72,7 @@ struct ParamInfo {
     // move operations are all correct and this struct needs no rule-of-five.
     py::object dataPtr;
     Py_ssize_t utf16Len = 0;  // UTF-16 code unit count for string params
+    std::shared_ptr<VectorBinding> vectorBinding;
 };
 #ifdef __GNUC__
 #pragma GCC diagnostic pop
@@ -255,6 +257,25 @@ inline void ApplyInputSizeOverride(PyObject* params, PyObject* inputSize, Py_ssi
     }
 
     PyObject* obj = PyList_GET_ITEM(params, index);
+    if (info.paramSQLType == SQL_SS_VECTOR) {
+        auto dimensions = static_cast<size_t>(info.columnSize);
+        py::object vector = py::module_::import("mssql_python.vector")
+            .attr("_vector_from_hint")(borrow(obj), dimensions, info.decimalDigits);
+        if (PyList_SetItem(params, index, vector.release().ptr()) != 0) {
+            throw py::error_already_set();
+        }
+        obj = PyList_GET_ITEM(params, index);
+        info.paramCType = SQL_C_SS_VECTOR;
+        info.vectorBinding = obj == Py_None
+            ? std::make_shared<VectorBinding>(dimensions, info.decimalDigits)
+            : std::make_shared<VectorBinding>(borrow(obj));
+        if (info.vectorBinding->value.dimension != dimensions ||
+            info.vectorBinding->value.type != info.decimalDigits)
+            throw py::value_error("Vector dimensions and subtype must match setinputsizes");
+        info.columnSize = VectorBufferSize(dimensions);
+        info.isDAE = false;
+        return;
+    }
     if (obj == Py_None) {
         info.paramCType = SQL_C_DEFAULT;
         return;
@@ -703,6 +724,17 @@ inline std::vector<ParamInfo> DetectParamTypes(PyObject* params, PyObject* input
                 // PyList_SetItem steals (decrefs) the item even on failure.
                 throw py::error_already_set();
             }
+            continue;
+        }
+
+        int isVector = PyObject_IsInstance(obj, PyTypeCache::vector_class);
+        if (isVector < 0) throw py::error_already_set();
+        if (isVector) {
+            info.vectorBinding = std::make_shared<VectorBinding>(borrow(obj));
+            info.paramSQLType = SQL_SS_VECTOR;
+            info.paramCType = SQL_C_SS_VECTOR;
+            info.columnSize = VectorBufferSize(info.vectorBinding->elements.size());
+            info.decimalDigits = static_cast<SQLSMALLINT>(info.vectorBinding->value.type);
             continue;
         }
 
