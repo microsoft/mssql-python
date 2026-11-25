@@ -133,8 +133,14 @@ def test_relocated_linux_fixture_runs_public_contracts(tmp_path_factory, fixture
     for package in ("mssql_python", "mssql_python_odbc", "mssql_py_core"):
         assert not (tmp_path / package).exists(), f"Fixture shadows the installed {package}"
     # Supply only the installed provider's metadata, not importable driver source.
-    provider = (ROOT / "mssql_python_odbc" / "__init__.py").read_text(encoding="utf-8")
-    version = re.search(r'__version__\s*=\s*["\']([^"\']+)["\']', provider).group(1)
+    provider_init = ROOT / "mssql_python_odbc" / "__init__.py"
+    if provider_init.is_file():
+        provider = provider_init.read_text(encoding="utf-8")
+        version = re.search(r'__version__\s*=\s*["\']([^"\']+)["\']', provider).group(1)
+    else:
+        from importlib.metadata import version as distribution_version
+
+        version = distribution_version("mssql-python-odbc")
     metadata = tmp_path / f"mssql_python_odbc-{version}.dist-info"
     metadata.mkdir()
     (metadata / "METADATA").write_text(
