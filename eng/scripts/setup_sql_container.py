@@ -10,6 +10,8 @@ Only SQL lookup/pull/create/start/readiness/database setup is retried by default
 Colima starts once within the remaining overall setup budget. Release jobs can
 opt into --retry-colima for two startup attempts, each capped at 600 seconds,
 with a verified daemon and clean disposable-profile reset between attempts.
+Release startup uses explicit public DNS resolvers for the VM, avoiding the
+Lima host DNS forwarder when pulling the public SQL Server image.
 The owned-container lookup also checks Docker availability, so
 transient read-only failures can consume the same two attempts without creating
 or removing anything. Missing tools, invalid configuration/lookup results,
@@ -594,8 +596,11 @@ class SqlSetup:
             for number in range(1, attempts + 1):
                 self.log(f"Colima startup attempt {number}/{attempts} (outside SQL retry)")
                 try:
+                    command = ["colima", "start", "--cpu", "4", "--memory", "8", "--disk", "50"]
+                    if self.args.retry_colima:
+                        command.extend(["--dns", "1.1.1.1", "--dns", "8.8.8.8"])
                     result = self.command(
-                        ["colima", "start", "--cpu", "4", "--memory", "8", "--disk", "50"],
+                        command,
                         600 if self.args.retry_colima else self.deadline - time.monotonic(),
                         launcher=True,
                     )

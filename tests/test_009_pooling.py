@@ -1712,11 +1712,12 @@ def test_native_checked_cleanup_and_discard(conn_str, use_pool):
             def connection_id(connection):
                 statement = connection.alloc_statement_handle()
                 try:
-                    assert ddbc.DDBCSQLExecDirect(
+                    result = ddbc.DDBCSQLExecDirect(
                         statement,
                         "SELECT connection_id FROM sys.dm_exec_connections "
                         "WHERE session_id = @@SPID",
-                    ) in (0, 1)
+                    )
+                    assert result in (0, 1), ddbc.DDBCSQLGetAllDiagRecords(statement)
                     row = []
                     assert ddbc.DDBCSQLFetchOne(statement, row) in (0, 1)
                     assert len(row) == 1

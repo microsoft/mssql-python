@@ -37,6 +37,10 @@ class _AsyncConnection:
     Warning:
         This preview API is under active development and is not intended for production use.
         Its signatures, behavior, error handling, and compatibility may change without notice.
+
+    Busy or broken connection operations raise OperationalError; closed connections raise
+    InterfaceError. The original backend exception is retained as __cause__, whether the
+    backend uses a built-in RuntimeError or a native DB-API exception.
     """
 
     Warning = Warning

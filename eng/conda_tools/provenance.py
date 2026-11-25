@@ -97,8 +97,12 @@ def _wheel_security_reasons(get_json: Callable[[str], dict], build: dict, run: d
     if not isinstance(parameters, dict):
         return ["wheel producer security parameters are missing"]
     reasons = []
-    # Scheduled producers select Official even when the parameter defaults to NonOfficial.
-    if build.get("reason") != "schedule" and parameters.get("oneBranchType") != "Official":
+    # Scheduled/main-CI producers force Official despite the parameter default.
+    forced_official = build.get("reason") == "schedule" or (
+        build.get("sourceBranch") == _MAIN
+        and build.get("reason") in {"individualCI", "batchedCI"}
+    )
+    if not forced_official and parameters.get("oneBranchType") != "Official":
         reasons.append("wheel producer did not use Official mode")
     for name in ("runSdlTasks", "signWindowsBinaries"):
         if parameters.get(name) is not True:

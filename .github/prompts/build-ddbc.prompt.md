@@ -108,6 +108,10 @@ provisions that permission.
 
 The checked cleanup cases run with
 `python -m pytest tests/test_009_pooling.py -k test_native_checked_cleanup -v`.
+Their physical-connection identity check also queries `sys.dm_exec_connections`.
+Both PR validation and release runtime-test setup must grant the test login
+`VIEW SERVER STATE` on older SQL Server versions or `VIEW SERVER PERFORMANCE STATE`
+on SQL Server 2022+; database-level `db_owner` alone is insufficient.
 They exercise the internal idle-handle release and physical connection retirement
 primitives, not a public query cancellation API. Callers must serialize these
 primitives against all active statement/connection use; they do not interrupt
