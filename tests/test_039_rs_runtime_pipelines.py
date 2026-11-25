@@ -747,9 +747,7 @@ class TestReleaseBuildDependencies:
         assert "--require-hashes" in step["run"]
 
     @pytest.mark.parametrize("fixture_index", [0, 1], ids=["manylinux", "musllinux"])
-    def test_relocated_linux_fixture_collects_public_contracts(
-        self, tmp_path_factory, fixture_index
-    ):
+    def test_relocated_linux_fixture_runs_public_contracts(self, tmp_path_factory, fixture_index):
         tmp_path = tmp_path_factory.mktemp("lf")
         pipeline = (PIPELINES / "stages/build-linux-single-stage.yml").read_text(encoding="utf-8")
         fixtures = pipeline.split("# Step 7: Setup test environment")[1:]
@@ -807,16 +805,17 @@ class TestReleaseBuildDependencies:
                 "-m",
                 "pytest",
                 "--noconftest",
-                "--collect-only",
-                "-q",
+                "-v",
+                "--basetemp",
+                str(tmp_path / "p"),
                 "--tb=short",
                 *contracts,
             ],
             cwd=tmp_path,
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=600,
         )
         assert result.returncode == 0, result.stdout + result.stderr
-        collected = result.stdout.replace("\\", "/")
-        assert all(f"{contract}::" in collected for contract in contracts), collected
+        executed = result.stdout.replace("\\", "/")
+        assert all(f"{contract}::" in executed for contract in contracts), executed
