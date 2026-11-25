@@ -36,6 +36,7 @@ from mssql_python.exceptions import (
     ProgrammingError,
     OperationalError,
     DatabaseError,
+    DataError,
 )
 from mssql_python.row import Row, OutputConverter, _ColumnNames
 from mssql_python.json import Json, _decode_json
@@ -593,7 +594,12 @@ class Cursor:
 
     @property
     def json_output(self) -> Literal["text", "objects"]:
-        """JSON result representation; changes take effect on the next execution."""
+        """JSON result representation; changes take effect on the next execution.
+
+        Registered converters (including str and SQL_WVARCHAR fallbacks) take
+        precedence. Object decoding uses json.loads and is not lossless for
+        arbitrary JSON numbers; use text mode when preserving numeric text.
+        """
         return self._json_output
 
     @json_output.setter
@@ -1660,7 +1666,13 @@ class Cursor:
     def _decode_json_row(self, values: list[Any]) -> None:
         for index in self._json_decode_indices:
             if values[index] is not None:
-                values[index] = _decode_json(values[index])
+                try:
+                    values[index] = _decode_json(values[index])
+                except DataError as error:
+                    name = self.description[index][0] if self.description else None
+                    raise DataError(
+                        f"{error.driver_error} in column {index + 1} ({name!r})", ""
+                    ) from error
 
     def _compute_uuid_str_indices(self) -> tuple[int, ...] | None:
         """
@@ -3497,6 +3509,8 @@ class Cursor:
         rows = []
         for _ in range(min(size, len(procedure_rows))):
             buffered_row = procedure_rows.popleft()
+            if self._json_decode_indices:
+                self._decode_json_row(buffered_row)
             self._increment_rownumber()
             self.rowcount = self._next_row_index
             rows.append(
@@ -4890,6 +4904,7 @@ class Cursor:
             yield row
 
     def _next_procedure_result(self) -> bool:
+        self._json_decode_indices = ()
         self._cached_column_map = None
         self._cached_column_map_lower = None
         self._cached_converter_map = None
@@ -4932,6 +4947,7 @@ class Cursor:
         Use execute() to pass table-valued parameters.
         """
         self._check_closed()
+        self._execution_json_output = self._json_output
         self._executing = True
         try:
             if not isinstance(procname, str) or not procname or "\0" in procname:

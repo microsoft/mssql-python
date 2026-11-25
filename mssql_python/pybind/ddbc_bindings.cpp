@@ -521,13 +521,18 @@ static void CheckJsonBindError(SQLHANDLE hStmt, SQLRETURN rc) {
     }
 }
 
-[[noreturn]] static void ThrowParameterError(const SqlHandlePtr& statementHandle, SQLRETURN rc,
-                                        const std::string& operation) {
-    ErrorInfo error = SQLCheckError_Wrap(SQL_HANDLE_STMT, statementHandle, rc);
+[[noreturn]] static void ThrowStatementError(SQLHSTMT statementHandle, SQLRETURN rc,
+                                           const std::string& operation) {
+    ErrorInfo error = SQLReadError(SQL_HANDLE_STMT, statementHandle, rc);
     py::object raiseException =
         py::module_::import("mssql_python.exceptions").attr("raise_exception");
     raiseException(error.sqlState, operation + ": " + error.ddbcErrorMsg);
     throw std::runtime_error(operation);
+}
+
+[[noreturn]] static void ThrowParameterError(const SqlHandlePtr& statementHandle, SQLRETURN rc,
+                                           const std::string& operation) {
+    ThrowStatementError(statementHandle ? statementHandle->get() : nullptr, rc, operation);
 }
 
 static SQLRETURN PreResolveUdtTypes(SqlHandle& handle, SQLHANDLE hStmt,
@@ -3582,7 +3587,7 @@ py::object FetchLobColumnData(SQLHSTMT hStmt, SQLUSMALLINT colIndex, SQLSMALLINT
         }
         CaptureFetchDiagnostics(hStmt, ret, messages, true);
         if (!SQL_SUCCEEDED(ret)) {
-            ThrowStdException("SQLGetData failed to probe the UTF-16 LOB length");
+            ThrowStatementError(hStmt, ret, "Probing LOB length for column " + std::to_string(colIndex));
         }
         if (sourceLength == SQL_NULL_DATA) {
             return py::none();
@@ -3620,7 +3625,7 @@ py::object FetchLobColumnData(SQLHSTMT hStmt, SQLUSMALLINT colIndex, SQLSMALLINT
             oss << "Error fetching LOB for column " << colIndex << ", cType=" << cType
                 << ", loop=" << loopCount << ", SQLGetData return=" << ret;
             LOG("FetchLobColumnData: %s", oss.str().c_str());
-            ThrowStdException(oss.str());
+            ThrowStatementError(hStmt, ret, oss.str());
         }
         if (actualRead == SQL_NULL_DATA) {
             LOG("FetchLobColumnData: Column %d is NULL at loop %d", colIndex, loopCount);

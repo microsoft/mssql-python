@@ -199,6 +199,122 @@ example, requesting ASCII with `SQL_CHAR` does not cause non-ASCII parameters to
 raise encoding errors. Use `setencoding()` with no arguments to restore the
 supported defaults. `setdecoding()` independently controls how result data is read.
 
+### Native JSON (preview)
+
+Synchronous `execute()` and `executemany()` support native SQL Server JSON with a
+JSON-capable **msodbcsql18 preview provider** and a JSON-capable server (SQL Server
+2025 or a supported Azure SQL database). This feature does not replace the shipped
+provider. Development preview binaries are not for production or redistribution.
+The `mssql-odbc` provider is not supported for these JSON inputs; there is no
+automatic provider change, text fallback, or statement retry.
+
+```python
+from mssql_python import Json, SQL_JSON, connect
+
+with connect(connection_string) as connection:
+    with connection.cursor() as cursor:
+        cursor.json_output = "objects"  # Default is "text"
+        cursor.execute("SELECT CAST(? AS JSON) AS document", Json({"items": [1, None]}))
+        document = cursor.fetchone()[0]  # {"items": [1, None]}
+        cursor.setinputsizes([SQL_JSON])
+        cursor.execute("SELECT CAST(? AS JSON)", None)  # SQL NULL
+```
+
+`Json(value)` accepts exact built-in `dict`, `list`, or `str`. Dict/list values
+are strictly validated and serialized once into an immutable snapshot; later
+mutations of the original value do not affect it. Nested `None` becomes JSON null.
+Non-string object keys, nonfinite numbers, cycles, unsupported nested values
+(including tuples and subclasses), and invalid Unicode are rejected.
+`Json(None)`, numeric/bool roots, bytes and root subclasses are rejected at
+construction. Unwrapped parameter sequences and named mappings retain their
+existing meanings.
+
+`Json(str)` means **already-serialized JSON text**, not a Python string to
+serialize. Python retains it without parsing, stripping or rewriting it, while
+still checking Unicode encodability. For example, `Json(' {"items":[1,null]} ')`
+is valid. `Json('text')` is malformed JSON and `Json('"text"')` is a scalar;
+both construct successfully but fail at execution, as do empty text and
+`Json('null')`. Native JSON requires an object/array root. Provider/server
+diagnostics propagate. This intentionally differs from psycopg's default
+`Json(str)`, which serializes a Python string as a JSON string scalar.
+
+`cursor.json_output` accepts `"text"` or `"objects"` and is captured for each
+execution, including buffered `callproc()` result sets and `nextset()`. Changing
+it while fetching affects the next execution only. There is no connection-level
+default. Only native `SQL_SS_JSON` (`-157`) metadata triggers decoding; ordinary
+VARCHAR/NVARCHAR is never inspected for JSON. `description[i][1]` remains `str`
+in both modes. `Row` remains the outer container, decoded dict/list values are
+independent, and SQL NULL remains `None`.
+
+Registered output converters take precedence over `"objects"`, including
+Python `str` and `SQL_WVARCHAR` fallback converters. An exact `SQL_JSON` /
+`SQL_SS_JSON` converter wins over those fallbacks. A fallback written for text
+can therefore also transform native JSON. Converter selection is captured once
+per `fetchmany()`/`fetchall()` call, including buffered procedure results.
+Decode failures raise `DataError` identifying the column, without including its
+payload or silently returning text.
+
+Object decoding uses Python's `json.loads` and **is not a lossless round trip for
+arbitrary numbers**: fractional numbers become floats, and Python's integer
+digit and nesting limits apply. Re-inserting decoded objects can preserve a
+rounded value rather than the original number. Text mode preserves the server's
+returned text, not necessarily the original input representation. SQL Server may
+normalize input numbers or reject them. For duplicate keys, SQL Server's
+`JSON_VALUE` selects the first occurrence; Python object decoding keeps the last
+occurrence if duplicates are returned.
+
+For re-insertion in either output mode, use
+`None if row.payload is None else Json(row.payload)`. This preserves SQL NULL;
+it does not make object-mode numeric conversion lossless.
+
+Native JSON uses UTF-16 buffers and complete LOB retrieval. Oversized documents
+in `executemany()` use row-wise streaming rather than padded array allocation.
+One oversized document moves the whole batch to that path, so heterogeneous
+batch sizes can affect throughput. Dict/list construction pays strict validation
+and serialization once per wrapper; reusing the immutable wrapper avoids that
+work. JSON fetches use the per-row LOB path, and object decoding adds parsing
+cost; no general throughput advantage over text storage is promised.
+
+JSON-bound columns accept mixtures of `Json(dict)`, `Json(list)`, `Json(str)` and
+`None`. Bare strings explicitly hinted as JSON, or mixed Json/bare-value columns,
+are rejected. Ordinary unhinted strings retain character binding and SQL Server
+conversion. Use `setinputsizes([SQL_JSON])` for all-NULL parameters when the
+server cannot infer their types, such as with temporary tables. Late invalid
+text does not promise rollback of earlier batch rows; use explicit transactions
+and rollback for atomicity.
+
+**Provider and qualification limits:** `VectorTypeSupport` is not required for
+native JSON binding/fetch. Earlier previews omit JSON from `columns()` and
+`getTypeInfo()` with vector negotiation off. ODBC's updated SQL Server 2025+
+catalog policy uses the `sp_*170` procedures regardless of vector negotiation,
+with JSON always negotiated; this may expose vector catalog metadata even when
+vector negotiation is off. Catalog behavior must be qualified against the
+specific provider build, not used alone to decide whether JSON binding works.
+
+The shipped classic driver can report server JSON as VARCHAR; both output modes
+then return text. This retrieval path has been exercised with Unicode and
+multi-chunk values on Windows and Linux; macOS remains unqualified. Native JSON
+binding rejected with `HY004` raises `NotSupportedError` with the original
+diagnostic. Other errors retain their normal DB-API classification; the qualified
+preview on SQL Server 2022 rejects native JSON input with `ProgrammingError`
+(`42000`). LOB read failures preserve driver diagnostics/SQLSTATE and never
+return a partial JSON document.
+
+Run preview success tests with `MSSQL_TEST_NATIVE_JSON=1` only on an explicitly
+provisioned JSON-capable provider/server. Keep preview and shipped-driver CI legs
+on separate servers: cross-client cached result-metadata interference has been
+reported on SQL Server 2025. The capability probe uses `OPTION (RECOMPILE)`;
+ordinary application SQL is not rewritten or retried.
+
+The synchronous `SQL_JSON` constant maps to `SQL_SS_JSON` (`-157`). The existing
+`mssql_python.async_query.SQL_JSON` is a separate Rust-backed symbol; do not pass
+type codes between backends. JSON support for Arrow, TVPs, async execution and
+bulk copy remains deferred. Bulk copy adds no Python JSON scan; the core's
+unsupported-`Json` diagnostic becomes `NotSupportedError` when that row is
+consumed. Other core errors propagate unchanged. The full design's Arrow
+text-retrieval release gate and wider platform/sanitizer qualification remain
+open.
+
 ### Native vector values
 
 The synchronous ODBC API accepts and returns immutable `Vector` values. SQL NULL

@@ -8,6 +8,7 @@ import asyncio
 import subprocess
 import sys
 import uuid
+from pathlib import Path
 from dataclasses import FrozenInstanceError
 from datetime import date
 from decimal import Decimal
@@ -179,11 +180,12 @@ def test_async_json_batch_guard_preserves_iterator_boundary():
 
 @pytest.fixture
 def json_connection(conn_str):
+    """Run preview success cases on a server isolated from shipped-driver CI legs."""
     if os.environ.get("MSSQL_TEST_NATIVE_JSON") != "1":
         pytest.skip("Set MSSQL_TEST_NATIVE_JSON=1 with a qualified JSON provider and server")
     with connect(conn_str) as connection:
         with connection.cursor() as cursor:
-            cursor.execute("SELECT CAST(N'{}' AS JSON)")
+            cursor.execute("SELECT CAST(N'{}' AS JSON) OPTION (RECOMPILE)")
             assert cursor._column_sql_types == [SQL_SS_JSON], "Provider must report native JSON"
         yield connection
 
@@ -237,6 +239,133 @@ def test_json_unsupported_bind_preserves_diagnostics_and_cursor_reuse(
             assert [tuple(row) for row in cursor.fetchall()] == expected
         finally:
             cursor.execute("DROP TABLE #json_hy004")
+
+
+@pytest.mark.skipif(
+    os.environ.get("MSSQL_TEST_NATIVE_JSON") == "1",
+    reason="Legacy metadata regression requires the shipped driver",
+)
+@pytest.mark.parametrize("method", ["fetchone", "fetchmany", "fetchall"])
+@pytest.mark.parametrize("mode", ["text", "objects"])
+def test_json_legacy_varchar_results(conn_str, method, mode):
+    from mssql_python import get_native_provider_info
+
+    if get_native_provider_info()["id"] != "msodbcsql18":
+        pytest.skip("Tests the classic shipped driver's JSON-as-VARCHAR path")
+    with connect(conn_str) as connection, connection.cursor() as cursor:
+        if cursor.execute("SELECT TYPE_ID(N'json')").fetchval() is None:
+            pytest.skip("Server does not support JSON")
+        cursor.json_output = mode
+        for size in [1, 9000, 20000]:
+            text = json.dumps(
+                {"v": "x" * size + "\U0001f600\u4e2d\u00e9"},
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            # Different driver capabilities must not reuse this statement's result metadata.
+            cursor.execute("SELECT CAST(? AS JSON) AS doc OPTION (RECOMPILE)", text)
+            assert cursor._column_sql_types == [12]
+            result = getattr(cursor, method)()
+            value = result[0] if method == "fetchone" else result[0][0]
+            assert value == text
+            assert type(value) is str
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="Windows does not export ODBC function-pointer globals"
+)
+@pytest.mark.parametrize("failure", ["probe", "continuation"])
+def test_lob_read_failure_preserves_sqlstate(conn_str, failure):
+    code = (
+        "import runpy, sys; " "runpy.run_path(sys.argv[1])['_check_lob_read_failure'](sys.argv[2])"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code, str(Path(__file__).resolve()), failure],
+        env=dict(os.environ, DB_CONNECTION_STRING=conn_str),
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, (result.stdout, result.stderr)
+
+
+def _check_lob_read_failure(failure):
+    import ctypes as ct
+    from mssql_python import OperationalError, ddbc_bindings
+
+    library = ct.CDLL(ddbc_bindings.module.__file__)
+    data_pointer = ct.c_void_p.in_dll(library, "SQLGetData_ptr")
+    diag_pointer = ct.c_void_p.in_dll(library, "SQLGetDiagRec_ptr")
+    data_type = ct.CFUNCTYPE(
+        ct.c_short,
+        ct.c_void_p,
+        ct.c_ushort,
+        ct.c_short,
+        ct.c_void_p,
+        ct.c_ssize_t,
+        ct.POINTER(ct.c_ssize_t),
+    )
+    diag_type = ct.CFUNCTYPE(
+        ct.c_short,
+        ct.c_short,
+        ct.c_void_p,
+        ct.c_short,
+        ct.c_void_p,
+        ct.POINTER(ct.c_int32),
+        ct.c_void_p,
+        ct.c_short,
+        ct.POINTER(ct.c_short),
+    )
+    calls, callback_errors = [], []
+    failed_handle = None
+    diagnostic = "Injected communication link failure"
+
+    @data_type
+    def get_data(handle, column, ctype, buffer, capacity, indicator):
+        nonlocal failed_handle
+        calls.append(capacity)
+        if (failure == "probe" and capacity == 0) or (
+            failure == "continuation" and len(calls) == 2
+        ):
+            failed_handle = handle
+            return -1
+        return original_data(handle, column, ctype, buffer, capacity, indicator)
+
+    @diag_type
+    def get_diag(kind, handle, record, state, number, message, capacity, length):
+        if failed_handle is None or handle != failed_handle:
+            return original_diag(kind, handle, record, state, number, message, capacity, length)
+        if record != 1:
+            return 100
+        encoded = diagnostic.encode("utf-16-le")
+        if not state or not message or not length or not number or capacity <= len(encoded) // 2:
+            callback_errors.append("Invalid diagnostic buffer")
+            return -1
+        ct.memmove(state, "08S01\0".encode("utf-16-le"), 12)
+        ct.memmove(message, encoded + b"\0\0", len(encoded) + 2)
+        length[0] = len(encoded) // 2
+        number[0] = 0
+        return 0
+
+    with connect(os.environ["DB_CONNECTION_STRING"]) as connection, connection.cursor() as cursor:
+        sql_type = "VARCHAR(MAX)" if failure == "probe" else "NVARCHAR(MAX)"
+        cursor.execute(f"SELECT REPLICATE(CAST('x' AS {sql_type}), 20000) AS doc")
+        saved_data, saved_diag = data_pointer.value, diag_pointer.value
+        assert saved_data and saved_diag
+        original_data, original_diag = data_type(saved_data), diag_type(saved_diag)
+        try:
+            data_pointer.value = ct.cast(get_data, ct.c_void_p).value
+            diag_pointer.value = ct.cast(get_diag, ct.c_void_p).value
+            with pytest.raises(OperationalError) as caught:
+                cursor.fetchone()
+            assert caught.value.sqlstate == "08S01"
+            assert diagnostic in caught.value.ddbc_error
+            assert "column 1" in caught.value.ddbc_error
+            assert not callback_errors
+            assert len(calls) == (1 if failure == "probe" else 2)
+        finally:
+            data_pointer.value, diag_pointer.value = saved_data, saved_diag
+        assert cursor.execute("SELECT 42").fetchval() == 42
 
 
 @pytest.mark.parametrize("fetch", ["fetchone", "fetchmany", "fetchall", "fetchval", "iteration"])
@@ -761,20 +890,124 @@ def test_json_parse_errors_propagate_from_fetch(json_connection, monkeypatch, me
     from mssql_python import ddbc_bindings
 
     def invalid_result(handle, rows, *args):
-        rows.extend(["{"] if method == "fetchone" else [["{"]])
+        values = ["{}", '{"private-payload":']
+        rows.extend(values if method == "fetchone" else [values])
         return 0
 
     with json_connection.cursor() as cursor:
         cursor.json_output = "objects"
-        cursor.execute("SELECT CAST(N'{}' AS JSON)")
+        cursor.execute("SELECT CAST(N'{}' AS JSON) AS valid, CAST(N'{}' AS JSON) AS broken")
         native_method = {
             "fetchone": "DDBCSQLFetchOne",
             "fetchmany": "DDBCSQLFetchMany",
             "fetchall": "DDBCSQLFetchAll",
         }[method]
         monkeypatch.setattr(ddbc_bindings, native_method, invalid_result)
-        with pytest.raises(DataError, match="Invalid native JSON"):
+        with pytest.raises(DataError, match="column 2.*broken") as caught:
             getattr(cursor, method)()
+        assert "private-payload" not in str(caught.value)
+        assert isinstance(caught.value.__cause__, DataError)
+
+
+@pytest.mark.parametrize("method", ["fetchone", "fetchmany", "fetchall"])
+@pytest.mark.parametrize("mode", ["text", "objects"])
+def test_json_callproc_execution_snapshot_and_nextset(json_connection, monkeypatch, method, mode):
+    import mssql_python.cursor as cursor_module
+
+    decode = Mock(wraps=_decode_json)
+    monkeypatch.setattr(cursor_module, "_decode_json", decode)
+    with json_connection.cursor() as cursor:
+        cursor.execute(
+            "CREATE PROCEDURE #json_results AS BEGIN SET NOCOUNT ON; "
+            "SELECT CAST(N'{\"v\":[]}' AS JSON) AS doc FROM (VALUES(1),(2)) t(id); "
+            "SELECT CAST(NULL AS JSON) AS doc; "
+            "SELECT N'ordinary' AS txt; "
+            "SELECT CAST(N'[]' AS JSON) AS doc; END"
+        )
+        cursor.json_output = mode
+        cursor.callproc("#json_results")
+        cursor.json_output = "text" if mode == "objects" else "objects"
+        cursor.arraysize = 2
+        if method == "fetchone":
+            values = [cursor.fetchone()[0], cursor.fetchone()[0]]
+        else:
+            values = [row[0] for row in getattr(cursor, method)()]
+        expected = {"v": []} if mode == "objects" else '{"v":[]}'
+        assert values == [expected, expected]
+        if mode == "objects":
+            values[0]["v"].append("independent")
+            assert values[1] == {"v": []}
+        assert cursor.nextset()
+        assert cursor.fetchval() is None
+        assert cursor.nextset()
+        assert cursor.fetchval() == "ordinary"
+        assert cursor.nextset()
+        assert cursor.fetchval() == ([] if mode == "objects" else "[]")
+        assert not cursor.nextset()
+        assert cursor._json_decode_indices == ()
+        assert decode.call_count == (3 if mode == "objects" else 0)
+
+        cursor.callproc("#json_results")
+        assert cursor.fetchval() == ('{"v":[]}' if mode == "objects" else {"v": []})
+
+
+@pytest.mark.parametrize("execution", ["execute", "callproc"])
+@pytest.mark.parametrize("key", [SQL_JSON, str, -9], ids=["json", "python-str", "wvarchar"])
+def test_json_fallback_converter_precedence_and_batch_snapshot(json_connection, execution, key):
+    calls = []
+
+    def converter(raw):
+        calls.append(raw)
+        json_connection.remove_output_converter(key)
+        return "converted"
+
+    with json_connection.cursor() as cursor:
+        query = 'SELECT CAST(N\'{"a":"x"}\' AS JSON) AS doc ' "FROM (VALUES(1),(2),(3)) t(id)"
+        if execution == "callproc":
+            cursor.execute(
+                f"CREATE PROCEDURE #json_converter AS BEGIN SET NOCOUNT ON; {query}; END"
+            )
+        cursor.json_output = "objects"
+        json_connection.add_output_converter(key, converter)
+        if execution == "callproc":
+            cursor.callproc("#json_converter")
+        else:
+            cursor.execute(query)
+        assert [row[0] for row in cursor.fetchmany(2)] == ["converted", "converted"]
+        assert calls == ['{"a":"x"}'.encode("utf-16-le")] * 2
+        assert cursor.fetchval() == {"a": "x"}
+
+
+@pytest.mark.parametrize("method", ["fetchone", "fetchmany", "fetchall"])
+@pytest.mark.parametrize("mode", ["text", "objects"])
+def test_json_later_unicode_read_boundaries(json_connection, method, mode):
+    with json_connection.cursor() as cursor:
+        cursor.json_output = mode
+        for boundary in [4095, 8190, 12285, 16380]:
+            for offset in [-1, 0, 1]:
+                value = {"v": "a" * (boundary - 6 + offset) + "\U0001f600\u4e2d\u00e9" + "z" * 5000}
+                parameter = Json(value)
+                cursor.execute("SELECT ?", parameter)
+                result = getattr(cursor, method)()
+                actual = result[0] if method == "fetchone" else result[0][0]
+                assert actual == (value if mode == "objects" else parameter._text)
+
+
+def test_json_unhinted_null_describe_on_permanent_table(json_connection):
+    table = "json_null_" + uuid.uuid4().hex
+    with json_connection.cursor() as cursor:
+        cursor.execute(f"CREATE TABLE [{table}] (id INT, doc JSON)")
+        try:
+            cursor.execute(f"INSERT INTO [{table}] VALUES (?, ?)", 1, None)
+            cursor.executemany(f"INSERT INTO [{table}] VALUES (?, ?)", [(2, None), (3, None)])
+            cursor.execute(f"INSERT INTO [{table}] VALUES (?, ?)", 4, Json({}))
+            cursor.execute(f"UPDATE [{table}] SET doc = ? WHERE id = ?", None, 4)
+            cursor.json_output = "objects"
+            cursor.execute(f"SELECT doc FROM [{table}] ORDER BY id")
+            assert cursor._column_sql_types == [SQL_JSON]
+            assert [row[0] for row in cursor.fetchall()] == [None] * 4
+        finally:
+            cursor.execute(f"DROP TABLE [{table}]")
 
 
 @pytest.mark.parametrize("batch", [False, True])

@@ -7,6 +7,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 ## [Unreleased]
 
 ### Added
+- Preview synchronous native JSON support with immutable `Json(dict | list | str)`
+  inputs, `SQL_JSON` / `SQL_SS_JSON` binding, typed NULLs and large-value streaming.
+  Text results remain the default; execution-scoped `cursor.json_output="objects"`
+  decodes native JSON result metadata, including buffered procedure results.
+  Custom converters retain precedence. Requires a qualified JSON-capable classic
+  ODBC provider; shipped binaries are unchanged. Async, bulk, TVP and Arrow JSON
+  support remains deferred.
 - Opt-in synchronous native vector support with immutable `Vector` values,
   FLOAT32/FLOAT16 subtype metadata, scalar/array parameter binding, and row
   fetches. `base_type` selects SQL storage; values are normalized to float32 at
@@ -139,6 +146,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
   before; users should call `cursor.setinputsizes()` to work around this.
 
 ### Fixed
+- LOB read/probe failures retain ODBC diagnostics and SQLSTATE in public DB-API
+  exceptions. JSON decoding errors identify the failing column without its payload.
+- Async busy-connection errors retain the public `OperationalError` classification
+  with both stable and nightly Rust-core exception representations.
 - **GH-863:** `Cursor.nextset()` now refreshes `Cursor.rowcount` for
   the result it moves to, as `execute()` does: the affected-row count for an
   INSERT/UPDATE/DELETE/MERGE result and -1 for a result set. Previously
