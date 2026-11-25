@@ -121,6 +121,16 @@ def test_translation_context_preserves_native_error_as_cause():
     assert caught.value.__cause__ is native_error
 
 
+@pytest.mark.parametrize("native_type", [RuntimeError, mssql_py_core.InterfaceError])
+def test_busy_connection_translation_preserves_public_contract(native_type):
+    native_error = native_type("Connection is busy with another cursor operation")
+    with pytest.raises(public_exceptions.OperationalError) as caught:
+        with translate_py_core_exceptions():
+            raise native_error
+    assert caught.value.__cause__ is native_error
+    assert caught.value.ddbc_error == str(native_error)
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "fetch",
@@ -387,7 +397,7 @@ async def test_busy_connection_is_operational_error(async_connection):
         with pytest.raises(public_exceptions.OperationalError) as caught:
             await blocked_cursor.execute("SELECT 3")
 
-        assert isinstance(caught.value.__cause__, RuntimeError)
+        assert isinstance(caught.value.__cause__, (RuntimeError, mssql_py_core.InterfaceError))
         await owning_cursor.close()
         assert await blocked_cursor.execute("SELECT 3") is blocked_cursor
     finally:

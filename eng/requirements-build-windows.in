@@ -1,6 +1,8 @@
 # Dependencies installed before Windows release wheels are produced.
 pip
 psutil
+pyarrow==25.0.1; python_version < "3.15"
+pyarrow==26.0.0; python_version >= "3.15"
 pybind11
 pyodbc
 pytest

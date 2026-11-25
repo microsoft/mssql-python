@@ -383,6 +383,10 @@ stages:
                     cp /workspace/eng/scripts/run-mssql-odbc-tests.sh /workspace/eng/scripts/verify_mssql_odbc_provider.py $TEST_DIR/eng/scripts/;
                     cp /workspace/eng/pipelines/mssql-odbc-daily-validation-pipeline.yml $TEST_DIR/eng/pipelines/;
                     cp -r /workspace/eng/pipelines/. $TEST_DIR/eng/pipelines/;
+                    cp /workspace/setup.py /workspace/MANIFEST.in /workspace/PyPI_Description.md $TEST_DIR/;
+                    cp /workspace/eng/scripts/mssql_python_rs.py /workspace/eng/scripts/install_mssql_python_rs.py /workspace/eng/scripts/download_mssql_python_rs_wheels.py /workspace/eng/scripts/mssql_python_build_safety.py $TEST_DIR/eng/scripts/;
+                    cp -r /workspace/eng/conda_tools $TEST_DIR/eng/;
+                    cp -r /workspace/conda $TEST_DIR/;
                     cp -r /workspace/OneBranchPipelines/. $TEST_DIR/OneBranchPipelines/;
                     cp /workspace/eng/versions/mssql-python-rs.version $TEST_DIR/eng/versions/;
                     cp /workspace/OneBranchPipelines/stages/build-linux-single-stage.yml $TEST_DIR/OneBranchPipelines/stages/;
@@ -391,11 +395,8 @@ stages:
                     # Step 8: Run pytest (stops on first failure)
                     if [ -d $TEST_DIR/tests ]; then
                       echo "Running pytest for ${PYBIN}...";
-                      # Release-lock tests validate repository workflows and lock files,
-                      # not the installed wheel; run them in source-checkout validation.
                       DB_CONNECTION_STRING="Server=$SQL_IP;Database=master;Uid=SA;Pwd=$DB_PASSWORD;TrustServerCertificate=yes" \
-                        $PY -m pytest $TEST_DIR/tests -v --maxfail=1 \
-                          --ignore=tests/test_release_build_dependencies.py || {
+                        $PY -m pytest $TEST_DIR/tests -v --maxfail=1 || {
                           echo "ERROR: Tests failed for ${PYBIN}";
                           exit 1;
                         };
@@ -469,6 +470,10 @@ stages:
                     cp /workspace/eng/scripts/run-mssql-odbc-tests.sh /workspace/eng/scripts/verify_mssql_odbc_provider.py $TEST_DIR/eng/scripts/;
                     cp /workspace/eng/pipelines/mssql-odbc-daily-validation-pipeline.yml $TEST_DIR/eng/pipelines/;
                     cp -r /workspace/eng/pipelines/. $TEST_DIR/eng/pipelines/;
+                    cp /workspace/setup.py /workspace/MANIFEST.in /workspace/PyPI_Description.md $TEST_DIR/;
+                    cp /workspace/eng/scripts/mssql_python_rs.py /workspace/eng/scripts/install_mssql_python_rs.py /workspace/eng/scripts/download_mssql_python_rs_wheels.py /workspace/eng/scripts/mssql_python_build_safety.py $TEST_DIR/eng/scripts/;
+                    cp -r /workspace/eng/conda_tools $TEST_DIR/eng/;
+                    cp -r /workspace/conda $TEST_DIR/;
                     cp -r /workspace/OneBranchPipelines/. $TEST_DIR/OneBranchPipelines/;
                     cp /workspace/eng/versions/mssql-python-rs.version $TEST_DIR/eng/versions/;
                     cp /workspace/OneBranchPipelines/stages/build-linux-single-stage.yml $TEST_DIR/OneBranchPipelines/stages/;
@@ -477,11 +482,8 @@ stages:
                     # Step 8: Run pytest (stops on first failure)
                     if [ -d $TEST_DIR/tests ]; then
                       echo "Running pytest for ${PYBIN}...";
-                      # Release-lock tests validate repository workflows and lock files,
-                      # not the installed wheel; run them in source-checkout validation.
                       DB_CONNECTION_STRING="Server=$SQL_IP;Database=master;Uid=SA;Pwd=$DB_PASSWORD;TrustServerCertificate=yes" \
-                        $PY -m pytest $TEST_DIR/tests -v --maxfail=1 \
-                          --ignore=tests/test_release_build_dependencies.py || {
+                        $PY -m pytest $TEST_DIR/tests -v --maxfail=1 || {
                           echo "ERROR: Tests failed for ${PYBIN}";
                           exit 1;
                         };

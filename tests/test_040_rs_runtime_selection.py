@@ -1,5 +1,4 @@
 import json
-import runpy
 import subprocess
 import sys
 import zipfile
@@ -61,12 +60,27 @@ def test_committed_pin_must_be_a_release(tmp_path, version):
 def test_setup_metadata_uses_same_effective_runtime(monkeypatch, override):
     if override:
         monkeypatch.setenv(runtime.VERSION_ENV, override)
-    captured = {}
-    monkeypatch.chdir(ROOT)
-    monkeypatch.setattr("setuptools.setup", lambda **kwargs: captured.update(kwargs))
-    runpy.run_path(str(ROOT / "setup.py"))
+    # Older Python's setuptools shim can be poisoned by earlier pip/distutils imports.
+    monkeypatch.setitem(sys.modules, "setuptools", None)
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import json, runpy, setuptools; "
+            "captured = {}; "
+            "setuptools.setup = lambda **kwargs: captured.update(kwargs); "
+            "runpy.run_path('setup.py'); "
+            "print(json.dumps(captured['install_requires']))",
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    requirements = json.loads(result.stdout.splitlines()[-1])
     selected = runtime.resolve_runtime()
-    assert f"mssql-python-rs=={selected.version}" in captured["install_requires"]
+    assert f"mssql-python-rs=={selected.version}" in requirements
 
 
 @pytest.mark.parametrize("override", [None, "0.4.0.dev20261028187000"])

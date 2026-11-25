@@ -932,8 +932,9 @@ def test_wheel_security_evidence_required_for_production(chain, problem):
     assert result["productionIneligibilityReasons"]
 
 
-def test_scheduled_official_wheel_run_still_requires_completed_security_checks(chain):
-    chain["build/builds/173176?api-version=7.1"]["reason"] = "schedule"
+@pytest.mark.parametrize("reason", ["schedule", "individualCI", "batchedCI"])
+def test_forced_official_wheel_run_still_requires_completed_security_checks(chain, reason):
+    chain["build/builds/173176?api-version=7.1"]["reason"] = reason
     chain["pipelines/2199/runs/173176?api-version=7.1"]["templateParameters"][
         "oneBranchType"
     ] = "NonOfficial"
@@ -941,6 +942,20 @@ def test_scheduled_official_wheel_run_still_requires_completed_security_checks(c
     chain["build/builds/173176/timeline?api-version=7.1"]["records"].clear()
     with pytest.raises(ValueError, match="Production publication is ineligible"):
         _verify(chain)
+
+
+@pytest.mark.parametrize("reason", ["individualCI", "batchedCI"])
+def test_feature_branch_ci_cannot_claim_forced_official_mode(chain, reason):
+    chain["build/builds/173176?api-version=7.1"]["reason"] = reason
+    chain["build/builds/173176?api-version=7.1"]["sourceBranch"] = "refs/heads/feature"
+    chain["pipelines/2199/runs/173176?api-version=7.1"]["templateParameters"][
+        "oneBranchType"
+    ] = "NonOfficial"
+    assert provenance._wheel_security_reasons(
+        chain.__getitem__,
+        chain["build/builds/173176?api-version=7.1"],
+        chain["pipelines/2199/runs/173176?api-version=7.1"],
+    ) == ["wheel producer did not use Official mode"]
 
 
 @pytest.mark.parametrize(

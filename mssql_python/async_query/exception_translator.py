@@ -87,6 +87,10 @@ def translate_py_core_exception(error: Exception) -> Exception:
         public_type = _EXCEPTION_TYPES.get(error_type.__name__)
         if public_type is None:
             continue
+        # Newer py-core builds type busy rejections as InterfaceError; preserve
+        # the public classification used for the earlier RuntimeError form.
+        if public_type is InterfaceError and str(error).startswith("Connection is busy"):
+            public_type = OperationalError
         if public_type is DatabaseError:
             public_type = _classify_database_error(error, DatabaseError)
 
