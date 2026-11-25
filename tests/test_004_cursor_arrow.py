@@ -1151,7 +1151,7 @@ def _arrow_native_cancel_probe(outcome):
         }.get(outcome, "HY008")
         for index, character in enumerate(text + "\0"):
             state[index] = ord(character)
-        native[0] = 0
+        native[0] = 8115 if text == "22003" else 0
         diagnostic = "injected diagnostic " + text
         length[0] = len(diagnostic)
         if capacity:
@@ -1225,6 +1225,8 @@ def _arrow_native_cancel_probe(outcome):
                 assert len(errors) == 1 and isinstance(errors[0], expected), errors
                 state = "22003" if unrelated_error else "HY008"
                 assert "injected diagnostic " + state in str(errors[0]), errors
+                assert errors[0].sqlstate == state
+                assert errors[0].native_error == (8115 if unrelated_error else 0)
             cursor.execute("select 99")
             assert cursor.fetchone()[0] == 99
 
