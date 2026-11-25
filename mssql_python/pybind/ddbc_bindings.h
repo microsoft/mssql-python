@@ -17,6 +17,8 @@
 #include <cstring>
 #include <exception>
 #include <memory>
+#include <optional>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -422,6 +424,20 @@ using SqlHandlePtr = std::shared_ptr<SqlHandle>;
 struct ErrorInfo {
     std::string sqlState;
     std::string ddbcErrorMsg;
+    std::optional<SQLINTEGER> nativeError;
+};
+class NativeDatabaseError : public std::runtime_error {
+  public:
+    explicit NativeDatabaseError(const ErrorInfo& error)
+        : std::runtime_error(error.sqlState.length() == 5
+                                 ? "SQLSTATE:" + error.sqlState + ":" + error.ddbcErrorMsg
+                                 : error.ddbcErrorMsg),
+          diagnostic(error) {}
+    NativeDatabaseError(const ErrorInfo& error, const std::string& message)
+        : std::runtime_error(message), diagnostic(error), mapSqlState(false) {}
+    ErrorInfo diagnostic;
+    // Some connection operations historically use a generic Python exception.
+    bool mapSqlState = true;
 };
 ErrorInfo SQLCheckError_Wrap(SQLSMALLINT handleType, SqlHandlePtr handle, SQLRETURN retcode);
 // Driver must be initialized; reads diagnostics without Python logging/callbacks.

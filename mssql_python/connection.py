@@ -222,27 +222,45 @@ _SQLSTATE_RE = re.compile(r"^SQLSTATE:([A-Z0-9]{0,5}):(.*)", re.DOTALL)
 def _raise_connection_error(e: RuntimeError) -> NoReturn:
     """Map a RuntimeError from the C++ pybind layer to the correct DB-API 2.0 exception.
 
-    Connection::checkError() throws "SQLSTATE:XXXXX:<odbc_message>" so the SQLSTATE
-    can be mapped via sqlstate_to_exception(), consistent with cursor-level error handling.
+    New native errors carry structured diagnostics. The serialized SQLSTATE prefix
+    remains supported for legacy RuntimeError producers.
     """
     error_msg = str(e)
-    match = _SQLSTATE_RE.match(error_msg)
-    if match:
-        sqlstate, ddbc_error = match.group(1), match.group(2)
+    native_error = None
+    if isinstance(e, ddbc_bindings.NativeDatabaseError):
+        if not e.map_sqlstate:
+            logger.error("Connection error: %s", error_msg)
+            raise OperationalError(
+                driver_error="Connection operation failed",
+                ddbc_error=error_msg,
+                sqlstate=e.sqlstate,
+                native_error=e.native_error,
+            ) from None
+        sqlstate = e.sqlstate or ""
+        ddbc_error = e.ddbc_error
+        native_error = e.native_error
+        has_diagnostic = True
+    else:
+        match = _SQLSTATE_RE.match(error_msg)
+        has_diagnostic = match is not None
+        sqlstate, ddbc_error = (match.group(1), match.group(2)) if match else ("", error_msg)
+    if has_diagnostic:
         # Handle malformed SQLSTATE prefix (empty or invalid code)
         if not sqlstate or len(sqlstate) != 5:
             logger.error("Connection error (malformed SQLSTATE): %s", ddbc_error)
             raise OperationalError(
                 driver_error="Connection operation failed",
                 ddbc_error=ddbc_error,
+                native_error=native_error,
             ) from None
-        exc = sqlstate_to_exception(sqlstate, ddbc_error)
+        exc = sqlstate_to_exception(sqlstate, ddbc_error, native_error=native_error)
         if exc is None:
             logger.error("Unknown SQLSTATE %s, raising DatabaseError", sqlstate)
             raise DatabaseError(
                 driver_error=f"An error occurred with SQLSTATE code: {sqlstate}",
                 ddbc_error=ddbc_error,
                 sqlstate=sqlstate,
+                native_error=native_error,
             ) from None
         logger.error("Connection error (SQLSTATE %s): %s", sqlstate, ddbc_error)
         raise exc from None
@@ -257,9 +275,8 @@ def _raise_connection_error(e: RuntimeError) -> NoReturn:
 def _sqlstate_from_runtime_error(e: RuntimeError) -> Optional[str]:
     """Return the SQLSTATE carried by a RuntimeError from the C++ pybind layer.
 
-    Connection::checkError() throws "SQLSTATE:XXXXX:<odbc_message>". Only a code of exactly five
-    characters is returned; a message without the prefix, or with an empty or truncated code,
-    yields None so the caller treats the failure as not retriable.
+    Prefer structured diagnostics; accept the old "SQLSTATE:XXXXX:<odbc_message>"
+    transport as a fallback. Only a five-character code is retriable.
 
     Args:
         e (RuntimeError): The exception raised by the native connection.
@@ -267,6 +284,11 @@ def _sqlstate_from_runtime_error(e: RuntimeError) -> Optional[str]:
     Returns:
         Optional[str]: The SQLSTATE, or None.
     """
+    if isinstance(e, ddbc_bindings.NativeDatabaseError):
+        if not e.map_sqlstate:
+            return None
+        sqlstate = e.sqlstate
+        return sqlstate if sqlstate and len(sqlstate) == 5 else None
     match = _SQLSTATE_RE.match(str(e))
     if match is None:
         return None
@@ -1725,14 +1747,22 @@ class Connection:
 
         except Exception as e:
             error_msg = f"Failed to set connection attribute {sanitized_attr}: {str(e)}"
+            sqlstate = e.sqlstate if isinstance(e, ddbc_bindings.NativeDatabaseError) else None
+            native_error = (
+                e.native_error if isinstance(e, ddbc_bindings.NativeDatabaseError) else None
+            )
 
             # Determine appropriate exception type based on error content
             error_str = str(e).lower()
             if "invalid" in error_str or "unsupported" in error_str or "cast" in error_str:
                 logger.error(error_msg)
-                raise InterfaceError(error_msg, str(e)) from e
+                raise InterfaceError(
+                    error_msg, str(e), sqlstate=sqlstate, native_error=native_error
+                ) from e
             logger.error(error_msg)
-            raise ProgrammingError(error_msg, str(e)) from e
+            raise ProgrammingError(
+                error_msg, str(e), sqlstate=sqlstate, native_error=native_error
+            ) from e
 
     @property
     def searchescape(self) -> str:
