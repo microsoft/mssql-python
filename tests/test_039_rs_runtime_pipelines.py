@@ -726,6 +726,16 @@ class TestReleaseBuildDependencies:
                 requirement,
             )
 
+    def test_release_test_locks_include_performance_and_windows_timezone_dependencies(self):
+        for lock_name in (
+            "requirements-build-windows.txt",
+            "requirements-build-macos.txt",
+            "requirements-test-linux.txt",
+        ):
+            lock = (ROOT / "eng" / lock_name).read_text(encoding="utf-8")
+            for requirement in (r"pyperf==\S+", r"""tzdata==\S+ ; sys_platform == ['"]win32['"]"""):
+                assert re.search(rf"^{requirement} \\\n +--hash=sha256:", lock, re.M), lock_name
+
     def test_python_315_source_builds_preserve_stable_binary_only_matrix(self):
         workflow = yaml.safe_load(self.workflow.read_text(encoding="utf-8"))
         job = workflow["jobs"]["validate-locks"]
