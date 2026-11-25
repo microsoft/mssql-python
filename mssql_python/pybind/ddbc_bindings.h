@@ -57,6 +57,8 @@ using py::literals::operator""_a;
 #define SQL_SS_VARIANT (-150)
 #define SQL_SS_TABLE (-153)
 #define SQL_CA_SS_VARIANT_TYPE (1215)
+#define SQL_SS_VECTOR (-156)
+#define SQL_C_SS_VECTOR (0x4002)
 #define SQL_SOPT_SS_PARAM_FOCUS (1236)
 #define SQL_CA_SS_SCHEMA_NAME (1226)
 #define SQL_CA_SS_TYPE_NAME (1227)
@@ -331,6 +333,8 @@ struct ConnectionCleanupState {
     std::atomic<bool> childFreeFailed{false};  // Sticky for this physical connection.
 };
 
+struct ErrorInfo;
+
 class SqlHandle {
   public:
     SqlHandle(SQLSMALLINT type, SQLHANDLE rawHandle,
@@ -339,7 +343,8 @@ class SqlHandle {
     SQLHANDLE get() const;
     SQLSMALLINT type() const;
     void free();
-    SQLRETURN freeHandle();
+    void freeChecked();
+    SQLRETURN freeHandle(ErrorInfo* error = nullptr);
     void close_cursor();
     // Cancel an in-progress statement (SQLCancel). Safe to call from a
     // thread other than the one running the fetch — this is the *only*

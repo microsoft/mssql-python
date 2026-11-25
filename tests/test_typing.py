@@ -67,6 +67,35 @@ def supported_calls(cursor: Cursor) -> None:
     _check_typing(tmp_path, str(usage))
 
 
+@pytest.mark.parametrize(
+    "module", ["mssql_python", "mssql_python.mssql_python", "mssql_python.exceptions"]
+)
+def test_exception_consumer_call_shapes(tmp_path: Path, module: str) -> None:
+    usage = tmp_path / "exception_consumer.py"
+    usage.write_text(
+        f"""\
+from {module} import (
+    Warning, Error, InterfaceError, DatabaseError, DataError, OperationalError,
+    IntegrityError, InternalError, ProgrammingError, NotSupportedError,
+)
+
+def supported_calls() -> None:
+    for exception_type in (
+        Warning, Error, InterfaceError, DatabaseError, DataError, OperationalError,
+        IntegrityError, InternalError, ProgrammingError, NotSupportedError,
+    ):
+        legacy = exception_type("driver msg", "ddbc msg")
+        diagnostic = exception_type(
+            driver_error="driver msg", ddbc_error="ddbc msg", sqlstate="42000"
+        )
+        state: str | None = diagnostic.sqlstate
+        legacy_state: str | None = legacy.sqlstate
+""",
+        encoding="utf-8",
+    )
+    _check_typing(tmp_path, str(usage))
+
+
 def test_native_api_call_shapes(tmp_path: Path) -> None:
     usage = tmp_path / "native_api_usage.py"
     usage.write_text(
@@ -92,6 +121,32 @@ def fetch_with_converters(
     ddbc_bindings.DDBCSQLGetData(
         handle, 1, row, "utf-16le", "utf-16le", -8, converters=[converter]
     )
+""",
+        encoding="utf-8",
+    )
+    _check_typing(tmp_path, str(usage))
+
+
+@pytest.mark.parametrize("module", ["mssql_python", "mssql_python.mssql_python"])
+def test_vector_consumer_call_shapes(tmp_path: Path, module: str) -> None:
+    usage = tmp_path / "vector_consumer.py"
+    usage.write_text(
+        f"""\
+from {module} import (
+    Cursor, Vector, OutputParameter, InputOutputParameter, SQL_SS_VECTOR,
+)
+
+def supported_calls(cursor: Cursor) -> None:
+    vector = Vector([0.1, 0.2, 0.3], base_type="float16")
+    values: list[float] = list(vector)
+    dimensions: int = vector.dimensions
+    base_type: str = vector.base_type
+    output = OutputParameter(SQL_SS_VECTOR, 3, 1)
+    inout = InputOutputParameter(vector)
+    cursor.execute("SELECT ?", [vector])
+    cursor.setinputsizes([(SQL_SS_VECTOR, 3, 1)])
+    cursor.executemany("INSERT INTO v VALUES (?)", [([1, 2, 3],), (None,), (vector,)])
+    cursor.callproc("[dbo].[p]", [vector, output, inout])
 """,
         encoding="utf-8",
     )
