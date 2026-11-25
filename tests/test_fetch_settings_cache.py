@@ -1136,7 +1136,9 @@ def test_fetch_error_is_raised_before_wrapping_rows(connection, method, bridge_n
             patch.object(
                 mssql_python.ddbc_bindings,
                 "DDBCSQLCheckError",
-                return_value=SimpleNamespace(sqlState="HY000", ddbcErrorMsg="injected fetch error"),
+                return_value=SimpleNamespace(
+                    sqlState="HY000", ddbcErrorMsg="injected fetch error", nativeError=None
+                ),
             ),
         ):
             with pytest.raises(mssql_python.DatabaseError, match="injected fetch error"):

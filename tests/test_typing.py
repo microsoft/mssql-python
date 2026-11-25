@@ -91,10 +91,13 @@ def supported_calls() -> None:
     ):
         legacy = exception_type("driver msg", "ddbc msg")
         diagnostic = exception_type(
-            driver_error="driver msg", ddbc_error="ddbc msg", sqlstate="42000"
+            driver_error="driver msg", ddbc_error="ddbc msg", sqlstate="42000",
+            native_error=208,
         )
         state: str | None = diagnostic.sqlstate
         legacy_state: str | None = legacy.sqlstate
+        native_error: int | None = diagnostic.native_error
+        legacy_native_error: int | None = legacy.native_error
 """,
         encoding="utf-8",
     )
@@ -114,6 +117,13 @@ from mssql_python.row import OutputConverter
 def reset_inputsizes(wrapper: _AsyncCursor, native: AsyncCoreCursor) -> None:
     wrapper.setinputsizes(None)
     native.setinputsizes(None)
+
+def diagnostic_metadata(error: ddbc_bindings.NativeDatabaseError) -> None:
+    info = ddbc_bindings.DDBCSQLCheckError(3, None, -2)
+    native_number: int | None = info.nativeError
+    state: str | None = error.sqlstate
+    number: int | None = error.native_error
+    message: str = error.ddbc_error
 
 def fetch_with_converters(
     handle: ddbc_bindings.SqlHandle,

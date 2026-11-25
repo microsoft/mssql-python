@@ -14,6 +14,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
   Custom converters retain precedence. Requires a qualified JSON-capable classic
   ODBC provider; shipped binaries are unchanged. Async, bulk, TVP and Arrow JSON
   support remains deferred.
+- **AB#50711:** DB-API exceptions now expose optional `native_error` metadata
+  alongside `sqlstate` for synchronous ODBC errors. Native numbers come from the
+  same diagnostic record as SQLSTATE; zero is retained and unavailable metadata
+  is `None`. Async Rust/TDS errors still use `None`.
 - Opt-in synchronous native vector support with immutable `Vector` values,
   FLOAT32/FLOAT16 subtype metadata, scalar/array parameter binding, and row
   fetches. `base_type` selects SQL storage; values are normalized to float32 at

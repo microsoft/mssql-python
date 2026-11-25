@@ -132,60 +132,112 @@ def Binary(value: Union[str, bytes, bytearray, memoryview]) -> bytes: ...
 # https://www.python.org/dev/peps/pep-0249/#exceptions
 class Warning(Exception):
     def __init__(
-        self, driver_error: str, ddbc_error: str, *, sqlstate: Optional[str] = None
+        self,
+        driver_error: str,
+        ddbc_error: str,
+        *,
+        sqlstate: Optional[str] = None,
+        native_error: Optional[int] = None,
     ) -> None: ...
     driver_error: str
     ddbc_error: str
     message: str
     sqlstate: Optional[str]
+    native_error: Optional[int]
 
 class Error(Exception):
     def __init__(
-        self, driver_error: str, ddbc_error: str, *, sqlstate: Optional[str] = None
+        self,
+        driver_error: str,
+        ddbc_error: str,
+        *,
+        sqlstate: Optional[str] = None,
+        native_error: Optional[int] = None,
     ) -> None: ...
     driver_error: str
     ddbc_error: str
     message: str
     sqlstate: Optional[str]
+    native_error: Optional[int]
 
 class InterfaceError(Error):
     def __init__(
-        self, driver_error: str, ddbc_error: str, *, sqlstate: Optional[str] = None
+        self,
+        driver_error: str,
+        ddbc_error: str,
+        *,
+        sqlstate: Optional[str] = None,
+        native_error: Optional[int] = None,
     ) -> None: ...
 
 class DatabaseError(Error):
     def __init__(
-        self, driver_error: str, ddbc_error: str, *, sqlstate: Optional[str] = None
+        self,
+        driver_error: str,
+        ddbc_error: str,
+        *,
+        sqlstate: Optional[str] = None,
+        native_error: Optional[int] = None,
     ) -> None: ...
 
 class DataError(DatabaseError):
     def __init__(
-        self, driver_error: str, ddbc_error: str, *, sqlstate: Optional[str] = None
+        self,
+        driver_error: str,
+        ddbc_error: str,
+        *,
+        sqlstate: Optional[str] = None,
+        native_error: Optional[int] = None,
     ) -> None: ...
 
 class OperationalError(DatabaseError):
     def __init__(
-        self, driver_error: str, ddbc_error: str, *, sqlstate: Optional[str] = None
+        self,
+        driver_error: str,
+        ddbc_error: str,
+        *,
+        sqlstate: Optional[str] = None,
+        native_error: Optional[int] = None,
     ) -> None: ...
 
 class IntegrityError(DatabaseError):
     def __init__(
-        self, driver_error: str, ddbc_error: str, *, sqlstate: Optional[str] = None
+        self,
+        driver_error: str,
+        ddbc_error: str,
+        *,
+        sqlstate: Optional[str] = None,
+        native_error: Optional[int] = None,
     ) -> None: ...
 
 class InternalError(DatabaseError):
     def __init__(
-        self, driver_error: str, ddbc_error: str, *, sqlstate: Optional[str] = None
+        self,
+        driver_error: str,
+        ddbc_error: str,
+        *,
+        sqlstate: Optional[str] = None,
+        native_error: Optional[int] = None,
     ) -> None: ...
 
 class ProgrammingError(DatabaseError):
     def __init__(
-        self, driver_error: str, ddbc_error: str, *, sqlstate: Optional[str] = None
+        self,
+        driver_error: str,
+        ddbc_error: str,
+        *,
+        sqlstate: Optional[str] = None,
+        native_error: Optional[int] = None,
     ) -> None: ...
 
 class NotSupportedError(DatabaseError):
     def __init__(
-        self, driver_error: str, ddbc_error: str, *, sqlstate: Optional[str] = None
+        self,
+        driver_error: str,
+        ddbc_error: str,
+        *,
+        sqlstate: Optional[str] = None,
+        native_error: Optional[int] = None,
     ) -> None: ...
 
 # Row Object

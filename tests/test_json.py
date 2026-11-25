@@ -219,6 +219,7 @@ def test_json_unsupported_bind_preserves_diagnostics_and_cursor_reuse(
 
             error = caught.value
             assert error.sqlstate == "HY004"
+            assert error.native_error == 0
             assert error.ddbc_error == "[Microsoft]Invalid SQL data type"
             assert error.ddbc_error in str(error)
             assert "does not support native JSON binding" in str(error)
@@ -359,6 +360,7 @@ def _check_lob_read_failure(failure):
             with pytest.raises(OperationalError) as caught:
                 cursor.fetchone()
             assert caught.value.sqlstate == "08S01"
+            assert caught.value.native_error == 0
             assert diagnostic in caught.value.ddbc_error
             assert "column 1" in caught.value.ddbc_error
             assert not callback_errors
