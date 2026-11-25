@@ -15568,12 +15568,10 @@ def test_tables_error_handling(cursor):
         pass
 
 
-def test_callproc_not_supported_error(cursor):
-    """Test callproc NotSupportedError (Lines 2413-2421)."""
-
-    # This should always raise NotSupportedError (lines 2417-2420)
-    with pytest.raises(mssql_python.NotSupportedError, match="callproc.*is not yet implemented"):
-        cursor.callproc("test_proc")
+def test_callproc_invalid_name(cursor):
+    """Reject invalid procedure names before sending a request."""
+    with pytest.raises(ValueError, match="procedure"):
+        cursor.callproc("dbo..test_proc")
 
 
 def test_setoutputsize_no_op(cursor):

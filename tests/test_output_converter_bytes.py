@@ -178,7 +178,10 @@ def test_converter_null_bypass_and_arbitrary_results(connection, method):
 
 @pytest.mark.parametrize("method", METHODS)
 @pytest.mark.parametrize("mutation", ("replace", "remove", "clear"))
-def test_converter_mutation_during_fetch_preserves_batch_snapshot(connection, method, mutation):
+@pytest.mark.parametrize("source", ("query", "procedure"))
+def test_converter_mutation_during_fetch_preserves_batch_snapshot(
+    connection, method, mutation, source
+):
     inputs = []
 
     def original(raw):
@@ -193,7 +196,14 @@ def test_converter_mutation_during_fetch_preserves_batch_snapshot(connection, me
 
     connection.add_output_converter(mssql_python.SQL_WVARCHAR, original)
     with connection.cursor() as cursor:
-        cursor.execute("SELECT CAST(N'abc' AS NVARCHAR(10)) FROM (VALUES (1), (2), (3)) AS v(n)")
+        query = "SELECT CAST(N'abc' AS NVARCHAR(10)) FROM (VALUES (1), (2), (3)) AS v(n)"
+        if source == "procedure":
+            cursor.execute(
+                f"CREATE PROCEDURE #converter_snapshot AS BEGIN SET NOCOUNT ON; {query}; END"
+            )
+            cursor.callproc("#converter_snapshot")
+        else:
+            cursor.execute(query)
         rows = _fetch(cursor, method)
         expected = ["old"] * 3
         if method == "fetchone":
