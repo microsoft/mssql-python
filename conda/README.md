@@ -67,6 +67,14 @@ Missing wheels, metadata/dependency or hash mismatches and build/audit failures 
 fail the gate; there is no skip or older-release fallback. This published packaging
 control does not qualify current-source RS or Python 3.15.
 
+Linux release wheel-test fixtures stage the complete `conda/` directory alongside
+`eng/conda_tools/`: the contract suites read publisher inputs and recipe files.
+They also stage packaging metadata and runtime-selection helpers, but never the
+driver packages, so runtime imports still use installed wheels.
+`tests/test_release_build_dependencies.py` reconstructs both Linux fixture layouts
+and runs the relocated public packaging, provenance and runtime-selection contracts.
+Internal-only performance fixtures are not part of the public test suite.
+
 Run the source-only trigger regressions without a native build, SQL Server, or PyYAML:
 
 ```text
