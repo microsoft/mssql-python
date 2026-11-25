@@ -930,11 +930,13 @@ def test_gh745_executemany_zero_and_tiny_scale38(cursor, db_connection, data):
         db_connection.commit()
 
 
-def test_gh745_executemany_mixed_decimal_string_precision(cursor, db_connection):
-    """Decimal + numeric-string batch must fit DECIMAL(38,14) (bewithgaurav).
+def test_gh745_executemany_mixed_decimal_string_rowwise_fallback(cursor, db_connection):
+    """Mixed Decimal/string inputs use row-by-row fallback and keep values (bewithgaurav).
 
-    Auto-detect used to derive NUMERIC(18,2) from the Decimal alone, then fail
-    the 17-digit string with DataError even though the destination fits both.
+    executemany classifies a Decimal+str column as mixed_types and sets
+    requires_rowwise, so each row goes through execute() rather than
+    SQLExecuteMany. This test checks value preservation on that fallback
+    path; it does not exercise batch-wide NUMERIC precision widening.
     """
     table_name = "#pytest_gh745_mixed_prec"
     try:
