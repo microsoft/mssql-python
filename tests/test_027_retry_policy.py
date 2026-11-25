@@ -114,6 +114,28 @@ def test_no_policy_is_stored_as_none(native):
     assert len(native.calls) == 1
 
 
+@pytest.mark.parametrize("map_sqlstate,attempts", [(True, 3), (False, 1)])
+def test_structured_diagnostics_preserve_retry_attempts_and_final_metadata(
+    monkeypatch, sleeps, map_sqlstate, attempts
+):
+    bindings = mssql_python.connection.ddbc_bindings
+    error = bindings.NativeDatabaseError("Connection operation failed")
+    error.sqlstate = "08S01"
+    error.native_error = 0
+    error.ddbc_error = "Communication link failure"
+    error.map_sqlstate = map_sqlstate
+    native = MagicMock(side_effect=error)
+    monkeypatch.setattr(bindings, "Connection", native)
+
+    with pytest.raises(OperationalError) as caught:
+        connect(CONN_STR, retry_policy=RetryPolicy(max_attempts=3, jitter=False))
+
+    assert native.call_count == attempts
+    assert sleeps == ([1.0, 2.0] if map_sqlstate else [])
+    assert caught.value.sqlstate == "08S01"
+    assert caught.value.native_error == 0
+
+
 def test_policy_retries_transient_failure_until_success(native, sleeps):
     native.failures = 2
     policy = RetryPolicy(max_attempts=3, jitter=False)

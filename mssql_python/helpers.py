@@ -35,7 +35,9 @@ def check_error(handle_type: int, handle: Any, ret: int) -> None:
         error_info = ddbc_bindings.DDBCSQLCheckError(handle_type, handle, ret)
         logger.error("Error: %s", error_info.ddbcErrorMsg)
         logger.debug("check_error: SQL state=%s", error_info.sqlState)
-        raise_exception(error_info.sqlState, error_info.ddbcErrorMsg)
+        raise_exception(
+            error_info.sqlState, error_info.ddbcErrorMsg, native_error=error_info.nativeError
+        )
 
 
 def sanitize_connection_string(conn_str: str) -> str:
