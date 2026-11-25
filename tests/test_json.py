@@ -1351,7 +1351,7 @@ def test_json_streamed_batch_row_shape_rejected_before_writes(json_connection):
         assert cursor.fetchval() == 0
 
 
-def test_json_bulk_guard_preserves_iterator_boundary(json_connection, monkeypatch):
+def test_json_bulk_guard_preserves_iterator_boundary(db_connection, monkeypatch):
     import mssql_python.cursor as cursor_module
 
     consumed = []
@@ -1377,7 +1377,7 @@ def test_json_bulk_guard_preserves_iterator_boundary(json_connection, monkeypatc
     core = Mock()
     native_cursor = core.PyCoreConnection.return_value.cursor.return_value
     native_cursor.bulkcopy.side_effect = consume
-    with json_connection.cursor() as cursor:
+    with db_connection.cursor() as cursor:
         monkeypatch.setattr(cursor, "_bulkcopy_core_and_validate", lambda *args: core)
         monkeypatch.setattr(cursor, "_build_pycore_context", dict)
         monkeypatch.setattr(cursor_module, "isinstance", counted_isinstance, raising=False)
@@ -1417,11 +1417,11 @@ def test_json_bulk_core_rejects_without_consuming_tail(json_connection, later_ro
             json_connection.commit()
 
 
-def test_bulk_unrelated_value_error_is_preserved(json_connection, monkeypatch):
+def test_bulk_unrelated_value_error_is_preserved(db_connection, monkeypatch):
     error = ValueError("Unsupported Python type for bulk copy: CustomType")
     core = Mock()
     core.PyCoreConnection.return_value.cursor.return_value.bulkcopy.side_effect = error
-    with json_connection.cursor() as cursor:
+    with db_connection.cursor() as cursor:
         monkeypatch.setattr(cursor, "_bulkcopy_core_and_validate", lambda *args: core)
         monkeypatch.setattr(cursor, "_build_pycore_context", dict)
         with pytest.raises(ValueError) as caught:
