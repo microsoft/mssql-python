@@ -1054,9 +1054,7 @@ def test_json_late_batch_mismatch_never_dispatches(json_connection, monkeypatch)
 
 
 @pytest.mark.parametrize("numeric", ["integer", "decimal"])
-def test_ordinary_numeric_batch_checks_json_per_column_not_per_cell(
-    json_connection, monkeypatch, numeric
-):
+def test_ordinary_numeric_batch_checks_json_per_column_not_per_cell(conn_str, monkeypatch, numeric):
     import builtins
     import mssql_python.cursor as cursor_module
 
@@ -1067,7 +1065,7 @@ def test_ordinary_numeric_batch_checks_json_per_column_not_per_cell(
             checks.append(type(value))
         return builtins.isinstance(value, classes)
 
-    with json_connection.cursor() as cursor:
+    with connect(conn_str) as connection, connection.cursor() as cursor:
         cursor.execute("CREATE TABLE #json_check_counts (a DECIMAL(12,2), b DECIMAL(12,2), c BIT)")
         values = [i if numeric == "integer" else Decimal(i) / 10 for i in range(64)]
         monkeypatch.setattr(cursor_module, "isinstance", counted_isinstance, raising=False)
