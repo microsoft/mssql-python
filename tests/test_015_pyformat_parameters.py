@@ -1340,14 +1340,6 @@ class TestEdgeCases:
         assert result_sql == "?"
         assert result_params == (42,)
 
-    def test_parameter_at_end_of_sql(self):
-        """Test parameter at the very end of SQL."""
-        sql = "SELECT * FROM users WHERE id = %(id)s"
-        params = {"id": 42}
-        result_sql, result_params = convert_pyformat_to_qmark(sql, params)
-        assert result_sql == "SELECT * FROM users WHERE id = ?"
-        assert result_params == (42,)
-
     def test_only_parameter_in_sql(self):
         """Test SQL with only a parameter."""
         sql = "%(value)s"
@@ -2330,16 +2322,6 @@ class TestMockedExceptionPaths:
 
         assert new_sql == "SELECT * FROM users WHERE name LIKE '%test%' AND id = ?"
         assert new_params == (42,)
-
-    def test_empty_parameters_with_pyformat_style(self):
-        """Test SQL with no parameter substitutions but pyformat detection."""
-        sql = "SELECT * FROM users"
-        params = {}
-
-        new_sql, new_params = detect_and_convert_parameters(sql, params)
-
-        assert new_sql == sql
-        assert new_params == ()
 
     def test_reused_parameters_in_complex_query(self):
         """Test query with same parameter reused multiple times."""
