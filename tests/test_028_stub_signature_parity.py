@@ -7,11 +7,24 @@ reference, an unqualified RetryPolicy); kind, name, order and default are.
 """
 
 import ast
+import importlib.util
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
-PKG = Path(__file__).resolve().parent.parent / "mssql_python"
+
+def _package_path(test_root):
+    source = test_root / "mssql_python"
+    if (source / "connection.py").is_file():
+        return source
+    spec = importlib.util.find_spec("mssql_python")
+    if spec is None or spec.origin is None:
+        raise FileNotFoundError("Cannot locate the mssql_python source files and type stub")
+    return Path(spec.origin).parent
+
+
+PKG = _package_path(Path(__file__).resolve().parent.parent)
 
 
 def _signature(path, name, cls=None):
@@ -75,3 +88,21 @@ def test_signature_separates_the_two_positional_kinds(tmp_path):
     assert _signature(runtime, "f") != _signature(stub, "f")
     # the default still has to travel with the parameter it belongs to
     assert _signature(runtime, "f")[1] == ("pos", "b", "1")
+
+
+def test_package_path_resolves_installed_wheel_without_importing_driver(tmp_path, monkeypatch):
+    installed = tmp_path / "site-packages" / "mssql_python"
+    installed.mkdir(parents=True)
+    (installed / "connection.py").write_text("class Connection: pass\n", encoding="utf-8")
+    monkeypatch.setattr(
+        importlib.util,
+        "find_spec",
+        lambda name: SimpleNamespace(origin=str(installed / "__init__.py")),
+    )
+    assert _package_path(tmp_path / "isolated-tests") == installed
+
+
+def test_package_path_reports_missing_package(tmp_path, monkeypatch):
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: None)
+    with pytest.raises(FileNotFoundError, match="Cannot locate"):
+        _package_path(tmp_path)

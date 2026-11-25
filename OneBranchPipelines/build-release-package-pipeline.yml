@@ -66,7 +66,7 @@ parameters:
   # OneBranch build type determines compliance level
   # - Official: Production builds with full SDL compliance, all security scanning enabled
   # - NonOfficial: Development/test builds with reduced security scanning
-  # Note: Scheduled (daily) builds automatically use 'Official' regardless of this setting
+  # Scheduled builds and main-branch CI use Official regardless of this setting.
   - name: oneBranchType
     displayName: 'OneBranch Template Type'
     type: string
@@ -201,10 +201,10 @@ variables:
       value: ''
     ${{ else }}:
       value: ${{ parameters.rsVersionOverride }}
-  # Determine effective build type: scheduled builds are Official, manual/PR builds use parameter
+  # Production main CI must use the same governed template as scheduled builds.
   # Build.Reason values: Schedule, Manual, IndividualCI, PullRequest, BatchedCI
   - name: effectiveOneBranchType
-    ${{ if eq(variables['Build.Reason'], 'Schedule') }}:
+    ${{ if or(eq(variables['Build.Reason'], 'Schedule'), and(eq(variables['Build.SourceBranch'], 'refs/heads/main'), in(variables['Build.Reason'], 'IndividualCI', 'BatchedCI'))) }}:
       value: 'Official'
     ${{ else }}:
       value: '${{ parameters.oneBranchType }}'
@@ -250,7 +250,7 @@ resources:
 # =========================
 # Extends OneBranch official template for cross-platform builds
 # Template type determined by effectiveOneBranchType:
-# - Scheduled builds: Always Official (full SDL compliance)
+# - Scheduled builds and main CI: Always Official (full SDL compliance)
 # - Manual/PR builds: Uses oneBranchType parameter (default NonOfficial)
 extends:
   template: 'v2/OneBranch.${{ variables.effectiveOneBranchType }}.CrossPlat.yml@templates'

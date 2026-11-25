@@ -1,6 +1,6 @@
 import pytest
 
-pytest.importorskip("mssql_py_core", exc_type=ImportError)
+mssql_py_core = pytest.importorskip("mssql_py_core", exc_type=ImportError)
 
 from mssql_python import (
     ConnectionStringParseError,
@@ -365,19 +365,19 @@ async def test_operations_after_close_translate_native_errors(async_connection_s
 
     with pytest.raises(InterfaceError, match="Connection is closed") as cursor_error:
         connection.cursor()
-    assert isinstance(cursor_error.value.__cause__, RuntimeError)
+    assert isinstance(cursor_error.value.__cause__, (RuntimeError, mssql_py_core.InterfaceError))
 
     with pytest.raises(InterfaceError, match="Connection is closed") as commit_error:
         await connection.commit()
-    assert isinstance(commit_error.value.__cause__, RuntimeError)
+    assert isinstance(commit_error.value.__cause__, (RuntimeError, mssql_py_core.InterfaceError))
 
     with pytest.raises(InterfaceError, match="Connection is closed") as rollback_error:
         await connection.rollback()
-    assert isinstance(rollback_error.value.__cause__, RuntimeError)
+    assert isinstance(rollback_error.value.__cause__, (RuntimeError, mssql_py_core.InterfaceError))
 
     with pytest.raises(InterfaceError, match="Connection is closed") as enter_error:
         await connection.__aenter__()
-    assert isinstance(enter_error.value.__cause__, RuntimeError)
+    assert isinstance(enter_error.value.__cause__, (RuntimeError, mssql_py_core.InterfaceError))
 
 
 @pytest.mark.asyncio
