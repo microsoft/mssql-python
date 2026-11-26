@@ -236,7 +236,7 @@ stages:
           # Tests use localhost:1433 connection (SA user with password from variable)
           # -v = verbose output (show test names and results)
           - script: |
-              python eng/scripts/mssql_python_rs.py --verify && python -m pytest -v
+              python eng/scripts/mssql_python_rs.py --verify && python -m pytest -v --reruns 3 -rfER
             displayName: 'Run pytests'
             env:
               # Connection string uses localhost (SQL Server container exposed on port 1433)

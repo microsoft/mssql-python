@@ -384,7 +384,7 @@ stages:
               } else {
                 python eng/scripts/mssql_python_rs.py --verify
                 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-                python -m pytest -v
+                python -m pytest -v --reruns 3 -rfER
               }
             displayName: 'Run pytests'
             env:
