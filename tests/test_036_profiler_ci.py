@@ -721,7 +721,7 @@ def test_checkout_is_safe_and_compatible_with_python_310(tmp_path, monkeypatch, 
 def test_report_cases_match_the_executed_workload_registry():
     _, workloads = controller.load_suite()
     assert tuple(workloads.registry()) == reporting.CASES
-    assert len(reporting.CASES) == 26
+    assert len(reporting.CASES) == 40
     assert reporting.CASES[-1] == "row_to_dict"
     assert workloads.registry()["row_to_dict"] == (workloads.row_to_dict, True)
     assert workloads.registry()["scalar_fetchval"] == (workloads.scalar_fetchval, True)
@@ -1144,6 +1144,160 @@ def test_scalar_fetchval_workload_rejects_invalid_measurements(monkeypatch, prob
     else:
         context.disable.assert_called_once()
         connection.cursor.return_value.__exit__.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    "storage,encoding,text",
+    [
+        ("ascii", "ascii", "Abcd1234"),
+        ("cp1252", "cp1252", "caf\u00e9 \u20ac\u00df!"),
+        ("utf8", "utf-8", "A\u00e9\u4e2d\U0001f642Z\u6f22\u03a9!"),
+        ("nvarchar", "utf-16le", "A\u00e9\u4e2d\U0001f642Z\u6f22\u03a9!"),
+    ],
+)
+def test_text_conversion_workload_excludes_setup_and_validates_bytes(
+    monkeypatch, report, storage, encoding, text
+):
+    from mssql_python import SQL_WCHAR
+
+    expected = text * 32
+    raw = expected.encode(encoding)
+    cursor = MagicMock()
+    cursor.fetchone.return_value = (len(raw), raw)
+    cursor.fetchall.return_value = [(expected,) * 8] * 5000
+    cursor.messages = []
+    connection = MagicMock()
+    connection.getdecoding.return_value = {"encoding": "utf-16le", "ctype": SQL_WCHAR}
+    connection.cursor.return_value.__enter__.return_value = cursor
+    context = MagicMock()
+    context.collect.return_value = ({}, {})
+
+    def clock():
+        assert cursor.execute.call_count == 4
+        cursor.fetchone.assert_called_once_with()
+        context.enable.assert_called_once()
+        context.collect.assert_not_called()
+        return 1.1 if cursor.fetchall.called else 1.0
+
+    monkeypatch.setattr(benchmark_workloads.time, "perf_counter", clock)
+    result = benchmark_workloads.text_conversion_fetchall(connection, context, storage)
+    assert result["wall_ms"] == pytest.approx(100)
+    assert "payload chars: 256; fetch: UTF-16LE" in result["detail"]
+    cursor.execute.assert_called_with("DROP TABLE #ci_text_conversion")
+    context.disable.assert_called_once()
+    context.collect.assert_called_once()
+    name = f"text_conversion_{storage}_fetchall"
+    assert reporting.TASK_NAMES[name] in reporting.render([report], "c" * 40, 42)
+
+
+@pytest.mark.parametrize(
+    "storage,encoding,text,size",
+    [
+        ("ascii", "ascii", "Abcd1234", "short"),
+        ("cp1252", "cp1252", "caf\u00e9 \u20ac\u00df!", "full"),
+        ("utf8", "utf-8", "A\u00e9\u4e2d\U0001f642Z\u6f22\u03a9!", "full"),
+        ("nvarchar", "utf-16le", "A\u00e9\u4e2d\U0001f642Z\u6f22\u03a9!", "full"),
+    ],
+)
+def test_text_payload_sweep_uses_stored_byte_limits(storage, encoding, text, size):
+    from mssql_python import SQL_WCHAR
+
+    expected = text * (1 if size == "short" else 8000 // len(text.encode(encoding)))
+    raw = expected.encode(encoding)
+    count = 5000 if size == "short" else 200
+    cursor = MagicMock()
+    cursor.fetchone.return_value = (len(raw), raw)
+    cursor.fetchall.return_value = [(expected,) * 8] * count
+    cursor.messages = []
+    connection = MagicMock()
+    connection.getdecoding.return_value = {"encoding": "utf-16le", "ctype": SQL_WCHAR}
+    connection.cursor.return_value.__enter__.return_value = cursor
+    context = MagicMock()
+    context.collect.return_value = ({}, {})
+    result = benchmark_workloads.text_conversion_fetchall(
+        connection, context, storage, payload_size=size
+    )
+    assert f"Rows: {count};" in result["detail"]
+    assert f"payload chars: {len(expected)};" in result["detail"]
+    assert "AS nvarchar(max)" in cursor.execute.call_args_list[1].args[0]
+    cursor.execute.assert_called_with("DROP TABLE #ci_text_conversion")
+
+
+@pytest.mark.parametrize("sql_type", ["SQL_CHAR", "SQL_WCHAR"])
+def test_text_conversion_rejects_mislabeled_fetch_encoding(sql_type):
+    import mssql_python as ms
+
+    connection = MagicMock()
+    connection.getdecoding.side_effect = lambda value: (
+        {"encoding": "utf-8", "ctype": ms.SQL_CHAR}
+        if value == getattr(ms, sql_type)
+        else {"encoding": "utf-16le", "ctype": ms.SQL_WCHAR}
+    )
+    with pytest.raises(ValueError, match="require UTF-16LE"):
+        benchmark_workloads.text_conversion_fetchall(connection, MagicMock(), "utf8")
+    connection.cursor.assert_not_called()
+
+
+@pytest.mark.parametrize("integers", [False, True])
+def test_narrow_controls_validate_all_rows_and_exclude_query(monkeypatch, integers):
+    cursor = MagicMock()
+    rows = [(index,) * 8 for index in range(200_000)] if integers else [("control",) * 8] * 200_000
+    cursor.fetchall.return_value = rows
+    cursor.messages = []
+    connection = MagicMock()
+    connection.cursor.return_value.__enter__.return_value = cursor
+    context = MagicMock()
+    context.collect.return_value = ({}, {})
+
+    def clock():
+        cursor.execute.assert_called_once()
+        context.enable.assert_called_once()
+        context.collect.assert_not_called()
+        return 1.1 if cursor.fetchall.called else 1.0
+
+    monkeypatch.setattr(benchmark_workloads.time, "perf_counter", clock)
+    result = benchmark_workloads.narrow_fetchall_control(connection, context, integers=integers)
+    assert result["wall_ms"] == pytest.approx(100)
+    assert "Rows: 200000; columns: 8;" in result["detail"]
+    rows[-1] = ("wrong",) * 8
+    cursor.execute.reset_mock()
+    cursor.fetchall.reset_mock()
+    context.reset_mock()
+    with pytest.raises(AssertionError):
+        benchmark_workloads.narrow_fetchall_control(connection, context, integers=integers)
+
+
+@pytest.mark.parametrize("problem", ("stored-bytes", "truncated", "wrong-type", "count", "error"))
+def test_text_conversion_workload_rejects_invalid_conversion_and_cleans_up(problem):
+    from mssql_python import SQL_WCHAR
+
+    expected = "A\u00e9\u4e2d\U0001f642Z\u6f22\u03a9!" * 32
+    raw = expected.encode("utf-8")
+    cursor = MagicMock()
+    cursor.fetchone.return_value = (len(raw), raw)
+    cursor.fetchall.return_value = [(expected,) * 8] * 5000
+    cursor.messages = []
+    if problem == "stored-bytes":
+        cursor.fetchone.return_value = (len(raw), b"wrong")
+    elif problem == "truncated":
+        cursor.fetchall.return_value[-1] = (expected[:-1],) * 8
+    elif problem == "wrong-type":
+        cursor.fetchall.return_value[-1] = (raw,) * 8
+    elif problem == "count":
+        cursor.fetchall.return_value.pop()
+    else:
+        cursor.fetchall.side_effect = RuntimeError("fetch failed")
+    connection = MagicMock()
+    connection.getdecoding.return_value = {"encoding": "utf-16le", "ctype": SQL_WCHAR}
+    connection.cursor.return_value.__enter__.return_value = cursor
+    context = MagicMock()
+    context.collect.return_value = ({}, {})
+    with pytest.raises(RuntimeError if problem == "error" else AssertionError):
+        benchmark_workloads.text_conversion_fetchall(connection, context, "utf8")
+    cursor.execute.assert_called_with("DROP TABLE #ci_text_conversion")
+    context.disable.assert_called_once()
+    if problem == "stored-bytes":
+        context.enable.assert_not_called()
 
 
 def test_lob_workload_validates_payload_and_times_only_fetch(monkeypatch):

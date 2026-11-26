@@ -12,7 +12,7 @@ python -m eng.profiler_benchmarks.controller --base main --candidate HEAD \
 python -m eng.profiler_benchmarks.report profiler-results/report.json
 ```
 
-The fixed registry has 26 tasks. `--scenarios` runs a local subset, but subset
+The fixed registry has 40 tasks. `--scenarios` runs a local subset, but subset
 reports remain incomplete and cannot produce a verdict.
 
 `lob_varchar_256k_fetchall` fetches one 256 KiB `VARCHAR(MAX)` value to exercise
@@ -67,9 +67,41 @@ preparation, key/order/value/type/NULL checks, row counts, cursor diagnostics,
 and cleanup are excluded. This is one additional workload, not a cold/warm or
 width matrix.
 
-This conversion has no guaranteed instrumented native phase, so **only**
+`text_conversion_{ascii,cp1252,utf8,nvarchar}_fetchall` adds four matched text-fetch
+workloads: 5,000 rows, eight declared-wide columns, and 256-character payloads.
+ASCII is a control; CP1252 includes accented text and the euro sign; UTF-8 VARCHAR
+and NVARCHAR include BMP and supplementary characters. Each workload requires
+UTF-16LE / SQL_WCHAR decoding. VARCHAR columns are declared as VARCHAR(8000);
+NVARCHAR columns are NVARCHAR(4000). The UTF-8 case requires SQL Server 2019+
+UTF-8 collation support; unsupported setup fails rather than reporting a speedup.
+
+Connection-local temporary-table creation, population, stored-byte verification,
+query execution, output validation, and cleanup are outside timing. Only public
+`fetchall()` and retained row construction are timed. Stored-byte checks prevent
+lossy insertion or an unintended source encoding from masquerading as conversion
+coverage. All four run identically on base and candidate with the existing paired
+report thresholds. Driver conversion is included in the fetch-call phase; Python
+Unicode construction is included in row construction, not a separately isolated
+decoder timer. Python strings use flexible-width storage, not uniformly UTF-32.
+These are local/server-specific conversion workloads, not a WAN simulation.
+
+The `_short_fetchall` and `_full_fetchall` variants use the same four storage
+types. Short values have eight characters and 5,000 rows. Near-full values repeat
+whole patterns up to the column's 8,000-byte stored-data limit and use 200 rows
+to bound retained output memory. Supplementary characters therefore consume
+different numbers of UTF-8 bytes and UTF-16 code units; the payload limit is not
+calculated using Python code-point counts. The source Unicode literal is MAX
+only during insertion; the measured result columns remain bounded types.
+
+`narrow_varchar_fetchall` and `narrow_integer_fetchall` each fetch 200,000 rows
+and eight columns. The first uses short VARCHAR(32) values; the second uses
+ordered INT values. Both exclude query execution and validate every returned
+value/type outside the fetch timer. These controls target initial rowset growth
+and shared setup costs without large declared string allocations.
+
+The row-to-dictionary workload has no guaranteed instrumented native phase, so **only**
 `row_to_dict` permits an empty native diagnostics dictionary. Skipped results,
-malformed counters, and missing native samples from the other 25 tasks remain
+malformed counters, and missing native samples from the other 39 tasks remain
 invalid in both the worker and report validation. The row uses the existing
 paired wall-time comparison and unchanged thresholds: it can demonstrate an
 observed main-relative improvement, not assert a speedup in advance or establish
