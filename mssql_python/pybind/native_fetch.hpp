@@ -4,6 +4,7 @@
 #pragma once
 
 #include <atomic>
+#include <array>
 #include <cstddef>
 #include <cstring>
 #include <limits>
@@ -27,6 +28,7 @@ namespace NativeFetch {
 // No Python handles are process-static. Cross-interpreter invalidation is
 // conservative; callbacks only change this scalar and never allocate or call Python.
 inline std::atomic<uint64_t> mutationEpoch{1};
+inline std::atomic<uint64_t> queryPolicyEpoch{1};
 inline thread_local PyObject* internalDict = nullptr;
 inline thread_local PyObject* internalKey = nullptr;
 inline thread_local PyObject* internalValue = nullptr;
@@ -48,12 +50,20 @@ inline int dict_changed(PyDict_WatchEvent event, PyObject* dict, PyObject* key,
 
 inline int type_changed(PyTypeObject*) {
     mutationEpoch.fetch_add(1, std::memory_order_relaxed);
+    queryPolicyEpoch.fetch_add(1, std::memory_order_relaxed);
     return 0;
 }
 
 inline int function_changed(PyFunction_WatchEvent event, PyFunctionObject*, PyObject*) {
-    if (event != PyFunction_EVENT_CREATE && event != PyFunction_EVENT_DESTROY)
+    if (event != PyFunction_EVENT_CREATE && event != PyFunction_EVENT_DESTROY) {
         mutationEpoch.fetch_add(1, std::memory_order_relaxed);
+        queryPolicyEpoch.fetch_add(1, std::memory_order_relaxed);
+    }
+    return 0;
+}
+
+inline int query_policy_changed(PyDict_WatchEvent, PyObject*, PyObject*, PyObject*) {
+    queryPolicyEpoch.fetch_add(1, std::memory_order_relaxed);
     return 0;
 }
 
@@ -61,12 +71,18 @@ struct Observer {
     int dict;
     int type;
     int function;
+    int query = -1;
+};
+
+struct QueryPolicyCache {
+    uint64_t epoch = 0;
+    bool eligible = false;
 };
 
 enum Input : Py_ssize_t {
     Handle, CursorDict, Connection, ConnectionDict, ColumnMap, LowerMap, Names,
     RowType, Description, Messages, NextIndex, CharEncoding, WideEncoding,
-    CharCtype, ArraySize, Factory, ConnectionType, InputCount
+    CharCtype, ArraySize, Factory, ConnectionType, Admission, OperationSlot, Recover, InputCount
 };
 enum class Mode : size_t { One, Many, Value, Next };
 
@@ -74,6 +90,8 @@ struct Plan {
     py::dict cursorDict;
     py::object inputs = py::none();
     SqlHandlePtr handle;
+    QueryAdmission* admission = nullptr;
+    QueryOperationSlot* operationSlot = nullptr;
     std::string charEncoding;
     std::string wideEncoding;
     ResultMetadataCache::Snapshot metadata;
@@ -508,7 +526,8 @@ inline std::shared_ptr<Plan> prepare(PyObject* self, const py::tuple& rt, py::di
             !PyType_Check(plan->at(ConnectionType).ptr()) ||
             !PyLong_CheckExact(plan->at(NextIndex).ptr()) ||
             !PyLong_CheckExact(plan->at(ArraySize).ptr()) ||
-            !PyCallable_Check(plan->at(Factory).ptr()))
+            !PyCallable_Check(plan->at(Factory).ptr()) ||
+            !PyCallable_Check(plan->at(Recover).ptr()))
             throw py::type_error("Invalid native fetch plan fields");
         // current() relies on this watch, not on the Python policy registering it.
         auto* observer = static_cast<Observer*>(
@@ -516,6 +535,8 @@ inline std::shared_ptr<Plan> prepare(PyObject* self, const py::tuple& rt, py::di
         if (!observer || PyDict_Watch(observer->dict, plan->cursorDict.ptr()) < 0)
             throw py::error_already_set();
         plan->handle = plan->at(Handle).cast<SqlHandlePtr>();
+        plan->admission = plan->at(Admission).cast<QueryAdmission*>();
+        plan->operationSlot = plan->at(OperationSlot).cast<QueryOperationSlot*>();
         plan->charEncoding = plan->at(CharEncoding).cast<std::string>();
         plan->wideEncoding = plan->at(WideEncoding).cast<std::string>();
         plan->charCtype = EffectiveCharCtypeForFetch(
@@ -589,8 +610,6 @@ inline py::object finish_python(PyObject* self, Mode mode, const py::list& value
                                       : cursor.attr("_complete_fetchone")(values, ret);
     if (mode == Mode::Value && !row.is_none())
         return row[py::int_(0)];
-    if (mode == Mode::Next && row.is_none())
-        throw py::stop_iteration();
     return row;
 }
 
@@ -727,9 +746,21 @@ inline py::object fetch(PyObject* self, Context* context, Mode mode,
     if (mode == Mode::Value && PyList_GET_SIZE(plan->at(Description).ptr()) == 0)
         return fallback(self, rt, mode, args, nargs, keywords);
 
+    // The optimized entry bypasses the Python fetch methods, but must join
+    // the same admission, cancellation and recovery protocol.
+    ScopedQueryOperation operationGuard(*plan->admission, *plan->operationSlot,
+                                        plan->handle, object, plan->at(Recover));
     PERF_TIMER("NativeCursor::fetch");
     py::list values;
     SQLRETURN ret;
+    auto complete = [&](bool positionCommitted) {
+        auto row = finish_python(self, mode, values, ret, positionCommitted);
+        if (mode == Mode::Next && row.is_none()) {
+            operationGuard.finish();
+            throw py::stop_iteration();
+        }
+        return row;
+    };
     if (mode == Mode::Many && !plan->manyEligible) {
         // Keep batch decoding (including malformed-text handling), but complete
         // size-one reads here so ordinary counter writes do not invalidate the plan.
@@ -752,27 +783,29 @@ inline py::object fetch(PyObject* self, Context* context, Mode mode,
     // while SQLFetch releases the GIL. Complete the consumed row, never refetch it.
     if (!current(self, context, state, *plan, rt) ||
         (!SQL_SUCCEEDED(ret) && ret != SQL_NO_DATA))
-        return finish_python(self, mode, values, ret, false);
+        return complete(false);
     if (ret == SQL_NO_DATA) {
         if (mode == Mode::Many)
             return py::list();
-        if (mode == Mode::Next)
+        if (mode == Mode::Next) {
+            operationGuard.finish();
             throw py::stop_iteration();
+        }
         return py::none();
     }
     if (plan->nextIndex == std::numeric_limits<Py_ssize_t>::max())
-        return finish_python(self, mode, values, ret, false);
+        return complete(false);
     py::int_ next(plan->nextIndex + 1);
     py::int_ rowNumber(plan->nextIndex);
     if (!current(self, context, state, *plan, rt))
-        return finish_python(self, mode, values, ret, false);
+        return complete(false);
     auto counterNames = py::reinterpret_borrow<py::tuple>(rt[5]);
     set_counter(*plan, counterNames[0], next);
     set_counter(*plan, counterNames[1], rowNumber);
     set_counter(*plan, counterNames[2], next);
     ++plan->nextIndex;
     if (!current(self, context, state, *plan, rt))
-        return finish_python(self, mode, values, ret, true);
+        return complete(true);
 
     if (mode == Mode::Value) {
         // Decode every column, not just column zero. Eligible plans have no
@@ -1024,6 +1057,109 @@ inline PyObject* invalidate(PyObject* owner, PyObject* receiver) {
     }
 }
 
+inline py::object invoke_query_method(py::handle receiver, py::handle method,
+                                     const py::tuple& args, const py::dict& keywords) {
+    const size_t count = static_cast<size_t>(args.size()) + 1;
+    std::array<PyObject*, 8> local;
+    std::vector<PyObject*> overflow;
+    PyObject** values = local.data();
+    if (count > local.size()) {
+        overflow.resize(count);
+        values = overflow.data();
+    }
+    values[0] = receiver.ptr();
+    for (size_t i = 1; i < count; ++i)
+        values[i] = PyTuple_GET_ITEM(args.ptr(), static_cast<Py_ssize_t>(i - 1));
+    auto result = steal(PyObject_VectorcallDict(method.ptr(), values, count, keywords.ptr()));
+    if (!result)
+        throw py::error_already_set();
+    return result;
+}
+
+inline bool query_policy_eligible(const py::tuple& runtime) {
+    if (runtime.size() != 8)
+        throw py::type_error("Invalid native query operation runtime");
+    auto* cache = runtime[0].cast<QueryPolicyCache*>();
+    const auto epoch = queryPolicyEpoch.load(std::memory_order_relaxed);
+    if (cache->epoch != epoch) {
+        cache->eligible = runtime[1]().cast<bool>();
+        cache->epoch = epoch;
+    }
+    return cache->eligible;
+}
+
+inline py::object run_query_operation(py::handle receiver, py::handle method,
+                                     const py::tuple& args, const py::dict& keywords,
+                                     const py::tuple& runtime, py::handle fallback,
+                                     bool cancellable, bool connectionOperation) {
+    if (runtime.size() != 8)
+        throw py::type_error("Invalid native query operation runtime");
+    auto original = [&] { return invoke_query_method(receiver, fallback, args, keywords); };
+    if (reinterpret_cast<PyObject*>(Py_TYPE(receiver.ptr())) !=
+        runtime[connectionOperation ? 3 : 2].ptr())
+        return original();
+    if (!query_policy_eligible(runtime))
+        return original();
+    auto keys = runtime[7].cast<py::tuple>();
+    if (keys.size() != 9)
+        throw py::type_error("Invalid native query operation keys");
+    for (auto key : keys) {
+        if (!PyUnicode_CheckExact(key.ptr()))
+            throw py::type_error("Invalid native query operation key");
+    }
+    auto data = instance_dict(receiver.ptr());
+    if (!data)
+        throw py::error_already_set();
+    if (!PyDict_CheckExact(data.ptr()))
+        return original();
+    auto item = [&](PyObject* dict, size_t key) {
+        auto* value = PyDict_GetItemWithError(dict, keys[key].ptr());
+        if (!value && PyErr_Occurred())
+            throw py::error_already_set();
+        return value;
+    };
+    auto shadowed = [&](size_t key) {
+        const auto present = PyDict_Contains(data.ptr(), keys[key].ptr());
+        if (present < 0)
+            throw py::error_already_set();
+        return present != 0;
+    };
+    PyObject* connection = connectionOperation ? receiver.ptr() : item(data.ptr(), 0);
+    if (!connection || reinterpret_cast<PyObject*>(Py_TYPE(connection)) != runtime[3].ptr())
+        return original();
+    auto connectionDict = connectionOperation ? data : instance_dict(connection);
+    if (!connectionDict)
+        throw py::error_already_set();
+    if (!PyDict_CheckExact(connectionDict.ptr()))
+        return original();
+    auto* state = item(connectionDict.ptr(), 1);
+    if (!state || reinterpret_cast<PyObject*>(Py_TYPE(state)) != runtime[4].ptr())
+        return original();
+    auto nativeState = py::handle(state).attr("_native");
+    auto* admission = nativeState.cast<QueryAdmission*>();
+    if (connectionOperation) {
+        if (!admission->reserve())
+            RaiseStatementError("HY010", "Connection has an operation in progress");
+        struct Release {
+            QueryAdmission* state;
+            ~Release() { state->busy = false; }
+        } release{admission};
+        return invoke_query_method(receiver, method, args, keywords);
+    }
+    if (item(data.ptr(), 2) != Py_False || item(connectionDict.ptr(), 3) != Py_False)
+        return original();
+    auto* slot = item(data.ptr(), 4);
+    auto* handle = item(data.ptr(), 5);
+    if (!slot || !handle || reinterpret_cast<PyObject*>(Py_TYPE(slot)) != runtime[5].ptr() ||
+        shadowed(6) || shadowed(7) || shadowed(8))
+        return original();
+    auto nativeSlot = py::handle(slot).attr("_native");
+    ScopedQueryOperation operation(*admission, *nativeSlot.cast<QueryOperationSlot*>(),
+                                   py::handle(handle).cast<SqlHandlePtr>(),
+                                   receiver, runtime[6], cancellable);
+    return invoke_query_method(receiver, method, args, keywords);
+}
+
 inline void bind(py::module_& m) {
 #ifdef _MSC_VER
 #pragma warning(push)
@@ -1124,6 +1260,7 @@ inline void bind(py::module_& m) {
     }
 
     auto observer = std::make_unique<Observer>();
+    m.attr("_query_policy_available") = false;
     auto unavailable = [&m]() {
         PyErr_Clear();
         if (PyErr_WarnEx(PyExc_RuntimeWarning,
@@ -1150,6 +1287,15 @@ inline void bind(py::module_& m) {
         unavailable();
         return;
     }
+    observer->query = PyDict_AddWatcher(query_policy_changed);
+    if (observer->query < 0) {
+        PyErr_Clear();
+        if (PyErr_WarnEx(PyExc_RuntimeWarning,
+                        "Native query admission acceleration disabled: watcher slots unavailable",
+                        1) < 0)
+            throw py::error_already_set();
+    }
+    m.attr("_query_policy_available") = observer->query >= 0;
     // One registration per native-module lifetime. The callbacks retain no
     // watched objects; CPython removes registrations at interpreter teardown.
     m.attr("_fetch_observer") = py::capsule(
@@ -1183,12 +1329,28 @@ inline void bind(py::module_& m) {
         }
         return armed;
     });
+    py::class_<QueryPolicyCache>(m, "_QueryPolicyCache").def(py::init<>());
+    m.def("_query_policy_eligible", &query_policy_eligible);
+    m.def("_watch_query_policy", [](const py::capsule& capsule, const py::tuple& dicts) {
+        auto* observer = static_cast<Observer*>(
+            PyCapsule_GetPointer(capsule.ptr(), "mssql_python.native_fetch.Observer"));
+        if (!observer)
+            throw py::error_already_set();
+        if (observer->query < 0)
+            throw std::runtime_error("Native query policy watcher is unavailable");
+        for (auto dict : dicts) {
+            if (PyDict_Watch(observer->query, dict.ptr()) < 0)
+                throw py::error_already_set();
+        }
+    });
+    m.def("_run_query_operation", &run_query_operation);
 }
 
 #else
 
 inline void bind(py::module_& m) {
     m.attr("_fetch_observer") = py::none();
+    m.attr("_query_policy_available") = false;
     m.def("_invalidate_native_fetch", [](py::handle) {});
 }
 

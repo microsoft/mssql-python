@@ -40,18 +40,15 @@ SAMPLE_TOKEN = secrets.token_hex(44)
 
 
 def _bare_cursor():
-    """A Cursor instance with no wiring — enough for pure validation/detection."""
-    from mssql_python.cursor import Cursor
-
-    cursor = Cursor.__new__(Cursor)
-    cursor.closed = True  # keep __del__ a no-op during GC teardown
-    return cursor
+    """An idle Cursor with enough wiring for public validation/detection."""
+    return _cursor_with_conn("")
 
 
 def _cursor_with_conn(connection_str, auth_type=None, credential_kwargs=None):
     """A Cursor whose .connection is a mock carrying just the auth wiring that
     _build_pycore_context reads."""
     from mssql_python.cursor import Cursor
+    from mssql_python._query_operation import QueryConnectionState, QuerySlot
 
     mock_conn = MagicMock()
     mock_conn.connection_str = connection_str
@@ -62,10 +59,13 @@ def _cursor_with_conn(connection_str, auth_type=None, credential_kwargs=None):
     # _build_pycore_context down the custom-credential (token_provider) branch.
     mock_conn._token_provider = None
     mock_conn._is_connected = True
+    mock_conn.closed = False
+    mock_conn._query_state = QueryConnectionState()
 
     cursor = Cursor.__new__(Cursor)
+    cursor._query_slot = QuerySlot()
     cursor._connection = mock_conn
-    cursor.closed = True  # keep __del__ a no-op during GC teardown
+    cursor.closed = False
     cursor.hstmt = None
     cursor._timeout = 0  # timeout snapshot _build_pycore_context reads (0 = no override)
     return cursor
