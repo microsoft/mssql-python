@@ -726,6 +726,16 @@ class TestReleaseBuildDependencies:
                 requirement,
             )
 
+    def test_release_test_locks_include_performance_and_windows_timezone_dependencies(self):
+        for lock_name in (
+            "requirements-build-windows.txt",
+            "requirements-build-macos.txt",
+            "requirements-test-linux.txt",
+        ):
+            lock = (ROOT / "eng" / lock_name).read_text(encoding="utf-8")
+            for requirement in (r"pyperf==\S+", r"""tzdata==\S+ ; sys_platform == ['"]win32['"]"""):
+                assert re.search(rf"^{requirement} \\\n +--hash=sha256:", lock, re.M), lock_name
+
     def test_python_315_source_builds_preserve_stable_binary_only_matrix(self):
         workflow = yaml.safe_load(self.workflow.read_text(encoding="utf-8"))
         job = workflow["jobs"]["validate-locks"]
@@ -746,6 +756,45 @@ class TestReleaseBuildDependencies:
         assert '"${binary_args[@]}"' in step["run"]
         assert "--require-hashes" in step["run"]
 
+    @pytest.mark.parametrize("mirror", [False, True], ids=["public", "mirror"])
+    def test_copy_release_perf_fixture(self, tmp_path, mirror):
+        shell = shutil.which("sh")
+        if not shell:
+            pytest.skip("Linux release fixture requires a POSIX shell")
+        source = tmp_path / "source tree"
+        fixture = tmp_path / "wheel fixture"
+        (source / "OneBranchPipelines").mkdir(parents=True)
+        (fixture / "eng").mkdir(parents=True)
+        assets = (
+            "performance/nested/workload.py",
+            ".gitattributes",
+            "eng/requirements-perf.in",
+            "eng/requirements-perf.txt",
+            "eng/requirements-perf-data.in",
+            "eng/requirements-perf-data.txt",
+        )
+        if mirror:
+            (source / "OneBranchPipelines/ado-only-paths.txt").touch()
+            for name in assets:
+                path = source / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(name, encoding="utf-8")
+        script = ROOT / "eng/scripts/copy-release-perf-fixture.sh"
+        # Feed LF text to sh even when Git checks out CRLF on Windows.
+        subprocess.run(
+            [shell, "-s", "--", source.name, fixture.name],
+            input=script.read_text(encoding="utf-8").encode(),
+            cwd=tmp_path,
+            check=True,
+            timeout=30,
+        )
+        copied = {
+            path.relative_to(fixture).as_posix(): path.read_text(encoding="utf-8")
+            for path in fixture.rglob("*")
+            if path.is_file()
+        }
+        assert copied == ({name: name for name in assets} if mirror else {})
+
     @pytest.mark.parametrize("fixture_index", [0, 1], ids=["manylinux", "musllinux"])
     def test_relocated_linux_fixture_runs_public_contracts(self, tmp_path_factory, fixture_index):
         tmp_path = tmp_path_factory.mktemp("lf")
@@ -753,6 +802,9 @@ class TestReleaseBuildDependencies:
         fixtures = pipeline.split("# Step 7: Setup test environment")[1:]
         assert len(fixtures) == 2
         fixture = fixtures[fixture_index].split("# Step 8:", maxsplit=1)[0]
+        assert 'sh /workspace/eng/scripts/copy-release-perf-fixture.sh /workspace "$TEST_DIR";' in {
+            line.strip() for line in fixture.splitlines()
+        }
         for line in fixture.splitlines():
             if not line.strip().startswith("cp "):
                 continue
