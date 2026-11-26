@@ -81,6 +81,8 @@ def test_checked_fetch_buffer_preconditions(item_size, terminator):
 def test_fetchall_buffer_contract(conn_str, case):
     if not conn_str:
         pytest.skip("DB_CONNECTION_STRING is required")
+    if case == "arrow-cleanup-failure":
+        pytest.importorskip("pyarrow")
     addresses = getattr(ddbc_bindings.module, "_arrow_test_pointer_addresses", {})
     if (case in _RETAINED_CASES or case == "repeat-cleanup") and not hasattr(
         ddbc_bindings.module, "_test_retained_binding_storage"

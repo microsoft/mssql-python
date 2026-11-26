@@ -6974,11 +6974,14 @@ SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows,
 
     // Budget bound data and indicators, not retained Python output or allocator overhead.
     // A valid row wider than the budget must still fit without truncation.
-    constexpr size_t bufferBudget = 8 * 1024 * 1024;
+    constexpr size_t bufferBudgetBytes = size_t{8} * 1024 * 1024;
+    constexpr int initialBatchRows = 100;
+    constexpr int maximumBatchRows = 1000;
     const size_t rowBytes = BoundRowBufferBytes(columnNames, numCols, charCtype);
-    const int maxFetchSize = static_cast<int>(
-        std::max<size_t>(1, std::min<size_t>(1000, rowBytes ? bufferBudget / rowBytes : 1)));
-    int fetchSize = std::min(100, maxFetchSize);
+    const size_t rowsWithinBudget = rowBytes == 0 ? 1 : bufferBudgetBytes / rowBytes;
+    const int maxFetchSize =
+        static_cast<int>(std::clamp<size_t>(rowsWithinBudget, 1, maximumBatchRows));
+    int fetchSize = std::min(initialBatchRows, maxFetchSize);
     LOG("FetchAll_wrap: Binding %d rows, %zu bytes per row", fetchSize, rowBytes);
 
     FetchStateGuard fetchStateGuard(StatementHandle, messages, numCols, fetchSize);
