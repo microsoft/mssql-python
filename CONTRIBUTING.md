@@ -79,9 +79,9 @@ update the committed pin and validate with no override before releasing Python.
 Unset `MSSQL_PYTHON_RS_VERSION` to return to the committed release pin and rerun
 the installer.
 
-### Release-wheel test retries
+### CI test retries
 
-During release-wheel testing, pytest retries only the failing test
+During PR validation and release-wheel testing, pytest retries only the failing test
 case, up to three times after the initial attempt. Look for `RERUN` in the
 pytest log to distinguish a first-pass success from a recovered failure.
 Collection errors are not retried, and a case that fails all four attempts

@@ -53,7 +53,7 @@ mkdir -p "$(pwd)/profraw"
 export LLVM_PROFILE_FILE="$(pwd)/profraw/default-%p-%m.profraw"
 
 # Run pytest with Python coverage (XML + HTML output)
-python -m pytest -v \
+python -m pytest -v "$@" \
   --junitxml=test-results.xml \
   --cov=mssql_python \
   --cov-report=xml:coverage.xml \

@@ -452,7 +452,8 @@ def test_runtime_is_verified_after_dependency_setup_before_testing():
     ]
     assert test_commands
     typing_command = (
-        "python -m pytest tests/test_typing.py -m typing -v --junitxml=typing-test-results.xml"
+        "python -m pytest tests/test_typing.py -m typing -v $(pytestRetryArgs) "
+        "--junitxml=typing-test-results.xml"
     )
     assert sum(line.strip() == typing_command for line in test_commands) == 1
     runtime_test_commands = [line for line in test_commands if line.strip() != typing_command]
@@ -479,13 +480,25 @@ def test_runtime_is_verified_after_dependency_setup_before_testing():
     assert stress.count("python eng/scripts/mssql_python_rs.py --verify") == 2
 
 
-def test_release_wheels_retry_failing_pytest_cases():
+def test_validation_retries_pytest_cases_not_suites():
+    pr = yaml.safe_load((ROOT / ENTRY_POINTS[0]).read_text(encoding="utf-8"))
+    flags = pr["variables"]["pytestRetryArgs"]
+    assert shlex.split(flags) == ["--reruns", "3", "-rfER"]
+    for job in pr["jobs"]:
+        for step in job["steps"]:
+            script = step.get("script", "")
+            for line in script.splitlines():
+                command = line.strip()
+                if "python -m pytest " in command or command.startswith("./generate_codecov.sh"):
+                    assert "$(pytestRetryArgs)" in command, (job["job"], command)
+                    assert "retryCountOnTaskFailure" not in step, job["job"]
+
     for platform, count in (("linux", 2), ("windows", 1), ("macos", 1)):
         path = PIPELINES / f"stages/build-{platform}-single-stage.yml"
         commands = [line for line in path.read_text().splitlines() if " -m pytest " in line]
         assert len(commands) == count
         for command in commands:
-            assert "--reruns 3 -rfER" in command
+            assert flags in command
             if platform == "linux":
                 assert "--maxfail=1" in command
 
