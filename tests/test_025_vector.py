@@ -342,8 +342,12 @@ def test_vector_negotiation_is_opt_in():
 
 @pytest.fixture
 def unit_cursor(monkeypatch):
+    from mssql_python._query_operation import QueryConnectionState
+
     monkeypatch.setattr(Cursor, "_initialize_cursor", lambda self: None)
     connection = SimpleNamespace(
+        _query_state=QueryConnectionState(),
+        closed=False,
         _converters_generation=0,
         _decoding_generation=0,
         _output_converters={},
@@ -580,6 +584,22 @@ def test_callproc_propagates_backend_errors(unit_cursor, monkeypatch):
     assert unit_cursor._procedure_rows is None
 
 
+def test_callproc_owns_connection_and_rejects_cancellation(unit_cursor, monkeypatch):
+    def native_call(_statement, _query, values, *_args):
+        assert unit_cursor.connection._query_state.busy
+        with pytest.raises(mssql_python.NotSupportedError, match="not supported"):
+            unit_cursor.cancel()
+        with pytest.raises(mssql_python.ProgrammingError, match="operation in progress"):
+            with unit_cursor.connection._query_state:
+                pytest.fail("Concurrent connection operation was admitted")
+        return values, []
+
+    monkeypatch.setattr(ddbc_bindings, "DDBCCallProc", native_call)
+    assert unit_cursor.callproc("dbo.p", [1]) == [1]
+    assert not unit_cursor.connection._query_state.busy
+    assert unit_cursor._query_slot.active is None
+
+
 @pytest.mark.parametrize("operation", ["close", "execute"])
 def test_callproc_blocks_cursor_reentry_during_parameter_conversion(
     unit_cursor, monkeypatch, operation
@@ -597,7 +617,9 @@ def test_callproc_blocks_cursor_reentry_during_parameter_conversion(
         return values, []
 
     monkeypatch.setattr(ddbc_bindings, "DDBCCallProc", native_call)
-    with pytest.raises(mssql_python.ProgrammingError, match="while it is executing"):
+    with pytest.raises(
+        mssql_python.ProgrammingError, match="operation in progress|while it is executing"
+    ):
         unit_cursor.callproc("dbo.p", [Parameter()])
 
     assert unit_cursor.callproc("dbo.p", [1]) == [1]
@@ -620,6 +642,11 @@ def test_callproc_rejects_tvp_before_native_execution(unit_cursor, monkeypatch):
 
 def test_failing_callproc_invalidates_prepared_query(unit_cursor, monkeypatch):
     unit_cursor.hstmt = Mock()
+    monkeypatch.setattr(
+        ddbc_bindings,
+        "_StatementOperation",
+        lambda statement: SimpleNamespace(finish=lambda: False),
+    )
     monkeypatch.setattr(ddbc_bindings, "DDBCSQLResetStmt", lambda *args: 0)
     monkeypatch.setattr(ddbc_bindings, "DDBCSQLRowCount", lambda *args: -1)
     monkeypatch.setattr(ddbc_bindings, "DDBCSQLDescribeCol", lambda *args: 0)

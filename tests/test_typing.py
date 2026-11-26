@@ -57,6 +57,7 @@ def supported_calls(cursor: Cursor) -> None:
     cursor.execute("SELECT ?", Json('{{"items":[1,null]}}'))
     cursor.setinputsizes([SQL_JSON])
     cursor.setinputsizes([SQL_SS_JSON])
+    cursor.cancel()
     cursor.setinputsizes(None)
     cursor.executemany("INSERT INTO example VALUES (?, ?)", [(1, "one"), (2, "two")])
     cursor.executemany("INSERT INTO example VALUES (?, ?)", [[1, "one"], [2, "two"]])

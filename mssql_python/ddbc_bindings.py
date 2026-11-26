@@ -17,6 +17,13 @@ if TYPE_CHECKING:
     from ._ddbc_types import *
     from ._ddbc_types import (
         _ArrowReaderState as _ArrowReaderState,
+        _StatementOperation as _StatementOperation,
+        _QueryAdmission as _QueryAdmission,
+        _QueryOperationSlot as _QueryOperationSlot,
+        _QueryPolicyCache as _QueryPolicyCache,
+        _query_policy_eligible as _query_policy_eligible,
+        _run_query_operation as _run_query_operation,
+        _watch_query_policy as _watch_query_policy,
         _abort_native_fetch_install as _abort_native_fetch_install,
         _activate_native_fetch_install as _activate_native_fetch_install,
         _begin_native_fetch_install as _begin_native_fetch_install,

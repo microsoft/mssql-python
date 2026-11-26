@@ -679,3 +679,7 @@ sys.modules[__name__] = new_module
 # Initialize property values
 lowercase: bool = _settings.lowercase
 native_uuid: bool = _settings.native_uuid
+
+from ._query_operation import _initialize_native_runtime
+
+_initialize_native_runtime()
