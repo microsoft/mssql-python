@@ -17401,6 +17401,19 @@ def _make_bare_cursor():
     return cur
 
 
+def _initialize_mock_query_operation(cur, monkeypatch):
+    from unittest.mock import MagicMock
+    from mssql_python import ddbc_bindings
+    from mssql_python._query_operation import QueryConnectionState, QuerySlot
+
+    cur._connection.closed = False
+    cur._connection._query_state = QueryConnectionState()
+    cur._query_slot = QuerySlot()
+    operation = MagicMock()
+    operation.return_value.finish.return_value = False
+    monkeypatch.setattr(ddbc_bindings, "_StatementOperation", operation)
+
+
 def test_compute_column_type_large_decimal():
     """_compute_column_type picks the highest-precision Decimal as sample."""
     cur = _make_bare_cursor()
@@ -17452,6 +17465,7 @@ def test_gh745_executemany_money_range_binds_as_numeric(monkeypatch):
     cur._connection = MagicMock()
     cur._connection._encoding = "utf-8"
     cur._connection._conn = MagicMock()
+    _initialize_mock_query_operation(cur, monkeypatch)
     captured = {}
 
     def fake_sql_execute_many(hstmt, op, col_params, param_types, row_count, enc):
@@ -17500,6 +17514,7 @@ def test_gh745_executemany_near_max_precision_stays_within_38(monkeypatch):
     cur._connection = MagicMock()
     cur._connection._encoding = "utf-8"
     cur._connection._conn = MagicMock()
+    _initialize_mock_query_operation(cur, monkeypatch)
     captured = {}
 
     def fake_sql_execute_many(hstmt, op, col_params, param_types, row_count, enc):
@@ -17552,6 +17567,7 @@ def test_gh745_executemany_zero_and_tiny_stays_within_38(monkeypatch, data):
     cur._connection = MagicMock()
     cur._connection._encoding = "utf-8"
     cur._connection._conn = MagicMock()
+    _initialize_mock_query_operation(cur, monkeypatch)
     captured = {}
 
     def fake_sql_execute_many(hstmt, op, col_params, param_types, row_count, enc):
@@ -17589,6 +17605,7 @@ def test_gh745_executemany_buffer_fits_mixed_sign_short_precision(monkeypatch):
     cur._connection = MagicMock()
     cur._connection._encoding = "utf-8"
     cur._connection._conn = MagicMock()
+    _initialize_mock_query_operation(cur, monkeypatch)
     captured = {}
 
     def fake_sql_execute_many(hstmt, op, col_params, param_types, row_count, enc):
@@ -17628,6 +17645,7 @@ def test_setinputsizes_sql_decimal_memoryerror_no_leak_unit(monkeypatch):
     cur._connection = MagicMock()
     cur._connection._encoding = "utf-8"
     cur._connection._conn = MagicMock()
+    _initialize_mock_query_operation(cur, monkeypatch)
 
     monkeypatch.setattr(cur, "_check_closed", lambda: None)
     monkeypatch.setattr(cur, "_reset_cursor", lambda: None)
@@ -17669,6 +17687,7 @@ def test_setinputsizes_sql_decimal_runtimeerror_no_leak_unit(monkeypatch):
     cur._connection = MagicMock()
     cur._connection._encoding = "utf-8"
     cur._connection._conn = MagicMock()
+    _initialize_mock_query_operation(cur, monkeypatch)
 
     monkeypatch.setattr(cur, "_check_closed", lambda: None)
     monkeypatch.setattr(cur, "_reset_cursor", lambda: None)
@@ -17717,6 +17736,7 @@ def test_setinputsizes_sql_numeric_keeps_declared_precision_scale(monkeypatch):
     cur._connection = MagicMock()
     cur._connection._encoding = "utf-8"
     cur._connection._conn = MagicMock()
+    _initialize_mock_query_operation(cur, monkeypatch)
     captured = {}
 
     def fake_sql_execute_many(hstmt, op, col_params, param_types, row_count, enc):
@@ -17762,6 +17782,7 @@ def test_setinputsizes_sql_decimal_buffer_from_protected_conversion(monkeypatch)
         cur._connection = MagicMock()
         cur._connection._encoding = "utf-8"
         cur._connection._conn = MagicMock()
+        _initialize_mock_query_operation(cur, monkeypatch)
         captured = {}
 
         def fake_sql_execute_many(hstmt, op, col_params, param_types, row_count, enc):
@@ -17818,6 +17839,7 @@ def test_gh745_executemany_rejects_non_finite_both_orders(monkeypatch, data):
     cur._connection = MagicMock()
     cur._connection._encoding = "utf-8"
     cur._connection._conn = MagicMock()
+    _initialize_mock_query_operation(cur, monkeypatch)
 
     monkeypatch.setattr(cur, "_check_closed", lambda: None)
     monkeypatch.setattr(cur, "_reset_cursor", lambda: None)
@@ -17872,7 +17894,6 @@ def test_executemany_decimal_numeric_override_coverage(monkeypatch):
     from unittest.mock import MagicMock
     from mssql_python import ddbc_bindings
     from mssql_python.cursor import Cursor
-    from mssql_python._query_operation import QueryConnectionState, QuerySlot
 
     cur = Cursor.__new__(Cursor)
     cur._inputsizes = None
@@ -17884,12 +17905,7 @@ def test_executemany_decimal_numeric_override_coverage(monkeypatch):
     cur._connection = MagicMock()
     cur._connection._encoding = "utf-8"
     cur._connection._conn = MagicMock()
-    cur._connection.closed = False
-    cur._connection._query_state = QueryConnectionState()
-    cur._query_slot = QuerySlot()
-    operation = MagicMock()
-    operation.return_value.finish.return_value = False
-    monkeypatch.setattr(ddbc_bindings, "_StatementOperation", operation)
+    _initialize_mock_query_operation(cur, monkeypatch)
     captured = {}
 
     def fake_sql_execute_many(hstmt, op, col_params, param_types, row_count, enc):
