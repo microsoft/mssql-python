@@ -43,6 +43,12 @@ from mssql_python.table_valued_parameter import TableValuedParameter
 from mssql_python.perf_timer import perf_phase
 from mssql_python import get_settings
 from mssql_python.odbc_provider import ProviderManager, PROVIDER_MSSQL_ODBC
+from mssql_python._query_operation import (
+    QueryOperation,
+    QuerySlot,
+    cursor_operation,
+    uncancellable_cursor_operation,
+)
 from mssql_python.parameter_helper import (
     detect_and_convert_parameters,
     parse_pyformat_params,
@@ -428,7 +434,8 @@ class _ArrowReader:
         Most of the actual cleanup work lives in the generator's ``finally``
         clause (see ``Cursor.arrow_reader``); this method just unblocks any
         in-flight fetch and closes the generator, which triggers that
-        ``finally`` block.
+        ``finally`` block. If a sibling cursor owns the connection, raises
+        ``ProgrammingError`` and retains pending cleanup for a later retry.
         """
         # Fast path: cleanup already completed on a previous call.  We use
         # the *generator* reference — not ``_closed`` — as the completion
@@ -461,6 +468,10 @@ class _ArrowReader:
                     self._cursor = None
                     self._inner = None
                     return
+            except ProgrammingError:
+                # Admission can fail after generator finalization. The iterator
+                # still owns the cleanup callback, so retain it for a retry.
+                raise
             except Exception as e:  # pylint: disable=broad-exception-caught
                 logger.debug("arrow_reader.close: generator.close raised: %s", e)
                 if getattr(gen, "gi_frame", None) is not None:
@@ -531,6 +542,7 @@ class Cursor:
         # an HSTMT exists.
         self.closed: bool = False
         self.hstmt: ddbc_bindings.SqlHandle | None = None
+        self._query_slot = QuerySlot()
 
         self._connection: "Connection" = connection  # Store as private attribute
         self._timeout: int = timeout
@@ -1169,6 +1181,9 @@ class Cursor:
         """
         self._allocate_statement_handle()
         self._set_timeout()
+        operation = self._query_slot.active
+        if operation is not None and operation.native is not None:
+            operation.native.bind(self.hstmt)
 
     def _allocate_statement_handle(self) -> None:
         """
@@ -1201,14 +1216,17 @@ class Cursor:
             except Exception as e:  # pylint: disable=broad-exception-caught
                 logger.warning("Failed to set query timeout: %s", str(e))
 
-    def _reset_cursor(self) -> None:
+    def _reset_cursor(self, *, checked: bool = False) -> None:
         """
         Reset the DDBC statement handle.
         """
         self._procedure_results = None
         self._procedure_rows = None
         if self.hstmt:
-            self.hstmt.free()
+            if checked:
+                self.hstmt._free_checked()
+            else:
+                self.hstmt.free()
             self.hstmt = None
             logger.debug("SQLFreeHandle succeeded")
 
@@ -1241,6 +1259,34 @@ class Cursor:
         self._clear_rownumber()
 
     def close(self) -> None:
+        """Close an idle cursor. An in-flight operation must finish first."""
+        if getattr(self, "closed", True):
+            return
+        with self.connection._query_state:
+            self._close()
+
+    def cancel(self) -> None:
+        """Request cancellation of this cursor's active synchronous operation.
+
+        Safe from another thread. Idle calls preserve unread results. Wait for
+        the worker to finish before reusing or closing the cursor/connection.
+        Cancellation does not roll back a transaction or guarantee that work
+        already completed on the server is undone.
+        """
+        with self.connection._query_state.lock:
+            if self.closed:
+                raise ProgrammingError("Operation cannot be performed: The cursor is closed.", "")
+            if self.connection.closed:
+                raise ProgrammingError("Connection is closed", "")
+            operation = self._query_slot.active
+        # Never hold the admission lock while SQLCancel or the worker waits.
+        if operation is not None:
+            operation.cancel()
+
+    def _query_operation(self, *, cancellable: bool = True) -> QueryOperation:
+        return QueryOperation(self, cancellable)
+
+    def _close(self) -> None:
         """
         Close the connection now (rather than whenever .__del__() is called).
         Idempotent: subsequent calls have no effect and will be no-ops.
@@ -1902,7 +1948,20 @@ class Cursor:
         """
         return next(self)
 
-    def execute(  # pylint: disable=too-many-locals,too-many-branches,too-many-statements
+    @cursor_operation
+    def execute(
+        self,
+        operation: str,
+        *parameters: Any,
+        use_prepare: bool = True,
+        reset_cursor: bool = True,
+    ) -> Cursor:
+        """Prepare and execute a synchronous database operation."""
+        return self._execute(
+            operation, *parameters, use_prepare=use_prepare, reset_cursor=reset_cursor
+        )
+
+    def _execute(  # pylint: disable=too-many-locals,too-many-branches,too-many-statements
         self,
         operation: str,
         *parameters: Any,
@@ -2217,6 +2276,7 @@ class Cursor:
         # Return the cursor itself for method chaining
         return self
 
+    @uncancellable_cursor_operation
     def getTypeInfo(self, sqlType: int | None = None) -> Cursor:
         """
         Executes SQLGetTypeInfo and creates a result set with information about
@@ -2240,6 +2300,7 @@ class Cursor:
             self._reset_cursor()
             raise e
 
+    @uncancellable_cursor_operation
     def procedures(
         self, procedure: str | None = None, catalog: str | None = None, schema: str | None = None
     ) -> Cursor:
@@ -2274,6 +2335,7 @@ class Cursor:
         # Use the helper method to prepare the result set
         return self._prepare_metadata_result_set(fallback_description=fallback_description)
 
+    @uncancellable_cursor_operation
     def primaryKeys(
         self, table: str, catalog: str | None = None, schema: str | None = None
     ) -> Cursor:
@@ -2309,6 +2371,7 @@ class Cursor:
         # Use the helper method to prepare the result set
         return self._prepare_metadata_result_set(fallback_description=fallback_description)
 
+    @uncancellable_cursor_operation
     def foreignKeys(  # pylint: disable=too-many-arguments,too-many-positional-arguments
         self,
         table: str | None = None,
@@ -2366,6 +2429,7 @@ class Cursor:
         # Use the helper method to prepare the result set
         return self._prepare_metadata_result_set(fallback_description=fallback_description)
 
+    @uncancellable_cursor_operation
     def rowIdColumns(
         self,
         table: str,
@@ -2411,6 +2475,7 @@ class Cursor:
         # Use the helper method to prepare the result set
         return self._prepare_metadata_result_set(fallback_description=fallback_description)
 
+    @uncancellable_cursor_operation
     def rowVerColumns(
         self,
         table: str,
@@ -2456,6 +2521,7 @@ class Cursor:
         # Use the helper method to prepare the result set
         return self._prepare_metadata_result_set(fallback_description=fallback_description)
 
+    @uncancellable_cursor_operation
     def statistics(  # pylint: disable=too-many-arguments,too-many-positional-arguments
         self,
         table: str,
@@ -2508,6 +2574,7 @@ class Cursor:
         # Use the helper method to prepare the result set
         return self._prepare_metadata_result_set(fallback_description=fallback_description)
 
+    @uncancellable_cursor_operation
     def columns(
         self,
         table: str | None = None,
@@ -2699,6 +2766,7 @@ class Cursor:
 
         return sample_value, None, None, max_decimal_formatted_len
 
+    @cursor_operation
     def executemany(  # pylint: disable=too-many-locals,too-many-branches,too-many-statements
         self,
         operation: str,
@@ -3037,7 +3105,7 @@ class Cursor:
                         row = processed_row
                     # execute() consumes overrides; every row needs them.
                     self._inputsizes = input_sizes
-                    self.execute(operation, tuple(row))
+                    self._execute(operation, tuple(row))
                     if self.rowcount < 0:
                         total_rowcount = -1
                     elif total_rowcount >= 0:
@@ -3149,6 +3217,7 @@ class Cursor:
             # Reset input sizes after execution
             self._reset_inputsizes()
 
+    @cursor_operation
     def fetchone(self) -> Union[None, Row]:
         """
         Fetch the next row of a query result set.
@@ -3276,6 +3345,7 @@ class Cursor:
                 column_names=self._cached_result_columns,
             )
 
+    @cursor_operation
     def fetchmany(self, size: Optional[int] = None) -> List[Row]:
         """
         Fetch the next set of rows of a query result.
@@ -3425,6 +3495,7 @@ class Cursor:
                 for row_data in rows_data
             ]
 
+    @cursor_operation
     def fetchall(self) -> List[Row]:
         """
         Fetch all (remaining) rows of a query result.
@@ -3435,8 +3506,7 @@ class Cursor:
         self._check_closed()  # Check if the cursor is closed
         procedure_rows: deque[list[Any]] | None = getattr(self, "_procedure_rows", None)
         if procedure_rows is not None:
-            # Use a positive size so fetchmany handles empty and non-row results too.
-            return self.fetchmany(max(1, len(procedure_rows)))
+            return self._fetch_procedure_rows(procedure_rows, max(1, len(procedure_rows)))
         if not self._has_result_set and self.description:
             self._reset_rownumber()
 
@@ -3546,6 +3616,7 @@ class Cursor:
         assert batch is not None
         return batch
 
+    @uncancellable_cursor_operation
     def _fetch_arrow_batch(
         self, batch_size: int, reader_state: ddbc_bindings._ArrowReaderState | None = None
     ) -> Optional["pyarrow.RecordBatch"]:
@@ -3633,6 +3704,9 @@ class Cursor:
         is **not** closed and can be re-executed; old readers cannot consume or
         clean up its newer result. A close called reentrantly on the reading
         thread defers cleanup until that advancement exits. ``close()`` is idempotent.
+        If a sibling cursor owns the connection, ``close()`` raises
+        ``ProgrammingError``; retry after that operation finishes to release
+        the pending server-side resources.
 
         Args:
             batch_size: Size of the Record Batches produced by the reader.
@@ -3666,6 +3740,10 @@ class Cursor:
             cur = cursor_ref[0]
             if cur is None:
                 return
+            with cur.connection._query_state:
+                cleanup_result(cur)
+
+        def cleanup_result(cur: Cursor) -> None:
             cursor_ref[0] = None
             if (
                 not cur.closed
@@ -3747,6 +3825,7 @@ class Cursor:
         inner = pa.RecordBatchReader.from_batches(schema, gen)
         return _ArrowReader(self, inner, gen, pa.ArrowInvalid, close_requested)
 
+    @cursor_operation
     def nextset(self) -> Optional[bool]:
         """
         Skip to the next available result set.
@@ -4038,6 +4117,7 @@ class Cursor:
                         cleanup_error,
                     )
 
+    @uncancellable_cursor_operation
     def bulkcopy(
         self,
         table_name: str,
@@ -4247,6 +4327,7 @@ class Cursor:
         finally:
             self._bulkcopy_teardown(pycore_context, pycore_cursor, pycore_connection)
 
+    @uncancellable_cursor_operation
     def bulkcopy_arrow(
         self,
         table_name: str,
@@ -4514,6 +4595,7 @@ class Cursor:
                 if logger is not None:
                     logger.debug("Exception during cursor cleanup in __del__: %s", e)
 
+    @uncancellable_cursor_operation
     def scroll(
         self, value: int, mode: str = "relative"
     ) -> None:  # pylint: disable=too-many-branches
@@ -4676,6 +4758,7 @@ class Cursor:
         ):
             self.messages.extend(ddbc_bindings.DDBCSQLGetAllDiagRecords(stmt_handle))
 
+    @uncancellable_cursor_operation
     def tables(
         self,
         table: str | None = None,
@@ -4769,6 +4852,7 @@ class Cursor:
             self._uuid_str_indices = self._compute_uuid_str_indices()
         return True
 
+    @uncancellable_cursor_operation
     def callproc(
         self, procname: str, parameters: Optional[Sequence[Any]] = None
     ) -> Optional[Sequence[Any]]:

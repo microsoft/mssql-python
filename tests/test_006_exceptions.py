@@ -731,14 +731,14 @@ def test_cursor_cleanup_failure_still_calls_native_close():
     with patch("mssql_python.connection.ddbc_bindings.Connection", return_value=native):
         conn = connect("Server=testserver;Database=mydb;Trusted_Connection=yes;")
     broken = MagicMock(closed=False)
-    broken.close.side_effect = RuntimeError("cursor cleanup failed")
+    broken._close.side_effect = RuntimeError("cursor cleanup failed")
     healthy = MagicMock(closed=False)
     conn._cursors = {broken, healthy}
 
     conn.close()
 
-    broken.close.assert_called_once_with()
-    healthy.close.assert_called_once_with()
+    broken._close.assert_called_once_with()
+    healthy._close.assert_called_once_with()
     native.close.assert_called_once_with(rollback_before_disconnect=True)
     assert conn.closed
     assert conn._conn is None
