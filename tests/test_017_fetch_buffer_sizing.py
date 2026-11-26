@@ -139,7 +139,11 @@ def _run_case(case):
             size[0] = 0
         elif result in (0, 1) and case.startswith("overflow-"):
             dtype[0] = 1  # SQL_CHAR is bound, not routed through LOB streaming.
-            size[0] = sql_ulen(-1).value if case == "overflow-cell" else (sys.maxsize // 2) - 4
+            if case == "overflow-cell":
+                size[0] = sql_ulen(-1).value
+            else:
+                expansion = 1 if sys.platform == "win32" else 4
+                size[0] = (sys.maxsize // 2 - ct.sizeof(sql_len) - 1) // expansion
         return result
 
     ms.pooling(enabled=False)
@@ -226,7 +230,12 @@ def _run_case(case):
                     describe,
                 )
                 if case.startswith("overflow-"):
-                    with pytest.raises(ValueError, match="Fetch .*buffer size exceeds"):
+                    message = (
+                        "Fetch buffer size exceeds supported limits"
+                        if case == "overflow-cell"
+                        else "Fetch row buffer size exceeds supported limits"
+                    )
+                    with pytest.raises(ValueError, match=f"^{message}$"):
                         cursor.fetchall()
                     assert not bindings
                     assert not fetches
