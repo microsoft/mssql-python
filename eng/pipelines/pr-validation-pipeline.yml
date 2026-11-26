@@ -255,7 +255,7 @@ jobs:
       
       Write-Host "Waiting for SQL Server 2022 to start..."
       while (-not $connected -and $attempt -lt $maxAttempts) {
-        sqlcmd -S "localhost" -U "sa" -Q "SELECT 1" -C -b
+        sqlcmd -S "lpc:." -U "sa" -Q "SELECT 1" -C -b
         if ($LASTEXITCODE -eq 0) {
           $connected = $true
           Write-Host "SQL Server is ready!"
@@ -272,7 +272,7 @@ jobs:
       }
       
       # Create database and user
-      sqlcmd -S "localhost" -U "sa" -b -Q "IF DB_ID('TestDB') IS NULL CREATE DATABASE TestDB" -C
+      sqlcmd -S "lpc:." -U "sa" -b -Q "IF DB_ID('TestDB') IS NULL CREATE DATABASE TestDB" -C
       if ($LASTEXITCODE -ne 0) { throw "Failed to provision CI database" }
       $sqlPassword = $env:DB_PASSWORD.Replace("'", "''")
       $sqlPath = Join-Path $env:TEMP ("create-testuser-{0}.sql" -f [guid]::NewGuid())
@@ -283,17 +283,17 @@ jobs:
         icacls $sqlPath /inheritance:r /grant:r "${identity}:(F)" "SYSTEM:(R)" | Out-Null
         if ($LASTEXITCODE -ne 0) { throw "Failed to secure temporary SQL file" }
         [System.IO.File]::WriteAllBytes($sqlPath, $sqlBytes)
-        sqlcmd -S "localhost" -U "sa" -C -i $sqlPath -b -x -f 65001
+        sqlcmd -S "lpc:." -U "sa" -C -i $sqlPath -b -x -f 65001
         if ($LASTEXITCODE -ne 0) { throw "Failed to create the testuser login" }
       } finally {
         Remove-Item $sqlPath -Force -ErrorAction Stop
       }
-      sqlcmd -S "localhost" -U "sa" -d TestDB -b -Q "IF DATABASE_PRINCIPAL_ID('testuser') IS NULL CREATE USER testuser FOR LOGIN testuser" -C
+      sqlcmd -S "lpc:." -U "sa" -d TestDB -b -Q "IF DATABASE_PRINCIPAL_ID('testuser') IS NULL CREATE USER testuser FOR LOGIN testuser" -C
       if ($LASTEXITCODE -ne 0) { throw "Failed to provision CI user" }
-      sqlcmd -S "localhost" -U "sa" -d TestDB -b -Q "IF IS_ROLEMEMBER('db_owner', 'testuser') = 0 ALTER ROLE db_owner ADD MEMBER testuser" -C
+      sqlcmd -S "lpc:." -U "sa" -d TestDB -b -Q "IF IS_ROLEMEMBER('db_owner', 'testuser') = 0 ALTER ROLE db_owner ADD MEMBER testuser" -C
       if ($LASTEXITCODE -ne 0) { throw "Failed to provision CI role membership" }
       # Pool eviction tests observe physical connections from a second session.
-      sqlcmd -S "localhost" -U "sa" -b -Q "GRANT VIEW SERVER PERFORMANCE STATE TO [testuser]; EXECUTE AS LOGIN = 'testuser'; SELECT connection_id FROM sys.dm_exec_connections WHERE session_id = @@SPID; REVERT;" -C
+      sqlcmd -S "lpc:." -U "sa" -b -Q "GRANT VIEW SERVER PERFORMANCE STATE TO [testuser]; EXECUTE AS LOGIN = 'testuser'; SELECT connection_id FROM sys.dm_exec_connections WHERE session_id = @@SPID; REVERT;" -C
       if ($LASTEXITCODE -ne 0) { throw "Failed to provision the CI test login's DMV-read permission." }
     displayName: 'Setup database and user for SQL Server 2022'
     retryCountOnTaskFailure: 3
@@ -320,7 +320,7 @@ jobs:
       
       Write-Host "Waiting for SQL Server 2025 to start..."
       while (-not $connected -and $attempt -lt $maxAttempts) {
-        sqlcmd -S "localhost" -U "sa" -Q "SELECT 1" -C -b
+        sqlcmd -S "lpc:." -U "sa" -Q "SELECT 1" -C -b
         if ($LASTEXITCODE -eq 0) {
           $connected = $true
           Write-Host "SQL Server is ready!"
@@ -337,7 +337,7 @@ jobs:
       }
       
       # Create database and user
-      sqlcmd -S "localhost" -U "sa" -b -Q "IF DB_ID('TestDB') IS NULL CREATE DATABASE TestDB" -C
+      sqlcmd -S "lpc:." -U "sa" -b -Q "IF DB_ID('TestDB') IS NULL CREATE DATABASE TestDB" -C
       if ($LASTEXITCODE -ne 0) { throw "Failed to provision CI database" }
       $sqlPassword = $env:DB_PASSWORD.Replace("'", "''")
       $sqlPath = Join-Path $env:TEMP ("create-testuser-{0}.sql" -f [guid]::NewGuid())
@@ -348,17 +348,17 @@ jobs:
         icacls $sqlPath /inheritance:r /grant:r "${identity}:(F)" "SYSTEM:(R)" | Out-Null
         if ($LASTEXITCODE -ne 0) { throw "Failed to secure temporary SQL file" }
         [System.IO.File]::WriteAllBytes($sqlPath, $sqlBytes)
-        sqlcmd -S "localhost" -U "sa" -C -i $sqlPath -b -x -f 65001
+        sqlcmd -S "lpc:." -U "sa" -C -i $sqlPath -b -x -f 65001
         if ($LASTEXITCODE -ne 0) { throw "Failed to create the testuser login" }
       } finally {
         Remove-Item $sqlPath -Force -ErrorAction Stop
       }
-      sqlcmd -S "localhost" -U "sa" -d TestDB -b -Q "IF DATABASE_PRINCIPAL_ID('testuser') IS NULL CREATE USER testuser FOR LOGIN testuser" -C
+      sqlcmd -S "lpc:." -U "sa" -d TestDB -b -Q "IF DATABASE_PRINCIPAL_ID('testuser') IS NULL CREATE USER testuser FOR LOGIN testuser" -C
       if ($LASTEXITCODE -ne 0) { throw "Failed to provision CI user" }
-      sqlcmd -S "localhost" -U "sa" -d TestDB -b -Q "IF IS_ROLEMEMBER('db_owner', 'testuser') = 0 ALTER ROLE db_owner ADD MEMBER testuser" -C
+      sqlcmd -S "lpc:." -U "sa" -d TestDB -b -Q "IF IS_ROLEMEMBER('db_owner', 'testuser') = 0 ALTER ROLE db_owner ADD MEMBER testuser" -C
       if ($LASTEXITCODE -ne 0) { throw "Failed to provision CI role membership" }
       # Pool eviction tests observe physical connections from a second session.
-      sqlcmd -S "localhost" -U "sa" -b -Q "GRANT VIEW SERVER PERFORMANCE STATE TO [testuser]; EXECUTE AS LOGIN = 'testuser'; SELECT connection_id FROM sys.dm_exec_connections WHERE session_id = @@SPID; REVERT;" -C
+      sqlcmd -S "lpc:." -U "sa" -b -Q "GRANT VIEW SERVER PERFORMANCE STATE TO [testuser]; EXECUTE AS LOGIN = 'testuser'; SELECT connection_id FROM sys.dm_exec_connections WHERE session_id = @@SPID; REVERT;" -C
       if ($LASTEXITCODE -ne 0) { throw "Failed to provision the CI test login's DMV-read permission." }
     displayName: 'Setup database and user for SQL Server 2025'
     retryCountOnTaskFailure: 3

@@ -18,7 +18,7 @@ if ($Year -eq '2022') {
 # the actual instance/version and login, never consider a service alone ready.
 if (Get-Service MSSQLSERVER -ErrorAction SilentlyContinue) {
     $env:SQLCMDPASSWORD = $env:DB_PASSWORD
-    sqlcmd -S localhost -U sa -C -b -l 5 -Q "IF CAST(SERVERPROPERTY('ProductMajorVersion') AS int) <> $major OR SERVERPROPERTY('EngineEdition') <> 4 THROW 50000, 'Unexpected SQL instance', 1;"
+    sqlcmd -S "lpc:." -U sa -C -b -l 5 -Q "IF CAST(SERVERPROPERTY('ProductMajorVersion') AS int) <> $major OR SERVERPROPERTY('EngineEdition') <> 4 THROW 50000, 'Unexpected SQL instance', 1;"
     if ($LASTEXITCODE -eq 0) { exit 0 }
 }
 
