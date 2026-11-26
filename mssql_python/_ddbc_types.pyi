@@ -268,7 +268,7 @@ def DDBCSQLExecute(
     statementHandle: SqlHandle | None,
     query: str,
     params: list[Any],
-    inputSizes: list[tuple[int, int, int, int]] | None,
+    inputSizes: list[tuple[int, int, int, int] | None] | None,
     isStmtPrepared: list[bool],
     usePrepare: bool,
     encodingSettings: EncodingSettings,

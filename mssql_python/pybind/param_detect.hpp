@@ -363,6 +363,9 @@ inline std::vector<ParamInfo> DetectParamTypes(PyObject* params, PyObject* input
     PyTypeCache::initialize();
 
     const Py_ssize_t n = PyList_GET_SIZE(params);
+    if (inputSizes != Py_None && !PyList_Check(inputSizes)) {
+        throw py::type_error("input_sizes must be a list or None");
+    }
     const Py_ssize_t inputSizeCount = inputSizes == Py_None ? 0 : PyList_GET_SIZE(inputSizes);
     std::vector<ParamInfo> infos(n);
 
@@ -375,12 +378,46 @@ inline std::vector<ParamInfo> DetectParamTypes(PyObject* params, PyObject* input
         info.isDAE = false;
         info.isTVP = false;
 
-        if (i < inputSizeCount) {
-            ApplyInputSizeOverride(params, PyList_GET_ITEM(inputSizes, i), i, info);
+        PyObject* obj = PyList_GET_ITEM(params, i);
+        const bool isJson =
+            PyObject_TypeCheck(obj, reinterpret_cast<PyTypeObject*>(PyTypeCache::get_json_class()));
+        PyObject* inputSize = i < inputSizeCount ? PyList_GET_ITEM(inputSizes, i) : Py_None;
+        if (inputSize != Py_None &&
+            (!PyTuple_Check(inputSize) || PyTuple_GET_SIZE(inputSize) != 4)) {
+            throw py::type_error("Each input size must be a four-item tuple or None");
+        }
+        const bool jsonOverride = inputSize != Py_None &&
+            PyLong_AsLong(PyTuple_GET_ITEM(inputSize, 0)) == SQL_SS_JSON;
+        if (PyErr_Occurred()) throw py::error_already_set();
+        if (isJson || jsonOverride) {
+            if (isJson && inputSize != Py_None && !jsonOverride)
+                throw py::type_error("Json requires SQL_JSON input sizing");
+            if (!isJson && obj != Py_None)
+                throw py::type_error("SQL_JSON requires Json or None");
+            if (isJson) {
+                py::object text = steal(PyObject_GetAttrString(obj, "_text"));
+                if (!text) throw py::error_already_set();
+                if (PyList_SetItem(params, i, text.release().ptr()) != 0)
+                    throw py::error_already_set();
+                obj = PyList_GET_ITEM(params, i);
+            }
+            info.paramSQLType = SQL_SS_JSON;
+            info.paramCType = SQL_C_WCHAR;
+            info.columnSize = 0;
+            if (obj != Py_None) {
+                if (!PyUnicode_Check(obj))
+                    throw py::type_error("Json snapshot must be text");
+                info.utf16Len = UnicodeUtf16Length(obj);
+                info.isDAE = info.utf16Len > MAX_INLINE_CHAR;
+                if (info.isDAE) info.dataPtr = borrow(obj);
+            }
             continue;
         }
 
-        PyObject* obj = PyList_GET_ITEM(params, i);
+        if (inputSize != Py_None) {
+            ApplyInputSizeOverride(params, inputSize, i, info);
+            continue;
+        }
 
         // --- None ---
         if (obj == Py_None) {

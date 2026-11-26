@@ -17896,6 +17896,7 @@ def test_executemany_decimal_numeric_override_coverage(monkeypatch):
     from mssql_python.cursor import Cursor
 
     cur = Cursor.__new__(Cursor)
+    cur.json_output = "text"
     cur._inputsizes = None
     cur._timeout = 0
     cur.closed = False

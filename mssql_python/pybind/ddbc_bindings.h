@@ -55,6 +55,9 @@ using py::literals::operator""_a;
 #define MAX_DIGITS_IN_NUMERIC 64
 #define SQL_MAX_NUMERIC_LEN 16
 #define SQL_SS_XML (-152)
+#ifndef SQL_SS_JSON
+#define SQL_SS_JSON (-157)
+#endif
 #define SQL_SS_UDT (-151)
 #define SQL_SS_VARIANT (-150)
 #define SQL_SS_TABLE (-153)
