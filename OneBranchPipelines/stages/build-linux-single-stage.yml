@@ -388,6 +388,7 @@ stages:
                     cp -r /workspace/eng/conda_tools $TEST_DIR/eng/;
                     cp -r /workspace/conda $TEST_DIR/;
                     cp -r /workspace/OneBranchPipelines/. $TEST_DIR/OneBranchPipelines/;
+                    sh /workspace/eng/scripts/copy-release-perf-fixture.sh /workspace "$TEST_DIR";
                     cp /workspace/eng/versions/mssql-python-rs.version $TEST_DIR/eng/versions/;
                     cp /workspace/OneBranchPipelines/stages/build-linux-single-stage.yml $TEST_DIR/OneBranchPipelines/stages/;
                     cp /workspace/pytest.ini $TEST_DIR/ || echo "WARNING: No pytest.ini";
@@ -475,6 +476,7 @@ stages:
                     cp -r /workspace/eng/conda_tools $TEST_DIR/eng/;
                     cp -r /workspace/conda $TEST_DIR/;
                     cp -r /workspace/OneBranchPipelines/. $TEST_DIR/OneBranchPipelines/;
+                    sh /workspace/eng/scripts/copy-release-perf-fixture.sh /workspace "$TEST_DIR";
                     cp /workspace/eng/versions/mssql-python-rs.version $TEST_DIR/eng/versions/;
                     cp /workspace/OneBranchPipelines/stages/build-linux-single-stage.yml $TEST_DIR/OneBranchPipelines/stages/;
                     cp /workspace/pytest.ini $TEST_DIR/ || echo "WARNING: No pytest.ini";
