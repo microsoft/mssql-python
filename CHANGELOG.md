@@ -13,7 +13,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
   conversion and terminators; a single wider row is still allowed. This is
   not a limit on retained Python results or total process memory. Declared-width
   string buffers and the existing LOB streaming path remain unchanged (#455,
-  partially addressed).
+  partially addressed). Smaller rowsets can increase driver fetch calls; these
+  calls do not necessarily correspond to network round trips.
+- Batch fetch cleanup failures retire the statement and retain native column,
+  indicator, and rows-fetched storage until successful statement release or
+  connection disconnect, including partially rebound batches.
 
 ### Added
 - **AB#50711:** DB-API exceptions now expose optional `native_error` metadata

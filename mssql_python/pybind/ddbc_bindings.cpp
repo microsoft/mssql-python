@@ -1714,20 +1714,25 @@ void DriverLoader::loadDriver() {
     }
 }
 
-FailedParameterBuffers::FailedParameterBuffers(std::vector<std::shared_ptr<void>> buffers)
+FailedBindingBuffers::FailedBindingBuffers(std::vector<std::shared_ptr<void>> buffers)
     : _buffers(std::make_unique<std::vector<std::shared_ptr<void>>>(std::move(buffers))) {}
 
-FailedParameterBuffers::~FailedParameterBuffers() {
+FailedBindingBuffers::~FailedBindingBuffers() {
     if (_buffers) {
         // If even parent teardown failed, the driver may still use these addresses.
         // Abandon native storage to process teardown rather than free bound buffers.
-        std::fputs("mssql-python: retaining parameter storage after failed native teardown\n", stderr);
+        std::fputs("mssql-python: retaining binding storage after failed native teardown\n", stderr);
         _buffers.release();
     }
 }
 
 // SqlHandle definition
 static thread_local StatementOperation* activeStatementOperation = nullptr;
+
+class RetiredStatementError : public std::runtime_error {
+  public:
+    using std::runtime_error::runtime_error;
+};
 
 static void RaiseStatementError(const std::string& state, const std::string& message) {
     py::module_::import("mssql_python.exceptions").attr("raise_exception")(state, message);
@@ -1918,17 +1923,25 @@ std::unique_lock<std::mutex> SqlHandle::lockForCleanup() const {
 }
 
 SQLHANDLE SqlHandle::get() const {
-    return _failedParameterBuffers ? nullptr : _handle;
+    if (_failedBindingBuffers) {
+        throw RetiredStatementError(
+            "Statement is unavailable after failed binding cleanup; close the cursor");
+    }
+    return _handle;
 }
 
 void SqlHandle::retainFailedParameters(std::vector<std::shared_ptr<void>> buffers) {
-    _failedParameterBuffers = std::make_shared<FailedParameterBuffers>(std::move(buffers));
+    retainFailedBindings(std::make_shared<FailedBindingBuffers>(std::move(buffers)));
+}
+
+void SqlHandle::retainFailedBindings(std::shared_ptr<FailedBindingBuffers> buffers) {
+    _failedBindingBuffers = std::move(buffers);
     py::gil_scoped_release release;
     auto cleanupLock = lockForCleanup();
     if (!_handle || _implicitly_freed || (_cleanupState && _cleanupState->disconnected)) {
-        _failedParameterBuffers->release();
+        _failedBindingBuffers->release();
     } else if (_cleanupState) {
-        _cleanupState->failedParameterBuffers.push_back(_failedParameterBuffers);
+        _cleanupState->failedBindingBuffers.push_back(_failedBindingBuffers);
     }
 }
 
@@ -2009,12 +2022,12 @@ SQLRETURN SqlHandle::freeHandle(ErrorInfo* error) {
             paramsBound = false;
             boundParamSignature.clear();
             boundParamBuffers.clear();
-            if (_failedParameterBuffers) _failedParameterBuffers->release();
+            if (_failedBindingBuffers) _failedBindingBuffers->release();
         } else {
             if (_type == SQL_HANDLE_STMT && _cleanupState) {
                 _cleanupState->childFreeFailed = true;
             }
-            // get() hides poisoned statements; cleanup still owns their raw handle.
+            // get() rejects retired statements; cleanup still owns their raw handle.
             if (error) *error = SQLReadError(_type, _handle, ret);
         }
         return ret;
@@ -4915,7 +4928,7 @@ SQLRETURN SQLFetchScroll_wrap(SqlHandlePtr StatementHandle, SQLSMALLINT FetchOri
 
 static size_t CheckedFetchBufferBytes(size_t count, size_t itemSize, size_t terminator = 0) {
     const size_t limit = static_cast<size_t>(std::numeric_limits<SQLLEN>::max());
-    if (count > (limit - terminator) / itemSize)
+    if (itemSize == 0 || terminator > limit || count > (limit - terminator) / itemSize)
         throw std::length_error("Fetch buffer size exceeds supported limits");
     return count * itemSize + terminator;
 }
@@ -5503,13 +5516,26 @@ static size_t BoundRowBufferBytes(const py::list& columnNames, SQLUSMALLINT numC
     return rowSize;
 }
 
+struct FetchBufferState {
+    ColumnBuffers columns;
+    SQLULEN rowsFetched = 0;
+
+    FetchBufferState(SQLSMALLINT numCols, int fetchSize) : columns(numCols, fetchSize) {}
+};
+
 struct FetchStateGuard {
     SqlHandlePtr handle;
     PyObject* messages;  // Borrowed from the enclosing native fetch call.
+    std::shared_ptr<FetchBufferState> storage;
+    std::shared_ptr<FailedBindingBuffers> lifetime;
     int cleanupStep = 0;
+    bool cleanupSucceeded = true;
 
-    FetchStateGuard(SqlHandlePtr handle, py::handle messages)
-        : handle(std::move(handle)), messages(messages.ptr()) {
+    FetchStateGuard(SqlHandlePtr handle, py::handle messages, SQLSMALLINT numCols, int fetchSize)
+        : handle(std::move(handle)), messages(messages.ptr()),
+          storage(std::make_shared<FetchBufferState>(numCols, fetchSize)),
+          lifetime(std::make_shared<FailedBindingBuffers>(
+              std::vector<std::shared_ptr<void>>{storage})) {
         this->handle->fetchColumnsUnbound = false;
     }
 
@@ -5523,9 +5549,10 @@ struct FetchStateGuard {
                                    (SQLPOINTER)(intptr_t)rowArraySize, 0));
     }
 
-    void configure(SQLULEN* numRowsFetched, SQLULEN rowArraySize) const {
+    void configure(SQLULEN rowArraySize) const {
         setRowArraySize(rowArraySize);
-        observe(SQLSetStmtAttr_ptr(handle->get(), SQL_ATTR_ROWS_FETCHED_PTR, numRowsFetched, 0));
+        observe(SQLSetStmtAttr_ptr(handle->get(), SQL_ATTR_ROWS_FETCHED_PTR,
+                                   &storage->rowsFetched, 0));
     }
 
     void close() {
@@ -5544,6 +5571,7 @@ struct FetchStateGuard {
                     handle->fetchColumnsUnbound = SQL_SUCCEEDED(ret);
                     break;
             }
+            cleanupSucceeded = cleanupSucceeded && SQL_SUCCEEDED(ret);
             observe(ret);
         }
     }
@@ -5557,6 +5585,18 @@ struct FetchStateGuard {
                 error.discard_as_unraisable("fetch state cleanup");
             } catch (const std::exception& error) {
                 LOG_ERROR("Fetch state cleanup failed: %s", error.what());
+            }
+        }
+        if (cleanupSucceeded) {
+            lifetime->release();
+        } else {
+            // Register native-only ownership before this guard releases its references.
+            // If registration itself fails, FailedBindingBuffers abandons rather than
+            // destroys storage that the live driver may still reference.
+            try {
+                handle->retainFailedBindings(lifetime);
+            } catch (const std::exception& error) {
+                LOG_ERROR("Failed to retain fetch storage on the connection: %s", error.what());
             }
         }
     }
@@ -5651,10 +5691,9 @@ SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetch
         return ret;
     }
 
-    // Initialized to 0 for LOB path counter; overwritten by ODBC in non-LOB path;
-    SQLULEN numRowsFetched = 0;
     // If we have LOBs → fall back to row-by-row fetch + SQLGetData_wrap
     if (!lobColumns.empty()) {
+        SQLULEN numRowsFetched = 0;
         LOG("FetchMany_wrap: LOB columns detected (%zu columns), using per-row "
             "SQLGetData path",
             lobColumns.size());
@@ -5677,8 +5716,9 @@ SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetch
     }
 
     // Initialize column buffers
-    ColumnBuffers buffers(numCols, fetchSize);
-    FetchStateGuard fetchStateGuard(StatementHandle, messages);
+    FetchStateGuard fetchStateGuard(StatementHandle, messages, numCols, fetchSize);
+    auto& buffers = fetchStateGuard.storage->columns;
+    auto& numRowsFetched = fetchStateGuard.storage->rowsFetched;
 
     // Bind columns
     ret = SQLBindColums(hStmt, buffers, columnNames, numCols, fetchSize, charCtype, messages);
@@ -5687,7 +5727,7 @@ SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetch
         return ret;
     }
 
-    fetchStateGuard.configure(&numRowsFetched, fetchSize);
+    fetchStateGuard.configure(fetchSize);
 
     ret = FetchBatchData(hStmt, buffers, columnNames, rows, numCols, numRowsFetched, lobColumns,
                          charEncoding, charCtype, messages, converters);
@@ -6090,9 +6130,9 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules,
     }
 
     // Initialize column buffers
-    ColumnBuffers buffers(numCols, fetchSize);
-    SQLULEN numRowsFetched = 0;
-    FetchStateGuard fetchStateGuard(StatementHandle, messages);
+    FetchStateGuard fetchStateGuard(StatementHandle, messages, numCols, fetchSize);
+    auto& buffers = fetchStateGuard.storage->columns;
+    auto& numRowsFetched = fetchStateGuard.storage->rowsFetched;
 
     if (!hasLobColumns && fetchSize > 0) {
         ret = SQLBindColums(hStmt, buffers, columnNames, numCols, fetchSize, charCtype, messages);
@@ -6102,7 +6142,7 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules,
         }
     }
 
-    fetchStateGuard.configure(&numRowsFetched, fetchSize);
+    fetchStateGuard.configure(fetchSize);
 
     int idxRowArrow = 0;
 
@@ -6941,9 +6981,9 @@ SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows,
     int fetchSize = std::min(100, maxFetchSize);
     LOG("FetchAll_wrap: Binding %d rows, %zu bytes per row", fetchSize, rowBytes);
 
-    ColumnBuffers buffers(numCols, fetchSize);
-    SQLULEN numRowsFetched = 0;
-    FetchStateGuard fetchStateGuard(StatementHandle, messages);
+    FetchStateGuard fetchStateGuard(StatementHandle, messages, numCols, fetchSize);
+    auto& buffers = fetchStateGuard.storage->columns;
+    auto& numRowsFetched = fetchStateGuard.storage->rowsFetched;
 
     // Bind columns
     ret = SQLBindColums(hStmt, buffers, columnNames, numCols, fetchSize, charCtype, messages);
@@ -6952,7 +6992,7 @@ SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows,
         return ret;
     }
 
-    fetchStateGuard.configure(&numRowsFetched, fetchSize);
+    fetchStateGuard.configure(fetchSize);
 
     while (ret != SQL_NO_DATA) {
         ret = FetchBatchData(hStmt, buffers, columnNames, rows, numCols, numRowsFetched, lobColumns,
@@ -7315,6 +7355,12 @@ PYBIND11_MODULE(ddbc_bindings, m) {
             instance.attr("ddbc_error") = py::str(error.diagnostic.ddbcErrorMsg);
             instance.attr("map_sqlstate") = py::bool_(error.mapSqlState);
             PyErr_SetObject(type.ptr(), instance.ptr());
+        } catch (const RetiredStatementError& error) {
+            try {
+                RaiseStatementError("HY010", error.what());
+            } catch (py::error_already_set& pythonError) {
+                pythonError.restore();
+            }
         }
     });
 
@@ -7420,6 +7466,11 @@ PYBIND11_MODULE(ddbc_bindings, m) {
         .def("request_close", &ArrowReaderState::requestClose);
 
 #ifdef MSSQL_ARROW_TEST_INTERPOSITION
+    m.def("_test_checked_fetch_buffer_bytes", &CheckedFetchBufferBytes);
+    m.def("_test_retained_binding_storage", [](const SqlHandlePtr& handle) {
+        auto storage = handle->bindingStorageForTest();
+        return py::cpp_function([storage] { return !storage.expired(); });
+    });
     py::dict arrowTestPointers;
     arrowTestPointers["SQLFetch_ptr"] = reinterpret_cast<std::uintptr_t>(&SQLFetch_ptr);
     arrowTestPointers["SQLCancel_ptr"] = reinterpret_cast<std::uintptr_t>(&SQLCancel_ptr);

@@ -4,6 +4,7 @@
 """Observe live rowset bindings in isolated processes, including checked metadata."""
 
 import ctypes as ct
+import gc
 import os
 from pathlib import Path
 import subprocess
@@ -20,7 +21,31 @@ _POINTER_NAMES = (
     "SQLFreeStmt_ptr",
     "SQLFetchScroll_ptr",
     "SQLDescribeCol_ptr",
+    "SQLFreeHandle_ptr",
+    "SQLFetch_ptr",
 )
+
+_RETAINED_CASES = (
+    "persistent-unbind-failure",
+    "persistent-rows-fetched-failure",
+    "rowset-reset-failure",
+    "partial-bind-cleanup-failure",
+    "fetchmany-cleanup-failure",
+    "arrow-cleanup-failure",
+    "parent-cleanup-failure",
+)
+
+
+@pytest.mark.parametrize("item_size,terminator", [(0, 0), (1, sys.maxsize + 1)])
+def test_checked_fetch_buffer_preconditions(item_size, terminator):
+    checked_bytes = getattr(ddbc_bindings.module, "_test_checked_fetch_buffer_bytes", None)
+    if checked_bytes is None:
+        if os.getenv("MSSQL_ARROW_TEST_INTERPOSITION", "").upper() in ("1", "ON"):
+            pytest.fail("explicitly requested native sizing controls are missing")
+        pytest.skip("requires MSSQL_ARROW_TEST_INTERPOSITION=1")
+    with pytest.raises(ValueError, match="^Fetch buffer size exceeds supported limits$"):
+        checked_bytes(0, item_size, terminator)
+    assert checked_bytes(0, 1, sys.maxsize) == sys.maxsize
 
 
 @pytest.mark.parametrize(
@@ -41,6 +66,15 @@ _POINTER_NAMES = (
         "growth-failure",
         "unbind-failure",
         "bind-failure",
+        "partial-bind-failure",
+        "persistent-unbind-failure",
+        "persistent-rows-fetched-failure",
+        "rowset-reset-failure",
+        "partial-bind-cleanup-failure",
+        "fetchmany-cleanup-failure",
+        "arrow-cleanup-failure",
+        "parent-cleanup-failure",
+        "repeat-cleanup",
         "lob",
     ],
 )
@@ -48,6 +82,12 @@ def test_fetchall_buffer_contract(conn_str, case):
     if not conn_str:
         pytest.skip("DB_CONNECTION_STRING is required")
     addresses = getattr(ddbc_bindings.module, "_arrow_test_pointer_addresses", {})
+    if (case in _RETAINED_CASES or case == "repeat-cleanup") and not hasattr(
+        ddbc_bindings.module, "_test_retained_binding_storage"
+    ):
+        if os.getenv("MSSQL_ARROW_TEST_INTERPOSITION", "").upper() in ("1", "ON"):
+            pytest.fail("explicitly requested native lifetime controls are missing")
+        pytest.skip("native lifetime checks require MSSQL_ARROW_TEST_INTERPOSITION=1")
     if sys.platform == "win32" and not all(name in addresses for name in _POINTER_NAMES):
         if os.getenv("MSSQL_ARROW_TEST_INTERPOSITION", "").upper() in ("1", "ON"):
             pytest.fail("explicitly requested ODBC pointer controls are missing")
@@ -84,6 +124,9 @@ def _run_case(case):
     fetches = []
     events = []
     current_size = 1
+    statement = None
+    lifetime = None
+    persistent = case in _RETAINED_CASES
     sql_len = ct.c_ssize_t
     sql_ulen = ct.c_size_t
     budget = 8 * 1024 * 1024
@@ -103,18 +146,34 @@ def _run_case(case):
         pointer.value = ct.cast(callback, ct.c_void_p).value
 
     def bind(original, handle, col, ctype, data, length, indicator):
+        nonlocal statement
+        statement = handle
         bindings.append((col, ctype, length))
         events.append("bind")
         if case == "bind-failure" and fetches:
+            return -2
+        if (
+            case in ("partial-bind-failure", "partial-bind-cleanup-failure")
+            and fetches
+            and col == 2
+        ):
             return -2
         return original(handle, col, ctype, data, length, indicator)
 
     def attr(original, handle, attribute, value, length):
         nonlocal current_size
+        if (
+            case in ("persistent-rows-fetched-failure", "arrow-cleanup-failure")
+            and attribute == 26
+            and not value
+        ):
+            return -2  # Leave SQL_ATTR_ROWS_FETCHED_PTR installed.
         if attribute == 27:  # SQL_ATTR_ROW_ARRAY_SIZE
             current_size = value
             rowsets.append(value)
             events.append("rowset")
+            if case == "rowset-reset-failure" and value == 1:
+                return -2
             if case == "growth-failure" and value > 100:
                 # SQL_INVALID_HANDLE has no diagnostic record; it still must surface.
                 return -2
@@ -125,12 +184,30 @@ def _run_case(case):
             events.append("unbind")
             if case == "unbind-failure" and events.count("unbind") == 1:
                 return -2
+            if case in (
+                "persistent-unbind-failure",
+                "fetchmany-cleanup-failure",
+                "parent-cleanup-failure",
+            ):
+                return -2
+            if case == "partial-bind-cleanup-failure" and events.count("unbind") > 1:
+                return -2
         return original(handle, option)
+
+    def free_handle(original, kind, handle):
+        if case == "parent-cleanup-failure" and kind == 3 and handle == statement:
+            events.append("failed-free")
+            return -2
+        return original(kind, handle)
 
     def fetch(original, handle, orientation, offset):
         fetches.append(current_size)
         events.append("fetch")
         return original(handle, orientation, offset)
+
+    def arrow_fetch(original, handle):
+        fetches.append(current_size)
+        return original(handle)
 
     def describe(original, handle, col, name, capacity, actual, dtype, size, scale, nullable):
         result = original(handle, col, name, capacity, actual, dtype, size, scale, nullable)
@@ -213,6 +290,9 @@ def _run_case(case):
                     attr,
                 )
                 install("SQLFreeStmt_ptr", [ct.c_void_p, ct.c_ushort], free)
+                install("SQLFreeHandle_ptr", [ct.c_short, ct.c_void_p], free_handle)
+                if case == "arrow-cleanup-failure":
+                    install("SQLFetch_ptr", [ct.c_void_p], arrow_fetch)
                 install("SQLFetchScroll_ptr", [ct.c_void_p, ct.c_short, sql_len], fetch)
                 install(
                     "SQLDescribeCol_ptr",
@@ -240,10 +320,42 @@ def _run_case(case):
                     assert not bindings
                     assert not fetches
                 elif case.endswith("-failure"):
-                    error = RuntimeError if case == "bind-failure" else ms.Error
-                    with pytest.raises(error):
-                        cursor.fetchall()
-                    assert fetches == [100]
+                    error = (
+                        RuntimeError
+                        if case
+                        in ("bind-failure", "partial-bind-failure", "partial-bind-cleanup-failure")
+                        else ms.Error
+                    )
+                    with pytest.raises(error) as failure:
+                        if case == "fetchmany-cleanup-failure":
+                            cursor.fetchmany(100)
+                        elif case == "arrow-cleanup-failure":
+                            cursor.arrow_batch(64)
+                        else:
+                            cursor.fetchall()
+                    if error is RuntimeError:
+                        assert "Failed to bind column" in str(failure.value)
+                    if case == "arrow-cleanup-failure":
+                        assert fetches == [64]
+                    elif case not in ("persistent-rows-fetched-failure", "rowset-reset-failure"):
+                        assert fetches == [100]
+                    if case in ("partial-bind-failure", "partial-bind-cleanup-failure"):
+                        assert bindings[3][0] == 2
+                    if persistent:
+                        with pytest.raises(ms.ProgrammingError, match="failed binding cleanup"):
+                            ddbc_bindings.DDBCSQLNumResultCols(cursor.hstmt)
+                        with pytest.raises(ms.ProgrammingError, match="failed binding cleanup"):
+                            cursor.fetchone()
+                        lifetime = ddbc_bindings.module._test_retained_binding_storage(cursor.hstmt)
+                        gc.collect()
+                        assert lifetime(), "ODBC still holds pointers into this native storage"
+                    if case == "parent-cleanup-failure":
+                        cursor.close()
+                        gc.collect()
+                        assert "failed-free" in events
+                        assert lifetime(), "failed statement free must retain its bound storage"
+                        connection.close()
+                        assert not lifetime(), "successful disconnect must release the storage"
                 else:
                     rows = cursor.fetchall()
                     assert [tuple(row) for row in rows] == [(i, *expected) for i in range(count)]
@@ -251,6 +363,15 @@ def _run_case(case):
             finally:
                 for name, address in original_addresses.items():
                     pointers[name].value = address
+
+            if persistent:
+                cursor.close()
+                assert not lifetime()
+                if case != "parent-cleanup-failure":
+                    with connection.cursor() as sibling:
+                        sibling.execute("SELECT 42")
+                        assert tuple(sibling.fetchone()) == (42,)
+                return
 
             if not case.startswith("overflow-") and case != "lob" and not case.endswith("-failure"):
                 ncols = len(columns) + 1
@@ -287,4 +408,14 @@ def _run_case(case):
 
 
 if __name__ == "__main__":
-    _run_case(sys.argv[1])
+    if sys.argv[1] == "repeat-cleanup":
+        for _ in range(10):
+            for failure in (
+                "small",
+                "partial-bind-failure",
+                "persistent-unbind-failure",
+                "parent-cleanup-failure",
+            ):
+                _run_case(failure)
+    else:
+        _run_case(sys.argv[1])

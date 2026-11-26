@@ -298,11 +298,17 @@ struct DescribedParamInfo {
     SQLSMALLINT decimalDigits;
 };
 
-class FailedParameterBuffers {
+class FailedBindingBuffers {
   public:
-    explicit FailedParameterBuffers(std::vector<std::shared_ptr<void>> buffers);
-    ~FailedParameterBuffers();
+    explicit FailedBindingBuffers(std::vector<std::shared_ptr<void>> buffers);
+    ~FailedBindingBuffers();
     void release() { _buffers.reset(); }
+#ifdef MSSQL_ARROW_TEST_INTERPOSITION
+    std::weak_ptr<void> firstBufferForTest() const {
+        if (_buffers && !_buffers->empty()) return _buffers->front();
+        return {};
+    }
+#endif
 
   private:
     std::unique_ptr<std::vector<std::shared_ptr<void>>> _buffers;
@@ -329,7 +335,7 @@ struct ParamBindSignature {
 struct ConnectionCleanupState {
     std::mutex mutex;
     bool disconnected = false;  // Protected by mutex, shared with every child.
-    std::vector<std::shared_ptr<FailedParameterBuffers>> failedParameterBuffers;
+    std::vector<std::shared_ptr<FailedBindingBuffers>> failedBindingBuffers;
     // Unlike weak_ptr expiration, this count includes destructors still freeing handles.
     std::atomic<size_t> childStatementCount{0};
     std::atomic<bool> childFreeFailed{false};  // Sticky for this physical connection.
@@ -357,7 +363,14 @@ class SqlHandle {
     void cancel();
     bool isImplicitlyFreed() const { return _implicitly_freed; }
     void retainFailedParameters(std::vector<std::shared_ptr<void>> buffers);
+    void retainFailedBindings(std::shared_ptr<FailedBindingBuffers> buffers);
     bool cleanupFailed() const { return _cleanupState && _cleanupState->childFreeFailed; }
+#ifdef MSSQL_ARROW_TEST_INTERPOSITION
+    std::weak_ptr<void> bindingStorageForTest() const {
+        return _failedBindingBuffers ? _failedBindingBuffers->firstBufferForTest()
+                                     : std::weak_ptr<void>{};
+    }
+#endif
 
     // Mark this handle as implicitly freed (freed by parent handle)
     // This prevents double-free attempts when the ODBC driver automatically
@@ -414,9 +427,9 @@ class SqlHandle {
     SQLHANDLE _handle;
     bool _implicitly_freed = false;  // Tracks if handle was freed by parent
     std::shared_ptr<ConnectionCleanupState> _cleanupState;
-    // Only populated if both parameter reset and handle release fail.
+    // Native parameter or fetch storage left installed after failed cleanup.
     // The connection also retains this native storage if the wrapper is dropped.
-    std::shared_ptr<FailedParameterBuffers> _failedParameterBuffers;
+    std::shared_ptr<FailedBindingBuffers> _failedBindingBuffers;
 };
 using SqlHandlePtr = std::shared_ptr<SqlHandle>;
 
