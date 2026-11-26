@@ -1972,24 +1972,25 @@ jobs:
         echo 'Detected architecture: '\$architecture
         
         # Download the packages
-        curl -O https://download.microsoft.com/download/0b3d5518-b4a7-4a2b-afc7-7ee9e967f93c/msodbcsql18_18.6.2.1-1_\$architecture.apk
-        curl -O https://download.microsoft.com/download/7/6d/76de322a-d860-4894-9945-f0cc5d6a45f8/mssql-tools18_18.4.1.1-1_\$architecture.apk
+        curl -fsSLO https://download.microsoft.com/download/0b3d5518-b4a7-4a2b-afc7-7ee9e967f93c/msodbcsql18_18.6.2.1-1_\$architecture.apk
+        curl -fsSLO https://download.microsoft.com/download/a5dcc5e7-6124-49d3-8df4-48d738a0e784/mssql-tools18_18.7.1.1-1_\$architecture.apk
         
         # Download signatures for verification
-        curl -O https://download.microsoft.com/download/0b3d5518-b4a7-4a2b-afc7-7ee9e967f93c/msodbcsql18_18.6.2.1-1_\$architecture.sig
-        curl -O https://download.microsoft.com/download/7/6d/76de322a-d860-4894-9945-f0cc5d6a45f8/mssql-tools18_18.4.1.1-1_\$architecture.sig
+        curl -fsSLO https://download.microsoft.com/download/0b3d5518-b4a7-4a2b-afc7-7ee9e967f93c/msodbcsql18_18.6.2.1-1_\$architecture.sig
+        curl -fsSLO https://download.microsoft.com/download/a5dcc5e7-6124-49d3-8df4-48d738a0e784/mssql-tools18_18.7.1.1-1_\$architecture.sig
         
         # Import Microsoft GPG key and verify packages
-        curl https://packages.microsoft.com/keys/microsoft.asc | gpg --import -
+        curl -fsSL https://packages.microsoft.com/keys/microsoft.asc -o microsoft.asc
+        gpg --import microsoft.asc
         gpg --verify msodbcsql18_18.6.2.1-1_\$architecture.sig msodbcsql18_18.6.2.1-1_\$architecture.apk
-        gpg --verify mssql-tools18_18.4.1.1-1_\$architecture.sig mssql-tools18_18.4.1.1-1_\$architecture.apk
+        gpg --verify mssql-tools18_18.7.1.1-1_\$architecture.sig mssql-tools18_18.7.1.1-1_\$architecture.apk
         
         # Install the packages
         apk add --allow-untrusted msodbcsql18_18.6.2.1-1_\$architecture.apk
-        apk add --allow-untrusted mssql-tools18_18.4.1.1-1_\$architecture.apk
+        apk add --allow-untrusted mssql-tools18_18.7.1.1-1_\$architecture.apk
         
         # Cleanup
-        rm -f msodbcsql18_18.6.2.1-1_\$architecture.* mssql-tools18_18.4.1.1-1_\$architecture.*
+        rm -f microsoft.asc msodbcsql18_18.6.2.1-1_\$architecture.* mssql-tools18_18.7.1.1-1_\$architecture.*
         
         # Add mssql-tools to PATH
         export PATH=\"\$PATH:/opt/mssql-tools18/bin\"
@@ -2234,24 +2235,25 @@ jobs:
         echo 'Detected architecture: '\$architecture
         
         # Download the packages
-        curl -O https://download.microsoft.com/download/0b3d5518-b4a7-4a2b-afc7-7ee9e967f93c/msodbcsql18_18.6.2.1-1_\$architecture.apk
-        curl -O https://download.microsoft.com/download/7/6d/76de322a-d860-4894-9945-f0cc5d6a45f8/mssql-tools18_18.4.1.1-1_\$architecture.apk
+        curl -fsSLO https://download.microsoft.com/download/0b3d5518-b4a7-4a2b-afc7-7ee9e967f93c/msodbcsql18_18.6.2.1-1_\$architecture.apk
+        curl -fsSLO https://download.microsoft.com/download/a5dcc5e7-6124-49d3-8df4-48d738a0e784/mssql-tools18_18.7.1.1-1_\$architecture.apk
         
         # Download signatures for verification
-        curl -O https://download.microsoft.com/download/0b3d5518-b4a7-4a2b-afc7-7ee9e967f93c/msodbcsql18_18.6.2.1-1_\$architecture.sig
-        curl -O https://download.microsoft.com/download/7/6d/76de322a-d860-4894-9945-f0cc5d6a45f8/mssql-tools18_18.4.1.1-1_\$architecture.sig
+        curl -fsSLO https://download.microsoft.com/download/0b3d5518-b4a7-4a2b-afc7-7ee9e967f93c/msodbcsql18_18.6.2.1-1_\$architecture.sig
+        curl -fsSLO https://download.microsoft.com/download/a5dcc5e7-6124-49d3-8df4-48d738a0e784/mssql-tools18_18.7.1.1-1_\$architecture.sig
         
         # Import Microsoft GPG key and verify packages
-        curl https://packages.microsoft.com/keys/microsoft.asc | gpg --import -
+        curl -fsSL https://packages.microsoft.com/keys/microsoft.asc -o microsoft.asc
+        gpg --import microsoft.asc
         gpg --verify msodbcsql18_18.6.2.1-1_\$architecture.sig msodbcsql18_18.6.2.1-1_\$architecture.apk
-        gpg --verify mssql-tools18_18.4.1.1-1_\$architecture.sig mssql-tools18_18.4.1.1-1_\$architecture.apk
+        gpg --verify mssql-tools18_18.7.1.1-1_\$architecture.sig mssql-tools18_18.7.1.1-1_\$architecture.apk
         
         # Install the packages
         apk add --allow-untrusted msodbcsql18_18.6.2.1-1_\$architecture.apk
-        apk add --allow-untrusted mssql-tools18_18.4.1.1-1_\$architecture.apk
+        apk add --allow-untrusted mssql-tools18_18.7.1.1-1_\$architecture.apk
         
         # Cleanup
-        rm -f msodbcsql18_18.6.2.1-1_\$architecture.* mssql-tools18_18.4.1.1-1_\$architecture.*
+        rm -f microsoft.asc msodbcsql18_18.6.2.1-1_\$architecture.* mssql-tools18_18.7.1.1-1_\$architecture.*
         
         # Add mssql-tools to PATH
         export PATH=\"\$PATH:/opt/mssql-tools18/bin\"
