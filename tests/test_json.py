@@ -8,7 +8,6 @@ import asyncio
 import subprocess
 import sys
 import uuid
-from pathlib import Path
 from dataclasses import FrozenInstanceError
 from datetime import date
 from decimal import Decimal
@@ -270,104 +269,6 @@ def test_json_legacy_varchar_results(conn_str, method, mode):
             value = result[0] if method == "fetchone" else result[0][0]
             assert value == text
             assert type(value) is str
-
-
-@pytest.mark.skipif(
-    sys.platform == "win32", reason="Windows does not export ODBC function-pointer globals"
-)
-@pytest.mark.parametrize("failure", ["probe", "continuation"])
-def test_lob_read_failure_preserves_sqlstate(conn_str, failure):
-    code = (
-        "import runpy, sys; " "runpy.run_path(sys.argv[1])['_check_lob_read_failure'](sys.argv[2])"
-    )
-    result = subprocess.run(
-        [sys.executable, "-c", code, str(Path(__file__).resolve()), failure],
-        env=dict(os.environ, DB_CONNECTION_STRING=conn_str),
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
-    assert result.returncode == 0, (result.stdout, result.stderr)
-
-
-def _check_lob_read_failure(failure):
-    import ctypes as ct
-    from mssql_python import OperationalError, ddbc_bindings
-
-    library = ct.CDLL(ddbc_bindings.module.__file__)
-    data_pointer = ct.c_void_p.in_dll(library, "SQLGetData_ptr")
-    diag_pointer = ct.c_void_p.in_dll(library, "SQLGetDiagRec_ptr")
-    data_type = ct.CFUNCTYPE(
-        ct.c_short,
-        ct.c_void_p,
-        ct.c_ushort,
-        ct.c_short,
-        ct.c_void_p,
-        ct.c_ssize_t,
-        ct.POINTER(ct.c_ssize_t),
-    )
-    diag_type = ct.CFUNCTYPE(
-        ct.c_short,
-        ct.c_short,
-        ct.c_void_p,
-        ct.c_short,
-        ct.c_void_p,
-        ct.POINTER(ct.c_int32),
-        ct.c_void_p,
-        ct.c_short,
-        ct.POINTER(ct.c_short),
-    )
-    calls, callback_errors = [], []
-    failed_handle = None
-    diagnostic = "Injected communication link failure"
-
-    @data_type
-    def get_data(handle, column, ctype, buffer, capacity, indicator):
-        nonlocal failed_handle
-        calls.append(capacity)
-        if (failure == "probe" and capacity == 0) or (
-            failure == "continuation" and len(calls) == 2
-        ):
-            failed_handle = handle
-            return -1
-        return original_data(handle, column, ctype, buffer, capacity, indicator)
-
-    @diag_type
-    def get_diag(kind, handle, record, state, number, message, capacity, length):
-        if failed_handle is None or handle != failed_handle:
-            return original_diag(kind, handle, record, state, number, message, capacity, length)
-        if record != 1:
-            return 100
-        encoded = diagnostic.encode("utf-16-le")
-        if not state or not message or not length or not number or capacity <= len(encoded) // 2:
-            callback_errors.append("Invalid diagnostic buffer")
-            return -1
-        ct.memmove(state, "08S01\0".encode("utf-16-le"), 12)
-        ct.memmove(message, encoded + b"\0\0", len(encoded) + 2)
-        length[0] = len(encoded) // 2
-        number[0] = 0
-        return 0
-
-    with connect(os.environ["DB_CONNECTION_STRING"]) as connection, connection.cursor() as cursor:
-        sql_type = "VARCHAR(MAX)" if failure == "probe" else "NVARCHAR(MAX)"
-        cursor.execute(f"SELECT REPLICATE(CAST('x' AS {sql_type}), 20000) AS doc")
-        saved_data, saved_diag = data_pointer.value, diag_pointer.value
-        assert saved_data and saved_diag
-        original_data, original_diag = data_type(saved_data), diag_type(saved_diag)
-        try:
-            data_pointer.value = ct.cast(get_data, ct.c_void_p).value
-            diag_pointer.value = ct.cast(get_diag, ct.c_void_p).value
-            with pytest.raises(OperationalError) as caught:
-                cursor.fetchone()
-            assert caught.value.sqlstate == "08S01"
-            assert caught.value.native_error == 0
-            assert diagnostic in caught.value.ddbc_error
-            assert "column 1" in caught.value.ddbc_error
-            assert not callback_errors
-            assert len(calls) == (1 if failure == "probe" else 2)
-        finally:
-            data_pointer.value, diag_pointer.value = saved_data, saved_diag
-        assert cursor.execute("SELECT 42").fetchval() == 42
 
 
 @pytest.mark.parametrize("fetch", ["fetchone", "fetchmany", "fetchall", "fetchval", "iteration"])

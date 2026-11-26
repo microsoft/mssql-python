@@ -301,8 +301,9 @@ multi-chunk values on Windows and Linux; macOS remains unqualified. Native JSON
 binding rejected with `HY004` raises `NotSupportedError` with the original
 diagnostic. Other errors retain their normal DB-API classification; the qualified
 preview on SQL Server 2022 rejects native JSON input with `ProgrammingError`
-(`42000`). LOB read failures preserve driver diagnostics/SQLSTATE and never
-return a partial JSON document.
+(`42000`). LOB read failures retain main's existing error handling and never
+return a partial JSON document; some failures raise `RuntimeError` without
+SQLSTATE or native diagnostic metadata.
 
 Run preview success tests with `MSSQL_TEST_NATIVE_JSON=1` only on an explicitly
 provisioned JSON-capable provider/server. Keep preview and shipped-driver CI legs

@@ -150,8 +150,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
   before; users should call `cursor.setinputsizes()` to work around this.
 
 ### Fixed
-- LOB read/probe failures retain ODBC diagnostics and SQLSTATE in public DB-API
-  exceptions. JSON decoding errors identify the failing column without its payload.
+- JSON decoding errors identify the failing column without its payload.
 - Async busy-connection errors retain the public `OperationalError` classification
   with both stable and nightly Rust-core exception representations.
 - **GH-863:** `Cursor.nextset()` now refreshes `Cursor.rowcount` for
