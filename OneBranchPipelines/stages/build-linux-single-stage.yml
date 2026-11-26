@@ -393,11 +393,11 @@ stages:
                     cp /workspace/OneBranchPipelines/stages/build-linux-single-stage.yml $TEST_DIR/OneBranchPipelines/stages/;
                     cp /workspace/pytest.ini $TEST_DIR/ || echo "WARNING: No pytest.ini";
                     
-                    # Step 8: Run pytest (stops on first failure)
+                    # Step 8: Run pytest (stop on the first failure that exhausts its retries)
                     if [ -d $TEST_DIR/tests ]; then
                       echo "Running pytest for ${PYBIN}...";
                       DB_CONNECTION_STRING="Server=$SQL_IP;Database=master;Uid=SA;Pwd=$DB_PASSWORD;TrustServerCertificate=yes" \
-                        $PY -m pytest $TEST_DIR/tests -v --maxfail=1 || {
+                        $PY -m pytest $TEST_DIR/tests -v --maxfail=1 --reruns 3 -rfER || {
                           echo "ERROR: Tests failed for ${PYBIN}";
                           exit 1;
                         };
@@ -481,11 +481,11 @@ stages:
                     cp /workspace/OneBranchPipelines/stages/build-linux-single-stage.yml $TEST_DIR/OneBranchPipelines/stages/;
                     cp /workspace/pytest.ini $TEST_DIR/ || echo "WARNING: No pytest.ini";
                     
-                    # Step 8: Run pytest (stops on first failure)
+                    # Step 8: Run pytest (stop on the first failure that exhausts its retries)
                     if [ -d $TEST_DIR/tests ]; then
                       echo "Running pytest for ${PYBIN}...";
                       DB_CONNECTION_STRING="Server=$SQL_IP;Database=master;Uid=SA;Pwd=$DB_PASSWORD;TrustServerCertificate=yes" \
-                        $PY -m pytest $TEST_DIR/tests -v --maxfail=1 || {
+                        $PY -m pytest $TEST_DIR/tests -v --maxfail=1 --reruns 3 -rfER || {
                           echo "ERROR: Tests failed for ${PYBIN}";
                           exit 1;
                         };

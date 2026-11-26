@@ -35,10 +35,15 @@ parameters:
     type: string
     default: ''
 
+  - name: retryCount
+    type: number
+    default: 0
+
 steps:
 # Windows: run the PowerShell script directly on the host
 - ${{ if eq(parameters.platform, 'windows') }}:
   - task: PowerShell@2
+    retryCountOnTaskFailure: ${{ parameters.retryCount }}
     displayName: 'Install mssql-python-rs${{ parameters.displaySuffix }}'
     inputs:
       targetType: 'filePath'
@@ -50,6 +55,7 @@ steps:
       chmod +x eng/scripts/install-mssql-py-core.sh
       ./eng/scripts/install-mssql-py-core.sh
     displayName: 'Install mssql-python-rs${{ parameters.displaySuffix }}'
+    retryCountOnTaskFailure: ${{ parameters.retryCount }}
 
 # Inside a Docker container
 - ${{ if eq(parameters.platform, 'container') }}:
@@ -60,3 +66,4 @@ steps:
         ./eng/scripts/install-mssql-py-core.sh
       "
     displayName: 'Install mssql-python-rs in ${{ parameters.containerName }}${{ parameters.displaySuffix }}'
+    retryCountOnTaskFailure: ${{ parameters.retryCount }}

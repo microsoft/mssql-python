@@ -2,6 +2,7 @@
 pytest
 pytest-cov
 pytest-asyncio
+pytest-rerunfailures
 PyYAML
 zstandard
 coverage

@@ -9,6 +9,7 @@ pybind11
 pyodbc
 pytest
 pytest-asyncio
+pytest-rerunfailures
 PyYAML
 setuptools
 wheel
