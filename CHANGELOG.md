@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [Unreleased]
 
+### Changed
+- `fetchall()` starts bounded-column fetching with at most 100 rows, growing
+  once after a full batch to at most 1,000 rows. Batch sizing targets 8 MiB
+  of native column data and length/null indicators, accounting for character
+  conversion and terminators; a single wider row is still allowed. This is
+  not a limit on retained Python results or total process memory. Declared-width
+  string buffers and the existing LOB streaming path remain unchanged (#455,
+  partially addressed).
+
 ### Added
 - **AB#50711:** DB-API exceptions now expose optional `native_error` metadata
   alongside `sqlstate` for synchronous ODBC errors. Native numbers come from the

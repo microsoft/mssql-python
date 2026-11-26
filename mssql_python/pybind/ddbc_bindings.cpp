@@ -4913,6 +4913,72 @@ SQLRETURN SQLFetchScroll_wrap(SqlHandlePtr StatementHandle, SQLSMALLINT FetchOri
     return ret;
 }
 
+static size_t CheckedFetchBufferBytes(size_t count, size_t itemSize, size_t terminator = 0) {
+    const size_t limit = static_cast<size_t>(std::numeric_limits<SQLLEN>::max());
+    if (count > (limit - terminator) / itemSize)
+        throw std::length_error("Fetch buffer size exceeds supported limits");
+    return count * itemSize + terminator;
+}
+
+static size_t BoundColumnBufferBytes(SQLSMALLINT dataType, SQLULEN columnSize, int charCtype) {
+    switch (dataType) {
+        case SQL_CHAR:
+        case SQL_VARCHAR:
+        case SQL_LONGVARCHAR:
+            HandleZeroColumnSizeAtFetch(columnSize);
+            if (charCtype == SQL_C_WCHAR)
+                return CheckedFetchBufferBytes(columnSize, sizeof(SQLWCHAR), sizeof(SQLWCHAR));
+#if defined(__APPLE__) || defined(__linux__)
+            return CheckedFetchBufferBytes(columnSize, 4, 1);
+#else
+            return CheckedFetchBufferBytes(columnSize, sizeof(SQLCHAR), sizeof(SQLCHAR));
+#endif
+        case SQL_WCHAR:
+        case SQL_WVARCHAR:
+        case SQL_WLONGVARCHAR:
+            HandleZeroColumnSizeAtFetch(columnSize);
+            return CheckedFetchBufferBytes(columnSize, sizeof(SQLWCHAR), sizeof(SQLWCHAR));
+        case SQL_INTEGER:
+            return sizeof(SQLINTEGER);
+        case SQL_SMALLINT:
+            return sizeof(SQLSMALLINT);
+        case SQL_TINYINT:
+        case SQL_BIT:
+            return sizeof(SQLCHAR);
+        case SQL_REAL:
+            return sizeof(SQLREAL);
+        case SQL_FLOAT:
+        case SQL_DOUBLE:
+            return sizeof(SQLDOUBLE);
+        case SQL_DECIMAL:
+        case SQL_NUMERIC:
+            return MAX_DIGITS_IN_NUMERIC * sizeof(SQLCHAR);
+        case SQL_TIMESTAMP:
+        case SQL_TYPE_TIMESTAMP:
+        case SQL_DATETIME:
+            return sizeof(SQL_TIMESTAMP_STRUCT);
+        case SQL_BIGINT:
+            return sizeof(SQLBIGINT);
+        case SQL_TYPE_DATE:
+            return sizeof(SQL_DATE_STRUCT);
+        case SQL_SS_TIME2:
+            return sizeof(SQL_SS_TIME2_STRUCT);
+        case SQL_GUID:
+            return sizeof(SQLGUID);
+        case SQL_SS_UDT:
+        case SQL_BINARY:
+        case SQL_VARBINARY:
+        case SQL_LONGVARBINARY:
+            HandleZeroColumnSizeAtFetch(columnSize);
+            return CheckedFetchBufferBytes(columnSize, sizeof(SQLCHAR));
+        case SQL_SS_TIMESTAMPOFFSET:
+            return sizeof(DateTimeOffset);
+        default:
+            ThrowStdException("Unsupported bound fetch data type: " + std::to_string(dataType));
+            return 0;
+    }
+}
+
 // For column in the result set, binds a buffer to retrieve column data
 // TODO: Move to anonymous namespace, since it is not used outside this file
 template <typename Metadata>
@@ -4927,31 +4993,25 @@ SQLRETURN SQLBindColums(SQLHSTMT hStmt, ColumnBuffers& buffers, const Metadata& 
         const auto& columnMeta = GetFetchColumnMetadata(columnNames, col - 1);
         SQLSMALLINT dataType = GetFetchColumnType(columnMeta);
         SQLULEN columnSize = GetFetchColumnSize(columnMeta);
+        const size_t bufferBytes = BoundColumnBufferBytes(dataType, columnSize, charCtype);
+        const size_t batchBytes = CheckedFetchBufferBytes(fetchSize, bufferBytes);
 
         switch (dataType) {
             case SQL_CHAR:
             case SQL_VARCHAR:
             case SQL_LONGVARCHAR: {
-                HandleZeroColumnSizeAtFetch(columnSize);
                 if (useWideChar) {
                     // Bind VARCHAR columns as SQL_C_WCHAR so the ODBC driver
                     // returns UTF-16 data, avoiding code-page decode issues.
-                    uint64_t fetchBufferSize = columnSize + 1 /*null-terminator*/;
-                    buffers.wcharBuffers[col - 1].resize(fetchSize * fetchBufferSize);
+                    buffers.wcharBuffers[col - 1].resize(batchBytes / sizeof(SQLWCHAR));
                     ret = SQLBindCol_ptr(
                         hStmt, col, SQL_C_WCHAR, buffers.wcharBuffers[col - 1].data(),
-                        fetchBufferSize * sizeof(SQLWCHAR), buffers.indicators[col - 1].data());
+                        bufferBytes, buffers.indicators[col - 1].data());
                 } else {
-                    // Original narrow-char path
-#if defined(__APPLE__) || defined(__linux__)
-                    uint64_t fetchBufferSize = columnSize * 4 + 1 /*null-terminator*/;
-#else
-                    uint64_t fetchBufferSize = columnSize + 1 /*null-terminator*/;
-#endif
-                    buffers.charBuffers[col - 1].resize(fetchSize * fetchBufferSize);
+                    buffers.charBuffers[col - 1].resize(batchBytes);
                     ret = SQLBindCol_ptr(
                         hStmt, col, SQL_C_CHAR, buffers.charBuffers[col - 1].data(),
-                        fetchBufferSize * sizeof(SQLCHAR), buffers.indicators[col - 1].data());
+                        bufferBytes, buffers.indicators[col - 1].data());
                 }
                 break;
             }
@@ -4960,11 +5020,9 @@ SQLRETURN SQLBindColums(SQLHSTMT hStmt, ColumnBuffers& buffers, const Metadata& 
             case SQL_WLONGVARCHAR: {
                 // TODO: handle variable length data correctly. This logic wont
                 // suffice
-                HandleZeroColumnSizeAtFetch(columnSize);
-                uint64_t fetchBufferSize = columnSize + 1 /*null-terminator*/;
-                buffers.wcharBuffers[col - 1].resize(fetchSize * fetchBufferSize);
+                buffers.wcharBuffers[col - 1].resize(batchBytes / sizeof(SQLWCHAR));
                 ret = SQLBindCol_ptr(hStmt, col, SQL_C_WCHAR, buffers.wcharBuffers[col - 1].data(),
-                                     fetchBufferSize * sizeof(SQLWCHAR),
+                                     bufferBytes,
                                      buffers.indicators[col - 1].data());
                 break;
             }
@@ -4996,7 +5054,7 @@ SQLRETURN SQLBindColums(SQLHSTMT hStmt, ColumnBuffers& buffers, const Metadata& 
                 break;
             case SQL_DECIMAL:
             case SQL_NUMERIC:
-                buffers.charBuffers[col - 1].resize(fetchSize * MAX_DIGITS_IN_NUMERIC);
+                buffers.charBuffers[col - 1].resize(batchBytes);
                 ret = SQLBindCol_ptr(hStmt, col, SQL_C_CHAR, buffers.charBuffers[col - 1].data(),
                                      MAX_DIGITS_IN_NUMERIC * sizeof(SQLCHAR),
                                      buffers.indicators[col - 1].data());
@@ -5045,16 +5103,15 @@ SQLRETURN SQLBindColums(SQLHSTMT hStmt, ColumnBuffers& buffers, const Metadata& 
             case SQL_LONGVARBINARY:
                 // TODO: handle variable length data correctly. This logic wont
                 // suffice
-                HandleZeroColumnSizeAtFetch(columnSize);
-                buffers.charBuffers[col - 1].resize(fetchSize * columnSize);
+                buffers.charBuffers[col - 1].resize(batchBytes);
                 ret = SQLBindCol_ptr(hStmt, col, SQL_C_BINARY, buffers.charBuffers[col - 1].data(),
-                                     columnSize, buffers.indicators[col - 1].data());
+                                     bufferBytes, buffers.indicators[col - 1].data());
                 break;
             case SQL_SS_TIMESTAMPOFFSET:
                 buffers.datetimeoffsetBuffers[col - 1].resize(fetchSize);
                 ret = SQLBindCol_ptr(hStmt, col, SQL_C_SS_TIMESTAMPOFFSET,
                                      buffers.datetimeoffsetBuffers[col - 1].data(),
-                                     sizeof(DateTimeOffset) * fetchSize,
+                                     bufferBytes,
                                      buffers.indicators[col - 1].data());
                 break;
             default:
@@ -5141,27 +5198,15 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, const Metadata&
             HandleZeroColumnSizeAtFetch(columnInfos[col].processedColumnSize);
 
             SQLSMALLINT dt = columnInfos[col].dataType;
-            bool isCharType = (dt == SQL_CHAR || dt == SQL_VARCHAR || dt == SQL_LONGVARCHAR);
-
-            if (isCharType && useWideChar) {
-                // When VARCHAR is bound as SQL_C_WCHAR, buffer size is in SQLWCHAR
-                // units (same as NVARCHAR). +1 for null terminator.
-                columnInfos[col].fetchBufferSize = columnInfos[col].processedColumnSize + 1;
-            } else {
-                // On Linux/macOS, the ODBC driver returns UTF-8 for SQL_C_CHAR where
-                // each character can be up to 4 bytes. Must match SQLBindColums buffer.
-#if defined(__APPLE__) || defined(__linux__)
-                if (isCharType) {
-                    columnInfos[col].fetchBufferSize = columnInfos[col].processedColumnSize * 4 +
-                                                       1;  // *4 for UTF-8, +1 for null terminator
-                } else {
-                    columnInfos[col].fetchBufferSize =
-                        columnInfos[col].processedColumnSize + 1;  // +1 for null terminator
-                }
-#else
+            if (dt == SQL_CHAR || dt == SQL_VARCHAR || dt == SQL_LONGVARCHAR ||
+                dt == SQL_WCHAR || dt == SQL_WVARCHAR || dt == SQL_WLONGVARCHAR) {
+                const bool wide = useWideChar ||
+                    dt == SQL_WCHAR || dt == SQL_WVARCHAR || dt == SQL_WLONGVARCHAR;
                 columnInfos[col].fetchBufferSize =
-                    columnInfos[col].processedColumnSize + 1;  // +1 for null terminator
-#endif
+                    BoundColumnBufferBytes(dt, columnInfos[col].columnSize, charCtype) /
+                    (wide ? sizeof(SQLWCHAR) : sizeof(SQLCHAR));
+            } else {
+                columnInfos[col].fetchBufferSize = columnInfos[col].processedColumnSize + 1;
             }
         }
 
@@ -5443,90 +5488,17 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, const Metadata&
     return ret;
 }
 
-// Given a list of columns that are a part of single row in the result set,
-// calculates the max size of the row
-// TODO: Move to anonymous namespace, since it is not used outside this file
-size_t calculateRowSize(py::list& columnNames, SQLUSMALLINT numCols) {
+static size_t BoundRowBufferBytes(const py::list& columnNames, SQLUSMALLINT numCols,
+                                 int charCtype) {
     size_t rowSize = 0;
-    for (SQLUSMALLINT col = 1; col <= numCols; col++) {
-        auto columnMeta = columnNames[col - 1].cast<py::dict>();
-        SQLSMALLINT dataType = columnMeta["DataType"].cast<SQLSMALLINT>();
-        SQLULEN columnSize = columnMeta["ColumnSize"].cast<SQLULEN>();
-
-        switch (dataType) {
-            case SQL_CHAR:
-            case SQL_VARCHAR:
-            case SQL_LONGVARCHAR:
-                rowSize += columnSize;
-                break;
-            case SQL_SS_XML:
-            case SQL_WCHAR:
-            case SQL_WVARCHAR:
-            case SQL_WLONGVARCHAR:
-                rowSize += columnSize * sizeof(SQLWCHAR);
-                break;
-            case SQL_INTEGER:
-                rowSize += sizeof(SQLINTEGER);
-                break;
-            case SQL_SMALLINT:
-                rowSize += sizeof(SQLSMALLINT);
-                break;
-            case SQL_REAL:
-                rowSize += sizeof(SQLREAL);
-                break;
-            case SQL_FLOAT:
-                rowSize += sizeof(SQLFLOAT);
-                break;
-            case SQL_DOUBLE:
-                rowSize += sizeof(SQLDOUBLE);
-                break;
-            case SQL_DECIMAL:
-            case SQL_NUMERIC:
-                rowSize += MAX_DIGITS_IN_NUMERIC;
-                break;
-            case SQL_TIMESTAMP:
-            case SQL_TYPE_TIMESTAMP:
-            case SQL_DATETIME:
-                rowSize += sizeof(SQL_TIMESTAMP_STRUCT);
-                break;
-            case SQL_BIGINT:
-                rowSize += sizeof(SQLBIGINT);
-                break;
-            case SQL_TYPE_DATE:
-                rowSize += sizeof(SQL_DATE_STRUCT);
-                break;
-            case SQL_SS_TIME2:
-                rowSize += sizeof(SQL_SS_TIME2_STRUCT);
-                break;
-            case SQL_GUID:
-                rowSize += sizeof(SQLGUID);
-                break;
-            case SQL_TINYINT:
-            case SQL_BIT:
-                rowSize += sizeof(SQLCHAR);
-                break;
-            case SQL_SS_UDT:
-                rowSize += (static_cast<SQLLEN>(columnSize) == SQL_NO_TOTAL || columnSize == 0)
-                               ? SQL_MAX_LOB_SIZE
-                               : columnSize;
-                break;
-            case SQL_BINARY:
-            case SQL_VARBINARY:
-            case SQL_LONGVARBINARY:
-                rowSize += columnSize;
-                break;
-            case SQL_SS_TIMESTAMPOFFSET:
-                rowSize += sizeof(DateTimeOffset);
-                break;
-            default:
-                std::string columnName = columnMeta["ColumnName"].cast<std::string>();
-                std::ostringstream errorString;
-                errorString << "Unsupported data type for column - " << columnName.c_str()
-                            << ", Type - " << dataType << ", column ID - " << col;
-                LOG("calculateRowSize: %s", errorString.str().c_str());
-                ThrowStdException(errorString.str());
-                break;
-        }
+    const size_t limit = static_cast<size_t>(std::numeric_limits<SQLLEN>::max());
+    for (SQLUSMALLINT col = 0; col < numCols; ++col) {
+        const auto columnMeta = GetFetchColumnMetadata(columnNames, col);
+        const size_t bytes = BoundColumnBufferBytes(
+            GetFetchColumnType(columnMeta), GetFetchColumnSize(columnMeta), charCtype);
+        if (bytes > limit - sizeof(SQLLEN) || rowSize > limit - bytes - sizeof(SQLLEN))
+            throw std::length_error("Fetch row buffer size exceeds supported limits");
+        rowSize += bytes + sizeof(SQLLEN);
     }
     return rowSize;
 }
@@ -6960,46 +6932,14 @@ SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows,
         return SQL_SUCCESS;
     }
 
-    // No LOBs detected - use binding path with batch fetching
-    // Define a memory limit (1 GB)
-    const size_t memoryLimit = 1ULL * 1024 * 1024 * 1024;
-    size_t totalRowSize = calculateRowSize(columnNames, numCols);
-
-    // Calculate fetch size based on the total row size and memory limit
-    size_t numRowsInMemLimit;
-    if (totalRowSize > 0) {
-        numRowsInMemLimit = static_cast<size_t>(memoryLimit / totalRowSize);
-    } else {
-        // Handle case where totalRowSize is 0 to avoid division by zero.
-        // This can happen for NVARCHAR(MAX) cols. SQLDescribeCol returns 0
-        // for column size of such columns.
-        // TODO: Find why NVARCHAR(MAX) returns columnsize 0
-        // TODO: What if a row has 2 cols, an int & NVARCHAR(MAX)?
-        //       totalRowSize will be 4+0 = 4. It wont take NVARCHAR(MAX)
-        //       into account. So, we will end up fetching 1000 rows at a time.
-        numRowsInMemLimit = 1;  // fetchsize will be 10
-    }
-    // TODO: Revisit this logic. Eventhough we're fetching fetchSize rows at a
-    // time, fetchall will keep all rows in memory anyway. So what are we
-    // gaining by fetching fetchSize rows at a time? Also, say the table has
-    // only 10 rows, each row size if 100 bytes. Here, we'll have fetchSize =
-    // 1000, so we'll allocate memory for 1000 rows inside SQLBindCol_wrap,
-    // while actually only need to retrieve 10 rows
-    int fetchSize;
-    if (numRowsInMemLimit == 0) {
-        // If the row size is larger than the memory limit, fetch one row at a
-        // time
-        fetchSize = 1;
-    } else if (numRowsInMemLimit > 0 && numRowsInMemLimit <= 100) {
-        // If between 1-100 rows fit in memoryLimit, fetch 10 rows at a time
-        fetchSize = 10;
-    } else if (numRowsInMemLimit > 100 && numRowsInMemLimit <= 1000) {
-        // If between 100-1000 rows fit in memoryLimit, fetch 100 rows at a time
-        fetchSize = 100;
-    } else {
-        fetchSize = 1000;
-    }
-    LOG("FetchAll_wrap: Fetching data in batch sizes of %d", fetchSize);
+    // Budget bound data and indicators, not retained Python output or allocator overhead.
+    // A valid row wider than the budget must still fit without truncation.
+    constexpr size_t bufferBudget = 8 * 1024 * 1024;
+    const size_t rowBytes = BoundRowBufferBytes(columnNames, numCols, charCtype);
+    const int maxFetchSize = static_cast<int>(
+        std::max<size_t>(1, std::min<size_t>(1000, rowBytes ? bufferBudget / rowBytes : 1)));
+    int fetchSize = std::min(100, maxFetchSize);
+    LOG("FetchAll_wrap: Binding %d rows, %zu bytes per row", fetchSize, rowBytes);
 
     ColumnBuffers buffers(numCols, fetchSize);
     SQLULEN numRowsFetched = 0;
@@ -7021,6 +6961,17 @@ SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows,
         if (!SQL_SUCCEEDED(ret) && ret != SQL_NO_DATA) {
             LOG("FetchAll_wrap: Error when fetching data - SQLRETURN=%d", ret);
             return ret;
+        }
+        if (SQL_SUCCEEDED(ret) && numRowsFetched == static_cast<SQLULEN>(fetchSize) &&
+            fetchSize < maxFetchSize) {
+            // Unbind before releasing any storage still referenced by the driver.
+            fetchStateGuard.observe(SQLFreeStmt_ptr(hStmt, SQL_UNBIND));
+            buffers = ColumnBuffers(numCols, maxFetchSize);
+            fetchSize = maxFetchSize;
+            LOG("FetchAll_wrap: Binding %d rows, %zu bytes per row", fetchSize, rowBytes);
+            ret = SQLBindColums(hStmt, buffers, columnNames, numCols, fetchSize, charCtype, messages);
+            fetchStateGuard.observe(ret);
+            fetchStateGuard.setRowArraySize(fetchSize);
         }
     }
 
@@ -7480,6 +7431,10 @@ PYBIND11_MODULE(ddbc_bindings, m) {
     arrowTestPointers["SQLPutData_ptr"] = reinterpret_cast<std::uintptr_t>(&SQLPutData_ptr);
     arrowTestPointers["SQLGetData_ptr"] = reinterpret_cast<std::uintptr_t>(&SQLGetData_ptr);
     arrowTestPointers["SQLFetchScroll_ptr"] = reinterpret_cast<std::uintptr_t>(&SQLFetchScroll_ptr);
+    arrowTestPointers["SQLBindCol_ptr"] = reinterpret_cast<std::uintptr_t>(&SQLBindCol_ptr);
+    arrowTestPointers["SQLDescribeCol_ptr"] = reinterpret_cast<std::uintptr_t>(&SQLDescribeCol_ptr);
+    arrowTestPointers["SQLSetStmtAttr_ptr"] = reinterpret_cast<std::uintptr_t>(&SQLSetStmtAttr_ptr);
+    arrowTestPointers["SQLFreeStmt_ptr"] = reinterpret_cast<std::uintptr_t>(&SQLFreeStmt_ptr);
     arrowTestPointers["SQLFreeHandle_ptr"] = reinterpret_cast<std::uintptr_t>(&SQLFreeHandle_ptr);
     m.attr("_arrow_test_pointer_addresses") = std::move(arrowTestPointers);
 #endif
