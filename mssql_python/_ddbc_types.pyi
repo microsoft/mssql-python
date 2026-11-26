@@ -41,6 +41,7 @@ __all__ = [
     "ErrorInfo",
     "GetDriverPathCpp",
     "NumericData",
+    "NativeDatabaseError",
     "ParamInfo",
     "SQLExecuteMany",
     "SQL_NO_TOTAL",
@@ -61,6 +62,33 @@ class EncodingSettings(TypedDict):
     ctype: int
 
 def _batch_text_metadata(column: list[Any]) -> tuple[bool, int]: ...
+
+class _QueryAdmission:
+    busy: bool
+    def __init__(self) -> None: ...
+    def reserve(self) -> bool: ...
+    def reserve_for(self, owner: object) -> bool: ...
+    def release_for(self, owner: object) -> None: ...
+
+class _QueryOperationSlot:
+    active: _StatementOperation | None
+    def __init__(self) -> None: ...
+
+class _QueryPolicyCache:
+    def __init__(self) -> None: ...
+
+def _query_policy_eligible(runtime: tuple[object, ...]) -> bool: ...
+def _run_query_operation(
+    receiver: object,
+    method: Callable[..., Any],
+    args: tuple[Any, ...],
+    keywords: dict[str, Any],
+    runtime: tuple[object, ...],
+    fallback: Callable[..., Any],
+    cancellable: bool,
+    connection_operation: bool,
+) -> Any: ...
+def _watch_query_policy(observer: object, dicts: tuple[object, ...]) -> None: ...
 
 class ColumnMetadata(TypedDict):
     ColumnName: str
@@ -87,6 +115,16 @@ class _ArrowReaderState:
     @property
     def closed(self) -> bool: ...
     def request_close(self) -> None: ...
+
+class _StatementOperation:
+    def __init__(self, statement: SqlHandle | None) -> None: ...
+    def bind(self, statement: SqlHandle | None) -> None: ...
+    def cancel(self) -> None: ...
+    def finish(self) -> bool: ...
+    @property
+    def failed(self) -> bool: ...
+    @property
+    def native(self) -> _StatementOperation: ...
 
 class Connection:
     def __init__(
@@ -132,6 +170,13 @@ class NumericData:
 class ErrorInfo:
     sqlState: str
     ddbcErrorMsg: str
+    nativeError: int | None
+
+class NativeDatabaseError(RuntimeError):
+    sqlstate: str | None
+    native_error: int | None
+    ddbc_error: str
+    map_sqlstate: bool
 
 class _RowMappingBase:
     _row: Row

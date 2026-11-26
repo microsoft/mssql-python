@@ -19,6 +19,7 @@ variables:
 jobs:
 - job: SelectRsRuntime
   displayName: 'Select one published Rust nightly for the validation run'
+  timeoutInMinutes: 90
   pool:
     vmImage: 'ubuntu-latest'
   steps:
@@ -78,6 +79,7 @@ jobs:
     displayName: 'Build and run native pool sanitation tests'
 
 - job: CodeQLAnalysis
+  timeoutInMinutes: 90
   dependsOn: SelectRsRuntime
   variables:
     MSSQL_PYTHON_RS_VERSION: $[ dependencies.SelectRsRuntime.outputs['select.version'] ]
@@ -1178,6 +1180,7 @@ jobs:
       testRunTitle: 'Publish pytest results on $(distroName)'
 
 - job: PytestOnLinux_ARM64
+  timeoutInMinutes: 90
   dependsOn: SelectRsRuntime
   variables:
     MSSQL_PYTHON_RS_VERSION: $[ dependencies.SelectRsRuntime.outputs['select.version'] ]
@@ -1424,6 +1427,7 @@ jobs:
       testRunTitle: 'Publish pytest results on $(distroName) ARM64'
 
 - job: PytestOnLinux_RHEL9
+  timeoutInMinutes: 90
   dependsOn: SelectRsRuntime
   variables:
     MSSQL_PYTHON_RS_VERSION: $[ dependencies.SelectRsRuntime.outputs['select.version'] ]
@@ -1629,6 +1633,7 @@ jobs:
       testRunTitle: 'Publish pytest results on RHEL 9'
 
 - job: PytestOnLinux_RHEL9_ARM64
+  timeoutInMinutes: 90
   dependsOn: SelectRsRuntime
   variables:
     MSSQL_PYTHON_RS_VERSION: $[ dependencies.SelectRsRuntime.outputs['select.version'] ]
@@ -1849,6 +1854,7 @@ jobs:
       testRunTitle: 'Publish pytest results on RHEL 9 ARM64'
 
 - job: PytestOnLinux_Alpine
+  timeoutInMinutes: 90
   dependsOn: SelectRsRuntime
   variables:
     MSSQL_PYTHON_RS_VERSION: $[ dependencies.SelectRsRuntime.outputs['select.version'] ]
@@ -2088,6 +2094,7 @@ jobs:
       testRunTitle: 'Publish pytest results on Alpine x86_64'
 
 - job: PytestOnLinux_Alpine_ARM64
+  timeoutInMinutes: 90
   dependsOn: SelectRsRuntime
   variables:
     MSSQL_PYTHON_RS_VERSION: $[ dependencies.SelectRsRuntime.outputs['select.version'] ]
@@ -2559,6 +2566,7 @@ jobs:
 #       testRunTitle: 'Publish pytest results on Ubuntu AzureSQL'
 
 - job: CodeCoverageReport
+  timeoutInMinutes: 90
   dependsOn: SelectRsRuntime
   variables:
     MSSQL_PYTHON_RS_VERSION: $[ dependencies.SelectRsRuntime.outputs['select.version'] ]

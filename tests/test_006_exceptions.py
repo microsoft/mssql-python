@@ -34,15 +34,22 @@ EXCEPTION_CLASSES = (
 
 @pytest.mark.parametrize("cls", EXCEPTION_CLASSES)
 @pytest.mark.parametrize("ddbc_error", ["ddbc msg", ""])
-def test_exception_sqlstate_constructor_compatibility(cls, ddbc_error):
+@pytest.mark.parametrize("native_error", [None, 0, 208])
+def test_exception_sqlstate_constructor_compatibility(cls, ddbc_error, native_error):
     original = cls("driver msg", ddbc_error)
     keyword = cls(driver_error="driver msg", ddbc_error=ddbc_error)
-    diagnostic = cls("driver msg", ddbc_error, sqlstate="42000")
+    diagnostic = cls("driver msg", ddbc_error, sqlstate="42000", native_error=native_error)
+    native_only = cls("driver msg", ddbc_error, native_error=native_error)
 
     assert original.sqlstate is None
     assert keyword.sqlstate is None
     assert diagnostic.sqlstate == "42000"
-    for error in (keyword, diagnostic):
+    assert original.native_error is None
+    assert keyword.native_error is None
+    assert diagnostic.native_error == native_error
+    assert native_only.sqlstate is None
+    assert native_only.native_error == native_error
+    for error in (keyword, diagnostic, native_only):
         assert error.driver_error == original.driver_error
         assert error.ddbc_error == original.ddbc_error
         assert error.message == original.message
@@ -158,12 +165,17 @@ def test_unknown_error_exception():
     "sqlstate, expected_type",
     [("42000", ProgrammingError), ("99999", DatabaseError), ("", DatabaseError)],
 )
-def test_check_error_preserves_diagnostic_sqlstate(monkeypatch, sqlstate, expected_type):
+@pytest.mark.parametrize("native_error", [None, 0, 208])
+def test_check_error_preserves_diagnostic_sqlstate(
+    monkeypatch, sqlstate, expected_type, native_error
+):
     from types import SimpleNamespace
     from unittest.mock import Mock
     from mssql_python import helpers
 
-    diagnostic = SimpleNamespace(sqlState=sqlstate, ddbcErrorMsg="diagnostic message")
+    diagnostic = SimpleNamespace(
+        sqlState=sqlstate, ddbcErrorMsg="diagnostic message", nativeError=native_error
+    )
     read_error = Mock(return_value=diagnostic)
     monkeypatch.setattr(helpers.ddbc_bindings, "DDBCSQLCheckError", read_error)
     handle = object()
@@ -173,6 +185,7 @@ def test_check_error_preserves_diagnostic_sqlstate(monkeypatch, sqlstate, expect
 
     assert type(caught.value) is expected_type
     assert caught.value.sqlstate == (sqlstate or None)
+    assert caught.value.native_error == native_error
     assert caught.value.ddbc_error == "diagnostic message"
     read_error.assert_called_once_with(3, handle, -1)
 
@@ -189,6 +202,257 @@ def test_table_not_found_error(cursor):
         cursor.execute("SELECT * FROM non_existent_table")
     assert "Base table or view not found" in str(excinfo.value)
     assert excinfo.value.sqlstate == "42S02"
+    assert excinfo.value.native_error == 208
+
+
+@pytest.mark.parametrize("ret", [-1, -2])
+def test_native_missing_diagnostics(ret):
+    from mssql_python import ddbc_bindings, helpers
+
+    diagnostic = ddbc_bindings.DDBCSQLCheckError(3, None, ret)
+    assert diagnostic.sqlState == ""
+    assert diagnostic.nativeError is None
+    with pytest.raises(DatabaseError) as caught:
+        helpers.check_error(3, None, ret)
+    assert caught.value.sqlstate is None
+    assert caught.value.native_error is None
+
+
+@pytest.mark.parametrize(
+    "sql,native_error",
+    [("SELECT 1 / 0", 8134), ("THROW 50001, 'native diagnostic test', 1", 50001)],
+)
+def test_cursor_native_server_numbers(cursor, sql, native_error):
+    with pytest.raises(DatabaseError) as caught:
+        cursor.execute(sql)
+        cursor.fetchall()
+    assert caught.value.sqlstate is not None
+    assert caught.value.native_error == native_error
+
+
+def test_connection_native_error_survives_failed_login_cleanup(conn_str):
+    from mssql_python.connection_string_parser import _ConnectionStringParser
+    from mssql_python.connection import _raise_connection_error
+    from mssql_python import ddbc_bindings
+
+    parser = _ConnectionStringParser()
+    params = parser._parse(conn_str)
+    params["database"] = "mssql_python_native_error_missing_database"
+    from mssql_python.connection_string_builder import _ConnectionStringBuilder
+
+    failed_login = _ConnectionStringBuilder(params).build()
+    with pytest.raises(ddbc_bindings.NativeDatabaseError) as native:
+        ddbc_bindings.Connection(failed_login, False)
+    assert isinstance(native.value, RuntimeError)
+    assert (native.value.sqlstate, native.value.native_error) in (
+        ("28000", 18456),
+        ("42000", 4060),
+    )
+    with pytest.raises(Error) as legacy:
+        _raise_connection_error(RuntimeError(str(native.value)))
+    with pytest.raises(type(legacy.value)) as mapped:
+        _raise_connection_error(native.value)
+    assert mapped.value.sqlstate == native.value.sqlstate
+    assert mapped.value.native_error == native.value.native_error
+    assert mapped.value.args == legacy.value.args
+    assert mapped.value.ddbc_error == truncate_error_message(native.value.ddbc_error)
+    with pytest.raises(type(mapped.value)) as public:
+        connect(failed_login)
+    assert public.value.sqlstate == mapped.value.sqlstate
+    assert public.value.native_error == mapped.value.native_error
+    assert public.value.args == mapped.value.args
+
+
+def test_connection_attribute_error_metadata(conn_str):
+    from mssql_python import SQL_ATTR_CURRENT_CATALOG
+
+    with connect(conn_str) as connection:
+        with pytest.raises(ProgrammingError) as caught:
+            connection.set_attr(
+                SQL_ATTR_CURRENT_CATALOG, "mssql_python_native_error_missing_database"
+            )
+        assert type(caught.value) is ProgrammingError
+        assert caught.value.sqlstate is not None and len(caught.value.sqlstate) == 5
+        assert caught.value.native_error == 911
+        assert caught.value.ddbc_error == "Failed to set connection attribute 109"
+
+        with pytest.raises(ProgrammingError) as local:
+            connection.set_attr(SQL_ATTR_CURRENT_CATALOG, "\ud800")
+        assert local.value.sqlstate is None
+        assert local.value.native_error is None
+        assert local.value.args == caught.value.args
+
+
+def test_native_preconnect_attribute_failure_retains_zero(conn_str):
+    from mssql_python import ddbc_bindings
+    from mssql_python.connection import _raise_connection_error, _sqlstate_from_runtime_error
+
+    with pytest.raises(ddbc_bindings.NativeDatabaseError) as native:
+        ddbc_bindings.Connection(conn_str, False, {108: 987654321})
+    assert native.value.sqlstate is not None and len(native.value.sqlstate) == 5
+    assert native.value.native_error == 0
+    assert native.value.map_sqlstate is False
+    assert _sqlstate_from_runtime_error(native.value) is None
+    with pytest.raises(OperationalError) as caught:
+        _raise_connection_error(native.value)
+    assert caught.value.ddbc_error == "Failed to set attribute 108 before connect"
+    assert caught.value.sqlstate == native.value.sqlstate
+    assert caught.value.native_error == 0
+
+
+def test_native_preconnect_attribute_conversion_has_no_diagnostics(conn_str):
+    from mssql_python import SQL_ATTR_CURRENT_CATALOG, ddbc_bindings
+    from mssql_python.connection import _raise_connection_error
+
+    with pytest.raises(ddbc_bindings.NativeDatabaseError) as native:
+        ddbc_bindings.Connection(conn_str, False, {SQL_ATTR_CURRENT_CATALOG: "\ud800"})
+    assert native.value.sqlstate is None
+    assert native.value.native_error is None
+    with pytest.raises(OperationalError) as caught:
+        _raise_connection_error(native.value)
+    assert caught.value.sqlstate is None
+    assert caught.value.native_error is None
+    assert caught.value.ddbc_error == "Failed to set attribute 109 before connect"
+
+
+@pytest.mark.parametrize(
+    "sqlstate,expected_type",
+    [("42000", ProgrammingError), ("99999", DatabaseError), (None, OperationalError)],
+)
+@pytest.mark.parametrize("native_error", [None, 0, 50001])
+def test_structured_connection_diagnostic_mapping(sqlstate, expected_type, native_error):
+    from mssql_python import ddbc_bindings
+    from mssql_python.connection import _raise_connection_error, _sqlstate_from_runtime_error
+
+    native = ddbc_bindings.NativeDatabaseError("Not a serialized SQLSTATE message")
+    native.sqlstate = sqlstate
+    native.native_error = native_error
+    native.ddbc_error = "diagnostic message"
+    native.map_sqlstate = True
+    with pytest.raises(expected_type) as caught:
+        _raise_connection_error(native)
+    assert type(caught.value) is expected_type
+    assert caught.value.sqlstate == sqlstate
+    assert caught.value.native_error == native_error
+    assert caught.value.ddbc_error == "diagnostic message"
+    assert _sqlstate_from_runtime_error(native) == sqlstate
+
+
+def test_structured_connection_generic_fallback_preserves_class_and_retry_behavior():
+    from mssql_python import ddbc_bindings
+    from mssql_python.connection import _raise_connection_error, _sqlstate_from_runtime_error
+
+    native = ddbc_bindings.NativeDatabaseError("Failed to set attribute 123 before connect")
+    native.sqlstate = "42000"
+    native.native_error = 0
+    native.ddbc_error = "underlying diagnostic"
+    native.map_sqlstate = False
+    with pytest.raises(OperationalError) as legacy:
+        _raise_connection_error(RuntimeError(str(native)))
+    with pytest.raises(OperationalError) as caught:
+        _raise_connection_error(native)
+    assert type(caught.value) is type(legacy.value)
+    assert caught.value.args == legacy.value.args
+    assert caught.value.sqlstate == "42000"
+    assert caught.value.native_error == 0
+    assert _sqlstate_from_runtime_error(native) is None
+
+
+@pytest.mark.parametrize("outcome", ["zero", "unmapped", "missing"])
+def test_native_diagnostic_record_transport(outcome):
+    """Replace the diagnostic pointer only in an isolated subprocess."""
+    import subprocess
+    import sys
+    from pathlib import Path
+    from test_004_cursor_arrow import _require_arrow_interposition
+
+    _require_arrow_interposition()
+    code = "import runpy, sys; runpy.run_path(sys.argv[1])[sys.argv[2]](sys.argv[3])"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            code,
+            str(Path(__file__).resolve()),
+            "_native_diagnostic_record_probe",
+            outcome,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, (result.stdout, result.stderr)
+
+
+def _native_diagnostic_record_probe(outcome):
+    import ctypes
+    import os
+    from mssql_python import ddbc_bindings, helpers
+    from mssql_python.connection import _raise_connection_error
+    from mssql_python.connection_string_parser import _ConnectionStringParser
+    from mssql_python.connection_string_builder import _ConnectionStringBuilder
+
+    callback = ctypes.WINFUNCTYPE if os.name == "nt" else ctypes.CFUNCTYPE
+    diag_type = callback(
+        ctypes.c_short,
+        ctypes.c_short,
+        ctypes.c_void_p,
+        ctypes.c_short,
+        ctypes.POINTER(ctypes.c_ushort),
+        ctypes.POINTER(ctypes.c_int),
+        ctypes.POINTER(ctypes.c_ushort),
+        ctypes.c_short,
+        ctypes.POINTER(ctypes.c_short),
+    )
+    records = []
+    expected_state = "HY000" if outcome == "zero" else "99999"
+    expected_number = 0 if outcome == "zero" else 50001
+
+    @diag_type
+    def diagnostic(handle_type, handle, record, state, number, message, size, length):
+        records.append(record)
+        if outcome == "missing":
+            return 100  # SQL_NO_DATA: output parameters are unavailable.
+        # A different second record must not supply the selected native number.
+        selected_state = expected_state if record == 1 else "42000"
+        number[0] = expected_number if record == 1 else 208
+        for index, char in enumerate(selected_state + "\0"):
+            state[index] = ord(char)
+        text = "diagnostic without a number"
+        for index, char in enumerate(text + "\0"):
+            message[index] = ord(char)
+        length[0] = len(text)
+        return 1  # SQL_SUCCESS_WITH_INFO also supplies valid diagnostic fields.
+
+    connection = ddbc_bindings.Connection(os.environ["DB_CONNECTION_STRING"], False)
+    handle = connection.alloc_statement_handle()
+    slot = ctypes.c_void_p.from_address(
+        ddbc_bindings.module._arrow_test_pointer_addresses["SQLGetDiagRec_ptr"]
+    )
+    original = slot.value
+    params = _ConnectionStringParser()._parse(os.environ["DB_CONNECTION_STRING"])
+    params["database"] = "mssql_python_native_error_missing_database"
+    try:
+        slot.value = ctypes.cast(diagnostic, ctypes.c_void_p).value
+        info = ddbc_bindings.DDBCSQLCheckError(3, handle, -1)
+        assert info.sqlState == ("" if outcome == "missing" else expected_state)
+        assert info.nativeError == (None if outcome == "missing" else expected_number)
+        with pytest.raises(DatabaseError) as cursor_error:
+            helpers.check_error(3, handle, -1)
+        assert cursor_error.value.sqlstate == (None if outcome == "missing" else expected_state)
+        assert cursor_error.value.native_error == info.nativeError
+        with pytest.raises(ddbc_bindings.NativeDatabaseError) as native:
+            ddbc_bindings.Connection(_ConnectionStringBuilder(params).build(), False)
+        expected_type = OperationalError if outcome == "missing" else DatabaseError
+        with pytest.raises(expected_type) as connection_error:
+            _raise_connection_error(native.value)
+        assert connection_error.value.sqlstate == cursor_error.value.sqlstate
+        assert connection_error.value.native_error == cursor_error.value.native_error
+        assert records == [1, 1, 1]
+    finally:
+        slot.value = original
+        handle.free()
+        connection.close()
 
 
 def test_data_truncation_error(cursor, db_connection):
@@ -467,14 +731,14 @@ def test_cursor_cleanup_failure_still_calls_native_close():
     with patch("mssql_python.connection.ddbc_bindings.Connection", return_value=native):
         conn = connect("Server=testserver;Database=mydb;Trusted_Connection=yes;")
     broken = MagicMock(closed=False)
-    broken.close.side_effect = RuntimeError("cursor cleanup failed")
+    broken._close.side_effect = RuntimeError("cursor cleanup failed")
     healthy = MagicMock(closed=False)
     conn._cursors = {broken, healthy}
 
     conn.close()
 
-    broken.close.assert_called_once_with()
-    healthy.close.assert_called_once_with()
+    broken._close.assert_called_once_with()
+    healthy._close.assert_called_once_with()
     native.close.assert_called_once_with(rollback_before_disconnect=True)
     assert conn.closed
     assert conn._conn is None
@@ -664,12 +928,13 @@ def test_truncate_error_message_return_paths():
 
 @pytest.mark.parametrize("cls", EXCEPTION_CLASSES)
 @pytest.mark.parametrize("sqlstate", [None, "42000"])
-def test_exception_pickle_roundtrip(cls, sqlstate):
+@pytest.mark.parametrize("native_error", [None, 0, 208])
+def test_exception_pickle_roundtrip(cls, sqlstate, native_error):
     """All DB-API exception subclasses must survive a pickle round-trip."""
     import pickle
     import copy
 
-    original = cls("driver msg", "ddbc msg", sqlstate=sqlstate)
+    original = cls("driver msg", "ddbc msg", sqlstate=sqlstate, native_error=native_error)
 
     restored = pickle.loads(pickle.dumps(original))
     for result in (restored, copy.copy(original), copy.deepcopy(original)):
@@ -678,24 +943,28 @@ def test_exception_pickle_roundtrip(cls, sqlstate):
         assert result.ddbc_error == original.ddbc_error
         assert result.message == original.message
         assert result.sqlstate == sqlstate
+        assert result.native_error == native_error
         assert str(result) == str(original)
         assert result.args == original.args
 
 
-def test_exception_legacy_pickle_defaults_to_no_sqlstate():
+@pytest.mark.parametrize("state", [None, {"sqlstate": "42000"}])
+def test_exception_legacy_pickle_defaults_to_no_native_error(state):
     import pickle
 
     class LegacyPayload:
         def __reduce__(self):
-            return (
+            payload = (
                 Exception._unpickle,
                 (ProgrammingError, "driver msg", "ddbc msg", "original message"),
             )
+            return payload if state is None else (*payload, state)
 
     restored = pickle.loads(pickle.dumps(LegacyPayload()))
 
     assert type(restored) is ProgrammingError
-    assert restored.sqlstate is None
+    assert restored.sqlstate == (state["sqlstate"] if state else None)
+    assert restored.native_error is None
     assert restored.driver_error == "driver msg"
     assert restored.ddbc_error == "ddbc msg"
     assert restored.message == "original message"
@@ -712,6 +981,7 @@ def test_exception_pickle_does_not_retruncate_diagnostics(monkeypatch):
         "driver msg",
         "[Microsoft][ODBC Driver 18 for SQL Server][SQL Server]query failed",
         sqlstate="42000",
+        native_error=208,
     )
     payload = pickle.dumps(original)
     truncate = Mock(side_effect=AssertionError("Diagnostics must not be truncated again"))
@@ -719,6 +989,7 @@ def test_exception_pickle_does_not_retruncate_diagnostics(monkeypatch):
 
     for result in (pickle.loads(payload), copy.deepcopy(original)):
         assert result.sqlstate == "42000"
+        assert result.native_error == 208
         assert result.ddbc_error == original.ddbc_error
         assert result.args == original.args
     truncate.assert_not_called()

@@ -128,6 +128,54 @@ def _assert_fetchone_counts(observation, *, prepare, native, fallback, sql):
             assert observation["native"].get("ddbc::" + name, 0) == expected, name
 
 
+@pytest.mark.parametrize("retain_request", [False, True])
+def test_native_admission_reuses_only_uncaptured_tokens(connection, retain_request):
+    if ddbc_bindings._fetch_observer is None:
+        pytest.skip("Requires supported CPython watchers")
+    from mssql_python._query_operation import QueryOperation
+
+    calls = {}
+    requests = []
+    with connection.cursor() as cursor:
+
+        def observe(frame, event, argument):
+            if event == "call":
+                code = frame.f_code
+                calls[code] = calls.get(code, 0) + 1
+                if retain_request and code is Row._fast_create.__code__:
+                    if requests:
+                        # The old token must not be reactivated for this row.
+                        requests[0].cancel()
+                    else:
+                        requests.append(cursor._query_slot.active)
+
+        gc.collect()
+        enabled = gc.isenabled()
+        gc.disable()
+        try:
+            warm(cursor, "iterator")
+            previous = sys.getprofile()
+            with _native_fetch_counters() as profiling:
+                sys.setprofile(observe)
+                try:
+                    assert [next(cursor)[0] for _ in range(3)] == [3, 4, 5]
+                finally:
+                    sys.setprofile(previous)
+            assert calls.get(QueryOperation.__init__.__code__, 0) == 0
+            assert calls.get(QueryOperation._end.__code__, 0) == 0
+            assert cursor._query_slot.active is None
+            assert not connection._query_state.busy
+            if profiling is not None:
+                stats = profiling.get_stats()
+                assert stats["ddbc::NativeCursor::fetch"]["calls"] == 3
+                assert stats.get("ddbc::NativeCursor::new_operation", {}).get("calls", 0) == int(
+                    retain_request
+                )
+        finally:
+            if enabled:
+                gc.enable()
+
+
 def test_repeated_negative_fetchone_skips_prepare(connection):
     if ddbc_bindings._fetch_observer is None:
         pytest.skip("Requires supported CPython watchers")
@@ -1599,7 +1647,20 @@ def _redesign_live_plan_cycle():
         assert _redesign_runtime()[6] is ddbc_bindings._native_fetch_context
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="Requires exported SQLFetch pointer")
+def _redesign_fetch_pointer():
+    import ctypes
+
+    addresses = getattr(ddbc_bindings.module, "_arrow_test_pointer_addresses", None)
+    if addresses is not None:
+        return ctypes.c_void_p.from_address(addresses["SQLFetch_ptr"])
+    library = ctypes.CDLL(str(Path(ddbc_bindings.module.__file__).resolve()))
+    return ctypes.c_void_p.in_dll(library, "SQLFetch_ptr")
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32" and not hasattr(ddbc_bindings.module, "_arrow_test_pointer_addresses"),
+    reason="Requires SQLFetch pointer access",
+)
 @pytest.mark.parametrize("mutation", ("dictionary", "delete", "conflict"))
 def test_redesign_reentry_survives_state_replacement(conn_str, mutation):
     _redesign_runtime()
@@ -1626,12 +1687,11 @@ def _redesign_reenter_during_fetch(mutation):
             warm(cursor, "fetchone")
             old = cursor.__dict__
             conflict = object()
-            library = ctypes.CDLL(str(Path(ddbc_bindings.module.__file__).resolve()))
-            pointer = ctypes.c_void_p.in_dll(library, "SQLFetch_ptr")
+            pointer = _redesign_fetch_pointer()
             original = pointer.value
             fetch_type = ctypes.CFUNCTYPE(ctypes.c_short, ctypes.c_void_p)
             fetch = fetch_type(original)
-            calls, nested, errors = [], [], []
+            calls, rejected, errors = [], [], []
 
             @fetch_type
             def intercepted(handle):
@@ -1644,7 +1704,11 @@ def _redesign_reenter_during_fetch(mutation):
                         del cursor._native_fetch_state
                     else:
                         cursor._native_fetch_state = conflict
-                    nested.append(cursor.fetchone()[0])
+                    with pytest.raises(
+                        mssql_python.ProgrammingError, match="operation in progress"
+                    ):
+                        cursor.fetchone()
+                    rejected.append(True)
                     return fetch(handle)
                 except BaseException as error:
                     errors.append(type(error).__name__)
@@ -1658,10 +1722,10 @@ def _redesign_reenter_during_fetch(mutation):
                 pointer.value = original
             assert not errors, errors
             assert len(calls) == 1
-            assert nested == [3]
-            assert row[0] == 4
-            assert cursor.rowcount == 4
-            assert cursor.rownumber == 3
+            assert rejected == [True]
+            assert row[0] == 3
+            assert cursor.rowcount == 3
+            assert cursor.rownumber == 2
             python = observation["python"]
             assert python.get(type(runtime[2]).__call__.__code__, 0) == 0
             assert python.get(runtime[3][0].__code__, 0) == 1
@@ -1673,17 +1737,20 @@ def _redesign_reenter_during_fetch(mutation):
                     ("NativeCursor::fetch", 1),
                     ("NativeCursor::fallback", 1),
                     ("NativeCursor::completion_fallback", 1),
-                    ("FetchSingleRow", 2),
+                    ("FetchSingleRow", 1),
                 ):
                     assert observation["native"].get("ddbc::" + name, 0) == expected
             if mutation == "dictionary":
                 assert old["rowcount"] == 2
             elif mutation == "conflict":
                 assert cursor._native_fetch_state is conflict
-            assert cursor.fetchone()[0] == 5
+            assert cursor.fetchone()[0] == 4
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="Requires exported SQLFetch pointer")
+@pytest.mark.skipif(
+    sys.platform == "win32" and not hasattr(ddbc_bindings.module, "_arrow_test_pointer_addresses"),
+    reason="Requires SQLFetch pointer access",
+)
 def test_redesign_interleaved_calls_can_exit_out_of_order(conn_str):
     _redesign_runtime()
     code = "import runpy, sys; " "runpy.run_path(sys.argv[1])['_redesign_interleave_calls']()"
@@ -1710,14 +1777,13 @@ def _redesign_interleave_calls():
     ):
         warm(left, "fetchone")
         warm(right, "fetchone")
-        library = ctypes.CDLL(str(Path(ddbc_bindings.module.__file__).resolve()))
-        pointer = ctypes.c_void_p.in_dll(library, "SQLFetch_ptr")
+        pointer = _redesign_fetch_pointer()
         original = pointer.value
         fetch_type = ctypes.CFUNCTYPE(ctypes.c_short, ctypes.c_void_p)
         fetch = fetch_type(original)
         entered = {name: threading.Event() for name in ("left", "right")}
         release = {name: threading.Event() for name in entered}
-        calls, results, errors = {}, {}, []
+        calls, results, errors, rejected = {}, {}, [], []
 
         @fetch_type
         def intercepted(handle):
@@ -1729,7 +1795,11 @@ def _redesign_interleave_calls():
                     assert release[name].wait(15), name
                     if name == "right":
                         with _fetchone_window(None) as nested:
-                            assert right.fetchone()[0] == 3
+                            with pytest.raises(
+                                mssql_python.ProgrammingError, match="operation in progress"
+                            ):
+                                right.fetchone()
+                            rejected.append(True)
                         assert nested["python"].get(runtime[3][0].__code__, 0) == 1
                         assert nested["python"].get(type(runtime[2]).__call__.__code__, 0) == 0
                 return fetch(handle)
@@ -1766,10 +1836,11 @@ def _redesign_interleave_calls():
                 b.join(15)
             pointer.value = original
         assert not errors, errors
-        assert results == {"left": 3, "right": 4}
-        assert calls == {"left": 1, "right": 2}
+        assert rejected == [True]
+        assert results == {"left": 3, "right": 3}
+        assert calls == {"left": 1, "right": 1}
         assert left.fetchone()[0] == 4
-        assert right.fetchone()[0] == 5
+        assert right.fetchone()[0] == 4
 
 
 @pytest.mark.parametrize("phase", ("method", "policy", "activation", "rollback"))
@@ -1802,7 +1873,8 @@ class Loader:
                      policy=policy, abort=abort, disable=disable)
 
         def capture(cursor_type, functions):
-            namespace = functions[0].__globals__
+            import inspect
+            namespace = inspect.unwrap(functions[0]).__globals__
             saved.update(cursor_type=cursor_type, functions=functions, namespace=namespace,
                          row_type=namespace["Row"])
             return begin(cursor_type, functions)

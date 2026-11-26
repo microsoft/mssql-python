@@ -740,6 +740,41 @@ def test_arrow_reader_close_before_first_batch_releases_cursor(cursor, monkeypat
 
 
 @pytest.mark.parametrize("started", [False, True])
+def test_arrow_reader_close_retries_after_sibling_operation(cursor, monkeypatch, started):
+    reader = cursor.execute("select n from (values (1), (2)) v(n)").arrow_reader(batch_size=1)
+    if started:
+        assert next(reader).num_rows == 1
+    handle = cursor.hstmt
+    rowcount = cursor.rowcount
+    rownumber = cursor.rownumber
+    close_cursor = type(handle)._close_cursor
+    calls = []
+
+    def observed_close(statement):
+        calls.append(statement)
+        close_cursor(statement)
+
+    monkeypatch.setattr(type(handle), "_close_cursor", observed_close)
+    try:
+        with cursor.connection.cursor() as sibling:
+            with sibling._query_operation():
+                with pytest.raises(mssql_python.ProgrammingError, match="operation in progress"):
+                    reader.close()
+                assert reader.closed and reader._generator is not None
+                assert not calls
+                assert cursor.rowcount == rowcount and cursor.rownumber == rownumber
+        reader.close()
+        reader.close()
+        assert calls == [handle]
+        assert cursor.rowcount == -1 and cursor.rownumber == -1
+        assert not cursor._has_result_set
+        assert reader._generator is None and reader._cursor is None and reader._inner is None
+        assert cursor.execute("select 99").fetchone()[0] == 99
+    finally:
+        reader.close()
+
+
+@pytest.mark.parametrize("started", [False, True])
 @pytest.mark.parametrize("action", ["close", "gc", "read"])
 def test_arrow_reader_does_not_touch_reexecuted_result(cursor, started, action):
     import gc
@@ -1116,7 +1151,7 @@ def _arrow_native_cancel_probe(outcome):
         }.get(outcome, "HY008")
         for index, character in enumerate(text + "\0"):
             state[index] = ord(character)
-        native[0] = 0
+        native[0] = 8115 if text == "22003" else 0
         diagnostic = "injected diagnostic " + text
         length[0] = len(diagnostic)
         if capacity:
@@ -1190,6 +1225,8 @@ def _arrow_native_cancel_probe(outcome):
                 assert len(errors) == 1 and isinstance(errors[0], expected), errors
                 state = "22003" if unrelated_error else "HY008"
                 assert "injected diagnostic " + state in str(errors[0]), errors
+                assert errors[0].sqlstate == state
+                assert errors[0].native_error == (8115 if unrelated_error else 0)
             cursor.execute("select 99")
             assert cursor.fetchone()[0] == 99
 

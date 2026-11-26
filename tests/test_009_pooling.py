@@ -1712,11 +1712,12 @@ def test_native_checked_cleanup_and_discard(conn_str, use_pool):
             def connection_id(connection):
                 statement = connection.alloc_statement_handle()
                 try:
-                    assert ddbc.DDBCSQLExecDirect(
+                    result = ddbc.DDBCSQLExecDirect(
                         statement,
                         "SELECT connection_id FROM sys.dm_exec_connections "
                         "WHERE session_id = @@SPID",
-                    ) in (0, 1)
+                    )
+                    assert result in (0, 1), ddbc.DDBCSQLGetAllDiagRecords(statement)
                     row = []
                     assert ddbc.DDBCSQLFetchOne(statement, row) in (0, 1)
                     assert len(row) == 1
@@ -2137,10 +2138,17 @@ def test_cursor_cyclic_finalizer_with_concurrent_native_disconnect(conn_str, exp
 
                     cleanup_barrier.wait()
                     if explicit_close:
-                        connection.close()
+                        try:
+                            connection.close()
+                        except mssql_python.ProgrammingError as exc:
+                            assert "operation in progress" in str(exc)
+                            assert not connection.closed
+                            assert connection._conn is not None
                     else:
                         native = None
                     collect_barrier.wait()
+                    if explicit_close:
+                        connection.close()
 
                     remaining_cursor = cursor_ref()
                     if remaining_cursor is not None:

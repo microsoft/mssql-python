@@ -151,12 +151,17 @@ The Microsoft **mssql-python** module is designed to be fully compliant with the
  
 By adhering to the DB API 2.0 specification, the mssql-python module ensures compatibility with a wide range of Python applications and frameworks, making it a versatile choice for developers working with Microsoft SQL Server, Azure SQL Database, and Azure SQL Managed Instance.
  
-### Error classification with SQLSTATE
+### Error classification with SQLSTATE and native error numbers
 
-DB-API exceptions expose `sqlstate: str | None`. Synchronous ODBC errors retain
-their diagnostic SQLSTATE, including codes not recognized by the driver's
-exception mapping. When no SQLSTATE is available, the attribute is `None`.
-Python-created errors and async Rust/TDS errors default to `None`.
+DB-API exceptions expose `sqlstate: str | None` and `native_error: int | None`.
+Synchronous ODBC errors retain the SQLSTATE and native number from the same
+selected diagnostic record, including SQLSTATE codes not recognized by the
+driver's exception mapping. `native_error` is returned directly by ODBC, not
+parsed from message text: SQL Server errors commonly provide engine numbers
+(for example, 208 for a missing table), while driver errors can provide 0 or
+provider-specific numbers. A genuine 0 is retained; unavailable metadata is
+`None`. Python-created errors default to `None`. Async Rust/TDS errors do not
+currently provide this metadata and also default to `None`.
 
 ```python
 from mssql_python import Error
@@ -171,10 +176,9 @@ except Error as exc:
 ```
 
 Existing exception types, two-argument constructors, messages, and `args` are
-unchanged. Constructors also accept the optional keyword-only `sqlstate` argument,
-and SQLSTATE metadata survives pickling and copying. A SQLSTATE alone does not
-guarantee that retrying an operation is safe. Native SQL Server error numbers are
-not exposed by this attribute.
+unchanged. Constructors also accept optional keyword-only `sqlstate` and
+`native_error` arguments, and both survive pickling and copying. Neither
+attribute alone guarantees that retrying an operation is safe.
 
 ### Enhanced Pythonic Features
  
@@ -478,6 +482,40 @@ Iterator exceptions, including `KeyboardInterrupt`, cancel/reset the statement
 before releasing its buffers. `executemany()` and `setinputsizes()` overrides
 for statements containing TVPs are not supported. The `mssql-odbc` provider does
 not currently support this ODBC TVP path.
+
+## Cancelling a synchronous query
+
+`cursor.cancel()` requests cancellation of that cursor's active synchronous
+`execute`, `executemany`, `fetchone`, `fetchmany`, `fetchall`, or `nextset` operation.
+It also covers row iteration and `fetchval`. Call it from a different Python
+thread while the worker is blocked in the driver. On cancellation the worker
+raises `OperationalError` with `driver_error == "Operation canceled"`, unless
+a more specific driver or application error has already occurred.
+
+An idle or already-completed call is a no-op and preserves unread results.
+Calling it on a closed cursor or connection raises `ProgrammingError`.
+Cancellation is best effort: the driver/server may finish work before processing
+the request, and there is no fixed time bound. Once a request is accepted, the
+current result is abandoned even if server work completed. The request returns
+before the worker necessarily finishes; **wait for the worker before reusing or
+closing the cursor or connection**. A stale request never targets a later
+operation. Repeated requests for the same operation are harmless.
+
+Cancellation does not roll back a transaction or undo completed statements.
+After the worker finishes, a new execute is supported; resolve any outstanding
+transaction explicitly with `commit()` or `rollback()`. Failed cancellation or
+recovery retires the connection rather than returning uncertain state to the pool.
+Competing operations, cursor/connection close, commit, rollback, and cursor
+creation on the same connection raise `ProgrammingError` while work is active.
+This is a narrow cross-thread cancellation exception, not general thread safety;
+other connection settings must not be changed concurrently.
+
+`cancel()` does not cancel Rust/TDS async queries or bulk copy. An active bulk
+copy, catalog, scroll, or Arrow batch operation raises `NotSupportedError`;
+use the existing Arrow reader's `close()` for reader shutdown. A provider without
+`SQLCancel` also raises `NotSupportedError`. Set a query timeout **before** starting
+work as a separate fallback; changing a timeout or killing a Python thread is not
+a supported way to cancel an already-running query.
 
 ## Still have questions?
  

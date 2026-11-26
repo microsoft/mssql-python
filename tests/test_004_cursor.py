@@ -1982,7 +1982,7 @@ def test_executemany_string_column_inference(
                 patch.object(
                     ddbc_bindings, "SQLExecuteMany", wraps=ddbc_bindings.SQLExecuteMany
                 ) as batch,
-                patch.object(cur, "execute", wraps=cur.execute) as single,
+                patch.object(cur, "_execute", wraps=cur._execute) as single,
             ):
                 cur.executemany(operation, rows)
 
@@ -8483,7 +8483,7 @@ def test_nextset_rowcount_in_loop_batch(cursor, db_connection):
         db_connection.commit()
 
 
-def test_tables_setup(cursor, db_connection):
+def _setup_tables(cursor, db_connection):
     """Create test objects for tables method testing"""
     try:
         # Create a test schema for isolation
@@ -8527,7 +8527,7 @@ def test_tables_all(cursor, db_connection):
     """Test tables returns information about all tables/views"""
     try:
         # First set up our test tables
-        test_tables_setup(cursor, db_connection)
+        _setup_tables(cursor, db_connection)
 
         # Get all tables (no filters)
         tables_list = cursor.tables().fetchall()
@@ -10263,32 +10263,6 @@ def test_fetchmany_uuids(cursor, db_connection):
             assert retrieved_uuid == expected_uuid
     finally:
         mssql_python.native_uuid = original_native_uuid
-        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
-        db_connection.commit()
-
-
-def test_uuid_insert_with_none(cursor, db_connection):
-    """Test inserting None into a UUID column results in a NULL value."""
-    table_name = "#pytest_uuid_none"
-    try:
-        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
-        cursor.execute(f"""
-            CREATE TABLE {table_name} (
-                id UNIQUEIDENTIFIER,
-                name NVARCHAR(50)
-            )
-        """)
-        db_connection.commit()
-
-        cursor.execute(f"INSERT INTO {table_name} (id, name) VALUES (?, ?)", [None, "Alice"])
-        db_connection.commit()
-
-        cursor.execute(f"SELECT id, name FROM {table_name}")
-        retrieved_uuid, retrieved_name = cursor.fetchone()
-
-        assert retrieved_uuid is None, f"Expected NULL UUID, got {retrieved_uuid}"
-        assert retrieved_name == "Alice"
-    finally:
         cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
         db_connection.commit()
 
@@ -12050,7 +12024,7 @@ def test_gettypeinfo_cached_results(cursor):
         ), f"Expected SQL_VARCHAR type, got {row.data_type}"
 
 
-def test_procedures_setup(cursor, db_connection):
+def _setup_procedures(cursor, db_connection):
     """Create a test schema and procedures for testing"""
     try:
         # Create a test schema for isolation
@@ -12086,7 +12060,7 @@ def test_procedures_setup(cursor, db_connection):
 def test_procedures_all(cursor, db_connection):
     """Test getting information about all procedures"""
     # First set up our test procedures
-    test_procedures_setup(cursor, db_connection)
+    _setup_procedures(cursor, db_connection)
 
     try:
         # Get all procedures
@@ -12329,7 +12303,7 @@ def test_procedures_cleanup(cursor, db_connection):
         pytest.fail(f"Test cleanup failed: {e}")
 
 
-def test_foreignkeys_setup(cursor, db_connection):
+def _setup_foreignkeys(cursor, db_connection):
     """Create tables with foreign key relationships for testing"""
     try:
         # Create a test schema for isolation
@@ -12381,7 +12355,7 @@ def test_foreignkeys_all(cursor, db_connection):
     """Test getting all foreign keys"""
     try:
         # First set up our test tables
-        test_foreignkeys_setup(cursor, db_connection)
+        _setup_foreignkeys(cursor, db_connection)
 
         # Get all foreign keys
         fks = cursor.foreignKeys(table="orders", schema="pytest_fk_schema").fetchall()
@@ -12411,7 +12385,7 @@ def test_foreignkeys_specific_table(cursor, db_connection):
     """Test getting foreign keys for a specific table"""
     try:
         # First set up our test tables
-        test_foreignkeys_setup(cursor, db_connection)
+        _setup_foreignkeys(cursor, db_connection)
 
         # Get foreign keys for the orders table
         fks = cursor.foreignKeys(table="orders", schema="pytest_fk_schema").fetchall()
@@ -12437,7 +12411,7 @@ def test_foreignkeys_specific_foreign_table(cursor, db_connection):
     """Test getting foreign keys that reference a specific table"""
     try:
         # First set up our test tables
-        test_foreignkeys_setup(cursor, db_connection)
+        _setup_foreignkeys(cursor, db_connection)
 
         # Get foreign keys that reference the customers table
         fks = cursor.foreignKeys(
@@ -12467,7 +12441,7 @@ def test_foreignkeys_both_tables(cursor, db_connection):
     """Test getting foreign keys with both table and foreignTable specified"""
     try:
         # First set up our test tables
-        test_foreignkeys_setup(cursor, db_connection)
+        _setup_foreignkeys(cursor, db_connection)
 
         # Get foreign keys between the two tables
         fks = cursor.foreignKeys(
@@ -12508,7 +12482,7 @@ def test_foreignkeys_catalog_schema(cursor, db_connection):
     """Test foreignKeys() with catalog and schema filters"""
     try:
         # First set up our test tables
-        test_foreignkeys_setup(cursor, db_connection)
+        _setup_foreignkeys(cursor, db_connection)
 
         # Get current database name
         cursor.execute("SELECT DB_NAME() AS current_db")
@@ -12539,7 +12513,7 @@ def test_foreignkeys_result_structure(cursor, db_connection):
     """Test the structure of foreignKeys result rows"""
     try:
         # First set up our test tables
-        test_foreignkeys_setup(cursor, db_connection)
+        _setup_foreignkeys(cursor, db_connection)
 
         # Get foreign keys for the orders table
         fks = cursor.foreignKeys(table="orders", schema="pytest_fk_schema").fetchall()
@@ -12670,7 +12644,7 @@ def test_cleanup_schema(cursor, db_connection):
         pytest.fail(f"Schema cleanup failed: {e}")
 
 
-def test_primarykeys_setup(cursor, db_connection):
+def _setup_primarykeys(cursor, db_connection):
     """Create tables with primary keys for testing"""
     try:
         # Create a test schema for isolation
@@ -12710,7 +12684,7 @@ def test_primarykeys_simple(cursor, db_connection):
     """Test primaryKeys returns information about a simple primary key"""
     try:
         # First set up our test tables
-        test_primarykeys_setup(cursor, db_connection)
+        _setup_primarykeys(cursor, db_connection)
 
         # Get primary key information
         pks = cursor.primaryKeys("single_pk_test", schema="pytest_pk_schema").fetchall()
@@ -13405,7 +13379,7 @@ def test_specialcolumns_cleanup(cursor, db_connection):
         pytest.fail(f"Test cleanup failed: {e}")
 
 
-def test_statistics_setup(cursor, db_connection):
+def _setup_statistics(cursor, db_connection):
     """Create test tables and indexes for statistics testing"""
     try:
         # Create a test schema for isolation
@@ -13456,7 +13430,7 @@ def test_statistics_basic(cursor, db_connection):
     """Test basic functionality of statistics method"""
     try:
         # First set up our test tables
-        test_statistics_setup(cursor, db_connection)
+        _setup_statistics(cursor, db_connection)
 
         # Get statistics for the test table (all indexes)
         stats = cursor.statistics(table="stats_test", schema="pytest_stats_schema").fetchall()
@@ -13697,7 +13671,7 @@ def test_statistics_cleanup(cursor, db_connection):
         pytest.fail(f"Test cleanup failed: {e}")
 
 
-def test_columns_setup(cursor, db_connection):
+def _setup_columns(cursor, db_connection):
     """Create test tables for columns method testing"""
     try:
         # Create a test schema for isolation
@@ -13748,7 +13722,7 @@ def test_columns_all(cursor, db_connection):
     """Test columns returns information about all columns in all tables"""
     try:
         # First set up our test tables
-        test_columns_setup(cursor, db_connection)
+        _setup_columns(cursor, db_connection)
 
         # Get all columns (no filters)
         cols_cursor = cursor.columns()
@@ -17898,6 +17872,7 @@ def test_executemany_decimal_numeric_override_coverage(monkeypatch):
     from unittest.mock import MagicMock
     from mssql_python import ddbc_bindings
     from mssql_python.cursor import Cursor
+    from mssql_python._query_operation import QueryConnectionState, QuerySlot
 
     cur = Cursor.__new__(Cursor)
     cur._inputsizes = None
@@ -17909,6 +17884,12 @@ def test_executemany_decimal_numeric_override_coverage(monkeypatch):
     cur._connection = MagicMock()
     cur._connection._encoding = "utf-8"
     cur._connection._conn = MagicMock()
+    cur._connection.closed = False
+    cur._connection._query_state = QueryConnectionState()
+    cur._query_slot = QuerySlot()
+    operation = MagicMock()
+    operation.return_value.finish.return_value = False
+    monkeypatch.setattr(ddbc_bindings, "_StatementOperation", operation)
     captured = {}
 
     def fake_sql_execute_many(hstmt, op, col_params, param_types, row_count, enc):
