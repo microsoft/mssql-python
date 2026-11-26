@@ -13,7 +13,6 @@ parameters:
     default: ''
 
 variables:
-  pytestRetryArgs: '--reruns 3 -rfER'
   # QEMU 10.2.3, qualified against the ARM64 GCC startup crash and shutdown tests.
   arm64QemuImage: 'tonistiigi/binfmt@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0'
 
@@ -26,7 +25,6 @@ jobs:
   steps:
   - checkout: self
   - task: UsePythonVersion@0
-    retryCountOnTaskFailure: 3
     inputs:
       versionSpec: '3.12'
       addToPath: true
@@ -34,7 +32,6 @@ jobs:
       python eng/scripts/resolve_pr_rs_runtime.py --output-dir "$(Build.ArtifactStagingDirectory)/rs-runtime"
     name: select
     displayName: 'Resolve nightly or exact override from the Python package index'
-    retryCountOnTaskFailure: 3
     env:
       MSSQL_PYTHON_RS_VERSION: ${{ parameters.rsVersionOverride }}
   - task: PublishPipelineArtifact@1
@@ -61,7 +58,6 @@ jobs:
       versionSpec: '3.13'
       addToPath: true
     displayName: 'Use Python 3.13 for native tests'
-    retryCountOnTaskFailure: 3
 
   - bash: |
       set -euo pipefail
@@ -69,7 +65,6 @@ jobs:
       sudo apt-get install -y build-essential cmake unixodbc-dev
       python -m pip install --no-deps --require-hashes -r eng/requirements-build-linux.txt
     displayName: 'Install native test build dependencies'
-    retryCountOnTaskFailure: 3
 
   - bash: |
       set -euo pipefail
@@ -78,16 +73,10 @@ jobs:
         -DBUILD_NATIVE_POOL_TESTS=ON -DPython3_EXECUTABLE="$(command -v python)"
       cmake --build mssql_python/pybind/build/native-tests \
         --config Release --target pool_sanitation_tests --parallel 2
-    displayName: 'Build native pool sanitation tests'
-    retryCountOnTaskFailure: 3
-
-  - bash: |
-      set -euo pipefail
       ctest --test-dir mssql_python/pybind/build/native-tests \
         -C Release --output-on-failure --no-tests=error \
         --timeout 120 -R '^pool_sanitation$'
-    displayName: 'Run native pool sanitation tests'
-    retryCountOnTaskFailure: 3
+    displayName: 'Build and run native pool sanitation tests'
 
 - job: CodeQLAnalysis
   timeoutInMinutes: 90
@@ -100,43 +89,35 @@ jobs:
 
   steps:
   - script: |
-      set -e
       sudo apt-get update
       sudo apt-get install -y build-essential cmake curl git python3 python3-pip python3-dev python3-venv unixodbc-dev
     displayName: 'Install build dependencies for CodeQL'
-    retryCountOnTaskFailure: 3
 
   - task: UsePythonVersion@0
     inputs:
       versionSpec: '3.13'
       addToPath: true
     displayName: 'Use Python 3.13 for CodeQL'
-    retryCountOnTaskFailure: 3
 
   - script: |
-      set -e
       python -m pip install --upgrade pip
       pip install -r requirements.txt
     displayName: 'Install Python dependencies for CodeQL'
-    retryCountOnTaskFailure: 3
 
   - task: CodeQL3000Init@0
     inputs:
       Enabled: true
     displayName: 'Initialize CodeQL'
-    retryCountOnTaskFailure: 3
 
   # Build the C++ extension for CodeQL analysis
   - script: |
-      set -e
       cd mssql_python/pybind
       chmod +x build.sh
       ./build.sh
     displayName: 'Build C++ extension for CodeQL analysis'
-    retryCountOnTaskFailure: 3
 
   - script: |
-      python -m pytest tests/test_typing.py -m typing -v $(pytestRetryArgs) --junitxml=typing-test-results.xml
+      python -m pytest tests/test_typing.py -m typing -v --junitxml=typing-test-results.xml
     displayName: 'Gate mssql_python source and stub typing'
 
   - task: PublishTestResults@2
@@ -186,32 +167,25 @@ jobs:
       allowUnstable: true
       githubToken: $(GITHUB_TOKEN)
     displayName: 'Use Python $(pythonVersion)'
-    retryCountOnTaskFailure: 3
 
   - script: |
-      python -m pip install --upgrade pip || exit /b 1
+      python -m pip install --upgrade pip
       pip install -r requirements.txt
     displayName: 'Install dependencies'
-    retryCountOnTaskFailure: 3
 
   # Start LocalDB instance (for LocalDB matrix)
   - powershell: |
-      if ((sqllocaldb info) -notcontains "MSSQLLocalDB") {
-        sqllocaldb create MSSQLLocalDB
-        if ($LASTEXITCODE -ne 0) { throw "Failed to create LocalDB instance" }
-      }
+      sqllocaldb create MSSQLLocalDB
       sqllocaldb start MSSQLLocalDB
     displayName: 'Start LocalDB instance'
-    retryCountOnTaskFailure: 3
     condition: eq(variables['sqlVersion'], 'LocalDB')
 
   # Create database and user for LocalDB
   - powershell: |
-      sqlcmd -S "(localdb)\MSSQLLocalDB" -b -Q "IF DB_ID('TestDB') IS NULL CREATE DATABASE TestDB"
-      if ($LASTEXITCODE -ne 0) { throw "Failed to provision CI database" }
+      sqlcmd -S "(localdb)\MSSQLLocalDB" -Q "CREATE DATABASE TestDB"
       $sqlPassword = $env:DB_PASSWORD.Replace("'", "''")
       $sqlPath = Join-Path $env:TEMP ("create-testuser-{0}.sql" -f [guid]::NewGuid())
-      $sqlBytes = (New-Object System.Text.UTF8Encoding($false)).GetBytes("IF SUSER_ID('testuser') IS NULL CREATE LOGIN testuser WITH PASSWORD = '$sqlPassword'`n")
+      $sqlBytes = (New-Object System.Text.UTF8Encoding($false)).GetBytes("CREATE LOGIN testuser WITH PASSWORD = '$sqlPassword'`n")
       [System.IO.File]::Create($sqlPath).Dispose()
       try {
         $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
@@ -223,24 +197,66 @@ jobs:
       } finally {
         Remove-Item $sqlPath -Force -ErrorAction Stop
       }
-      sqlcmd -S "(localdb)\MSSQLLocalDB" -d TestDB -b -Q "IF DATABASE_PRINCIPAL_ID('testuser') IS NULL CREATE USER testuser FOR LOGIN testuser"
-      if ($LASTEXITCODE -ne 0) { throw "Failed to provision CI user" }
-      sqlcmd -S "(localdb)\MSSQLLocalDB" -d TestDB -b -Q "IF IS_ROLEMEMBER('db_owner', 'testuser') = 0 ALTER ROLE db_owner ADD MEMBER testuser"
-      if ($LASTEXITCODE -ne 0) { throw "Failed to provision CI role membership" }
+      sqlcmd -S "(localdb)\MSSQLLocalDB" -d TestDB -Q "CREATE USER testuser FOR LOGIN testuser"
+      sqlcmd -S "(localdb)\MSSQLLocalDB" -d TestDB -Q "ALTER ROLE db_owner ADD MEMBER testuser"
       # The Arrow live-fetch probe observes the blocked reader from the lock owner's session.
       sqlcmd -S "(localdb)\MSSQLLocalDB" -b -Q "GRANT VIEW SERVER STATE TO [testuser]; IF CAST(SERVERPROPERTY('ProductMajorVersion') AS int) >= 16 EXEC('GRANT VIEW SERVER PERFORMANCE STATE TO [testuser]');"
       if ($LASTEXITCODE -ne 0) { throw "Failed to provision the CI test login's DMV-read permission." }
     displayName: 'Setup database and user for LocalDB'
-    retryCountOnTaskFailure: 3
     condition: eq(variables['sqlVersion'], 'LocalDB')
     env:
       DB_PASSWORD: $(DB_PASSWORD)
 
   # Install SQL Server 2022 (for SQL2022 matrix)
   - powershell: |
-      .\eng\scripts\install-pr-sql-express.ps1 -Year 2022
+      Write-Host "Downloading SQL Server 2022 Express..."
+      # Download SQL Server 2022 Express installer
+      $ProgressPreference = 'SilentlyContinue'
+      Invoke-WebRequest -Uri "https://download.microsoft.com/download/e5d37105-aa68-4488-8ed5-b579e3809ea1/SQL2022-SSEI-Expr.exe" -OutFile "SQL2022-SSEI-Expr.exe"
+      
+      Write-Host "Installing SQL Server 2022 Express..."
+      # Install SQL Server 2022 Express with basic features
+      Start-Process -FilePath "SQL2022-SSEI-Expr.exe" -ArgumentList "/Action=Download","/MediaPath=$env:TEMP","/MediaType=Core","/Quiet" -Wait
+      
+      # Find the downloaded setup file
+      $setupFile = Get-ChildItem -Path $env:TEMP -Filter "SQLEXPR_x64_ENU.exe" -Recurse | Select-Object -First 1
+      
+      if ($setupFile) {
+        Write-Host "Extracting SQL Server setup files..."
+        Start-Process -FilePath $setupFile.FullName -ArgumentList "/x:$env:TEMP\SQLSetup","/u" -Wait
+        
+        Write-Host "Running SQL Server setup..."
+        $configPath = Join-Path $env:TEMP ("sql2022-setup-{0}.ini" -f [guid]::NewGuid())
+        $configLines = @(
+          '[OPTIONS]'
+          'QUIET="True"'
+          'ACTION="Install"'
+          'FEATURES=SQLEngine'
+          'INSTANCENAME=MSSQLSERVER'
+          'SQLSVCACCOUNT="NT AUTHORITY\SYSTEM"'
+          'SQLSYSADMINACCOUNTS="BUILTIN\Administrators"'
+          'TCPENABLED="1"'
+          'SECURITYMODE="SQL"'
+          "SAPWD=`"$env:DB_PASSWORD`""
+          'IACCEPTSQLSERVERLICENSETERMS="True"'
+        )
+        [System.IO.File]::Create($configPath).Dispose()
+        try {
+          $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+          icacls $configPath /inheritance:r /grant:r "${identity}:(F)" "SYSTEM:(R)" | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "Failed to secure SQL Server setup configuration" }
+          Set-Content -Path $configPath -Value $configLines -Encoding ASCII
+          Start-Process -FilePath "$env:TEMP\SQLSetup\setup.exe" -ArgumentList "/ConfigurationFile=`"$configPath`"" -Wait
+        } finally {
+          Remove-Item $configPath -Force -ErrorAction Stop
+        }
+      } else {
+        Write-Error "Failed to download SQL Server setup file"
+        exit 1
+      }
+      
+      Write-Host "SQL Server 2022 installation completed"
     displayName: 'Install SQL Server 2022 Express'
-    retryCountOnTaskFailure: 3
     condition: eq(variables['sqlVersion'], 'SQL2022')
     env:
       DB_PASSWORD: $(DB_PASSWORD)
@@ -255,7 +271,7 @@ jobs:
       
       Write-Host "Waiting for SQL Server 2022 to start..."
       while (-not $connected -and $attempt -lt $maxAttempts) {
-        sqlcmd -S "lpc:." -U "sa" -Q "SELECT 1" -C -b
+        sqlcmd -S "localhost" -U "sa" -Q "SELECT 1" -C -b
         if ($LASTEXITCODE -eq 0) {
           $connected = $true
           Write-Host "SQL Server is ready!"
@@ -272,40 +288,81 @@ jobs:
       }
       
       # Create database and user
-      sqlcmd -S "lpc:." -U "sa" -b -Q "IF DB_ID('TestDB') IS NULL CREATE DATABASE TestDB" -C
-      if ($LASTEXITCODE -ne 0) { throw "Failed to provision CI database" }
+      sqlcmd -S "localhost" -U "sa" -Q "CREATE DATABASE TestDB" -C
       $sqlPassword = $env:DB_PASSWORD.Replace("'", "''")
       $sqlPath = Join-Path $env:TEMP ("create-testuser-{0}.sql" -f [guid]::NewGuid())
-      $sqlBytes = (New-Object System.Text.UTF8Encoding($false)).GetBytes("IF SUSER_ID('testuser') IS NULL CREATE LOGIN testuser WITH PASSWORD = '$sqlPassword'`n")
+      $sqlBytes = (New-Object System.Text.UTF8Encoding($false)).GetBytes("CREATE LOGIN testuser WITH PASSWORD = '$sqlPassword'`n")
       [System.IO.File]::Create($sqlPath).Dispose()
       try {
         $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
         icacls $sqlPath /inheritance:r /grant:r "${identity}:(F)" "SYSTEM:(R)" | Out-Null
         if ($LASTEXITCODE -ne 0) { throw "Failed to secure temporary SQL file" }
         [System.IO.File]::WriteAllBytes($sqlPath, $sqlBytes)
-        sqlcmd -S "lpc:." -U "sa" -C -i $sqlPath -b -x -f 65001
+        sqlcmd -S "localhost" -U "sa" -C -i $sqlPath -b -x -f 65001
         if ($LASTEXITCODE -ne 0) { throw "Failed to create the testuser login" }
       } finally {
         Remove-Item $sqlPath -Force -ErrorAction Stop
       }
-      sqlcmd -S "lpc:." -U "sa" -d TestDB -b -Q "IF DATABASE_PRINCIPAL_ID('testuser') IS NULL CREATE USER testuser FOR LOGIN testuser" -C
-      if ($LASTEXITCODE -ne 0) { throw "Failed to provision CI user" }
-      sqlcmd -S "lpc:." -U "sa" -d TestDB -b -Q "IF IS_ROLEMEMBER('db_owner', 'testuser') = 0 ALTER ROLE db_owner ADD MEMBER testuser" -C
-      if ($LASTEXITCODE -ne 0) { throw "Failed to provision CI role membership" }
+      sqlcmd -S "localhost" -U "sa" -d TestDB -Q "CREATE USER testuser FOR LOGIN testuser" -C
+      sqlcmd -S "localhost" -U "sa" -d TestDB -Q "ALTER ROLE db_owner ADD MEMBER testuser" -C
       # Pool eviction tests observe physical connections from a second session.
-      sqlcmd -S "lpc:." -U "sa" -b -Q "GRANT VIEW SERVER PERFORMANCE STATE TO [testuser]; EXECUTE AS LOGIN = 'testuser'; SELECT connection_id FROM sys.dm_exec_connections WHERE session_id = @@SPID; REVERT;" -C
+      sqlcmd -S "localhost" -U "sa" -b -Q "GRANT VIEW SERVER PERFORMANCE STATE TO [testuser]; EXECUTE AS LOGIN = 'testuser'; SELECT connection_id FROM sys.dm_exec_connections WHERE session_id = @@SPID; REVERT;" -C
       if ($LASTEXITCODE -ne 0) { throw "Failed to provision the CI test login's DMV-read permission." }
     displayName: 'Setup database and user for SQL Server 2022'
-    retryCountOnTaskFailure: 3
     condition: eq(variables['sqlVersion'], 'SQL2022')
     env:
       DB_PASSWORD: $(DB_PASSWORD)
 
   # Install SQL Server 2025 (for SQL2025 matrix)
   - powershell: |
-      .\eng\scripts\install-pr-sql-express.ps1 -Year 2025
+      Write-Host "Downloading SQL Server 2025 Express..."
+      # Download SQL Server 2025 Express installer
+      $ProgressPreference = 'SilentlyContinue'
+      Invoke-WebRequest -Uri "https://go.microsoft.com/fwlink/p/?linkid=2216019&clcid=0x409&culture=en-us&country=us" -OutFile "SQL2025-SSEI-Expr.exe"
+      
+      Write-Host "Installing SQL Server 2025 Express..."
+      # Install SQL Server 2025 Express with basic features
+      Start-Process -FilePath "SQL2025-SSEI-Expr.exe" -ArgumentList "/Action=Download","/MediaPath=$env:TEMP","/MediaType=Core","/Quiet" -Wait
+      
+      # Find the downloaded setup file
+      $setupFile = Get-ChildItem -Path $env:TEMP -Filter "SQLEXPR_x64_ENU.exe" -Recurse | Select-Object -First 1
+      
+      if ($setupFile) {
+        Write-Host "Extracting SQL Server setup files..."
+        Start-Process -FilePath $setupFile.FullName -ArgumentList "/x:$env:TEMP\SQL2025Setup","/u" -Wait
+        
+        Write-Host "Running SQL Server setup..."
+        $configPath = Join-Path $env:TEMP ("sql2025-setup-{0}.ini" -f [guid]::NewGuid())
+        $configLines = @(
+          '[OPTIONS]'
+          'QUIET="True"'
+          'ACTION="Install"'
+          'FEATURES=SQLEngine'
+          'INSTANCENAME=MSSQLSERVER'
+          'SQLSVCACCOUNT="NT AUTHORITY\SYSTEM"'
+          'SQLSYSADMINACCOUNTS="BUILTIN\Administrators"'
+          'TCPENABLED="1"'
+          'SECURITYMODE="SQL"'
+          "SAPWD=`"$env:DB_PASSWORD`""
+          'IACCEPTSQLSERVERLICENSETERMS="True"'
+        )
+        [System.IO.File]::Create($configPath).Dispose()
+        try {
+          $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+          icacls $configPath /inheritance:r /grant:r "${identity}:(F)" "SYSTEM:(R)" | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "Failed to secure SQL Server setup configuration" }
+          Set-Content -Path $configPath -Value $configLines -Encoding ASCII
+          Start-Process -FilePath "$env:TEMP\SQL2025Setup\setup.exe" -ArgumentList "/ConfigurationFile=`"$configPath`"" -Wait
+        } finally {
+          Remove-Item $configPath -Force -ErrorAction Stop
+        }
+      } else {
+        Write-Error "Failed to download SQL Server setup file"
+        exit 1
+      }
+      
+      Write-Host "SQL Server 2025 installation completed"
     displayName: 'Install SQL Server 2025 Express'
-    retryCountOnTaskFailure: 3
     condition: eq(variables['sqlVersion'], 'SQL2025')
     env:
       DB_PASSWORD: $(DB_PASSWORD)
@@ -320,7 +377,7 @@ jobs:
       
       Write-Host "Waiting for SQL Server 2025 to start..."
       while (-not $connected -and $attempt -lt $maxAttempts) {
-        sqlcmd -S "lpc:." -U "sa" -Q "SELECT 1" -C -b
+        sqlcmd -S "localhost" -U "sa" -Q "SELECT 1" -C -b
         if ($LASTEXITCODE -eq 0) {
           $connected = $true
           Write-Host "SQL Server is ready!"
@@ -337,31 +394,27 @@ jobs:
       }
       
       # Create database and user
-      sqlcmd -S "lpc:." -U "sa" -b -Q "IF DB_ID('TestDB') IS NULL CREATE DATABASE TestDB" -C
-      if ($LASTEXITCODE -ne 0) { throw "Failed to provision CI database" }
+      sqlcmd -S "localhost" -U "sa" -Q "CREATE DATABASE TestDB" -C
       $sqlPassword = $env:DB_PASSWORD.Replace("'", "''")
       $sqlPath = Join-Path $env:TEMP ("create-testuser-{0}.sql" -f [guid]::NewGuid())
-      $sqlBytes = (New-Object System.Text.UTF8Encoding($false)).GetBytes("IF SUSER_ID('testuser') IS NULL CREATE LOGIN testuser WITH PASSWORD = '$sqlPassword'`n")
+      $sqlBytes = (New-Object System.Text.UTF8Encoding($false)).GetBytes("CREATE LOGIN testuser WITH PASSWORD = '$sqlPassword'`n")
       [System.IO.File]::Create($sqlPath).Dispose()
       try {
         $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
         icacls $sqlPath /inheritance:r /grant:r "${identity}:(F)" "SYSTEM:(R)" | Out-Null
         if ($LASTEXITCODE -ne 0) { throw "Failed to secure temporary SQL file" }
         [System.IO.File]::WriteAllBytes($sqlPath, $sqlBytes)
-        sqlcmd -S "lpc:." -U "sa" -C -i $sqlPath -b -x -f 65001
+        sqlcmd -S "localhost" -U "sa" -C -i $sqlPath -b -x -f 65001
         if ($LASTEXITCODE -ne 0) { throw "Failed to create the testuser login" }
       } finally {
         Remove-Item $sqlPath -Force -ErrorAction Stop
       }
-      sqlcmd -S "lpc:." -U "sa" -d TestDB -b -Q "IF DATABASE_PRINCIPAL_ID('testuser') IS NULL CREATE USER testuser FOR LOGIN testuser" -C
-      if ($LASTEXITCODE -ne 0) { throw "Failed to provision CI user" }
-      sqlcmd -S "lpc:." -U "sa" -d TestDB -b -Q "IF IS_ROLEMEMBER('db_owner', 'testuser') = 0 ALTER ROLE db_owner ADD MEMBER testuser" -C
-      if ($LASTEXITCODE -ne 0) { throw "Failed to provision CI role membership" }
+      sqlcmd -S "localhost" -U "sa" -d TestDB -Q "CREATE USER testuser FOR LOGIN testuser" -C
+      sqlcmd -S "localhost" -U "sa" -d TestDB -Q "ALTER ROLE db_owner ADD MEMBER testuser" -C
       # Pool eviction tests observe physical connections from a second session.
-      sqlcmd -S "lpc:." -U "sa" -b -Q "GRANT VIEW SERVER PERFORMANCE STATE TO [testuser]; EXECUTE AS LOGIN = 'testuser'; SELECT connection_id FROM sys.dm_exec_connections WHERE session_id = @@SPID; REVERT;" -C
+      sqlcmd -S "localhost" -U "sa" -b -Q "GRANT VIEW SERVER PERFORMANCE STATE TO [testuser]; EXECUTE AS LOGIN = 'testuser'; SELECT connection_id FROM sys.dm_exec_connections WHERE session_id = @@SPID; REVERT;" -C
       if ($LASTEXITCODE -ne 0) { throw "Failed to provision the CI test login's DMV-read permission." }
     displayName: 'Setup database and user for SQL Server 2025'
-    retryCountOnTaskFailure: 3
     condition: eq(variables['sqlVersion'], 'SQL2025')
     env:
       DB_PASSWORD: $(DB_PASSWORD)
@@ -380,7 +433,6 @@ jobs:
       cd mssql_python\pybind
       build.bat x64
     displayName: 'Build .pyd file'
-    retryCountOnTaskFailure: 3
     condition: succeeded()
 
   - script: python -m eng.profiler_benchmarks.controller --check-build on
@@ -389,12 +441,11 @@ jobs:
 
   - template: steps/install-mssql-py-core.yml
     parameters:
-      retryCount: 3
       platform: windows
 
   # Run tests for LocalDB
   - script: |
-      python eng/scripts/mssql_python_rs.py --verify && python -m pytest -v $(pytestRetryArgs) --junitxml=test-results-localdb.xml --cov=. --cov-report=xml:coverage-localdb.xml --capture=tee-sys --cache-clear
+      python eng/scripts/mssql_python_rs.py --verify && python -m pytest -v --junitxml=test-results-localdb.xml --cov=. --cov-report=xml:coverage-localdb.xml --capture=tee-sys --cache-clear
     displayName: 'Run tests with coverage on LocalDB'
     condition: and(succeeded(), eq(variables['sqlVersion'], 'LocalDB'))
     env:
@@ -402,7 +453,7 @@ jobs:
 
   # Run tests for SQL Server 2022
   - script: |
-      python eng/scripts/mssql_python_rs.py --verify && python -m pytest -v $(pytestRetryArgs) --junitxml=test-results-sql2022.xml --cov=. --cov-report=xml:coverage-sql2022.xml --capture=tee-sys --cache-clear
+      python eng/scripts/mssql_python_rs.py --verify && python -m pytest -v --junitxml=test-results-sql2022.xml --cov=. --cov-report=xml:coverage-sql2022.xml --capture=tee-sys --cache-clear
     displayName: 'Run tests with coverage on SQL Server 2022'
     condition: and(succeeded(), eq(variables['sqlVersion'], 'SQL2022'))
     env:
@@ -410,7 +461,7 @@ jobs:
 
   # Run tests for SQL Server 2025
   - script: |
-      python eng/scripts/mssql_python_rs.py --verify && python -m pytest -v $(pytestRetryArgs) --junitxml=test-results-sql2025.xml --cov=. --cov-report=xml:coverage-sql2025.xml --capture=tee-sys --cache-clear
+      python eng/scripts/mssql_python_rs.py --verify && python -m pytest -v --junitxml=test-results-sql2025.xml --cov=. --cov-report=xml:coverage-sql2025.xml --capture=tee-sys --cache-clear
     displayName: 'Run tests with coverage on SQL Server 2025'
     condition: and(succeeded(), eq(variables['sqlVersion'], 'SQL2025'))
     env:
@@ -642,7 +693,6 @@ jobs:
       addToPath: true
       allowUnstable: true
     displayName: 'Use Python $(pythonVersion) on macOS'
-    retryCountOnTaskFailure: 3
 
   - task: Cache@2
     inputs:
@@ -652,7 +702,6 @@ jobs:
         pip | "$(Agent.OS)"
       path: $(PIP_CACHE_DIR)
     displayName: 'Cache pip packages'
-    retryCountOnTaskFailure: 3
 
   - script: |
       # Single serialized Homebrew transaction. brew holds a global lock, so
@@ -665,11 +714,10 @@ jobs:
       brew uninstall cmake --ignore-dependencies || echo "CMake not installed or already removed"
       brew install cmake docker colima
     displayName: 'Install build & container tooling (Homebrew)'
-    retryCountOnTaskFailure: 3
 
   - script: |
       set -e
-      # On each task attempt Colima startup is overlapped with the
+      # Only SQL lifecycle is retried. Colima starts once, overlapped with the
       # unchanged dependency/native build chain. The helper bounds SQL work
       # and redacts output before it reaches this job-private log.
       SQL_LOG="$(Agent.TempDirectory)/sql-setup-$(System.JobId).log"
@@ -719,7 +767,6 @@ jobs:
         exit "$SQL_STATUS"
       fi
     displayName: 'Build + start SQL Server (Colima boot & SQL setup overlapped with build)'
-    retryCountOnTaskFailure: 3
     env:
       DB_PASSWORD: $(DB_PASSWORD)
       MSSQL_SA_PASSWORD: $(DB_PASSWORD)
@@ -727,7 +774,6 @@ jobs:
 
   - template: steps/install-mssql-py-core.yml
     parameters:
-      retryCount: 3
       platform: unix
 
   - script: |
@@ -759,11 +805,10 @@ jobs:
       otool -L mssql_python_odbc/libs/macos/x86_64/lib/libmsodbcsql.18.dylib \
         || echo "  bundled driver not found"
     displayName: 'Uninstall system ODBC Driver before running tests on macOS'
-    retryCountOnTaskFailure: 3
 
   - script: |
       echo "Build successful, running tests now"
-      python eng/scripts/mssql_python_rs.py --verify && python -m pytest -v $(pytestRetryArgs) --junitxml=test-results.xml --cov=. --cov-report=xml --capture=tee-sys --cache-clear
+      python eng/scripts/mssql_python_rs.py --verify && python -m pytest -v --junitxml=test-results.xml --cov=. --cov-report=xml --capture=tee-sys --cache-clear
     displayName: 'Run pytest with coverage'
     env:
       DB_CONNECTION_STRING: 'Server=tcp:127.0.0.1,1433;Database=master;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
@@ -839,24 +884,19 @@ jobs:
 
   - script: |
       # Create a Docker container for testing
-      set -e
-      bash eng/scripts/pr-test-container.sh reset "test-container-$(distroName)"
       docker run -e MSSQL_PYTHON_RS_VERSION -d --name test-container-$(distroName) \
-        --label "com.microsoft.mssql-python.ci-owner=$(Build.BuildId).$(System.JobId)" \
         -v $(Build.SourcesDirectory):/workspace \
         -w /workspace \
         --network bridge \
         $(dockerImage) \
         tail -f /dev/null
     displayName: 'Create $(distroName) container'
-    retryCountOnTaskFailure: 3
 
   - script: |
       python3 eng/scripts/setup_sql_container.py \
         --name "sqlserver-$(distroName)" --owner "$(Build.BuildId).$(System.JobId)" \
         --image "$(sqlServerImage)" --database TestDB
     displayName: 'Start SQL Server container for $(distroName)'
-    retryCountOnTaskFailure: 3
     condition: and(succeeded(), eq(variables['useAzureSQL'], 'false'))
     timeoutInMinutes: 22
     env:
@@ -895,7 +935,6 @@ jobs:
         "
       fi
     displayName: 'Install basic dependencies in $(distroName) container'
-    retryCountOnTaskFailure: 3
 
   - script: |
       # Install ODBC driver in the container
@@ -903,7 +942,6 @@ jobs:
       DRIVER_MAJOR_MINOR=$(echo "$DRIVER_VERSION" | cut -d. -f1,2)
       if [ -z "$DRIVER_MAJOR_MINOR" ]; then echo 'Error: failed to parse mssql_python_odbc.__version__'; exit 1; fi
       docker exec test-container-$(distroName) bash -c "
-        set -e
         export DEBIAN_FRONTEND=noninteractive
         
         # Download the package to configure the Microsoft repo
@@ -929,12 +967,10 @@ jobs:
         apt-get install -y unixodbc-dev
       "
     displayName: 'Install ODBC Driver in $(distroName) container'
-    retryCountOnTaskFailure: 3
 
   - script: |
       # Install Python dependencies in the container using virtual environment
       docker exec test-container-$(distroName) bash -c "
-        set -e
         # Create a virtual environment
         python3 -m venv /opt/venv
         source /opt/venv/bin/activate
@@ -944,10 +980,9 @@ jobs:
         python -m pip install -r requirements.txt
         
         # Make the virtual environment globally available
-        grep -Fxq 'source /opt/venv/bin/activate' ~/.bashrc 2>/dev/null || echo 'source /opt/venv/bin/activate' >> ~/.bashrc
+        echo 'source /opt/venv/bin/activate' >> ~/.bashrc
       "
     displayName: 'Install Python dependencies in $(distroName) container'
-    retryCountOnTaskFailure: 3
 
   - script: |
       set -e
@@ -966,7 +1001,6 @@ jobs:
       "
       if [ "$PROFILER_BUILD" = "1" ]; then
         docker exec test-container-$(distroName) bash -c "
-        set -e
           set -e
           source /opt/venv/bin/activate
           cd /workspace
@@ -974,11 +1008,9 @@ jobs:
         "
       fi
     displayName: 'Build pybind bindings (.so) in $(distroName) container'
-    retryCountOnTaskFailure: 3
 
   - template: steps/install-mssql-py-core.yml
     parameters:
-      retryCount: 3
       platform: container
       containerName: test-container-$(distroName)
       venvActivate: 'source /opt/venv/bin/activate'
@@ -989,7 +1021,6 @@ jobs:
       DRIVER_MAJOR_MINOR=$(echo "$DRIVER_VERSION" | cut -d. -f1,2)
       if [ -z "$DRIVER_MAJOR_MINOR" ]; then echo 'Error: failed to parse mssql_python_odbc.__version__'; exit 1; fi
       docker exec test-container-$(distroName) bash -c "
-        set -e
         export DEBIAN_FRONTEND=noninteractive
         apt-get remove --purge -y msodbcsql18 mssql-tools18 unixodbc-dev
         rm -f /usr/bin/sqlcmd
@@ -1002,7 +1033,6 @@ jobs:
         ldd mssql_python_odbc/libs/linux/debian_ubuntu/x86_64/lib/libmsodbcsql-${DRIVER_MAJOR_MINOR}.so.2.1
       "
     displayName: 'Uninstall ODBC Driver before running tests in $(distroName) container'
-    retryCountOnTaskFailure: 3
 
   - script: |
       # Run tests in the container
@@ -1016,7 +1046,7 @@ jobs:
           source /opt/venv/bin/activate
           echo 'Build successful, running tests now on $(distroName) with Azure SQL'
           echo 'Using Azure SQL connection string'
-          python eng/scripts/mssql_python_rs.py --verify && python -m pytest -v $(pytestRetryArgs) --junitxml=test-results-$(distroName).xml --cov=. --cov-report=xml:coverage-$(distroName).xml --capture=tee-sys --cache-clear
+          python eng/scripts/mssql_python_rs.py --verify && python -m pytest -v --junitxml=test-results-$(distroName).xml --cov=. --cov-report=xml:coverage-$(distroName).xml --capture=tee-sys --cache-clear
         "
       else
         # Local SQL Server testing
@@ -1031,7 +1061,7 @@ jobs:
           source /opt/venv/bin/activate
           echo 'Build successful, running tests now on $(distroName)'
           echo 'Using connection string: Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=***;TrustServerCertificate=yes'
-          python eng/scripts/mssql_python_rs.py --verify && python -m pytest -v $(pytestRetryArgs) --junitxml=test-results-$(distroName).xml --cov=. --cov-report=xml:coverage-$(distroName).xml --capture=tee-sys --cache-clear
+          python eng/scripts/mssql_python_rs.py --verify && python -m pytest -v --junitxml=test-results-$(distroName).xml --cov=. --cov-report=xml:coverage-$(distroName).xml --capture=tee-sys --cache-clear
         "
       fi
     displayName: 'Run pytest with coverage in $(distroName) container'
@@ -1138,7 +1168,8 @@ jobs:
       DB_PASSWORD: $(DB_PASSWORD)
 
   - script: |
-      bash eng/scripts/pr-test-container.sh cleanup "test-container-$(distroName)"
+      docker stop test-container-$(distroName) || true
+      docker rm test-container-$(distroName) || true
     displayName: 'Clean up $(distroName) containers'
     condition: always()
 
@@ -1184,32 +1215,26 @@ jobs:
         docker run --rm --privileged --platform linux/amd64 "$(arm64QemuImage)" --uninstall qemu-aarch64
       fi
       docker run --rm --privileged --platform linux/amd64 "$(arm64QemuImage)" --install arm64
-      docker buildx use multiarch 2>/dev/null || docker buildx create --name multiarch --driver docker-container --use
+      docker buildx create --name multiarch --driver docker-container --use
       docker buildx inspect --bootstrap
     displayName: 'Setup Docker buildx for ARM64 emulation'
-    retryCountOnTaskFailure: 3
 
   - script: |
       # Create a Docker container for testing on ARM64
-      set -e
-      bash eng/scripts/pr-test-container.sh reset "test-container-$(distroName)-$(archName)"
       docker run -e MSSQL_PYTHON_RS_VERSION -d --name test-container-$(distroName)-$(archName) \
         --platform linux/arm64 \
-        --label "com.microsoft.mssql-python.ci-owner=$(Build.BuildId).$(System.JobId)" \
         -v $(Build.SourcesDirectory):/workspace \
         -w /workspace \
         --network bridge \
         $(dockerImage) \
         tail -f /dev/null
     displayName: 'Create $(distroName) ARM64 container'
-    retryCountOnTaskFailure: 3
 
   - script: |
       python3 eng/scripts/setup_sql_container.py \
         --name "sqlserver-$(distroName)-$(archName)" --owner "$(Build.BuildId).$(System.JobId)" \
         --image "mcr.microsoft.com/mssql/server:2022-latest" --database TestDB
     displayName: 'Start SQL Server container for $(distroName) ARM64'
-    retryCountOnTaskFailure: 3
     timeoutInMinutes: 22
     env:
       DB_PASSWORD: $(DB_PASSWORD)
@@ -1255,7 +1280,6 @@ jobs:
         "
       fi
     displayName: 'Install basic dependencies in $(distroName) ARM64 container'
-    retryCountOnTaskFailure: 3
 
   - script: |
       # Install ODBC driver in the ARM64 container
@@ -1263,7 +1287,6 @@ jobs:
       DRIVER_MAJOR_MINOR=$(echo "$DRIVER_VERSION" | cut -d. -f1,2)
       if [ -z "$DRIVER_MAJOR_MINOR" ]; then echo 'Error: failed to parse mssql_python_odbc.__version__'; exit 1; fi
       docker exec test-container-$(distroName)-$(archName) bash -c "
-        set -e
         export DEBIAN_FRONTEND=noninteractive
         
         # Download the package to configure the Microsoft repo
@@ -1289,7 +1312,6 @@ jobs:
         apt-get install -y unixodbc-dev
       "
     displayName: 'Install ODBC Driver in $(distroName) ARM64 container'
-    retryCountOnTaskFailure: 3
 
   - script: |
       # Install Python dependencies in the ARM64 container using virtual environment
@@ -1308,10 +1330,9 @@ jobs:
         python -m pip install -r requirements.txt
         
         # Make the virtual environment globally available
-        grep -Fxq 'source /opt/venv/bin/activate' ~/.bashrc 2>/dev/null || echo 'source /opt/venv/bin/activate' >> ~/.bashrc
+        echo 'source /opt/venv/bin/activate' >> ~/.bashrc
       "
     displayName: 'Install Python dependencies in $(distroName) ARM64 container'
-    retryCountOnTaskFailure: 3
 
   - script: |
       # Build pybind bindings in the ARM64 container
@@ -1329,11 +1350,9 @@ jobs:
         ./build.sh
       "
     displayName: 'Build pybind bindings (.so) in $(distroName) ARM64 container'
-    retryCountOnTaskFailure: 3
 
   - template: steps/install-mssql-py-core.yml
     parameters:
-      retryCount: 3
       platform: container
       containerName: test-container-$(distroName)-$(archName)
       venvActivate: 'source /opt/venv/bin/activate'
@@ -1344,7 +1363,6 @@ jobs:
       DRIVER_MAJOR_MINOR=$(echo "$DRIVER_VERSION" | cut -d. -f1,2)
       if [ -z "$DRIVER_MAJOR_MINOR" ]; then echo 'Error: failed to parse mssql_python_odbc.__version__'; exit 1; fi
       docker exec test-container-$(distroName)-$(archName) bash -c "
-        set -e
         export DEBIAN_FRONTEND=noninteractive
         apt-get remove --purge -y msodbcsql18 mssql-tools18 unixodbc-dev
         rm -f /usr/bin/sqlcmd
@@ -1357,7 +1375,6 @@ jobs:
         ldd mssql_python_odbc/libs/linux/debian_ubuntu/arm64/lib/libmsodbcsql-${DRIVER_MAJOR_MINOR}.so.2.1
       "
     displayName: 'Uninstall ODBC Driver before running tests in $(distroName) ARM64 container'
-    retryCountOnTaskFailure: 3
 
   - script: |
       # Run tests in the ARM64 container
@@ -1375,7 +1392,7 @@ jobs:
         echo 'Architecture:' \$(uname -m)
         echo 'Using connection string: Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=***;TrustServerCertificate=yes'
         python main.py
-        python eng/scripts/mssql_python_rs.py --verify && python -m pytest -v $(pytestRetryArgs) --junitxml=test-results-$(distroName)-$(archName).xml --cov=. --cov-report=xml:coverage-$(distroName)-$(archName).xml --capture=tee-sys --cache-clear
+        python eng/scripts/mssql_python_rs.py --verify && python -m pytest -v --junitxml=test-results-$(distroName)-$(archName).xml --cov=. --cov-report=xml:coverage-$(distroName)-$(archName).xml --capture=tee-sys --cache-clear
       "
     displayName: 'Run pytest with coverage in $(distroName) ARM64 container'
     env:
@@ -1398,7 +1415,8 @@ jobs:
       DB_PASSWORD: $(DB_PASSWORD)
 
   - script: |
-      bash eng/scripts/pr-test-container.sh cleanup "test-container-$(distroName)-$(archName)"
+      docker stop test-container-$(distroName)-$(archName) || true
+      docker rm test-container-$(distroName)-$(archName) || true
     displayName: 'Clean up $(distroName) ARM64 containers'
     condition: always()
 
@@ -1420,24 +1438,19 @@ jobs:
   steps:
   - script: |
       # Create a Docker container for testing
-      set -e
-      bash eng/scripts/pr-test-container.sh reset "test-container-rhel9"
       docker run -e MSSQL_PYTHON_RS_VERSION -d --name test-container-rhel9 \
-        --label "com.microsoft.mssql-python.ci-owner=$(Build.BuildId).$(System.JobId)" \
         -v $(Build.SourcesDirectory):/workspace \
         -w /workspace \
         --network bridge \
         redhat/ubi9:latest \
         tail -f /dev/null
     displayName: 'Create RHEL 9 container'
-    retryCountOnTaskFailure: 3
 
   - script: |
       python3 eng/scripts/setup_sql_container.py \
         --name "sqlserver-rhel9" --owner "$(Build.BuildId).$(System.JobId)" \
         --image "mcr.microsoft.com/mssql/server:2022-latest" --database TestDB
     displayName: 'Start SQL Server container for RHEL 9'
-    retryCountOnTaskFailure: 3
     timeoutInMinutes: 22
     env:
       DB_PASSWORD: $(DB_PASSWORD)
@@ -1472,7 +1485,6 @@ jobs:
         g++ --version
       "
     displayName: 'Install basic dependencies in RHEL 9 container'
-    retryCountOnTaskFailure: 3
 
   - script: |
       # Verify compiler installation and set environment for RHEL 9
@@ -1500,12 +1512,10 @@ jobs:
         chmod +x /workspace/setup_env.sh
       "
     displayName: 'Verify and configure compilers in RHEL 9 container'
-    retryCountOnTaskFailure: 3
 
   - script: |
       # Install ODBC driver in the RHEL 9 container
       docker exec test-container-rhel9 bash -c "
-        set -e
         # Add Microsoft repository for RHEL 9
         curl -sSL -o /etc/yum.repos.d/msprod.repo https://packages.microsoft.com/config/rhel/9/prod.repo
         
@@ -1517,12 +1527,10 @@ jobs:
         dnf install -y unixODBC-devel
       "
     displayName: 'Install ODBC Driver in RHEL 9 container'
-    retryCountOnTaskFailure: 3
 
   - script: |
       # Install Python dependencies in the container using virtual environment
       docker exec test-container-rhel9 bash -c "
-        set -e
         # Create a virtual environment with Python 3.12
         python3.12 -m venv myvenv
         source myvenv/bin/activate
@@ -1532,15 +1540,13 @@ jobs:
         python -m pip install -r requirements.txt
         
         # Make the virtual environment globally available
-        grep -Fxq 'source myvenv/bin/activate' ~/.bashrc 2>/dev/null || echo 'source myvenv/bin/activate' >> ~/.bashrc
+        echo 'source myvenv/bin/activate' >> ~/.bashrc
       "
     displayName: 'Install Python dependencies in RHEL 9 container'
-    retryCountOnTaskFailure: 3
 
   - script: |
       # Build pybind bindings in the container
       docker exec test-container-rhel9 bash -c "
-        set -e
         source myvenv/bin/activate
         ls /usr/include/python3.12
         # Set compiler environment variables
@@ -1552,11 +1558,9 @@ jobs:
         ./build.sh
       "
     displayName: 'Build pybind bindings (.so) in RHEL 9 container'
-    retryCountOnTaskFailure: 3
 
   - template: steps/install-mssql-py-core.yml
     parameters:
-      retryCount: 3
       platform: container
       containerName: test-container-rhel9
       venvActivate: 'source myvenv/bin/activate'
@@ -1567,7 +1571,6 @@ jobs:
       DRIVER_MAJOR_MINOR=$(echo "$DRIVER_VERSION" | cut -d. -f1,2)
       if [ -z "$DRIVER_MAJOR_MINOR" ]; then echo 'Error: failed to parse mssql_python_odbc.__version__'; exit 1; fi
       docker exec test-container-rhel9 bash -c "
-        set -e
         dnf remove -y msodbcsql18 mssql-tools18 unixODBC-devel
         rm -f /usr/bin/sqlcmd
         rm -f /usr/bin/bcp
@@ -1579,7 +1582,6 @@ jobs:
         ldd mssql_python_odbc/libs/linux/rhel/x86_64/lib/libmsodbcsql-${DRIVER_MAJOR_MINOR}.so.2.1
       "
     displayName: 'Uninstall ODBC Driver before running tests in RHEL 9 container'
-    retryCountOnTaskFailure: 3
 
   - script: |
       # Run tests in the container
@@ -1596,7 +1598,7 @@ jobs:
         echo 'Build successful, running tests now on RHEL 9'
         echo 'Using connection string: Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=***;TrustServerCertificate=yes'
         python main.py
-        python eng/scripts/mssql_python_rs.py --verify && python -m pytest -v $(pytestRetryArgs) --junitxml=test-results-rhel9.xml --cov=. --cov-report=xml:coverage-rhel9.xml --capture=tee-sys --cache-clear
+        python eng/scripts/mssql_python_rs.py --verify && python -m pytest -v --junitxml=test-results-rhel9.xml --cov=. --cov-report=xml:coverage-rhel9.xml --capture=tee-sys --cache-clear
       "
     displayName: 'Run pytest with coverage in RHEL 9 container'
     env:
@@ -1619,7 +1621,8 @@ jobs:
       DB_PASSWORD: $(DB_PASSWORD)
 
   - script: |
-      bash eng/scripts/pr-test-container.sh cleanup "test-container-rhel9"
+      docker stop test-container-rhel9 || true
+      docker rm test-container-rhel9 || true
     displayName: 'Clean up RHEL 9 containers'
     condition: always()
 
@@ -1646,32 +1649,26 @@ jobs:
         docker run --rm --privileged --platform linux/amd64 "$(arm64QemuImage)" --uninstall qemu-aarch64
       fi
       docker run --rm --privileged --platform linux/amd64 "$(arm64QemuImage)" --install arm64
-      docker buildx use multiarch 2>/dev/null || docker buildx create --name multiarch --driver docker-container --use
+      docker buildx create --name multiarch --driver docker-container --use
       docker buildx inspect --bootstrap
     displayName: 'Setup Docker buildx for ARM64 emulation'
-    retryCountOnTaskFailure: 3
 
   - script: |
       # Create a Docker container for testing on ARM64
-      set -e
-      bash eng/scripts/pr-test-container.sh reset "test-container-rhel9-arm64"
       docker run -e MSSQL_PYTHON_RS_VERSION -d --name test-container-rhel9-arm64 \
         --platform linux/arm64 \
-        --label "com.microsoft.mssql-python.ci-owner=$(Build.BuildId).$(System.JobId)" \
         -v $(Build.SourcesDirectory):/workspace \
         -w /workspace \
         --network bridge \
         redhat/ubi9:latest \
         tail -f /dev/null
     displayName: 'Create RHEL 9 ARM64 container'
-    retryCountOnTaskFailure: 3
 
   - script: |
       python3 eng/scripts/setup_sql_container.py \
         --name "sqlserver-rhel9-arm64" --owner "$(Build.BuildId).$(System.JobId)" \
         --image "mcr.microsoft.com/mssql/server:2022-latest" --database TestDB
     displayName: 'Start SQL Server container for RHEL 9 ARM64'
-    retryCountOnTaskFailure: 3
     timeoutInMinutes: 22
     env:
       DB_PASSWORD: $(DB_PASSWORD)
@@ -1708,7 +1705,6 @@ jobs:
         echo 'Architecture:' \$(uname -m)
       "
     displayName: 'Install basic dependencies in RHEL 9 ARM64 container'
-    retryCountOnTaskFailure: 3
 
   - script: |
       # Verify compiler installation and set environment for RHEL 9 ARM64
@@ -1737,12 +1733,10 @@ jobs:
         chmod +x /workspace/setup_env.sh
       "
     displayName: 'Verify and configure compilers in RHEL 9 ARM64 container'
-    retryCountOnTaskFailure: 3
 
   - script: |
       # Install ODBC driver in the RHEL 9 ARM64 container
       docker exec test-container-rhel9-arm64 bash -c "
-        set -e
         # Add Microsoft repository for RHEL 9
         curl -sSL -o /etc/yum.repos.d/msprod.repo https://packages.microsoft.com/config/rhel/9/prod.repo
         
@@ -1754,12 +1748,10 @@ jobs:
         dnf install -y unixODBC-devel
       "
     displayName: 'Install ODBC Driver in RHEL 9 ARM64 container'
-    retryCountOnTaskFailure: 3
 
   - script: |
       # Install Python dependencies in the container using virtual environment
       docker exec test-container-rhel9-arm64 bash -c "
-        set -e
         # Create a virtual environment with Python 3.12
         python3.12 -m venv myvenv
         source myvenv/bin/activate
@@ -1769,15 +1761,13 @@ jobs:
         python -m pip install -r requirements.txt
         
         # Make the virtual environment globally available
-        grep -Fxq 'source myvenv/bin/activate' ~/.bashrc 2>/dev/null || echo 'source myvenv/bin/activate' >> ~/.bashrc
+        echo 'source myvenv/bin/activate' >> ~/.bashrc
       "
     displayName: 'Install Python dependencies in RHEL 9 ARM64 container'
-    retryCountOnTaskFailure: 3
 
   - script: |
       # Build pybind bindings in the ARM64 container
       docker exec test-container-rhel9-arm64 bash -c "
-        set -e
         source myvenv/bin/activate
         ls /usr/include/python3.12
         # Set compiler environment variables
@@ -1789,11 +1779,9 @@ jobs:
         ./build.sh
       "
     displayName: 'Build pybind bindings (.so) in RHEL 9 ARM64 container'
-    retryCountOnTaskFailure: 3
 
   - template: steps/install-mssql-py-core.yml
     parameters:
-      retryCount: 3
       platform: container
       containerName: test-container-rhel9-arm64
       venvActivate: 'source myvenv/bin/activate'
@@ -1804,7 +1792,6 @@ jobs:
       DRIVER_MAJOR_MINOR=$(echo "$DRIVER_VERSION" | cut -d. -f1,2)
       if [ -z "$DRIVER_MAJOR_MINOR" ]; then echo 'Error: failed to parse mssql_python_odbc.__version__'; exit 1; fi
       docker exec test-container-rhel9-arm64 bash -c "
-        set -e
         dnf remove -y msodbcsql18 mssql-tools18 unixODBC-devel
         rm -f /usr/bin/sqlcmd
         rm -f /usr/bin/bcp
@@ -1816,7 +1803,6 @@ jobs:
         ldd mssql_python_odbc/libs/linux/rhel/arm64/lib/libmsodbcsql-${DRIVER_MAJOR_MINOR}.so.2.1
       "
     displayName: 'Uninstall ODBC Driver before running tests in RHEL 9 ARM64 container'
-    retryCountOnTaskFailure: 3
 
   - script: |
       # Run tests in the ARM64 container
@@ -1833,7 +1819,7 @@ jobs:
         echo 'Build successful, running tests now on RHEL 9 ARM64'
         echo 'Architecture:' \$(uname -m)
         echo 'Using connection string: Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=***;TrustServerCertificate=yes'
-        python eng/scripts/mssql_python_rs.py --verify && python -m pytest -v $(pytestRetryArgs) --junitxml=test-results-rhel9-arm64.xml --cov=. --cov-report=xml:coverage-rhel9-arm64.xml --capture=tee-sys --cache-clear
+        python eng/scripts/mssql_python_rs.py --verify && python -m pytest -v --junitxml=test-results-rhel9-arm64.xml --cov=. --cov-report=xml:coverage-rhel9-arm64.xml --capture=tee-sys --cache-clear
       "
     displayName: 'Run pytest with coverage in RHEL 9 ARM64 container'
     env:
@@ -1856,7 +1842,8 @@ jobs:
       DB_PASSWORD: $(DB_PASSWORD)
 
   - script: |
-      bash eng/scripts/pr-test-container.sh cleanup "test-container-rhel9-arm64"
+      docker stop test-container-rhel9-arm64 || true
+      docker rm test-container-rhel9-arm64 || true
     displayName: 'Clean up RHEL 9 ARM64 containers'
     condition: always()
 
@@ -1877,35 +1864,28 @@ jobs:
 
   steps:
   - script: |
-      set -e
       # Set up Docker buildx for multi-architecture support
       docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
-      docker buildx use multiarch 2>/dev/null || docker buildx create --name multiarch --driver docker-container --use
+      docker buildx create --name multiarch --driver docker-container --use
       docker buildx inspect --bootstrap
     displayName: 'Setup Docker buildx for multi-architecture support'
-    retryCountOnTaskFailure: 3
 
   - script: |
       # Create a Docker container for testing on x86_64
-      set -e
-      bash eng/scripts/pr-test-container.sh reset "test-container-alpine"
       docker run -e MSSQL_PYTHON_RS_VERSION -d --name test-container-alpine \
         --platform linux/amd64 \
-        --label "com.microsoft.mssql-python.ci-owner=$(Build.BuildId).$(System.JobId)" \
         -v $(Build.SourcesDirectory):/workspace \
         -w /workspace \
         --network bridge \
         alpine:latest \
         tail -f /dev/null
     displayName: 'Create Alpine x86_64 container'
-    retryCountOnTaskFailure: 3
 
   - script: |
       python3 eng/scripts/setup_sql_container.py \
         --name "sqlserver-alpine" --owner "$(Build.BuildId).$(System.JobId)" \
         --image "mcr.microsoft.com/mssql/server:2022-latest" --database TestDB
     displayName: 'Start SQL Server container for Alpine x86_64'
-    retryCountOnTaskFailure: 3
     timeoutInMinutes: 22
     env:
       DB_PASSWORD: $(DB_PASSWORD)
@@ -1915,7 +1895,6 @@ jobs:
   - script: |
       # Install dependencies in the Alpine x86_64 container
       docker exec test-container-alpine sh -c "
-        set -e
         # Update package index
         apk update
         
@@ -1948,7 +1927,6 @@ jobs:
         which cmake
       "
     displayName: 'Install basic dependencies in Alpine x86_64 container'
-    retryCountOnTaskFailure: 3
 
   - script: |
       # Install ODBC driver in the Alpine x86_64 container
@@ -1956,7 +1934,6 @@ jobs:
       DRIVER_MAJOR_MINOR=$(echo "$DRIVER_VERSION" | cut -d. -f1,2)
       if [ -z "$DRIVER_MAJOR_MINOR" ]; then echo 'Error: failed to parse mssql_python_odbc.__version__'; exit 1; fi
       docker exec test-container-alpine bash -c "
-        set -e
         # Detect architecture for ODBC driver download
         case \$(uname -m) in
           x86_64) architecture='amd64' ;;
@@ -1972,37 +1949,34 @@ jobs:
         echo 'Detected architecture: '\$architecture
         
         # Download the packages
-        curl -fsSLO https://download.microsoft.com/download/0b3d5518-b4a7-4a2b-afc7-7ee9e967f93c/msodbcsql18_18.6.2.1-1_\$architecture.apk
-        curl -fsSLO https://download.microsoft.com/download/a5dcc5e7-6124-49d3-8df4-48d738a0e784/mssql-tools18_18.7.1.1-1_\$architecture.apk
+        curl -O https://download.microsoft.com/download/0b3d5518-b4a7-4a2b-afc7-7ee9e967f93c/msodbcsql18_18.6.2.1-1_\$architecture.apk
+        curl -O https://download.microsoft.com/download/7/6d/76de322a-d860-4894-9945-f0cc5d6a45f8/mssql-tools18_18.4.1.1-1_\$architecture.apk
         
         # Download signatures for verification
-        curl -fsSLO https://download.microsoft.com/download/0b3d5518-b4a7-4a2b-afc7-7ee9e967f93c/msodbcsql18_18.6.2.1-1_\$architecture.sig
-        curl -fsSLO https://download.microsoft.com/download/a5dcc5e7-6124-49d3-8df4-48d738a0e784/mssql-tools18_18.7.1.1-1_\$architecture.sig
+        curl -O https://download.microsoft.com/download/0b3d5518-b4a7-4a2b-afc7-7ee9e967f93c/msodbcsql18_18.6.2.1-1_\$architecture.sig
+        curl -O https://download.microsoft.com/download/7/6d/76de322a-d860-4894-9945-f0cc5d6a45f8/mssql-tools18_18.4.1.1-1_\$architecture.sig
         
         # Import Microsoft GPG key and verify packages
-        curl -fsSL https://packages.microsoft.com/keys/microsoft.asc -o microsoft.asc
-        gpg --import microsoft.asc
+        curl https://packages.microsoft.com/keys/microsoft.asc | gpg --import -
         gpg --verify msodbcsql18_18.6.2.1-1_\$architecture.sig msodbcsql18_18.6.2.1-1_\$architecture.apk
-        gpg --verify mssql-tools18_18.7.1.1-1_\$architecture.sig mssql-tools18_18.7.1.1-1_\$architecture.apk
+        gpg --verify mssql-tools18_18.4.1.1-1_\$architecture.sig mssql-tools18_18.4.1.1-1_\$architecture.apk
         
         # Install the packages
         apk add --allow-untrusted msodbcsql18_18.6.2.1-1_\$architecture.apk
-        apk add --allow-untrusted mssql-tools18_18.7.1.1-1_\$architecture.apk
+        apk add --allow-untrusted mssql-tools18_18.4.1.1-1_\$architecture.apk
         
         # Cleanup
-        rm -f microsoft.asc msodbcsql18_18.6.2.1-1_\$architecture.* mssql-tools18_18.7.1.1-1_\$architecture.*
+        rm -f msodbcsql18_18.6.2.1-1_\$architecture.* mssql-tools18_18.4.1.1-1_\$architecture.*
         
         # Add mssql-tools to PATH
         export PATH=\"\$PATH:/opt/mssql-tools18/bin\"
-        grep -Fxq 'export PATH=\"\$PATH:/opt/mssql-tools18/bin\"' ~/.bashrc 2>/dev/null || echo 'export PATH=\"\$PATH:/opt/mssql-tools18/bin\"' >> ~/.bashrc
+        echo 'export PATH=\"\$PATH:/opt/mssql-tools18/bin\"' >> ~/.bashrc
       "
     displayName: 'Install ODBC Driver in Alpine x86_64 container'
-    retryCountOnTaskFailure: 3
 
   - script: |
       # Install Python dependencies in the Alpine x86_64 container using virtual environment
       docker exec test-container-alpine bash -c "
-        set -e
         # Create virtual environment
         python -m venv /workspace/venv
         
@@ -2018,12 +1992,10 @@ jobs:
         which pip
       "
     displayName: 'Install Python dependencies in Alpine x86_64 container'
-    retryCountOnTaskFailure: 3
 
   - script: |
       # Build pybind bindings in the Alpine x86_64 container
       docker exec test-container-alpine bash -c "
-        set -e
         # Activate virtual environment
         source /workspace/venv/bin/activate
         
@@ -2032,11 +2004,9 @@ jobs:
         ./build.sh
       "
     displayName: 'Build pybind bindings (.so) in Alpine x86_64 container'
-    retryCountOnTaskFailure: 3
 
   - template: steps/install-mssql-py-core.yml
     parameters:
-      retryCount: 3
       platform: container
       containerName: test-container-alpine
       venvActivate: 'source /workspace/venv/bin/activate'
@@ -2047,7 +2017,6 @@ jobs:
       DRIVER_MAJOR_MINOR=$(echo "$DRIVER_VERSION" | cut -d. -f1,2)
       if [ -z "$DRIVER_MAJOR_MINOR" ]; then echo 'Error: failed to parse mssql_python_odbc.__version__'; exit 1; fi
       docker exec test-container-alpine bash -c "
-        set -e
         # Remove system ODBC installation
         apk del msodbcsql18 mssql-tools18 unixodbc-dev || echo 'ODBC packages not installed via apk'
         rm -f /usr/bin/sqlcmd
@@ -2060,7 +2029,6 @@ jobs:
         ldd mssql_python_odbc/libs/linux/alpine/x86_64/lib/libmsodbcsql-${DRIVER_MAJOR_MINOR}.so.2.1 || echo 'Driver library not found'
       "
     displayName: 'Uninstall system ODBC Driver before running tests in Alpine x86_64 container'
-    retryCountOnTaskFailure: 3
 
   - script: |
       # Run tests in the Alpine x86_64 container
@@ -2091,7 +2059,7 @@ jobs:
         fi
         
         # Run pytest
-        python eng/scripts/mssql_python_rs.py --verify && python -m pytest -v $(pytestRetryArgs) --junitxml=test-results-alpine.xml --cov=. --cov-report=xml:coverage-alpine.xml --capture=tee-sys --cache-clear
+        python eng/scripts/mssql_python_rs.py --verify && python -m pytest -v --junitxml=test-results-alpine.xml --cov=. --cov-report=xml:coverage-alpine.xml --capture=tee-sys --cache-clear
       "
     displayName: 'Run pytest with coverage in Alpine x86_64 container'
     env:
@@ -2114,7 +2082,8 @@ jobs:
       DB_PASSWORD: $(DB_PASSWORD)
 
   - script: |
-      bash eng/scripts/pr-test-container.sh cleanup "test-container-alpine"
+      docker stop test-container-alpine || true
+      docker rm test-container-alpine || true
     displayName: 'Clean up Alpine x86_64 containers'
     condition: always()
 
@@ -2141,34 +2110,28 @@ jobs:
         docker run --rm --privileged --platform linux/amd64 "$(arm64QemuImage)" --uninstall qemu-aarch64
       fi
       docker run --rm --privileged --platform linux/amd64 "$(arm64QemuImage)" --install arm64
-      docker buildx use multiarch 2>/dev/null || docker buildx create --name multiarch --driver docker-container --use
+      docker buildx create --name multiarch --driver docker-container --use
       docker buildx inspect --bootstrap
     displayName: 'Setup Docker buildx for ARM64 emulation'
-    retryCountOnTaskFailure: 3
 
   - script: |
       # Create a Docker container for testing on ARM64
       # TODO(AB#40901): Temporary pin to 3.22 due to msodbcsql ARM64 package arch mismatch
       # Revert to alpine:latest once ODBC team releases fixed ARM64 package
-      set -e
-      bash eng/scripts/pr-test-container.sh reset "test-container-alpine-arm64"
       docker run -e MSSQL_PYTHON_RS_VERSION -d --name test-container-alpine-arm64 \
         --platform linux/arm64 \
-        --label "com.microsoft.mssql-python.ci-owner=$(Build.BuildId).$(System.JobId)" \
         -v $(Build.SourcesDirectory):/workspace \
         -w /workspace \
         --network bridge \
         alpine:3.22 \
         tail -f /dev/null
     displayName: 'Create Alpine ARM64 container'
-    retryCountOnTaskFailure: 3
 
   - script: |
       python3 eng/scripts/setup_sql_container.py \
         --name "sqlserver-alpine-arm64" --owner "$(Build.BuildId).$(System.JobId)" \
         --image "mcr.microsoft.com/mssql/server:2022-latest" --database TestDB
     displayName: 'Start SQL Server container for Alpine ARM64'
-    retryCountOnTaskFailure: 3
     timeoutInMinutes: 22
     env:
       DB_PASSWORD: $(DB_PASSWORD)
@@ -2178,7 +2141,6 @@ jobs:
   - script: |
       # Install dependencies in the Alpine ARM64 container
       docker exec test-container-alpine-arm64 sh -c "
-        set -e
         # Update package index
         apk update
         
@@ -2211,7 +2173,6 @@ jobs:
         which cmake
       "
     displayName: 'Install basic dependencies in Alpine ARM64 container'
-    retryCountOnTaskFailure: 3
 
   - script: |
       # Install ODBC driver in the Alpine ARM64 container
@@ -2219,7 +2180,6 @@ jobs:
       DRIVER_MAJOR_MINOR=$(echo "$DRIVER_VERSION" | cut -d. -f1,2)
       if [ -z "$DRIVER_MAJOR_MINOR" ]; then echo 'Error: failed to parse mssql_python_odbc.__version__'; exit 1; fi
       docker exec test-container-alpine-arm64 bash -c "
-        set -e
         # Detect architecture for ODBC driver download
         case \$(uname -m) in
           x86_64) architecture='amd64' ;;
@@ -2235,37 +2195,34 @@ jobs:
         echo 'Detected architecture: '\$architecture
         
         # Download the packages
-        curl -fsSLO https://download.microsoft.com/download/0b3d5518-b4a7-4a2b-afc7-7ee9e967f93c/msodbcsql18_18.6.2.1-1_\$architecture.apk
-        curl -fsSLO https://download.microsoft.com/download/a5dcc5e7-6124-49d3-8df4-48d738a0e784/mssql-tools18_18.7.1.1-1_\$architecture.apk
+        curl -O https://download.microsoft.com/download/0b3d5518-b4a7-4a2b-afc7-7ee9e967f93c/msodbcsql18_18.6.2.1-1_\$architecture.apk
+        curl -O https://download.microsoft.com/download/7/6d/76de322a-d860-4894-9945-f0cc5d6a45f8/mssql-tools18_18.4.1.1-1_\$architecture.apk
         
         # Download signatures for verification
-        curl -fsSLO https://download.microsoft.com/download/0b3d5518-b4a7-4a2b-afc7-7ee9e967f93c/msodbcsql18_18.6.2.1-1_\$architecture.sig
-        curl -fsSLO https://download.microsoft.com/download/a5dcc5e7-6124-49d3-8df4-48d738a0e784/mssql-tools18_18.7.1.1-1_\$architecture.sig
+        curl -O https://download.microsoft.com/download/0b3d5518-b4a7-4a2b-afc7-7ee9e967f93c/msodbcsql18_18.6.2.1-1_\$architecture.sig
+        curl -O https://download.microsoft.com/download/7/6d/76de322a-d860-4894-9945-f0cc5d6a45f8/mssql-tools18_18.4.1.1-1_\$architecture.sig
         
         # Import Microsoft GPG key and verify packages
-        curl -fsSL https://packages.microsoft.com/keys/microsoft.asc -o microsoft.asc
-        gpg --import microsoft.asc
+        curl https://packages.microsoft.com/keys/microsoft.asc | gpg --import -
         gpg --verify msodbcsql18_18.6.2.1-1_\$architecture.sig msodbcsql18_18.6.2.1-1_\$architecture.apk
-        gpg --verify mssql-tools18_18.7.1.1-1_\$architecture.sig mssql-tools18_18.7.1.1-1_\$architecture.apk
+        gpg --verify mssql-tools18_18.4.1.1-1_\$architecture.sig mssql-tools18_18.4.1.1-1_\$architecture.apk
         
         # Install the packages
         apk add --allow-untrusted msodbcsql18_18.6.2.1-1_\$architecture.apk
-        apk add --allow-untrusted mssql-tools18_18.7.1.1-1_\$architecture.apk
+        apk add --allow-untrusted mssql-tools18_18.4.1.1-1_\$architecture.apk
         
         # Cleanup
-        rm -f microsoft.asc msodbcsql18_18.6.2.1-1_\$architecture.* mssql-tools18_18.7.1.1-1_\$architecture.*
+        rm -f msodbcsql18_18.6.2.1-1_\$architecture.* mssql-tools18_18.4.1.1-1_\$architecture.*
         
         # Add mssql-tools to PATH
         export PATH=\"\$PATH:/opt/mssql-tools18/bin\"
-        grep -Fxq 'export PATH=\"\$PATH:/opt/mssql-tools18/bin\"' ~/.bashrc 2>/dev/null || echo 'export PATH=\"\$PATH:/opt/mssql-tools18/bin\"' >> ~/.bashrc
+        echo 'export PATH=\"\$PATH:/opt/mssql-tools18/bin\"' >> ~/.bashrc
       "
     displayName: 'Install ODBC Driver in Alpine ARM64 container'
-    retryCountOnTaskFailure: 3
 
   - script: |
       # Install Python dependencies in the Alpine ARM64 container using virtual environment
       docker exec test-container-alpine-arm64 bash -c "
-        set -e
         # Create virtual environment
         python -m venv /workspace/venv
         
@@ -2281,12 +2238,10 @@ jobs:
         which pip
       "
     displayName: 'Install Python dependencies in Alpine ARM64 container'
-    retryCountOnTaskFailure: 3
 
   - script: |
       # Build pybind bindings in the Alpine ARM64 container
       docker exec test-container-alpine-arm64 bash -c "
-        set -e
         # Activate virtual environment
         source /workspace/venv/bin/activate
         
@@ -2295,11 +2250,9 @@ jobs:
         ./build.sh
       "
     displayName: 'Build pybind bindings (.so) in Alpine ARM64 container'
-    retryCountOnTaskFailure: 3
 
   - template: steps/install-mssql-py-core.yml
     parameters:
-      retryCount: 3
       platform: container
       containerName: test-container-alpine-arm64
       venvActivate: 'source /workspace/venv/bin/activate'
@@ -2310,7 +2263,6 @@ jobs:
       DRIVER_MAJOR_MINOR=$(echo "$DRIVER_VERSION" | cut -d. -f1,2)
       if [ -z "$DRIVER_MAJOR_MINOR" ]; then echo 'Error: failed to parse mssql_python_odbc.__version__'; exit 1; fi
       docker exec test-container-alpine-arm64 bash -c "
-        set -e
         # Remove system ODBC installation
         apk del msodbcsql18 mssql-tools18 unixodbc-dev || echo 'ODBC packages not installed via apk'
         rm -f /usr/bin/sqlcmd
@@ -2323,7 +2275,6 @@ jobs:
         ldd mssql_python_odbc/libs/linux/alpine/arm64/lib/libmsodbcsql-${DRIVER_MAJOR_MINOR}.so.2.1 || echo 'Driver library not found'
       "
     displayName: 'Uninstall system ODBC Driver before running tests in Alpine ARM64 container'
-    retryCountOnTaskFailure: 3
 
   - script: |
       # Run tests in the Alpine ARM64 container
@@ -2354,7 +2305,7 @@ jobs:
         fi
         
         # Run pytest
-        python eng/scripts/mssql_python_rs.py --verify && python -m pytest -v $(pytestRetryArgs) --junitxml=test-results-alpine-arm64.xml --cov=. --cov-report=xml:coverage-alpine-arm64.xml --capture=tee-sys --cache-clear
+        python eng/scripts/mssql_python_rs.py --verify && python -m pytest -v --junitxml=test-results-alpine-arm64.xml --cov=. --cov-report=xml:coverage-alpine-arm64.xml --capture=tee-sys --cache-clear
       "
     displayName: 'Run pytest with coverage in Alpine ARM64 container'
     env:
@@ -2377,7 +2328,8 @@ jobs:
       DB_PASSWORD: $(DB_PASSWORD)
 
   - script: |
-      bash eng/scripts/pr-test-container.sh cleanup "test-container-alpine-arm64"
+      docker stop test-container-alpine-arm64 || true
+      docker rm test-container-alpine-arm64 || true
     displayName: 'Clean up Alpine ARM64 containers'
     condition: always()
 
@@ -2628,22 +2580,18 @@ jobs:
       versionSpec: '3.12'
       addToPath: true
     displayName: 'Use Python 3.12 for coverage build and tests'
-    retryCountOnTaskFailure: 3
 
   - script: |
-      set -e
       # Install build dependencies
       sudo apt-get update
       sudo apt-get install -y cmake gcc g++ lcov unixodbc-dev llvm clang
     displayName: 'Install build dependencies'
-    retryCountOnTaskFailure: 3
 
   - script: |
       python3 eng/scripts/setup_sql_container.py \
         --name "sqlserver" --owner "$(Build.BuildId).$(System.JobId)" \
         --image "mcr.microsoft.com/mssql/server:2022-latest"
     displayName: 'Start SQL Server container'
-    retryCountOnTaskFailure: 3
     timeoutInMinutes: 22
     env:
       DB_PASSWORD: $(DB_PASSWORD)
@@ -2651,32 +2599,26 @@ jobs:
       SQLCMDPASSWORD: $(DB_PASSWORD)
 
   - script: |
-      set -e
       # Install Python dependencies
       python -m pip install --upgrade pip
       pip install -r requirements.txt
       pip install coverage-lcov lcov-cobertura
     displayName: 'Install Python dependencies'
-    retryCountOnTaskFailure: 3
 
   - script: |
-      set -e
       # Build pybind bindings with coverage instrumentation
       cd mssql_python/pybind
       ./build.sh codecov
     displayName: 'Build pybind bindings with coverage'
-    retryCountOnTaskFailure: 3
 
   - template: steps/install-mssql-py-core.yml
     parameters:
-      retryCount: 3
       platform: unix
 
   - script: |
       # Generate unified coverage (Python + C++)
-      set -e
       chmod +x ./generate_codecov.sh
-      ./generate_codecov.sh $(pytestRetryArgs)
+      ./generate_codecov.sh
 
       # Convert unified LCOV to Cobertura XML for ADO reporting
       lcov_cobertura total.info --output unified-coverage/coverage.xml

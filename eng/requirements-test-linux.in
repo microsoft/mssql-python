@@ -2,3 +2,4 @@
 -r requirements-build-linux.in
 -c requirements-build-linux.txt
 -r ../requirements.txt
+pytest-rerunfailures
