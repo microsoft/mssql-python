@@ -3905,6 +3905,169 @@ static inline bool CanUseSingleRowForFetchMany(SQLSMALLINT dataType, SQLULEN col
     }
 }
 
+static size_t CheckedFetchBufferBytes(size_t count, size_t itemSize, size_t terminator);
+
+static bool IsBoundedFetchText(SQLSMALLINT type, SQLULEN size) {
+    return size > 0 && size <= SQL_MAX_LOB_SIZE &&
+           (type == SQL_CHAR || type == SQL_VARCHAR || type == SQL_LONGVARCHAR ||
+            type == SQL_WCHAR || type == SQL_WVARCHAR || type == SQL_WLONGVARCHAR);
+}
+
+struct FetchTextScratch {
+    static constexpr size_t shortUnits = 256;
+    std::vector<SQLWCHAR> wide;
+    std::vector<SQLCHAR> narrow;
+#if defined(_WIN32)
+    const bool fastWideReads = GetSelectedProviderId() == kProviderMsodbcsql18;
+#else
+    // Unix VARCHAR-to-WCHAR truncation can consume characters that did not fit.
+    const bool fastWideReads = false;
+#endif
+
+    SQLLEN readWideParts(const SqlHandlePtr& handle, SQLUSMALLINT column, py::handle messages,
+                         const SQLWCHAR* first = nullptr, SQLLEN firstLength = 0) {
+        PERF_TIMER("FetchTextScratch::readWideParts");
+        wide.resize(std::max(wide.size(), shortUnits));
+        if (first)
+            std::copy_n(first, shortUnits, wide.data());
+        bool pending = first != nullptr;
+        size_t used = 0;
+        while (true) {
+            const size_t available = (wide.size() - used) * sizeof(SQLWCHAR);
+            const size_t payload = available - sizeof(SQLWCHAR);
+            SQLLEN length = firstLength;
+            SQLRETURN ret = SQL_SUCCESS_WITH_INFO;
+            if (!pending)
+                ret = CancellableGetData(handle->get(), column, SQL_C_WCHAR, wide.data() + used,
+                                         available, &length);
+            pending = false;
+            const bool truncated =
+                ret == SQL_SUCCESS_WITH_INFO &&
+                (length == SQL_NO_TOTAL || (length >= 0 && static_cast<size_t>(length) > payload));
+            CaptureFetchDiagnostics(handle->get(), ret, messages, truncated);
+            CheckFetchError(handle, ret);
+            if (length == SQL_NULL_DATA && SQL_SUCCEEDED(ret) && used == 0)
+                return SQL_NULL_DATA;
+            if (!SQL_SUCCEEDED(ret) || (length < 0 && !(truncated && length == SQL_NO_TOTAL)) ||
+                (length >= 0 && length % sizeof(SQLWCHAR)) ||
+                (!truncated && static_cast<size_t>(length) > payload))
+                ThrowStdException("Bounded text exceeded its probed buffer size");
+            if (!truncated)
+                return static_cast<SQLLEN>(used * sizeof(SQLWCHAR) + length);
+
+            const size_t prefix = used * sizeof(SQLWCHAR);
+            size_t bytes;
+            if (length == SQL_NO_TOTAL) {
+                bytes = CheckedFetchBufferBytes(wide.size(), sizeof(SQLWCHAR) * 2, 0);
+            } else {
+                const size_t limit = static_cast<size_t>(std::numeric_limits<SQLLEN>::max());
+                if (prefix > limit - sizeof(SQLWCHAR) ||
+                    static_cast<size_t>(length) > limit - prefix - sizeof(SQLWCHAR))
+                    throw std::length_error("Fetch buffer size exceeds supported limits");
+                bytes = prefix + static_cast<size_t>(length) + sizeof(SQLWCHAR);
+            }
+            used += payload / sizeof(SQLWCHAR);
+            wide.resize(bytes / sizeof(SQLWCHAR));
+        }
+    }
+
+    py::object read(const SqlHandlePtr& handle, SQLUSMALLINT column, SQLSMALLINT type,
+                    SQLULEN declaredSize, int charCtype, const std::string& encoding,
+                    py::handle messages, py::handle converters) {
+        const bool unicode = type == SQL_WCHAR || type == SQL_WVARCHAR || type == SQL_WLONGVARCHAR;
+        const bool useWide = unicode || charCtype == SQL_C_WCHAR;
+        SQLLEN length = 0;
+        if (useWide && fastWideReads) {
+            length = readWideParts(handle, column, messages);
+            if (length == SQL_NULL_DATA)
+                return py::none();
+        } else {
+            SQLLEN sourceLength = 0;
+            // A zero-byte binary probe does not consume nonempty text or perform a potentially
+            // lossy truncated VARCHAR-to-WCHAR conversion on Unix.
+            SQLRETURN ret =
+                CancellableGetData(handle->get(), column, SQL_C_BINARY, nullptr, 0, &sourceLength);
+            CaptureFetchDiagnostics(handle->get(), ret, messages, true);
+            CheckFetchError(handle, ret);
+            if (!SQL_SUCCEEDED(ret))
+                ThrowStdException("Failed to probe bounded text length");
+            if (sourceLength == SQL_NULL_DATA)
+                return py::none();
+            if (sourceLength == SQL_NO_TOTAL) {
+                sourceLength = static_cast<SQLLEN>(
+                    CheckedFetchBufferBytes(declaredSize, unicode ? sizeof(SQLWCHAR) : 1, 0));
+            } else if (sourceLength < 0) {
+                ThrowStdException("Invalid bounded text source length");
+            }
+            if (sourceLength == 0) {
+                // A successful zero-length probe already exhausts an empty value.
+                return decode(column, unicode, useWide, "", 0, encoding, converters);
+            }
+            size_t expansion = useWide && !unicode ? sizeof(SQLWCHAR) : 1;
+#if defined(__APPLE__) || defined(__linux__)
+            if (!useWide)
+                expansion = 4;
+#endif
+            const size_t terminator = useWide ? sizeof(SQLWCHAR) : 1;
+            const size_t bytes = CheckedFetchBufferBytes(sourceLength, expansion, terminator);
+            SQLPOINTER data;
+            if (useWide) {
+                if (bytes % sizeof(SQLWCHAR))
+                    ThrowStdException("Unaligned bounded UTF-16 text length");
+                wide.resize(bytes / sizeof(SQLWCHAR));
+                data = wide.data();
+            } else {
+                narrow.resize(bytes);
+                data = narrow.data();
+            }
+            ret = CancellableGetData(handle->get(), column, useWide ? SQL_C_WCHAR : SQL_C_CHAR,
+                                     data, static_cast<SQLLEN>(bytes), &length);
+            CaptureFetchDiagnostics(handle->get(), ret, messages);
+            CheckFetchError(handle, ret);
+            if (!SQL_SUCCEEDED(ret) || length < 0 ||
+                static_cast<size_t>(length) > bytes - terminator ||
+                (useWide && length % sizeof(SQLWCHAR)))
+                ThrowStdException("Bounded text exceeded its probed buffer size");
+        }
+        const auto* text = useWide ? reinterpret_cast<const char*>(wide.data())
+                                   : reinterpret_cast<const char*>(narrow.data());
+        return decode(column, unicode, useWide, text, length, encoding, converters);
+    }
+
+    static py::object decode(SQLUSMALLINT column, bool unicode, bool useWide,
+                             const char* text, SQLLEN length, const std::string& encoding,
+                             py::handle converters) {
+        if (useWide && OutputConverters::enabled(converters, column - 1)) {
+            py::object converted = OutputConverters::text(text, length);
+            if (converted)
+                return converted;
+        }
+        if (!length)
+            return py::str("");
+        PyObject* decoded;
+        if (unicode)
+            decoded = FetchText::decode_batch_utf16_native(text, length);
+        else if (useWide) {
+#if defined(_WIN32)
+            decoded = PyUnicode_FromWideChar(reinterpret_cast<const wchar_t*>(text),
+                                             length / sizeof(SQLWCHAR));
+#else
+            decoded = FetchText::decode_utf16_native(text, length);
+#endif
+        } else {
+            const auto codec = GetEffectiveCharDecoding(encoding);
+            decoded = PyUnicode_Decode(text, length, codec.c_str(), "strict");
+        }
+        if (!decoded) {
+            PyErr_Clear();
+            decoded = PyBytes_FromStringAndSize(text, length);
+        }
+        if (!decoded)
+            throw py::error_already_set();
+        return steal(decoded);
+    }
+};
+
 static SQLSMALLINT FixedScalarCType(SQLSMALLINT type) {
     switch (type) {
         case SQL_INTEGER: return SQL_C_LONG;
@@ -3985,13 +4148,136 @@ static size_t FetchFixedScalarRun(SQLHSTMT statement, StatementOperation* operat
     return read;
 }
 
-static SQLRETURN GetRowData(
-                            const SqlHandlePtr& StatementHandle, SQLUSMALLINT colCount,
+static size_t FetchShortCellRun(
+    const SqlHandlePtr& handle, StatementOperation* operation, const ResultMetadata& metadata,
+    size_t first, size_t count, py::list& row, FetchTextScratch& scratch, int charCtype,
+    const std::string& encoding, py::handle messages, py::handle converters, SQLRETURN& result) {
+    if (!scratch.fastWideReads || scratch.wide.size() > FetchTextScratch::shortUnits)
+        return 0;
+    constexpr size_t capacity = 16;
+    std::array<SQLSMALLINT, capacity> types;
+    size_t length = 0;
+    while (length < capacity && first + length < count) {
+        const auto& column = metadata.columns[first + length];
+        const bool unicode = column.dataType == SQL_WCHAR || column.dataType == SQL_WVARCHAR ||
+                             column.dataType == SQL_WLONGVARCHAR;
+        const auto scalar = FixedScalarCType(column.dataType);
+        const bool text = IsBoundedFetchText(column.dataType, column.columnSize) &&
+                          (unicode || charCtype == SQL_C_WCHAR);
+        if (!text && !scalar)
+            break;
+        types[length] = text ? SQL_C_WCHAR : scalar;
+        ++length;
+    }
+    if (length < 2)
+        return 0;
+
+    struct Cell {
+        std::array<SQLWCHAR, FetchTextScratch::shortUnits> data;
+        SQLINTEGER integer;
+        SQLSMALLINT smallInteger;
+        SQLBIGINT big;
+        SQLREAL real;
+        SQLDOUBLE floating;
+        SQLLEN indicator = 0;
+        SQLPOINTER buffer(SQLSMALLINT type) {
+            switch (type) {
+                case SQL_C_LONG: return &integer;
+                case SQL_C_SHORT: return &smallInteger;
+                case SQL_C_SBIGINT: return &big;
+                case SQL_C_FLOAT: return &real;
+                case SQL_C_DOUBLE: return &floating;
+                default: return data.data();
+            }
+        }
+    };
+    std::array<Cell, capacity> cells;
+    constexpr size_t payload = (FetchTextScratch::shortUnits - 1) * sizeof(SQLWCHAR);
+    SQLHSTMT statement = handle->get();
+    size_t read = 0;
+    bool admitted = true;
+    PERF_TIMER("SQLGetData::short_cell_group");
+    {
+        py::gil_scoped_release release;
+        for (; read < length;) {
+            auto& cell = cells[read];
+            const auto type = types[read];
+            result = CancellableCallWithoutGIL(
+                operation,
+                [&] {
+                    return SQLGetData_ptr(statement, static_cast<SQLUSMALLINT>(first + read + 1),
+                                          type, cell.buffer(type), sizeof(cell.data),
+                                          &cell.indicator);
+                },
+                admitted);
+            ++read;
+            // Stop before another call overwrites diagnostics or consumes later
+            // columns after an invalid length. Each read retains its cancellation fence.
+            if (result != SQL_SUCCESS ||
+                (cell.indicator != SQL_NULL_DATA &&
+                 (cell.indicator < 0 || static_cast<size_t>(cell.indicator) > payload ||
+                  cell.indicator % sizeof(SQLWCHAR))))
+                break;
+        }
+    }
+    result = operation->checkResult(statement, result, admitted);
+    const auto& last = cells[read - 1];
+    const bool truncated = types[read - 1] == SQL_C_WCHAR && result == SQL_SUCCESS_WITH_INFO &&
+                           (last.indicator == SQL_NO_TOTAL ||
+                            (last.indicator >= 0 && static_cast<size_t>(last.indicator) > payload));
+    if (!truncated)
+        CaptureFetchDiagnostics(statement, result, messages);
+    if (result == SQL_NO_DATA)
+        ThrowStdException("Bounded text exceeded its probed buffer size");
+    if (!SQL_SUCCEEDED(result))
+        return read;
+
+    for (size_t index = 0; index < read; ++index) {
+        const auto& cell = cells[index];
+        if (cell.indicator == SQL_NULL_DATA) {
+            row.append(py::none());
+            continue;
+        }
+        const auto column = static_cast<SQLUSMALLINT>(first + index + 1);
+        if (types[index] != SQL_C_WCHAR) {
+            if (cell.indicator < 0 || static_cast<size_t>(cell.indicator) > payload)
+                ThrowStdException("Invalid bounded scalar length");
+            switch (types[index]) {
+                case SQL_C_LONG: row.append(static_cast<int>(cell.integer)); break;
+                case SQL_C_SHORT: row.append(static_cast<int>(cell.smallInteger)); break;
+                case SQL_C_SBIGINT: row.append(static_cast<long long>(cell.big)); break;
+                case SQL_C_FLOAT: row.append(cell.real); break;
+                default: row.append(cell.floating); break;
+            }
+            continue;
+        }
+        const bool unicode = metadata.columns[first + index].dataType == SQL_WCHAR ||
+                             metadata.columns[first + index].dataType == SQL_WVARCHAR ||
+                             metadata.columns[first + index].dataType == SQL_WLONGVARCHAR;
+        if (truncated && index + 1 == read) {
+            const auto bytes =
+                scratch.readWideParts(handle, column, messages, cell.data.data(), cell.indicator);
+            row.append(FetchTextScratch::decode(column, unicode, true,
+                                                reinterpret_cast<const char*>(scratch.wide.data()),
+                                                bytes, encoding, converters));
+        } else {
+            if (cell.indicator < 0 || static_cast<size_t>(cell.indicator) > payload ||
+                cell.indicator % sizeof(SQLWCHAR))
+                ThrowStdException("Bounded text exceeded its probed buffer size");
+            row.append(FetchTextScratch::decode(column, unicode, true,
+                                                reinterpret_cast<const char*>(cell.data.data()),
+                                                cell.indicator, encoding, converters));
+        }
+    }
+    return read;
+}
+
+static SQLRETURN GetRowData(const SqlHandlePtr& StatementHandle, SQLUSMALLINT colCount,
                             py::list& row, const std::string& charEncoding,
-                            const std::string& wcharEncoding, int charCtype,
-                            py::handle messages, const ResultMetadataCache::Snapshot& snapshot,
+                            const std::string& wcharEncoding, int charCtype, py::handle messages,
+                            const ResultMetadataCache::Snapshot& snapshot,
                             bool completeResult = false, py::handle converters = {},
-                            bool batchText = false) {
+                            bool batchText = false, FetchTextScratch* textScratch = nullptr) {
     PERF_TIMER("SQLGetData_wrap");
     // Note: wcharEncoding parameter is reserved for future use
     // Currently WCHAR data always uses UTF-16LE for Windows compatibility
@@ -4019,10 +4305,22 @@ static SQLRETURN GetRowData(
     }
 
     auto* operation = StatementOperation::current(hStmt);
-    const bool groupScalars = operation && metadata &&
+    const bool groupScalars =
+        operation && metadata &&
         (!converters || converters.is_none() ||
          (PyDict_CheckExact(converters.ptr()) && PyDict_Size(converters.ptr()) == 0));
     for (SQLSMALLINT i = 1; i <= colCount; ++i) {
+        if (textScratch && operation && metadata) {
+            const auto read = FetchShortCellRun(
+                StatementHandle, operation, *metadata, static_cast<size_t>(i - 1), colCount,
+                row, *textScratch, charCtype, charEncoding, messages, converters, ret);
+            if (read) {
+                if (!SQL_SUCCEEDED(ret))
+                    return ret;
+                i += static_cast<SQLSMALLINT>(read - 1);
+                continue;
+            }
+        }
         if (groupScalars) {
             const auto read = FetchFixedScalarRun(hStmt, operation, *metadata,
                                                   static_cast<size_t>(i - 1), colCount,
@@ -4136,6 +4434,11 @@ static SQLRETURN GetRowData(
                 (long)variantCType, effectiveDataType);
         }
 
+        if (textScratch && IsBoundedFetchText(dataType, columnSize)) {
+            row.append(textScratch->read(StatementHandle, i, dataType, columnSize, charCtype,
+                                          charEncoding, messages, converters));
+            continue;
+        }
         switch (effectiveDataType) {
             case SQL_CHAR:
             case SQL_VARCHAR:
@@ -5602,6 +5905,44 @@ struct FetchStateGuard {
     }
 };
 
+// SQL_GD_BLOCK does not permit SQLGetData on multirow forward-only cursors.
+// Keep every column unbound and read in order; no driver pointers outlive a call.
+static SQLRETURN FetchDynamicTextRows(
+    const SqlHandlePtr& handle, SQLUSMALLINT numCols, py::list& rows, size_t limit,
+    const std::string& charEncoding, const std::string& wcharEncoding, int charCtype,
+    py::handle messages, py::handle converters) {
+    PERF_TIMER("FetchDynamicTextRows");
+    if (!handle->fetchColumnsUnbound) {
+        SQLRETURN ret = SQLFreeStmt_ptr(handle->get(), SQL_UNBIND);
+        CaptureFetchDiagnostics(handle->get(), ret, messages);
+        CheckFetchError(handle, ret);
+        if (!SQL_SUCCEEDED(ret))
+            return ret;
+        handle->fetchColumnsUnbound = true;
+    }
+    FetchTextScratch scratch;
+    for (size_t count = 0; count < limit; ++count) {
+        SQLRETURN ret = CancellableCall(handle->get(), [&] {
+            return SQLFetch_ptr(handle->get());
+        });
+        CaptureFetchDiagnostics(handle->get(), ret, messages);
+        CheckFetchError(handle, ret);
+        if (ret == SQL_NO_DATA)
+            break;
+        if (!SQL_SUCCEEDED(ret))
+            return ret;
+        py::list row;
+        ret = GetRowData(handle, numCols, row, charEncoding, wcharEncoding, charCtype,
+                          messages, handle->resultMetadata.snapshot(), true, converters,
+                          true, &scratch);
+        CheckFetchError(handle, ret);
+        if (!SQL_SUCCEEDED(ret))
+            return ret;
+        rows.append(row);
+    }
+    return SQL_SUCCESS;
+}
+
 // FetchMany_wrap - Fetches multiple rows of data from the result set.
 //
 // @param StatementHandle: Handle to the statement from which data is to be
@@ -5673,6 +6014,7 @@ SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetch
 
     std::vector<SQLUSMALLINT> lobColumns;
     bool singleRowEligible = fetchSize == 1;
+    bool dynamicText = false;
     for (SQLSMALLINT i = 0; i < numCols; i++) {
         const auto& column = columnNames.at(i);
         if (IsLobOrVariantColumn(column.dataType, column.columnSize)) {
@@ -5680,7 +6022,14 @@ SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetch
         }
         singleRowEligible = singleRowEligible &&
                             CanUseSingleRowForFetchMany(column.dataType, column.columnSize);
+        dynamicText = dynamicText ||
+                      (IsBoundedFetchText(column.dataType, column.columnSize) &&
+                       column.columnSize > 256);
     }
+
+    if (dynamicText && lobColumns.empty())
+        return FetchDynamicTextRows(StatementHandle, numCols, rows, fetchSize,
+                                     charEncoding, wcharEncoding, charCtype, messages, converters);
 
     if (singleRowEligible) {
         py::list row;
@@ -6920,6 +7269,7 @@ SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows,
     }
 
     std::vector<SQLUSMALLINT> lobColumns;
+    bool dynamicText = false;
     for (SQLSMALLINT i = 0; i < numCols; i++) {
         auto colMeta = columnNames[i].cast<py::dict>();
         SQLSMALLINT dataType = colMeta["DataType"].cast<SQLSMALLINT>();
@@ -6930,10 +7280,12 @@ SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows,
         if (IsLobOrVariantColumn(dataType, columnSize)) {
             lobColumns.push_back(i + 1);  // 1-based
         }
+        dynamicText = dynamicText ||
+                      (IsBoundedFetchText(dataType, columnSize) && columnSize > 256);
     }
 
     // If we have LOBs → fall back to row-by-row fetch + SQLGetData_wrap
-    if (!lobColumns.empty()) {
+    if (!lobColumns.empty() || dynamicText) {
         LOG("FetchAll_wrap: LOB columns detected (%zu columns), using per-row "
             "SQLGetData path",
             lobColumns.size());
@@ -6955,6 +7307,10 @@ SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows,
                 type == SQL_SS_VARIANT ? 0 : column["ColumnSize"].cast<SQLULEN>()});
         }
         StatementHandle->resultMetadata.publish(metadataSnapshot.generation, std::move(metadata));
+        if (lobColumns.empty())
+            return FetchDynamicTextRows(
+                StatementHandle, numCols, rows, std::numeric_limits<size_t>::max(),
+                charEncoding, wcharEncoding, charCtype, messages, converters);
         while (true) {
             ret = CancellableCall(hStmt, [&] { return SQLFetch_ptr(hStmt); });
             CaptureFetchDiagnostics(hStmt, ret, messages);

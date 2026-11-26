@@ -373,6 +373,19 @@ strings do not require a character-by-character scan.
 Wide-character retrieval of `VARCHAR(MAX)` values uses a non-consuming binary
 length probe to size the conversion buffer, avoiding character loss at truncated
 UTF-16 conversion boundaries while preserving embedded and trailing NULs.
+The experimental bounded-text path uses ordered, unbound reads for `fetchall()`
+and `fetchmany()` when a text column is wider than 256 declared characters,
+reusing storage rather than allocating every cell at its declared width.
+On Windows with `msodbcsql18`, short values need one read into a 512-byte starter
+buffer; longer values preserve that prefix and grow reusable storage.
+Up to 16 adjacent text/scalar reads share a GIL release, while retaining
+per-column cancellation and diagnostic handling. Other providers/platforms and
+narrow decoding retain conservative length probing.
+Fixed-width and short-text result sets retain rowset batching. Wide-text result
+sets still trade additional driver calls for lower temporary buffer use and can
+be slower for large results; they do not change the forward-only cursor type.
+Result sets containing LOB columns retain their existing streaming path.
+The 256-character cutoff is provisional, not a tuned throughput threshold.
 Explicit `setinputsizes()` SQL types and sizes still take precedence. An explicit
 `VARCHAR` parameter can lose characters outside the database collation's code
 page even when inserting into an `NVARCHAR` destination; use `SQL_WVARCHAR` when
