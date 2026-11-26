@@ -239,6 +239,8 @@ class _Policy:
             return None
         if self._conversion_ineligible(data):
             return None
+        if data.get("_json_decode_indices"):
+            return None
         runtime = _query_operation._NATIVE_QUERY_RUNTIME
         if not (self._policy_eligible(runtime) if isinstance(runtime, tuple) else self.unchanged()):
             return None

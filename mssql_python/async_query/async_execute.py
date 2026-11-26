@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any
 from ..exceptions import OperationalError, ProgrammingError
 from ..logging import logger
 from ..row import Row
+from ..json import _reject_json_parameters
 from .exception_translator import translate_py_core_exceptions
 
 if TYPE_CHECKING:
@@ -50,6 +51,10 @@ async def execute(
     """Execute a statement using the py-core async cursor."""
     if len(parameters) == 1 and isinstance(parameters[0], (tuple, list, Row)):
         parameters = tuple(parameters[0])
+    _reject_json_parameters(
+        parameters[0] if len(parameters) == 1 and isinstance(parameters[0], dict) else parameters,
+        "async execution",
+    )
 
     logger.debug(
         "AsyncCursor.execute: starting; param_count=%d; use_prepare=%s; reset_cursor=%s",
@@ -109,6 +114,7 @@ async def executemany(
         while True:
             try:
                 row = next(iterator)
+                _reject_json_parameters(row, "async execution")
             except StopIteration:
                 return
             except BaseException as error:

@@ -49,9 +49,14 @@ def test_cursor_consumer_call_shapes(tmp_path: Path, module: str) -> None:
     usage = tmp_path / "cursor_consumer.py"
     usage.write_text(
         f"""\
-from {module} import Cursor, SQL_INTEGER, TableValuedParameter
+from {module} import Cursor, Json, SQL_JSON, SQL_SS_JSON, SQL_INTEGER, TableValuedParameter
 
 def supported_calls(cursor: Cursor) -> None:
+    cursor.json_output = "objects"
+    cursor.execute("SELECT CAST(? AS JSON)", Json({{"items": [1, None]}}))
+    cursor.execute("SELECT ?", Json('{{"items":[1,null]}}'))
+    cursor.setinputsizes([SQL_JSON])
+    cursor.setinputsizes([SQL_SS_JSON])
     cursor.cancel()
     cursor.setinputsizes(None)
     cursor.executemany("INSERT INTO example VALUES (?, ?)", [(1, "one"), (2, "two")])

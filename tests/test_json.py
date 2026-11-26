@@ -1,0 +1,1330 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT license.
+"""Native JSON success cases need a preview; rejection cases use the shipped driver."""
+
+import json
+import os
+import asyncio
+import subprocess
+import sys
+import uuid
+from dataclasses import FrozenInstanceError
+from datetime import date
+from decimal import Decimal
+from types import ModuleType, SimpleNamespace
+from unittest.mock import Mock
+
+import pytest
+
+from mssql_python import Cursor, DataError, Json, NotSupportedError, SQL_JSON, SQL_SS_JSON, connect
+from mssql_python.json import _decode_json, _reject_json_parameters
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        None,
+        True,
+        1,
+        1.5,
+        b"{}",
+        (),
+        {1: "value"},
+        {"nested": {None: 1}},
+        {"v": (1, 2)},
+        {"v": {1, 2}},
+        {"v": object()},
+    ],
+)
+def test_json_rejects_unsupported_input(value):
+    with pytest.raises(TypeError):
+        Json(value)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [' \n{"key":1,"key":2,"escaped":"\\u0000\\u03bb"}\t', "[]", "", "text", '"text"', "null"],
+    ids=["object", "array", "empty", "malformed", "scalar", "null"],
+)
+def test_json_serialized_text_is_not_transformed(text, monkeypatch):
+    dumps = Mock(side_effect=AssertionError("Text must not be serialized"))
+    loads = Mock(side_effect=AssertionError("Text must not be parsed"))
+    monkeypatch.setattr(json, "dumps", dumps)
+    monkeypatch.setattr(json, "loads", loads)
+    parameter = Json(text)
+    assert parameter._text is text
+    assert repr(parameter) == "Json(<serialized>)"
+    with pytest.raises(FrozenInstanceError):
+        parameter._text = "changed"
+    dumps.assert_not_called()
+    loads.assert_not_called()
+
+
+@pytest.mark.parametrize("base", [dict, list, str])
+def test_json_rejects_root_subclasses(base):
+    class Custom(base):
+        pass
+
+    with pytest.raises(TypeError):
+        Json(Custom())
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), -float("inf")])
+def test_json_rejects_nonfinite_numbers(value):
+    with pytest.raises(ValueError):
+        Json({"nested": [value]})
+
+
+@pytest.mark.parametrize(
+    "value", [{"v": "\ud800"}, {"\udfff": 1}, ["\ud800\udc00"], '{"v":"\ud800"}', "\udfff"]
+)
+def test_json_rejects_surrogate_strings(value):
+    with pytest.raises(UnicodeError):
+        Json(value)
+
+
+def test_json_snapshot_cycles_and_shared_children():
+    child = [None, True, 1.5, "\U0001f600", "\x00"]
+    value = {"first": child, "second": child}
+    parameter = Json(value)
+    original = json.loads(parameter._text)
+    child.append("later")
+    assert json.loads(parameter._text) == original
+    with pytest.raises(FrozenInstanceError):
+        parameter._text = "{}"
+    child.append(value)
+    with pytest.raises(ValueError, match="circular"):
+        Json(value)
+
+
+@pytest.mark.parametrize("value", [None, 0, True, "object", [], {}])
+def test_json_output_validation(value):
+    cursor = Cursor.__new__(Cursor)
+    with pytest.raises(ValueError):
+        cursor.json_output = value
+
+
+@pytest.mark.parametrize("value", ["{", "null", "1", '"text"'])
+def test_json_decode_errors_are_not_text_fallbacks(value):
+    with pytest.raises(DataError):
+        _decode_json(value)
+
+
+def test_deferred_backends_reject_json():
+    for backend in ("async execution", "bulk copy"):
+        with pytest.raises(NotSupportedError, match=backend):
+            _reject_json_parameters([Json({})], backend)
+        _reject_json_parameters([None, "{}", [1, 2]], backend)
+
+
+@pytest.mark.parametrize("parameters", [(Json({}),), ([Json({})],), ({"doc": Json({})},)])
+def test_async_json_is_rejected_before_core_execute(parameters):
+    from mssql_python.async_query.async_execute import execute
+
+    core = Mock()
+    cursor = SimpleNamespace(_py_core_async_cursor=core)
+    with pytest.raises(NotSupportedError, match="async"):
+        asyncio.run(execute(cursor, "SELECT ?", *parameters))
+    core.execute.assert_not_called()
+
+
+@pytest.mark.parametrize("sizes", [[SQL_SS_JSON], [(SQL_SS_JSON, 0, 0)]])
+def test_async_json_hint_is_rejected_before_core_call(sizes):
+    from mssql_python.async_query.async_cursor import _AsyncCursor
+
+    core = Mock()
+    cursor = SimpleNamespace(_py_core_async_cursor=core)
+    with pytest.raises(NotSupportedError, match="async"):
+        _AsyncCursor.setinputsizes(cursor, sizes)
+    core.setinputsizes.assert_not_called()
+    _AsyncCursor.setinputsizes(cursor, None)
+    core.setinputsizes.assert_called_once_with(None)
+
+
+def test_sync_json_name_does_not_replace_async_symbol(monkeypatch):
+    from mssql_python import async_query
+    from mssql_python.async_query.async_cursor import _AsyncCursor
+
+    py_core = ModuleType("mssql_py_core")
+    py_core.SQL_JSON = 244
+    monkeypatch.setattr(async_query, "load_py_core", lambda: py_core)
+    core = Mock()
+    cursor = SimpleNamespace(_py_core_async_cursor=core)
+    _AsyncCursor.setinputsizes(cursor, [async_query.SQL_JSON])
+    core.setinputsizes.assert_called_once_with([244])
+    with pytest.raises(NotSupportedError, match="async"):
+        _AsyncCursor.setinputsizes(cursor, [SQL_JSON])
+
+
+def test_async_json_batch_guard_preserves_iterator_boundary():
+    from mssql_python.async_query.async_execute import executemany
+
+    consumed = []
+
+    def rows():
+        consumed.append("first")
+        yield (Json({}),)
+        consumed.append("tail")
+        yield (1,)
+
+    async def consume(_operation, parameters, **_kwargs):
+        list(parameters)
+
+    core = SimpleNamespace(executemany=consume)
+    cursor = SimpleNamespace(_check_closed=lambda: None, _py_core_async_cursor=core)
+    with pytest.raises(NotSupportedError, match="async"):
+        asyncio.run(executemany(cursor, "SELECT ?", rows()))
+    assert consumed == ["first"]
+
+
+@pytest.fixture
+def json_connection(conn_str):
+    """Run preview success cases on a server isolated from shipped-driver CI legs."""
+    if os.environ.get("MSSQL_TEST_NATIVE_JSON") != "1":
+        pytest.skip("Set MSSQL_TEST_NATIVE_JSON=1 with a qualified JSON provider and server")
+    with connect(conn_str) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT CAST(N'{}' AS JSON) OPTION (RECOMPILE)")
+            assert cursor._column_sql_types == [SQL_SS_JSON], "Provider must report native JSON"
+        yield connection
+
+
+@pytest.mark.skipif(
+    os.environ.get("MSSQL_TEST_NATIVE_JSON") == "1",
+    reason="Unsupported-bind regression requires the shipped driver, not the JSON preview",
+)
+@pytest.mark.parametrize("operation", ["execute", "executemany"])
+def test_json_unsupported_bind_preserves_diagnostics_and_cursor_reuse(
+    db_connection, monkeypatch, operation
+):
+    from mssql_python import ddbc_bindings, get_native_provider_info
+
+    if get_native_provider_info()["id"] != "msodbcsql18":
+        pytest.skip("Tests native HY004 translation, not the alternate-provider Python guard")
+
+    with db_connection.cursor() as cursor:
+        cursor.execute("CREATE TABLE #json_hy004 (id INT, doc NVARCHAR(MAX))")
+        try:
+            scalar = Mock(wraps=ddbc_bindings.DDBCSQLExecute)
+            array = Mock(wraps=ddbc_bindings.SQLExecuteMany)
+            monkeypatch.setattr(ddbc_bindings, "DDBCSQLExecute", scalar)
+            monkeypatch.setattr(ddbc_bindings, "SQLExecuteMany", array)
+            sql = "INSERT INTO #json_hy004 VALUES (?, ?)"
+            with pytest.raises(NotSupportedError) as caught:
+                if operation == "execute":
+                    cursor.execute(sql, 1, Json({}))
+                else:
+                    cursor.executemany(sql, [(1, Json({})), (2, Json([])), (3, None)])
+
+            error = caught.value
+            assert error.sqlstate == "HY004"
+            assert error.native_error == 0
+            assert error.ddbc_error == "[Microsoft]Invalid SQL data type"
+            assert error.ddbc_error in str(error)
+            assert "does not support native JSON binding" in str(error)
+            assert scalar.call_count == (1 if operation == "execute" else 0)
+            assert array.call_count == (1 if operation == "executemany" else 0)
+            with db_connection.cursor() as verifier:
+                assert verifier.execute("SELECT COUNT(*) FROM #json_hy004").fetchval() == 0
+
+            # Reuse the same statement before a different query can reset its binding state.
+            if operation == "execute":
+                cursor.execute(sql, 4, "recovered")
+            else:
+                cursor.executemany(sql, [(4, "recovered"), (5, None)])
+            cursor.execute("SELECT id, doc FROM #json_hy004 ORDER BY id")
+            expected = [(4, "recovered")]
+            if operation == "executemany":
+                expected.append((5, None))
+            assert [tuple(row) for row in cursor.fetchall()] == expected
+        finally:
+            cursor.execute("DROP TABLE #json_hy004")
+
+
+@pytest.mark.skipif(
+    os.environ.get("MSSQL_TEST_NATIVE_JSON") == "1",
+    reason="Legacy metadata regression requires the shipped driver",
+)
+@pytest.mark.parametrize("method", ["fetchone", "fetchmany", "fetchall"])
+@pytest.mark.parametrize("mode", ["text", "objects"])
+def test_json_legacy_varchar_results(conn_str, method, mode):
+    from mssql_python import get_native_provider_info
+
+    if get_native_provider_info()["id"] != "msodbcsql18":
+        pytest.skip("Tests the classic shipped driver's JSON-as-VARCHAR path")
+    with connect(conn_str) as connection, connection.cursor() as cursor:
+        if cursor.execute("SELECT TYPE_ID(N'json')").fetchval() is None:
+            pytest.skip("Server does not support JSON")
+        cursor.json_output = mode
+        for size in [1, 9000, 20000]:
+            text = json.dumps(
+                {"v": "x" * size + "\U0001f600\u4e2d\u00e9"},
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            # Different driver capabilities must not reuse this statement's result metadata.
+            cursor.execute("SELECT CAST(? AS JSON) AS doc OPTION (RECOMPILE)", text)
+            assert cursor._column_sql_types == [12]
+            result = getattr(cursor, method)()
+            value = result[0] if method == "fetchone" else result[0][0]
+            assert value == text
+            assert type(value) is str
+
+
+@pytest.mark.parametrize("fetch", ["fetchone", "fetchmany", "fetchall", "fetchval", "iteration"])
+@pytest.mark.parametrize("mode", ["text", "objects"])
+@pytest.mark.parametrize("serialized", [False, True])
+def test_json_fetch_modes(json_connection, fetch, mode, serialized):
+    expected = {"nested": [None, True, 1.25, "\U0001f600", "\x00"]}
+    value = json.dumps(expected, ensure_ascii=False) if serialized else expected
+    with json_connection.cursor() as cursor:
+        cursor.json_output = mode
+        cursor.execute("SELECT ? AS doc", Json(value))
+        assert cursor._column_sql_types == [SQL_SS_JSON]
+        assert cursor.description[0][1] is str
+        if fetch == "fetchval":
+            actual = cursor.fetchval()
+        elif fetch == "iteration":
+            actual = next(cursor)[0]
+        elif fetch in ("fetchmany", "fetchall"):
+            actual = getattr(cursor, fetch)()[0][0]
+        else:
+            actual = cursor.fetchone()[0]
+        assert (json.loads(actual) if mode == "text" else actual) == expected
+
+
+@pytest.mark.parametrize("size", [10, 4000, 4001, 70000])
+def test_json_large_array_binding_and_nulls(json_connection, size):
+    document = {"payload": "\U0001f600" * size}
+    with json_connection.cursor() as cursor:
+        cursor.execute("CREATE TABLE #json_batch (id INT, doc JSON NULL)")
+        rows = [(0, None), (1, Json(document)), (2, Json([]))]
+        cursor.executemany("INSERT INTO #json_batch VALUES (?, ?)", rows)
+        cursor.setinputsizes([4, SQL_JSON])
+        cursor.executemany("INSERT INTO #json_batch VALUES (?, ?)", [(3, None), (4, None)])
+        cursor.setinputsizes([4, SQL_JSON])
+        cursor.execute("INSERT INTO #json_batch VALUES (?, ?)", 5, None)
+        cursor.json_output = "objects"
+        cursor.execute("SELECT doc FROM #json_batch ORDER BY id")
+        assert [row[0] for row in cursor.fetchall()] == [None, document, [], None, None, None]
+        assert isinstance(rows[1][1], Json)
+
+
+def test_json_array_native_binding_contract(json_connection, monkeypatch):
+    from mssql_python import ddbc_bindings
+
+    execute_many = ddbc_bindings.SQLExecuteMany
+    observed = []
+
+    def bind(handle, sql, columns, infos, count, encoding):
+        observed.append([(info.paramSQLType, info.paramCType) for info in infos])
+        return execute_many(handle, sql, columns, infos, count, encoding)
+
+    monkeypatch.setattr(ddbc_bindings, "SQLExecuteMany", bind)
+    with json_connection.cursor() as cursor:
+        cursor.execute("CREATE TABLE #json_contract (doc JSON NULL)")
+        text = ' \n{"u":"\\u0000\\u03bb"}\t'
+        parameter = Json(text)
+        cursor.executemany(
+            "INSERT INTO #json_contract VALUES (?)",
+            [(None,), (Json({}),), (Json([]),), (parameter,)],
+        )
+        assert observed == [[(SQL_SS_JSON, -8)]]
+        assert parameter._text is text
+        cursor.json_output = "objects"
+        cursor.execute("SELECT doc FROM #json_contract")
+        assert [row[0] for row in cursor.fetchall()] == [None, {}, [], {"u": "\x00\u03bb"}]
+
+
+def test_json_batch_with_sparse_companion_hint(json_connection):
+    with json_connection.cursor() as cursor:
+        cursor.execute("CREATE TABLE #json_sparse (id INT, doc JSON)")
+        # Row-wise JSON binding uses this internal shape for inferred companions.
+        cursor._inputsizes = [None, (SQL_JSON, -8, 0, 0)]
+        cursor.executemany("INSERT INTO #json_sparse VALUES (?, ?)", [(1, Json({})), (2, None)])
+        cursor.json_output = "objects"
+        cursor.execute("SELECT id, doc FROM #json_sparse ORDER BY id")
+        assert [tuple(row) for row in cursor.fetchall()] == [(1, {}), (2, None)]
+
+
+@pytest.mark.parametrize("units", [4000, 4001, 1000008])
+def test_json_batch_streaming_selection(json_connection, monkeypatch, units):
+    from mssql_python import ddbc_bindings
+
+    text = '{"v":"' + "\U0001f600" * ((units - 8) // 2) + "x" * ((units - 8) % 2) + '"}'
+    assert len(text.encode("utf-16-le")) // 2 == units
+    dispatch = Mock(wraps=ddbc_bindings.SQLExecuteMany)
+    if units > 4000:
+        dispatch.side_effect = AssertionError("Oversized JSON must not use padded array binding")
+    monkeypatch.setattr(ddbc_bindings, "SQLExecuteMany", dispatch)
+    with json_connection.cursor() as cursor:
+        cursor.execute("CREATE TABLE #json_stream (id INT, doc JSON)")
+        values = [None, Json({}), Json(text), Json([])]
+        if units > 1000000:
+            values.extend([Json({})] * 1020)
+        cursor.executemany(
+            "INSERT INTO #json_stream VALUES (?, ?)",
+            list(enumerate(values)),
+        )
+        assert dispatch.call_count == (1 if units == 4000 else 0)
+        assert cursor.rowcount == len(values)
+        cursor.json_output = "objects"
+        cursor.execute("SELECT doc FROM #json_stream ORDER BY id")
+        assert [row[0] for row in cursor.fetchall()] == [
+            None if value is None else json.loads(value._text) for value in values
+        ]
+
+
+def test_json_reuse_does_not_reencode_for_sizing(json_connection):
+    class NoEncoding(str):
+        def encode(self, *args, **kwargs):
+            raise AssertionError("Validated JSON must not be encoded again merely for sizing")
+
+    parameter = Json({"v": "\U0001f600"})
+    # Keep identical validated content; native buffer conversion need not call str.encode().
+    object.__setattr__(parameter, "_text", NoEncoding(parameter._text))
+    with json_connection.cursor() as cursor:
+        cursor.execute("CREATE TABLE #json_reuse (doc JSON)")
+        cursor.executemany("INSERT INTO #json_reuse VALUES (?)", [(parameter,), (None,)])
+        cursor.execute("INSERT INTO #json_reuse VALUES (?)", parameter)
+        cursor.json_output = "objects"
+        cursor.execute("SELECT doc FROM #json_reuse")
+        assert [row[0] for row in cursor.fetchall()] == [
+            {"v": "\U0001f600"},
+            None,
+            {"v": "\U0001f600"},
+        ]
+
+
+def test_json_decode_state_cleared_on_no_results(json_connection):
+    with json_connection.cursor() as cursor:
+        cursor.json_output = "objects"
+        cursor.execute("SELECT CAST(N'{}' AS JSON)")
+        assert cursor._json_decode_indices == (0,)
+        cursor.execute("CREATE TABLE #json_no_results (id INT)")
+        assert cursor._json_decode_indices == ()
+        cursor.execute("SELECT CAST(N'{}' AS JSON); INSERT INTO #json_no_results VALUES(1)")
+        assert cursor.fetchone()[0] == {}
+        assert cursor.nextset()
+        assert cursor._json_decode_indices == ()
+        assert not cursor.nextset()
+        assert cursor._json_decode_indices == ()
+
+
+def test_native_malformed_hints_raise_without_crashing(db_connection):
+    script = """
+import os
+from mssql_python import connect, ddbc_bindings
+with connect(os.environ["DB_CONNECTION_STRING"]) as connection:
+    with connection.cursor() as cursor:
+        for hints in [(), [()], [42], [[]], [(4,)], [(-157,)]]:
+            try:
+                ddbc_bindings.DDBCSQLExecute(
+                    cursor.hstmt, "SELECT ?", [1], hints, [False], True,
+                    cursor._get_encoding_settings()
+                )
+            except TypeError:
+                pass
+            else:
+                raise AssertionError("Malformed native hint accepted")
+        assert cursor.execute("SELECT ?", 42).fetchval() == 42
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script], capture_output=True, text=True, timeout=30
+    )
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["", "text", "{", "null", '"text"', "1", "true", '{}\x00{"extra":1}'],
+    ids=["empty", "malformed", "incomplete", "null", "string", "number", "boolean", "nul"],
+)
+def test_json_text_server_rejection_and_prepared_recovery(json_connection, text):
+    from mssql_python import DatabaseError
+
+    parameter = Json(text)
+    with json_connection.cursor() as cursor:
+        cursor.json_output = "objects"
+        assert cursor.execute("SELECT ?", Json("{}"), reset_cursor=False).fetchval() == {}
+        with pytest.raises(DatabaseError) as error:
+            cursor.execute("SELECT ?", parameter, reset_cursor=False).fetchall()
+        assert error.value.args
+        assert cursor.execute("SELECT ?", Json("[]"), reset_cursor=False).fetchval() == []
+        assert cursor._column_sql_types == [SQL_JSON]
+
+
+def test_json_text_duplicate_keys_reach_server_unchanged(json_connection):
+    text = ' \n{"key":1,"key":2,"escaped":"\\u0000\\u03bb"}\t'
+    parameter = Json(text)
+    with json_connection.cursor() as cursor:
+        cursor.execute(
+            "SELECT ? AS doc, JSON_VALUE(?, '$.key') AS first_value", parameter, parameter
+        )
+        assert cursor._column_sql_types[0] == SQL_JSON
+        row = cursor.fetchone()
+        assert row.first_value == "1"
+        assert json.loads(row.doc)["escaped"] == "\x00\u03bb"
+        assert parameter._text is text
+
+
+@pytest.mark.parametrize("streamed", [False, True])
+def test_json_text_mixed_wrappers_hints_and_nulls(json_connection, streamed):
+    expected = [None, {"d": []}, [1], {"u": "\x00\u03bb\U0001f600"}, None]
+    values = [
+        None,
+        Json(expected[1]),
+        Json(expected[2]),
+        Json(' {"u":"\\u0000\u03bb\U0001f600"} '),
+        None,
+    ]
+    companion = "x" * (12000 if streamed else 1)
+    with json_connection.cursor() as cursor:
+        cursor.execute("CREATE TABLE #json_sources (id INT, doc JSON, txt NVARCHAR(MAX))")
+        cursor.setinputsizes([4, SQL_JSON, (-10 if streamed else -9, len(companion), 0)])
+        cursor.executemany(
+            "INSERT INTO #json_sources VALUES (?, ?, ?)",
+            [(i, value, companion) for i, value in enumerate(values)],
+        )
+        cursor.json_output = "objects"
+        cursor.execute("SELECT doc, LEN(txt) FROM #json_sources ORDER BY id")
+        assert [tuple(row) for row in cursor.fetchall()] == [
+            (value, len(companion)) for value in expected
+        ]
+
+
+@pytest.mark.parametrize("json_first", [False, True])
+def test_json_rowwise_mixed_companion_preserves_column_positions(json_connection, json_first):
+    rows = [
+        (None, None, None),
+        (1, Json("{}"), Json("[]")),
+        ("two", None, Json({"v": 1})),
+        (2.5, Json([]), None),
+    ]
+    expected = [(None, None, None), (1, {}, []), ("two", None, {"v": 1}), (2.5, [], None)]
+    columns = "value SQL_VARIANT, doc JSON, other JSON"
+    if json_first:
+        rows = [(doc, value, other) for value, doc, other in rows]
+        expected = [(doc, value, other) for value, doc, other in expected]
+        columns = "doc JSON, value SQL_VARIANT, other JSON"
+    with json_connection.cursor() as cursor:
+        cursor.execute(f"CREATE TABLE #json_rowwise (id INT IDENTITY, {columns})")
+        cursor.executemany("INSERT INTO #json_rowwise VALUES (?, ?, ?)", rows)
+        assert cursor.rowcount == len(rows)
+        cursor.json_output = "objects"
+        cursor.execute("SELECT * FROM #json_rowwise ORDER BY id")
+        assert [tuple(row)[1:] for row in cursor.fetchall()] == expected
+
+
+def test_json_rowwise_numeric_override_preserves_normalization(json_connection):
+    with json_connection.cursor() as cursor:
+        cursor.execute(
+            "CREATE TABLE #json_numeric (id INT IDENTITY, doc JSON, n DECIMAL(6,2), "
+            "txt NVARCHAR(MAX))"
+        )
+        cursor.setinputsizes([SQL_JSON, (3, 6, 2), (-10, 12000, 0)])
+        cursor.executemany(
+            "INSERT INTO #json_numeric VALUES (?, ?, ?)",
+            [(None, "1.25", "x" * 12000), (Json("{}"), Decimal("-2.5"), "y" * 12000)],
+        )
+        assert cursor.rowcount == 2
+        cursor.json_output = "objects"
+        cursor.execute("SELECT doc, n, LEN(txt) FROM #json_numeric ORDER BY id")
+        assert [tuple(row) for row in cursor.fetchall()] == [
+            (None, Decimal("1.25"), 12000),
+            ({}, Decimal("-2.50"), 12000),
+        ]
+
+
+@pytest.mark.parametrize("streamed", [False, True])
+def test_json_invalid_text_batch_explicit_rollback(json_connection, streamed):
+    from mssql_python import DatabaseError
+
+    companion = "x" * (12000 if streamed else 1)
+    with json_connection.cursor() as cursor:
+        cursor.execute("CREATE TABLE #json_transaction (doc JSON, txt NVARCHAR(MAX))")
+        json_connection.commit()
+        with pytest.raises(DatabaseError):
+            cursor.executemany(
+                "INSERT INTO #json_transaction VALUES (?, ?)",
+                [(Json("{}"), companion), (Json("invalid"), companion)],
+            )
+        json_connection.rollback()
+        assert cursor.execute("SELECT COUNT(*) FROM #json_transaction").fetchval() == 0
+        cursor.json_output = "objects"
+        assert cursor.execute("SELECT ?", Json('{"recovered":true}')).fetchval() == {
+            "recovered": True
+        }
+
+
+@pytest.mark.parametrize("mode", ["text", "objects"])
+def test_json_result_reinsertion_in_either_mode(json_connection, mode):
+    with json_connection.cursor() as cursor:
+        cursor.execute("CREATE TABLE #json_reinsert (id INT, doc JSON)")
+        cursor.json_output = mode
+        sources = [Json('{"v":[1,null]}'), Json('["\\u03bb"]'), None]
+        for i, source in enumerate(sources):
+            cursor.setinputsizes([SQL_JSON])
+            row = cursor.execute("SELECT ? AS payload", source).fetchone()
+            parameter = None if row.payload is None else Json(row.payload)
+            cursor.setinputsizes([4, SQL_JSON])
+            cursor.execute("INSERT INTO #json_reinsert VALUES (?, ?)", i, parameter)
+        cursor.json_output = "objects"
+        cursor.execute("SELECT doc FROM #json_reinsert ORDER BY id")
+        assert [row[0] for row in cursor.fetchall()] == [{"v": [1, None]}, ["\u03bb"], None]
+
+
+@pytest.mark.parametrize("hinted", [False, True])
+def test_classic_execute_does_not_scan_json_values_or_hints(db_connection, monkeypatch, hinted):
+    import mssql_python.cursor as cursor_module
+    from mssql_python.odbc_provider import ProviderManager
+
+    checks = []
+    hint_scans = []
+    original_isinstance = isinstance
+
+    def counted_isinstance(value, cls):
+        if cls is Json:
+            checks.append(value)
+        return original_isinstance(value, cls)
+
+    class CountedHints(list):
+        def __iter__(self):
+            hint_scans.append(True)
+            return super().__iter__()
+
+    with db_connection.cursor() as cursor:
+        if hinted:
+            cursor.setinputsizes([4, 12])
+            cursor._inputsizes = CountedHints(cursor._inputsizes)
+        monkeypatch.setattr(ProviderManager, "effective", lambda: "msodbcsql18")
+        monkeypatch.setattr(cursor_module, "isinstance", counted_isinstance, raising=False)
+        cursor.execute("SELECT ?, ?", 42, "ordinary")
+        assert checks == []
+        assert hint_scans == []
+        assert tuple(cursor.fetchone()) == (42, "ordinary")
+
+
+@pytest.mark.parametrize("hinted_null", [False, True])
+def test_json_provider_rejection_does_not_switch(db_connection, monkeypatch, hinted_null):
+    from mssql_python import ddbc_bindings
+    from mssql_python.odbc_provider import ProviderManager
+
+    monkeypatch.setattr(ProviderManager, "effective", lambda: "mssql-odbc")
+    with db_connection.cursor() as cursor:
+        dispatch = Mock(wraps=ddbc_bindings.DDBCSQLExecute)
+        monkeypatch.setattr(ddbc_bindings, "DDBCSQLExecute", dispatch)
+        if hinted_null:
+            cursor.setinputsizes([4, SQL_JSON])
+        with pytest.raises(NotSupportedError, match="msodbcsql18"):
+            cursor.execute("SELECT ?, ?", 42, None if hinted_null else Json({}))
+        dispatch.assert_not_called()
+        cursor.setinputsizes(None)
+        cursor.execute("SELECT ?", 42)
+        assert cursor.fetchval() == 42
+
+
+@pytest.mark.parametrize("batch", [False, True])
+@pytest.mark.parametrize(
+    "text",
+    ["{}", "[]", '{}\x00{"extra":1}', '{"v":"' + "x" * 12000 + '"}'],
+    ids=["object", "array", "nul", "large"],
+)
+def test_json_hint_rejects_serialized_strings_before_insert(json_connection, batch, text):
+    with json_connection.cursor() as cursor:
+        cursor.execute("CREATE TABLE #json_text_reject (doc JSON)")
+        cursor.setinputsizes([SQL_JSON])
+        with pytest.raises(TypeError, match="SQL_JSON requires Json or None"):
+            if batch:
+                cursor.executemany("INSERT INTO #json_text_reject VALUES (?)", [(text,)])
+            else:
+                cursor.execute("INSERT INTO #json_text_reject VALUES (?)", text)
+        cursor.setinputsizes(None)
+        cursor.execute("SELECT COUNT(*) FROM #json_text_reject")
+        assert cursor.fetchval() == 0
+
+
+@pytest.mark.parametrize("hinted", [False, True])
+@pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.parametrize("streamed_companion", [False, True])
+@pytest.mark.parametrize("serialized", [False, True])
+def test_json_mixed_string_batch_rejects_before_dispatch(
+    json_connection, hinted, reverse, streamed_companion, serialized
+):
+    with json_connection.cursor() as cursor:
+        cursor.execute("CREATE TABLE #json_mixed (doc JSON NULL, txt NVARCHAR(MAX))")
+        text = "x" * (12000 if streamed_companion else 1)
+        rows = [(Json("{}" if serialized else {}), text), ("[]", text)]
+        if reverse:
+            rows.reverse()
+        if hinted:
+            cursor.setinputsizes([SQL_JSON, (-9, 0, 0)])
+        with pytest.raises(TypeError, match="SQL_JSON requires Json or None"):
+            cursor.executemany("INSERT INTO #json_mixed VALUES (?, ?)", rows)
+        cursor.setinputsizes(None)
+        cursor.execute("SELECT COUNT(*) FROM #json_mixed")
+        assert cursor.fetchval() == 0
+
+
+@pytest.mark.parametrize("batch", [False, True])
+def test_unhinted_string_json_inserts_remain_supported(json_connection, batch):
+    values = ["{}", '["\\u03bb"]', '{"v":"' + "x" * 12000 + '"}']
+    with json_connection.cursor() as cursor:
+        cursor.execute("CREATE TABLE #json_legacy (id INT, doc JSON)")
+        rows = list(enumerate(values))
+        if batch:
+            cursor.executemany("INSERT INTO #json_legacy VALUES (?, ?)", rows)
+        else:
+            for row in rows:
+                cursor.execute("INSERT INTO #json_legacy VALUES (?, ?)", row)
+        cursor.json_output = "objects"
+        cursor.execute("SELECT doc FROM #json_legacy ORDER BY id")
+        assert [row[0] for row in cursor.fetchall()] == [json.loads(value) for value in values]
+
+
+def test_json_semantic_hint_accepts_wrappers_and_nulls(json_connection):
+    with json_connection.cursor() as cursor:
+        cursor.execute("CREATE TABLE #json_hint (id INT, doc JSON NULL)")
+        cursor.setinputsizes([4, SQL_JSON])
+        cursor.execute("INSERT INTO #json_hint VALUES (?, ?)", 0, Json({}))
+        cursor.setinputsizes([4, SQL_JSON])
+        cursor.executemany("INSERT INTO #json_hint VALUES (?, ?)", [(1, Json([])), (2, None)])
+        cursor.json_output = "objects"
+        cursor.execute("SELECT doc FROM #json_hint ORDER BY id")
+        assert [row[0] for row in cursor.fetchall()] == [{}, [], None]
+
+
+def test_json_execution_snapshot_and_nextset(json_connection):
+    with json_connection.cursor() as cursor:
+        cursor.json_output = "objects"
+        cursor.execute("SELECT CAST(N'[]' AS JSON); SELECT CAST(N'{}' AS JSON)")
+        cursor.json_output = "text"
+        assert cursor.fetchone()[0] == []
+        assert cursor.nextset()
+        assert cursor.fetchone()[0] == {}
+        cursor.execute("SELECT CAST(N'[]' AS JSON)")
+        assert isinstance(cursor.fetchone()[0], str)
+
+
+@pytest.mark.parametrize("method", ["fetchone", "fetchmany", "fetchval", "iteration"])
+def test_json_warm_fetch_and_mode_changes(json_connection, method):
+    def read(cursor):
+        if method == "fetchval":
+            return cursor.fetchval()
+        if method == "iteration":
+            return next(cursor)[0]
+        if method == "fetchmany":
+            return cursor.fetchmany(1)[0][0]
+        return cursor.fetchone()[0]
+
+    with json_connection.cursor() as cursor:
+        query = "SELECT CAST(N'{}' AS JSON) FROM (VALUES(1),(2),(3),(4),(5)) t(id)"
+        cursor.execute(query)
+        assert [read(cursor) for _ in range(3)] == ["{}"] * 3
+        cursor.json_output = "objects"
+        assert [read(cursor) for _ in range(2)] == ["{}"] * 2
+        cursor.execute(query)
+        assert [read(cursor) for _ in range(5)] == [{}] * 5
+        cursor.json_output = "text"
+        cursor.execute(query)
+        assert [read(cursor) for _ in range(5)] == ["{}"] * 5
+
+
+def test_json_converters_nulls_and_text_columns(json_connection):
+    with json_connection.cursor() as cursor:
+        cursor.json_output = "objects"
+        cursor.execute(
+            "SELECT CAST(N'{}' AS JSON), CAST(N'[]' AS NVARCHAR(MAX)), CAST(NULL AS JSON)"
+        )
+        assert tuple(cursor.fetchone()) == ({}, "[]", None)
+        converter = Mock(return_value="custom")
+        json_connection.add_output_converter(SQL_SS_JSON, converter)
+        cursor.execute("SELECT CAST(N'{}' AS JSON), CAST(NULL AS JSON)")
+        assert tuple(cursor.fetchone()) == ("custom", None)
+        converter.assert_called_once_with("{}".encode("utf-16-le"))
+        json_connection.remove_output_converter(SQL_SS_JSON)
+        cursor.execute("SELECT CAST(N'{}' AS JSON)")
+        assert cursor.fetchone()[0] == {}
+
+
+def test_json_parse_once_and_independent_rows(json_connection, monkeypatch):
+    import mssql_python.cursor as cursor_module
+
+    decode = Mock(wraps=_decode_json)
+    monkeypatch.setattr(cursor_module, "_decode_json", decode)
+    with json_connection.cursor() as cursor:
+        cursor.json_output = "objects"
+        cursor.execute("SELECT CAST(N'{\"v\":[]}' AS JSON) FROM (VALUES(1),(2),(3)) t(id)")
+        rows = [cursor.fetchone(), *cursor.fetchmany(2)]
+        assert decode.call_count == 3
+        rows[0][0]["v"].append(1)
+        assert rows[1][0] == rows[2][0] == {"v": []}
+
+
+def test_json_parameter_styles_and_streamed_companion(json_connection):
+    with json_connection.cursor() as cursor:
+        cursor.execute("CREATE TABLE #json_stream (doc JSON NULL, txt NVARCHAR(MAX))")
+        cursor.executemany(
+            "INSERT INTO #json_stream VALUES (%(doc)s, %(txt)s)",
+            [{"doc": None, "txt": "x" * 12000}, {"doc": Json([1]), "txt": "y" * 12000}],
+        )
+        cursor.json_output = "objects"
+        cursor.execute("SELECT doc, LEN(txt) FROM #json_stream ORDER BY txt")
+        assert [tuple(row) for row in cursor.fetchall()] == [(None, 12000), ([1], 12000)]
+        cursor.execute("SELECT CAST(%(doc)s AS JSON)", {"doc": Json({"v": 1})})
+        assert cursor.fetchval() == {"v": 1}
+        cursor.execute("SELECT ?, ?", [1, 2])
+        assert tuple(cursor.fetchone()) == (1, 2)
+
+
+def test_json_large_scalar_and_cursor_reuse(json_connection):
+    with json_connection.cursor() as cursor:
+        cursor.json_output = "objects"
+        for value in [{}, {"v": "\U0001f600" * 70000}, []]:
+            cursor.execute("SELECT CAST(? AS JSON)", Json(value))
+            assert cursor.fetchval() == value
+        cursor.setinputsizes([SQL_JSON])
+        cursor.execute("SELECT CAST(? AS JSON)", None)
+        assert cursor.fetchval() is None
+
+
+@pytest.mark.parametrize("method", ["fetchone", "fetchmany", "fetchall"])
+def test_json_parse_errors_propagate_from_fetch(json_connection, monkeypatch, method):
+    from mssql_python import ddbc_bindings
+
+    def invalid_result(handle, rows, *args):
+        values = ["{}", '{"private-payload":']
+        rows.extend(values if method == "fetchone" else [values])
+        return 0
+
+    with json_connection.cursor() as cursor:
+        cursor.json_output = "objects"
+        cursor.execute("SELECT CAST(N'{}' AS JSON) AS valid, CAST(N'{}' AS JSON) AS broken")
+        native_method = {
+            "fetchone": "DDBCSQLFetchOne",
+            "fetchmany": "DDBCSQLFetchMany",
+            "fetchall": "DDBCSQLFetchAll",
+        }[method]
+        monkeypatch.setattr(ddbc_bindings, native_method, invalid_result)
+        with pytest.raises(DataError, match="column 2.*broken") as caught:
+            getattr(cursor, method)()
+        assert "private-payload" not in str(caught.value)
+        assert isinstance(caught.value.__cause__, DataError)
+
+
+@pytest.mark.parametrize("method", ["fetchone", "fetchmany", "fetchall"])
+@pytest.mark.parametrize("mode", ["text", "objects"])
+def test_json_callproc_execution_snapshot_and_nextset(json_connection, monkeypatch, method, mode):
+    import mssql_python.cursor as cursor_module
+
+    decode = Mock(wraps=_decode_json)
+    monkeypatch.setattr(cursor_module, "_decode_json", decode)
+    with json_connection.cursor() as cursor:
+        cursor.execute(
+            "CREATE PROCEDURE #json_results AS BEGIN SET NOCOUNT ON; "
+            "SELECT CAST(N'{\"v\":[]}' AS JSON) AS doc FROM (VALUES(1),(2)) t(id); "
+            "SELECT CAST(NULL AS JSON) AS doc; "
+            "SELECT N'ordinary' AS txt; "
+            "SELECT CAST(N'[]' AS JSON) AS doc; END"
+        )
+        cursor.json_output = mode
+        cursor.callproc("#json_results")
+        cursor.json_output = "text" if mode == "objects" else "objects"
+        cursor.arraysize = 2
+        if method == "fetchone":
+            values = [cursor.fetchone()[0], cursor.fetchone()[0]]
+        else:
+            values = [row[0] for row in getattr(cursor, method)()]
+        expected = {"v": []} if mode == "objects" else '{"v":[]}'
+        assert values == [expected, expected]
+        if mode == "objects":
+            values[0]["v"].append("independent")
+            assert values[1] == {"v": []}
+        assert cursor.nextset()
+        assert cursor.fetchval() is None
+        assert cursor.nextset()
+        assert cursor.fetchval() == "ordinary"
+        assert cursor.nextset()
+        assert cursor.fetchval() == ([] if mode == "objects" else "[]")
+        assert not cursor.nextset()
+        assert cursor._json_decode_indices == ()
+        assert decode.call_count == (3 if mode == "objects" else 0)
+
+        cursor.callproc("#json_results")
+        assert cursor.fetchval() == ('{"v":[]}' if mode == "objects" else {"v": []})
+
+
+@pytest.mark.parametrize("execution", ["execute", "callproc"])
+@pytest.mark.parametrize("key", [SQL_JSON, str, -9], ids=["json", "python-str", "wvarchar"])
+def test_json_fallback_converter_precedence_and_batch_snapshot(json_connection, execution, key):
+    calls = []
+
+    def converter(raw):
+        calls.append(raw)
+        json_connection.remove_output_converter(key)
+        return "converted"
+
+    with json_connection.cursor() as cursor:
+        query = 'SELECT CAST(N\'{"a":"x"}\' AS JSON) AS doc ' "FROM (VALUES(1),(2),(3)) t(id)"
+        if execution == "callproc":
+            cursor.execute(
+                f"CREATE PROCEDURE #json_converter AS BEGIN SET NOCOUNT ON; {query}; END"
+            )
+        cursor.json_output = "objects"
+        json_connection.add_output_converter(key, converter)
+        if execution == "callproc":
+            cursor.callproc("#json_converter")
+        else:
+            cursor.execute(query)
+        assert [row[0] for row in cursor.fetchmany(2)] == ["converted", "converted"]
+        assert calls == ['{"a":"x"}'.encode("utf-16-le")] * 2
+        assert cursor.fetchval() == {"a": "x"}
+
+
+@pytest.mark.parametrize("method", ["fetchone", "fetchmany", "fetchall"])
+@pytest.mark.parametrize("mode", ["text", "objects"])
+def test_json_later_unicode_read_boundaries(json_connection, method, mode):
+    with json_connection.cursor() as cursor:
+        cursor.json_output = mode
+        for boundary in [4095, 8190, 12285, 16380]:
+            for offset in [-1, 0, 1]:
+                value = {"v": "a" * (boundary - 6 + offset) + "\U0001f600\u4e2d\u00e9" + "z" * 5000}
+                parameter = Json(value)
+                cursor.execute("SELECT ?", parameter)
+                result = getattr(cursor, method)()
+                actual = result[0] if method == "fetchone" else result[0][0]
+                assert actual == (value if mode == "objects" else parameter._text)
+
+
+def test_json_unhinted_null_describe_on_permanent_table(json_connection):
+    table = "json_null_" + uuid.uuid4().hex
+    with json_connection.cursor() as cursor:
+        cursor.execute(f"CREATE TABLE [{table}] (id INT, doc JSON)")
+        try:
+            cursor.execute(f"INSERT INTO [{table}] VALUES (?, ?)", 1, None)
+            cursor.executemany(f"INSERT INTO [{table}] VALUES (?, ?)", [(2, None), (3, None)])
+            cursor.execute(f"INSERT INTO [{table}] VALUES (?, ?)", 4, Json({}))
+            cursor.execute(f"UPDATE [{table}] SET doc = ? WHERE id = ?", None, 4)
+            cursor.json_output = "objects"
+            cursor.execute(f"SELECT doc FROM [{table}] ORDER BY id")
+            assert cursor._column_sql_types == [SQL_JSON]
+            assert [row[0] for row in cursor.fetchall()] == [None] * 4
+        finally:
+            cursor.execute(f"DROP TABLE [{table}]")
+
+
+@pytest.mark.parametrize("batch", [False, True])
+def test_json_rejects_conflicting_hints_before_execution(json_connection, batch):
+    with json_connection.cursor() as cursor:
+        cursor.execute("CREATE TABLE #json_reject (doc JSON)")
+        cursor.setinputsizes([12])
+        with pytest.raises(TypeError, match="SQL_JSON"):
+            if batch:
+                cursor.executemany("INSERT INTO #json_reject VALUES (?)", [(Json({}),)])
+            else:
+                cursor.execute("INSERT INTO #json_reject VALUES (?)", Json({}))
+        cursor.setinputsizes(None)
+        cursor.execute("SELECT COUNT(*) FROM #json_reject")
+        assert cursor.fetchval() == 0
+
+
+@pytest.mark.parametrize("method", ["arrow", "arrow_batch", "arrow_reader"])
+def test_json_arrow_boundary_does_not_consume_rows(json_connection, method):
+    with json_connection.cursor() as cursor:
+        cursor.execute("SELECT CAST(N'{}' AS JSON)")
+        with pytest.raises(NotSupportedError, match="Arrow"):
+            getattr(cursor, method)()
+        assert json.loads(cursor.fetchone()[0]) == {}
+
+
+@pytest.mark.parametrize("base", [dict, list, str, int, float])
+def test_json_rejects_nested_subclasses(base):
+    class Custom(base):
+        pass
+
+    with pytest.raises(TypeError):
+        Json({"nested": [Custom()]})
+
+
+def test_json_snapshot_serialized_once_across_reuse(json_connection, monkeypatch):
+    dumps = Mock(wraps=json.dumps)
+    monkeypatch.setattr(json, "dumps", dumps)
+    original = {"child": [1, "\U0001f600"]}
+    parameter = Json(original)
+    original["child"].append("changed")
+    with json_connection.cursor() as cursor:
+        cursor.execute("CREATE TABLE #json_snapshot (doc JSON)")
+        cursor.execute("INSERT INTO #json_snapshot VALUES (?)", parameter)
+        cursor.executemany("INSERT INTO #json_snapshot VALUES (?)", [(parameter,)] * 3)
+        cursor.json_output = "objects"
+        cursor.execute("SELECT doc FROM #json_snapshot")
+        assert [row[0] for row in cursor.fetchall()] == [{"child": [1, "\U0001f600"]}] * 4
+    assert dumps.call_count == 1
+
+
+@pytest.mark.parametrize("units", [3999, 4000, 4001, 4097, 4098, 4099, 65534, 65535, 65536])
+@pytest.mark.parametrize("batch", [False, True])
+@pytest.mark.parametrize("serialized", [False, True])
+def test_json_exact_utf16_boundaries(json_connection, units, batch, serialized):
+    # Eight units belong to {"v":""}; at 4098 the surrogate pair crosses the
+    # 8192-byte SQLGetData buffer's 4095-unit payload boundary.
+    value = {"v": "a" * (units - 10) + "\U0001f600"}
+    parameter = Json(
+        json.dumps(value, ensure_ascii=False, separators=(",", ":")) if serialized else value
+    )
+    assert len(parameter._text.encode("utf-16-le")) // 2 == units
+    with json_connection.cursor() as cursor:
+        cursor.execute("CREATE TABLE #json_boundary (id INT, doc JSON)")
+        if batch:
+            cursor.executemany(
+                "INSERT INTO #json_boundary VALUES (?, ?)",
+                [(0, Json({})), (1, parameter), (2, Json([]))],
+            )
+        else:
+            for i, item in enumerate([Json({}), parameter, Json([])]):
+                cursor.execute("INSERT INTO #json_boundary VALUES (?, ?)", i, item)
+        cursor.json_output = "objects"
+        cursor.execute("SELECT doc FROM #json_boundary ORDER BY id")
+        assert [row[0] for row in cursor.fetchall()] == [{}, value, []]
+
+
+@pytest.mark.parametrize("batch", [False, True])
+@pytest.mark.parametrize("serialized", [False, True])
+def test_json_multiple_columns_unicode_and_large_lob(json_connection, batch, serialized):
+    value = {
+        '\x00\n"\\e\u0301\u4e2d\U0001f600': [
+            '\x00\b\f\n\r\t"\\',
+            "a" * 32758 + "\U0001f600",
+            "\U0001f600\u4e2d" * 350000,
+        ]
+    }
+    expected = [(value, [], "ordinary"), ({}, None, "companion")]
+    with json_connection.cursor() as cursor:
+        cursor.execute("CREATE TABLE #json_columns (id INT, a JSON, b JSON NULL, c NVARCHAR(20))")
+        parameter = Json(json.dumps(value, ensure_ascii=False) if serialized else value)
+        rows = [(0, parameter, Json([]), "ordinary"), (1, Json({}), None, "companion")]
+        if batch:
+            cursor.executemany("INSERT INTO #json_columns VALUES (?, ?, ?, ?)", rows)
+        else:
+            for row in rows:
+                cursor.setinputsizes([4, SQL_JSON, SQL_JSON, -9])
+                cursor.execute("INSERT INTO #json_columns VALUES (?, ?, ?, ?)", row)
+        cursor.json_output = "objects"
+        cursor.execute("SELECT a,b,c FROM #json_columns ORDER BY id")
+        assert [tuple(row) for row in cursor.fetchall()] == expected
+
+
+@pytest.mark.parametrize("method", ["fetchone", "fetchmany", "fetchall"])
+def test_json_converter_changes_between_fetches(json_connection, method):
+    def read(cursor):
+        if method == "fetchone":
+            return [cursor.fetchone()[0]]
+        if method == "fetchmany":
+            return [row[0] for row in cursor.fetchmany(1)]
+        return [row[0] for row in cursor.fetchall()]
+
+    query = "SELECT CAST(N'{}' AS JSON) FROM (VALUES(1),(2),(3),(4)) t(id)"
+    with json_connection.cursor() as cursor:
+        cursor.json_output = "objects"
+        cursor.execute(query)
+        assert cursor.fetchone()[0] == {}
+        json_connection.add_output_converter(str, lambda raw: "python-type")
+        assert cursor.fetchone()[0] == "python-type"
+        json_connection.add_output_converter(SQL_JSON, lambda raw: "native-type")
+        assert cursor.fetchone()[0] == "native-type"
+        json_connection.remove_output_converter(SQL_JSON)
+        json_connection.remove_output_converter(str)
+        assert read(cursor) == [{}]
+        cursor.execute(query)
+        json_connection.add_output_converter(SQL_JSON, lambda raw: "first")
+        assert cursor.fetchone()[0] == "first"
+        json_connection.add_output_converter(SQL_JSON, lambda raw: "replacement")
+        assert read(cursor) == ["replacement"] * (3 if method == "fetchall" else 1)
+
+
+@pytest.mark.parametrize("method", ["fetchmany", "fetchall"])
+@pytest.mark.parametrize("action", ["remove", "replace"])
+def test_json_converter_mutation_preserves_batch_snapshot(json_connection, method, action):
+    calls = []
+
+    def converter(raw):
+        calls.append(raw)
+        if action == "remove":
+            json_connection.remove_output_converter(SQL_JSON)
+        else:
+            json_connection.add_output_converter(SQL_JSON, lambda value: "replacement")
+        return "original"
+
+    json_connection.add_output_converter(SQL_JSON, converter)
+    with json_connection.cursor() as cursor:
+        cursor.json_output = "objects"
+        cursor.execute("SELECT CAST(N'{}' AS JSON) FROM (VALUES(1),(2),(3),(4)) t(id)")
+        rows = cursor.fetchmany(3) if method == "fetchmany" else cursor.fetchall()
+        assert [row[0] for row in rows] == ["original"] * len(rows)
+        assert len(calls) == (3 if method == "fetchmany" else 4)
+        if method == "fetchall":
+            cursor.execute("SELECT CAST(N'{}' AS JSON)")
+        assert cursor.fetchval() == ({} if action == "remove" else "replacement")
+
+
+def test_json_failed_batch_preserves_prepared_execution(json_connection):
+    with json_connection.cursor() as cursor:
+        cursor.execute("CREATE TABLE #json_prepared (doc JSON)")
+        cursor.json_output = "objects"
+        cursor.execute("SELECT ?", Json({}), reset_cursor=False)
+        assert cursor.fetchval() == {}
+        with pytest.raises(TypeError, match="SQL_JSON"):
+            cursor.executemany("INSERT INTO #json_prepared VALUES (?)", [(Json({}),), ("{}",)])
+        for value in [Json([]), None, Json({"recovered": True})]:
+            cursor.setinputsizes([SQL_JSON])
+            cursor.execute("SELECT ?", value, reset_cursor=False)
+            assert cursor._column_sql_types == [SQL_JSON]
+            assert cursor.fetchval() == (None if value is None else json.loads(value._text))
+        assert cursor.execute("SELECT COUNT(*) FROM #json_prepared").fetchval() == 0
+
+
+@pytest.mark.parametrize("method", ["fetchone", "fetchmany", "fetchall"])
+def test_json_empty_result_rowcount_matches_text(json_connection, method):
+    counts = []
+    with json_connection.cursor() as cursor:
+        cursor.json_output = "objects"
+        for sql_type in ["JSON", "NVARCHAR(MAX)"]:
+            cursor.execute(f"SELECT CAST(N'{{}}' AS {sql_type}) WHERE 1=0")
+            assert getattr(cursor, method)() == (None if method == "fetchone" else [])
+            counts.append(cursor.rowcount)
+    assert counts[0] == counts[1]
+
+
+@pytest.mark.parametrize("method", ["skip", "scroll"])
+def test_json_relative_positioning_preserves_row_values(json_connection, method, monkeypatch):
+    import mssql_python.cursor as cursor_module
+
+    decode = Mock(wraps=_decode_json)
+    monkeypatch.setattr(cursor_module, "_decode_json", decode)
+    with json_connection.cursor() as cursor:
+        cursor.json_output = "objects"
+        cursor.execute(
+            "SELECT CAST(CONCAT(N'{\"id\":', id, N'}') AS JSON) "
+            "FROM (VALUES(1),(2),(3),(4)) t(id) ORDER BY id"
+        )
+        getattr(cursor, method)(1)
+        assert cursor.fetchval() == {"id": 2}
+        getattr(cursor, method)(1)
+        assert cursor.fetchval() == {"id": 4}
+        assert cursor.fetchone() is None
+        assert decode.call_count == 2
+
+
+def test_json_cursor_isolation_empty_schema_and_no_text_parsing(json_connection, monkeypatch):
+    import mssql_python.cursor as cursor_module
+
+    decode = Mock(wraps=_decode_json)
+    monkeypatch.setattr(cursor_module, "_decode_json", decode)
+    with json_connection.cursor() as objects, json_connection.cursor() as text:
+        objects.json_output = "objects"
+        objects.execute("SELECT CAST(N'{\"v\":[]}' AS JSON)")
+        retained = objects.fetchval()
+        assert objects.fetchone() is None
+        text.execute("SELECT CAST(N'{\"v\":[]}' AS JSON)")
+        assert json.loads(text.fetchval()) == retained
+        assert text.fetchone() is None
+        assert decode.call_count == 1
+        objects.execute("SELECT CAST(N'{}' AS JSON) WHERE 1=0")
+        assert objects.fetchall() == []
+        objects.execute("SELECT N'{}', CAST(NULL AS JSON)")
+        assert tuple(objects.fetchone()) == ("{}", None)
+        assert decode.call_count == 1
+    retained["v"].append("still independent after close")
+
+
+def test_json_validation_failure_and_server_error_recovery(json_connection):
+    from mssql_python import DatabaseError
+
+    with json_connection.cursor() as cursor:
+        cursor.execute("CREATE TABLE #json_recovery (id INT PRIMARY KEY, doc JSON)")
+        cursor.execute("INSERT INTO #json_recovery VALUES (?, ?)", 1, Json({}))
+        for parameter in ["{}", 1, [1], {"not": "wrapped"}]:
+            cursor.setinputsizes([4, SQL_JSON])
+            with pytest.raises(TypeError, match="SQL_JSON"):
+                cursor.execute("INSERT INTO #json_recovery VALUES (?, ?)", 2, parameter)
+        cursor.setinputsizes(None)
+        with pytest.raises(DatabaseError):
+            cursor.execute("INSERT INTO #json_recovery VALUES (?, ?)", 1, Json([]))
+        cursor.execute("INSERT INTO #json_recovery VALUES (?, ?)", 2, Json([]))
+        cursor.json_output = "objects"
+        cursor.execute("SELECT doc FROM #json_recovery ORDER BY id")
+        assert [row[0] for row in cursor.fetchall()] == [{}, []]
+
+
+@pytest.mark.parametrize("use_prepare", [False, True])
+def test_json_binding_type_switch_and_null_reuse(json_connection, use_prepare):
+    with json_connection.cursor() as cursor:
+        cursor.json_output = "objects"
+        cursor.execute("SELECT ?", Json({}))
+        assert cursor.fetchval() == {}
+        for value in [None, Json({}), Json({"v": "x" * 12000}), Json([]), None]:
+            cursor.setinputsizes([SQL_JSON])
+            cursor.execute("SELECT ?", value, use_prepare=use_prepare, reset_cursor=False)
+            assert cursor.fetchval() == (None if value is None else json.loads(value._text))
+        for value in [42, "ordinary", Json({}), "ordinary again", Json([])]:
+            cursor.execute("SELECT ?", value, use_prepare=use_prepare, reset_cursor=False)
+            assert cursor.fetchval() == (
+                json.loads(value._text) if isinstance(value, Json) else value
+            )
+
+
+def test_json_late_batch_mismatch_never_dispatches(json_connection, monkeypatch):
+    from mssql_python import ddbc_bindings
+
+    with json_connection.cursor() as cursor:
+        cursor.execute("CREATE TABLE #json_late (a JSON, b JSON)")
+        dispatch = Mock(wraps=ddbc_bindings.SQLExecuteMany)
+        monkeypatch.setattr(ddbc_bindings, "SQLExecuteMany", dispatch)
+        rows = [(Json({}), Json([]))] * 32 + [(Json({}), "[]")]
+        with pytest.raises(TypeError, match="SQL_JSON"):
+            cursor.executemany("INSERT INTO #json_late VALUES (?, ?)", rows)
+        cursor.executemany("INSERT INTO #json_late VALUES (?, ?)", [])
+        dispatch.assert_not_called()
+        cursor.execute("SELECT COUNT(*) FROM #json_late")
+        assert cursor.fetchval() == 0
+
+
+@pytest.mark.parametrize("numeric", ["integer", "decimal"])
+def test_ordinary_numeric_batch_checks_json_per_column_not_per_cell(conn_str, monkeypatch, numeric):
+    import builtins
+    import mssql_python.cursor as cursor_module
+
+    checks = []
+
+    def counted_isinstance(value, classes):
+        if classes is Json:
+            checks.append(type(value))
+        return builtins.isinstance(value, classes)
+
+    with connect(conn_str) as connection, connection.cursor() as cursor:
+        cursor.execute("CREATE TABLE #json_check_counts (a DECIMAL(12,2), b DECIMAL(12,2), c BIT)")
+        values = [i if numeric == "integer" else Decimal(i) / 10 for i in range(64)]
+        monkeypatch.setattr(cursor_module, "isinstance", counted_isinstance, raising=False)
+        inference = Mock(wraps=cursor._compute_column_type)
+        monkeypatch.setattr(cursor, "_compute_column_type", inference)
+        cursor.executemany(
+            "INSERT INTO #json_check_counts VALUES (?, ?, ?)",
+            [(value, value + 1, bool(i % 2)) for i, value in enumerate(values)],
+        )
+        assert len(checks) == 3
+        assert inference.call_count == 3
+        assert cursor.execute("SELECT COUNT(*) FROM #json_check_counts").fetchval() == 64
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.parametrize("streamed", [False, True])
+@pytest.mark.parametrize("ordinary", [1, True, 1.5, "{}", b"{}", Decimal("1.5"), date(2025, 1, 1)])
+def test_json_mixed_batch_with_null_prefix_rejected_before_dispatch(
+    json_connection, monkeypatch, reverse, streamed, ordinary
+):
+    from mssql_python import ddbc_bindings
+
+    text = "x" * (12000 if streamed else 1)
+    rows = [(Json({}), text), (ordinary, text)]
+    if reverse:
+        rows.reverse()
+    rows.insert(0, (None, text))
+    with json_connection.cursor() as cursor:
+        cursor.execute("CREATE TABLE #json_mixed (doc JSON, companion NVARCHAR(MAX))")
+        scalar = Mock(wraps=ddbc_bindings.DDBCSQLExecute)
+        batch = Mock(wraps=ddbc_bindings.SQLExecuteMany)
+        monkeypatch.setattr(ddbc_bindings, "DDBCSQLExecute", scalar)
+        monkeypatch.setattr(ddbc_bindings, "SQLExecuteMany", batch)
+        with pytest.raises(TypeError, match="SQL_JSON"):
+            cursor.executemany("INSERT INTO #json_mixed VALUES (?, ?)", rows)
+        scalar.assert_not_called()
+        batch.assert_not_called()
+        assert cursor.execute("SELECT COUNT(*) FROM #json_mixed").fetchval() == 0
+
+
+def test_json_streamed_batch_row_shape_rejected_before_writes(json_connection):
+    with json_connection.cursor() as cursor:
+        cursor.execute("CREATE TABLE #json_shape (doc JSON, txt NVARCHAR(MAX))")
+        rows = [(Json({}), "x" * 12000), (Json([]), "y" * 12000, "extra")]
+        with pytest.raises(ValueError, match="Inconsistent parameter row size"):
+            cursor.executemany("INSERT INTO #json_shape VALUES (?, ?)", rows)
+        cursor.execute("SELECT COUNT(*) FROM #json_shape")
+        assert cursor.fetchval() == 0
+
+
+def test_json_bulk_guard_preserves_iterator_boundary(db_connection, monkeypatch):
+    import mssql_python.cursor as cursor_module
+
+    consumed = []
+    json_checks = []
+    original_isinstance = isinstance
+
+    def counted_isinstance(value, cls):
+        if cls is Json:
+            json_checks.append(value)
+        return original_isinstance(value, cls)
+
+    def rows():
+        consumed.append("first")
+        yield (Json({}),)
+        consumed.append("tail")
+        yield (1,)
+
+    def consume(_table, parameters, **_kwargs):
+        for row in parameters:
+            if any(isinstance(value, Json) for value in row):
+                raise ValueError("Unsupported Python type for bulk copy: Json")
+
+    core = Mock()
+    native_cursor = core.PyCoreConnection.return_value.cursor.return_value
+    native_cursor.bulkcopy.side_effect = consume
+    with db_connection.cursor() as cursor:
+        monkeypatch.setattr(cursor, "_bulkcopy_core_and_validate", lambda *args: core)
+        monkeypatch.setattr(cursor, "_build_pycore_context", dict)
+        monkeypatch.setattr(cursor_module, "isinstance", counted_isinstance, raising=False)
+        with pytest.raises(NotSupportedError, match="bulk copy"):
+            cursor.bulkcopy("unused_json_guard", rows())
+    assert consumed == ["first"]
+    assert json_checks == []
+    native_cursor.close.assert_called_once()
+    core.PyCoreConnection.return_value.close.assert_called_once()
+
+
+@pytest.mark.parametrize("later_row", [False, True])
+def test_json_bulk_core_rejects_without_consuming_tail(json_connection, later_row):
+    name = "json_bulk_" + uuid.uuid4().hex
+    consumed = []
+
+    def rows():
+        if later_row:
+            yield ("ordinary",)
+        yield (Json({"private": "do not log"}),)
+        consumed.append("tail")
+        yield ("not consumed",)
+
+    with json_connection.cursor() as cursor:
+        cursor.execute(f"CREATE TABLE dbo.{name} (value NVARCHAR(MAX))")
+        json_connection.commit()
+        try:
+            with pytest.raises(NotSupportedError, match="bulk copy") as error:
+                cursor.bulkcopy(name, rows(), batch_size=1, timeout=10)
+            assert isinstance(error.value.__cause__, ValueError)
+            assert "private" not in str(error.value)
+            assert consumed == []
+            if not later_row:
+                assert cursor.execute(f"SELECT COUNT(*) FROM dbo.{name}").fetchval() == 0
+        finally:
+            cursor.execute(f"DROP TABLE dbo.{name}")
+            json_connection.commit()
+
+
+def test_bulk_unrelated_value_error_is_preserved(db_connection, monkeypatch):
+    error = ValueError("Unsupported Python type for bulk copy: CustomType")
+    core = Mock()
+    core.PyCoreConnection.return_value.cursor.return_value.bulkcopy.side_effect = error
+    with db_connection.cursor() as cursor:
+        monkeypatch.setattr(cursor, "_bulkcopy_core_and_validate", lambda *args: core)
+        monkeypatch.setattr(cursor, "_build_pycore_context", dict)
+        with pytest.raises(ValueError) as caught:
+            cursor.bulkcopy("unused", [(object(),)])
+        assert caught.value is error

@@ -506,6 +506,21 @@ static SQLRETURN PreResolveUnknownNullTypes(SqlHandle& handle, SQLHANDLE hStmt,
     return SQL_SUCCESS;
 }
 
+static void CheckJsonBindError(SQLHANDLE hStmt, SQLRETURN rc) {
+    const ErrorInfo error = SQLReadError(SQL_HANDLE_STMT, hStmt, rc);
+    if (error.sqlState == "HY004") {
+        py::object exceptionType =
+            py::module_::import("mssql_python.exceptions").attr("NotSupportedError");
+        py::object exception = exceptionType(
+            "The selected ODBC driver does not support native JSON binding; "
+            "use a qualified JSON-capable driver",
+            error.ddbcErrorMsg, py::arg("sqlstate") = error.sqlState,
+            py::arg("native_error") = error.nativeError);
+        PyErr_SetObject(exceptionType.ptr(), exception.ptr());
+        throw py::error_already_set();
+    }
+}
+
 [[noreturn]] static void ThrowParameterError(const SqlHandlePtr& statementHandle, SQLRETURN rc,
                                         const std::string& operation) {
     ErrorInfo error = SQLCheckError_Wrap(SQL_HANDLE_STMT, statementHandle, rc);
@@ -671,6 +686,13 @@ static void PrepareParamBuffer(const py::handle& param, ParamInfo& paramInfo,
                 break;
             }
             case SQL_C_WCHAR: {
+                if (param.is_none() && paramInfo.paramSQLType == SQL_SS_JSON) {
+                    dataPtr = nullptr;
+                    strLenOrIndPtr = AllocateParamBuffer<SQLLEN>(paramBuffers);
+                    *strLenOrIndPtr = SQL_NULL_DATA;
+                    bufferLength = 0;
+                    break;
+                }
                 if (!py::isinstance<py::str>(param) && !py::isinstance<py::bytearray>(param) &&
                     !py::isinstance<py::bytes>(param)) {
                     ThrowStdException(MakeParamMismatchErrorStr(paramInfo.paramCType, paramIndex));
@@ -1043,6 +1065,7 @@ SQLRETURN BindParameters(const SqlHandlePtr& statementHandle, SQLHANDLE hStmt, c
             LOG("BindParameters: SQLBindParameter failed for param[%d] - "
                 "SQLRETURN=%d, C_Type=%d, SQL_Type=%d",
                 paramIndex, rc, paramInfo.paramCType, paramInfo.paramSQLType);
+            if (paramInfo.paramSQLType == SQL_SS_JSON) CheckJsonBindError(hStmt, rc);
             return rc;
         }
         // Special handling for Numeric type -
@@ -3339,13 +3362,15 @@ SQLRETURN BindParameterArray(SqlHandle& handle, SQLHANDLE hStmt, const py::list&
                 rc = SQLBindParameter_ptr(hStmt, static_cast<SQLUSMALLINT>(paramIndex + 1),
                                          static_cast<SQLUSMALLINT>(info.inputOutputType),
                                          static_cast<SQLSMALLINT>(info.paramCType),
-                                         static_cast<SQLSMALLINT>(info.paramSQLType), info.columnSize,
+                                         static_cast<SQLSMALLINT>(info.paramSQLType),
+                                         info.paramSQLType == SQL_SS_JSON ? 0 : info.columnSize,
                                          info.decimalDigits, dataPtr, bufferLength, strLenOrIndArray);
             }
             if (!SQL_SUCCEEDED(rc)) {
                 LOG("BindParameterArray: SQLBindParameter failed - "
                     "param_index=%d, SQLRETURN=%d",
                     paramIndex, rc);
+                if (info.paramSQLType == SQL_SS_JSON) CheckJsonBindError(hStmt, rc);
                 return rc;
             }
         }
@@ -3873,7 +3898,7 @@ SQLSMALLINT MapVariantCTypeToSQLType(SQLLEN variantCType) {
 // Helper function to check if a column requires SQLGetData streaming (LOB or sql_variant)
 static inline bool IsLobOrVariantColumn(SQLSMALLINT dataType, SQLULEN columnSize) {
     // Vector buffers contain pointers; use the existing per-row GetData path.
-    return dataType == SQL_SS_VECTOR || dataType == SQL_SS_VARIANT ||
+    return dataType == SQL_SS_VECTOR || dataType == SQL_SS_VARIANT || dataType == SQL_SS_JSON ||
            ((dataType == SQL_WVARCHAR || dataType == SQL_WLONGVARCHAR || dataType == SQL_VARCHAR ||
              dataType == SQL_LONGVARCHAR || dataType == SQL_VARBINARY ||
              dataType == SQL_LONGVARBINARY || dataType == SQL_SS_XML || dataType == SQL_SS_UDT) &&
@@ -4335,8 +4360,9 @@ static SQLRETURN GetRowData(
                 }
                 break;
             }
+            case SQL_SS_JSON:
             case SQL_SS_XML: {
-                LOG("SQLGetData: Streaming XML for column %d", i);
+                LOG("SQLGetData: Streaming JSON/XML for column %d", i);
                 row.append(
                     FetchLobColumnData(hStmt, i, SQL_C_WCHAR, true, false, "utf-16le", messages));
                 break;
@@ -5459,6 +5485,7 @@ size_t calculateRowSize(py::list& columnNames, SQLUSMALLINT numCols) {
             case SQL_LONGVARCHAR:
                 rowSize += columnSize;
                 break;
+            case SQL_SS_JSON:
             case SQL_SS_XML:
             case SQL_WCHAR:
             case SQL_WVARCHAR:
