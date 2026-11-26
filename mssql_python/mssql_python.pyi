@@ -21,6 +21,7 @@ from typing import (
 from ._ddbc_types import EncodingSettings
 from ._pycore_types import BulkCopyResult
 from .logging import MSSQLLogger
+from .json import Json as Json
 import datetime
 import logging
 import pyarrow
@@ -309,6 +310,10 @@ class Cursor:
     @property
     def rownumber(self) -> int: ...
     @property
+    def json_output(self) -> Literal["text", "objects"]: ...
+    @json_output.setter
+    def json_output(self, value: Literal["text", "objects"]) -> None: ...
+    @property
     def connection(self) -> "Connection": ...
     def __init__(self, connection: "Connection", timeout: int = 0) -> None: ...
 
@@ -510,6 +515,8 @@ SQL_TIMESTAMP: int
 # SQL Server-specific type constants (pyodbc parity)
 SQL_SS_TIME2: int
 SQL_SS_XML: int
+SQL_SS_JSON: int
+SQL_JSON: int
 SQL_SS_VARIANT: int
 SQL_WMETADATA: int
 
