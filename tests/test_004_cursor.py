@@ -17406,6 +17406,7 @@ def _initialize_mock_query_operation(cur, monkeypatch):
     from mssql_python import ddbc_bindings
     from mssql_python._query_operation import QueryConnectionState, QuerySlot
 
+    cur.json_output = "text"
     cur._connection.closed = False
     cur._connection._query_state = QueryConnectionState()
     cur._query_slot = QuerySlot()
