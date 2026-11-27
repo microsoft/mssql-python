@@ -3991,17 +3991,22 @@ SQLRETURN SQLExecuteMany_wrap(const SqlHandlePtr statementHandle, const std::u16
         if (columnwise_params.size() != paramInfos.size()) {
             ThrowStdException("Parameter count does not match parameter metadata count");
         }
+        std::vector<py::sequence> columns;
+        columns.reserve(columnwise_params.size());
+        for (py::handle column : columnwise_params) {
+            py::sequence values = py::reinterpret_borrow<py::sequence>(column);
+            if (static_cast<size_t>(py::len(values)) != paramSetSize) {
+                ThrowStdException("Parameter column length does not match parameter set size");
+            }
+            columns.push_back(std::move(values));
+        }
         rc = SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_PARAMSET_SIZE, (SQLPOINTER)1, 0);
         if (!SQL_SUCCEEDED(rc)) return rc;
         size_t rowCount = paramSetSize;
         for (size_t rowIndex = 0; rowIndex < rowCount; ++rowIndex) {
             LOG("SQLExecuteMany: Processing DAE row %zu of %zu", rowIndex + 1, rowCount);
             py::list rowParams;
-            for (py::handle column : columnwise_params) {
-                py::sequence values = py::reinterpret_borrow<py::sequence>(column);
-                if (static_cast<size_t>(py::len(values)) != paramSetSize) {
-                    ThrowStdException("Parameter column length does not match parameter set size");
-                }
+            for (const auto& values : columns) {
                 rowParams.append(values[rowIndex]);
             }
 
