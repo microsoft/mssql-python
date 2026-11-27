@@ -92,6 +92,26 @@ def _verify_run(build: dict, run: dict, pipeline_id: int, run_id: int) -> dict:
     return {"pipeline": pipeline_id, "run": run_id, "branch": branch, "commit": commit}
 
 
+def _decode_matrix(value: str, parameter: str) -> list[dict[str, str]]:
+    # Manual ADO runs serialize these flat matrices as block-style YAML.
+    # Accept only the producer's plain scalar rows, without adding a release-agent dependency.
+    rows: list[dict[str, str]] = []
+    for line in value.splitlines():
+        match = re.fullmatch(
+            r"(- |  )([a-zA-Z][a-zA-Z0-9]*): ([a-zA-Z0-9_/.-]+(?: [a-zA-Z0-9_/.-]+)*)",
+            line,
+        )
+        if not match:
+            raise ValueError(f"Invalid recorded wheel producer {parameter} entry.")
+        prefix, key, scalar = match.groups()
+        if prefix == "- ":
+            rows.append({})
+        if not rows or key in rows[-1]:
+            raise ValueError(f"Invalid recorded wheel producer {parameter} entry.")
+        rows[-1][key] = scalar
+    return rows
+
+
 def _wheel_security_reasons(get_json: Callable[[str], dict], build: dict, run: dict) -> list[str]:
     parameters = run.get("templateParameters")
     if not isinstance(parameters, dict):
@@ -105,7 +125,8 @@ def _wheel_security_reasons(get_json: Callable[[str], dict], build: dict, run: d
     if not forced_official and parameters.get("oneBranchType") != "Official":
         reasons.append("wheel producer did not use Official mode")
     for name in ("runSdlTasks", "signWindowsBinaries"):
-        if parameters.get(name) is not True:
+        value = parameters.get(name)
+        if value is not True and value != "True":
             reasons.append(f"wheel producer {name} was not enabled")
     if reasons:
         return reasons
@@ -117,6 +138,8 @@ def _wheel_security_reasons(get_json: Callable[[str], dict], build: dict, run: d
         ("linuxConfigs", "Linux_", ("tag", "arch"), "BuildWheels"),
     ):
         configs = parameters.get(parameter)
+        if isinstance(configs, str):
+            configs = _decode_matrix(configs, parameter)
         if not isinstance(configs, list) or not configs:
             return [f"wheel producer {parameter} evidence is missing"]
         for config in configs:
