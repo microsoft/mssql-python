@@ -80,6 +80,8 @@ def test_checked_fetch_buffer_preconditions(item_size, terminator):
         "compact-wide",
         "compact-medium",
         "compact-small-dense",
+        "compact-warning",
+        "compact-dense-rebind-failure",
         "compact-no-total",
         "compact-invalid-length",
         "compact-truncated",
@@ -154,7 +156,12 @@ def _run_case(case):
         count = 2
     if case in ("overflow-cell", "overflow-row", "lob") or case.startswith("compact-"):
         count = 3
-    if case in ("compact-wide", "compact-medium", "compact-dense-truncated"):
+    if case in (
+        "compact-wide",
+        "compact-medium",
+        "compact-dense-truncated",
+        "compact-dense-rebind-failure",
+    ):
         count = 1207
     if case == "compact-small-dense":
         count = 1
@@ -177,7 +184,12 @@ def _run_case(case):
         if case == "bind-failure" and fetches:
             return -2
         if (
-            case in ("partial-bind-failure", "partial-bind-cleanup-failure")
+            case
+            in (
+                "partial-bind-failure",
+                "partial-bind-cleanup-failure",
+                "compact-dense-rebind-failure",
+            )
             and fetches
             and col == 2
         ):
@@ -231,6 +243,8 @@ def _run_case(case):
         events.append("fetch")
         result = original(handle, orientation, offset)
         if result in (0, 1):
+            if case == "compact-warning" and len(fetches) == 1:
+                return 1  # Valid bound values with SQL_SUCCESS_WITH_INFO.
             if case in ("compact-zero-rows", "compact-excess-rows"):
                 output_count = ct.cast(fetched_pointer, ct.POINTER(sql_ulen))
                 output_count[0] = 0 if case == "compact-zero-rows" else current_size + 1
@@ -282,7 +296,7 @@ def _run_case(case):
             connection.setdecoding(ms.SQL_CHAR, encoding="cp1252", ctype=ms.SQL_CHAR)
         columns = ["CAST('x' AS varchar(32))"]
         expected = ["x"]
-        if case in ("wide", "narrow", "compact-dense-truncated"):
+        if case in ("wide", "narrow", "compact-dense-truncated", "compact-dense-rebind-failure"):
             columns = [
                 "CAST(REPLICATE(CAST(NCHAR(233) AS nvarchar(max)), 8000) "
                 "COLLATE Latin1_General_100_BIN2 AS varchar(8000))"
@@ -414,7 +428,12 @@ def _run_case(case):
                     error = (
                         RuntimeError
                         if case
-                        in ("bind-failure", "partial-bind-failure", "partial-bind-cleanup-failure")
+                        in (
+                            "bind-failure",
+                            "partial-bind-failure",
+                            "partial-bind-cleanup-failure",
+                            "compact-dense-rebind-failure",
+                        )
                         else ms.Error
                     )
                     with pytest.raises(error) as failure:
@@ -428,6 +447,9 @@ def _run_case(case):
                         assert "Failed to bind column" in str(failure.value)
                     if case == "arrow-cleanup-failure":
                         assert fetches == [64]
+                    elif case == "compact-dense-rebind-failure":
+                        assert fetches == [rowsets[0]]
+                        assert bindings[len(columns) + 2][0] == 2
                     elif case not in ("persistent-rows-fetched-failure", "rowset-reset-failure"):
                         assert fetches == [100]
                     if case in ("partial-bind-failure", "partial-bind-cleanup-failure"):
@@ -479,9 +501,13 @@ def _run_case(case):
                 assert rowsets[0] == initial
                 assert initial * row_bytes <= 1024 * 1024 or initial == 1
                 sparse_narrow = case == "narrow" and sys.platform != "win32"
-                if case in ("compact-wide", "compact-small-dense", "mixed", "oversized-row") or (
-                    sparse_narrow
-                ):
+                if case in (
+                    "compact-wide",
+                    "compact-small-dense",
+                    "compact-warning",
+                    "mixed",
+                    "oversized-row",
+                ) or (sparse_narrow):
                     assert all(size == initial for size in fetches)
                     assert len(fetches) == (count + initial - 1) // initial + 2
                     assert len(bindings) == 2 * ncols  # Only the two fetchall invocations.

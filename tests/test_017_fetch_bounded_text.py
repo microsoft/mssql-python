@@ -14,6 +14,51 @@ import pytest
 from mssql_python import SQL_CHAR, SQL_WCHAR
 
 
+def test_native_zero_size_wide_fetch_preserves_pending_rows(db_connection):
+    from mssql_python import ddbc_bindings
+
+    with db_connection.cursor() as cursor:
+        cursor.execute("SELECT CAST(N'pending' AS nvarchar(4000))")
+        rows = []
+        assert ddbc_bindings.DDBCSQLFetchMany(cursor.hstmt, rows, 0) == 0
+        assert rows == []
+        assert [tuple(row) for row in cursor.fetchall()] == [("pending",)]
+
+
+@pytest.mark.parametrize("batch_size", [101, 129])
+@pytest.mark.parametrize("narrow", [False, True], ids=["wide", "narrow"])
+def test_dense_fetchmany_growth_preserves_tail_and_converter_storage(
+    db_connection, batch_size, narrow
+):
+    retained = []
+    db_connection.add_output_converter(
+        str, lambda raw: retained.append(raw) or raw.decode("utf-16le")
+    )
+    value = "\u00e9" * (8000 if narrow else 4000)
+    expression = "CAST(? AS varchar(8000))" if narrow else "CAST(? AS nvarchar(4000))"
+    try:
+        with db_connection.cursor() as cursor:
+            cursor.execute(
+                "WITH d(n) AS (SELECT n FROM (VALUES (0),(1),(2),(3),(4),"
+                "(5),(6),(7),(8),(9)) AS v(n)) "
+                f"SELECT n, {', '.join([expression] * 8)} "
+                "FROM (SELECT a.n+10*b.n+100*c.n AS n "
+                "FROM d a CROSS JOIN d b CROSS JOIN d c) v WHERE n < 137 ORDER BY n",
+                (value,) * 8,
+            )
+            first = cursor.fetchmany(batch_size)
+            assert len(first) == batch_size
+            tail = cursor.fetchall()
+            assert [tuple(row) for row in first + tail] == [(n,) + (value,) * 8 for n in range(137)]
+            assert cursor.fetchall() == []
+            cursor.execute("SELECT N'reused'")
+            assert cursor.fetchone()[0] == "reused"
+        assert len(retained) == 137 * 8 + 1
+        assert all(raw == value.encode("utf-16le") for raw in retained[:-1])
+    finally:
+        db_connection.remove_output_converter(str)
+
+
 @pytest.mark.parametrize("dense_first", [False, True])
 @pytest.mark.parametrize("batch_size", [None, 7, 9, 65], ids=["all", "many7", "many9", "many65"])
 def test_reusable_rowsets_preserve_density_transitions(db_connection, dense_first, batch_size):
