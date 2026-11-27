@@ -52,6 +52,7 @@ from .type import (
 )
 
 # Connection Objects
+from .json import Json
 from .db_connection import connect, Connection
 
 # Token provider protocol (structural type for the token_provider= parameter)
@@ -187,6 +188,8 @@ from .constants import (  # noqa: F401
     # SQL Server-specific type constants (pyodbc parity)
     SQL_SS_TIME2,
     SQL_SS_XML,
+    SQL_SS_JSON,
+    SQL_JSON,
     SQL_SS_VARIANT,
     SQL_SS_VECTOR,
     # Connection attribute constants
@@ -417,6 +420,9 @@ __all__ = [
     # SQL Server-specific type constants (pyodbc parity)
     "SQL_SS_TIME2",
     "SQL_SS_XML",
+    "SQL_SS_JSON",
+    "SQL_JSON",
+    "Json",
     "SQL_SS_VARIANT",
     # Connection attribute constants
     "SQL_ATTR_ACCESS_MODE",

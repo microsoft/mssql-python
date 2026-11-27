@@ -20,6 +20,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
   connection disconnect, including partially rebound batches.
 
 ### Added
+- Preview synchronous native JSON support with immutable `Json(dict | list | str)`
+  inputs, `SQL_JSON` / `SQL_SS_JSON` binding, typed NULLs and large-value streaming.
+  Text results remain the default; execution-scoped `cursor.json_output="objects"`
+  decodes native JSON result metadata, including buffered procedure results.
+  Custom converters retain precedence. Requires a qualified JSON-capable classic
+  ODBC provider; shipped binaries are unchanged. Async, bulk, TVP and Arrow JSON
+  support remains deferred.
 - **AB#50711:** DB-API exceptions now expose optional `native_error` metadata
   alongside `sqlstate` for synchronous ODBC errors. Native numbers come from the
   same diagnostic record as SQLSTATE; zero is retained and unavailable metadata
@@ -156,6 +163,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
   before; users should call `cursor.setinputsizes()` to work around this.
 
 ### Fixed
+- JSON decoding errors identify the failing column without its payload.
+- Async busy-connection errors retain the public `OperationalError` classification
+  with both stable and nightly Rust-core exception representations.
 - **GH-863:** `Cursor.nextset()` now refreshes `Cursor.rowcount` for
   the result it moves to, as `execute()` does: the affected-row count for an
   INSERT/UPDATE/DELETE/MERGE result and -1 for a result set. Previously
@@ -180,6 +190,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
   decoding on Linux/macOS. Existing platform-specific decode-error fallbacks
   remain unchanged. Actual MAX/LOB text decoding
   is unchanged; its existing BOM and trailing-NUL loss is not fixed here.
+- **GH-745:** `executemany` auto-detect binds money-range `Decimal`
+  values as `SQL_NUMERIC` with a batch-wide precision/scale (still via
+  `SQL_C_CHAR` string values), so a comparison against a smaller numeric
+  column no longer overflows. SQL precision/scale stay on `columnSize` /
+  `decimalDigits`; the CHAR array stride uses a separate `arrayBufferSize`
+  sized from the longest fixed-point encoding (e.g. `Decimal("1E-38")`),
+  so near-max precision values are not rejected by the array buffer.
+  Zero contributes no integer digits to the batch precision, so
+  `Decimal("0")` plus `Decimal("1E-38")` stays `NUMERIC(38,38)`.
+  The `setinputsizes` DECIMAL/NUMERIC string path uses the same buffer-width
+  split; buffer width is derived from text produced by the protected
+  conversion path so failed conversions still raise a sanitized `ValueError`
+  with row/column details (no raw MemoryError/RuntimeError leakage).
 - **GH-769:** Corrected 11 `GetInfoConstants` IDs for scalar functions, outer
   joins, driver handles, cursor attributes, catalog support, and parameter
   descriptions. Added the ODBC name `SQL_TIMEDATE_FUNCTIONS` as an alias of
@@ -217,8 +240,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
   `sql_variant` stores them as `numeric`, and because `numeric` outranks
   `money`/`varchar` in data-type precedence, `WHERE money_or_varchar_col = ?` can
   add a `CONVERT_IMPLICIT` on the column side that turns an index seek into a scan.
-  `executemany` intentionally keeps its batch `VARCHAR` string binding (GH-503);
-  the remaining money-range case there is tracked in #745.
+  The `executemany` auto-detect path is covered separately by GH-745.
 - **GH-725:** The `timeout` parameter of `connect()` / `Connection(...)` now
   correctly sets the **login (connection-attempt) timeout**
   (`SQL_ATTR_LOGIN_TIMEOUT`), matching pyodbc and its own docstring. Previously

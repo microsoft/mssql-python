@@ -119,6 +119,8 @@ class ConstantsDDBC(Enum):
     SQL_DATETIMEOFFSET = -155
     SQL_SS_TIME2 = -154
     SQL_SS_XML = -152
+    SQL_SS_JSON = -157
+    SQL_JSON = SQL_SS_JSON
     SQL_SS_VARIANT = -150
     SQL_SS_VECTOR = -156
     SQL_C_SS_VECTOR = 0x4002
@@ -419,6 +421,7 @@ class SQLTypes:
             ConstantsDDBC.SQL_SS_TIME2.value,
             ConstantsDDBC.SQL_DATETIMEOFFSET.value,
             ConstantsDDBC.SQL_SS_XML.value,
+            ConstantsDDBC.SQL_SS_JSON.value,
             ConstantsDDBC.SQL_GUID.value,
             ConstantsDDBC.SQL_SS_UDT.value,
             ConstantsDDBC.SQL_SS_VARIANT.value,
@@ -632,6 +635,8 @@ _DDBC_PUBLIC_API = {
     # SQL Server-specific type constants (pyodbc parity)
     "SQL_SS_TIME2",
     "SQL_SS_XML",
+    "SQL_SS_JSON",
+    "SQL_JSON",
     "SQL_SS_VARIANT",
     "SQL_SS_VECTOR",
     # Connection attribute constants (ODBC-standard, driver-independent only)
@@ -699,6 +704,8 @@ if TYPE_CHECKING:
     SQL_WLONGVARCHAR: int
     SQL_SS_TIME2: int
     SQL_SS_XML: int
+    SQL_SS_JSON: int
+    SQL_JSON: int
     SQL_SS_VARIANT: int
     SQL_SS_VECTOR: int
     SQL_ATTR_ACCESS_MODE: int
