@@ -198,8 +198,16 @@ def test_native_dae_preserves_empty_and_null(db_connection, c_type, sql_type, co
 
 
 @pytest.mark.skipif(not DDBC_AVAILABLE, reason="ddbc_bindings not available")
-@pytest.mark.parametrize("failure_stage", ["binding", "streaming", "completion"])
+@pytest.mark.parametrize(
+    "failure_stage", ["binding", "binding_without_cancel", "streaming", "completion"]
+)
 def test_native_dae_failure_preserves_error_and_allows_reuse(conn_str, failure_stage):
+    if failure_stage == "binding_without_cancel" and not hasattr(
+        ddbc.module, "_arrow_test_pointer_addresses"
+    ):
+        if os.environ.get("MSSQL_ARROW_TEST_INTERPOSITION", "").upper() in ("1", "ON"):
+            pytest.fail("Arrow test interposition was requested but is not compiled")
+        pytest.skip("Requires an Arrow test-interposition build")
     env = os.environ.copy()
     env["DB_CONNECTION_STRING"] = str(conn_str)
     result = subprocess.run(
@@ -239,7 +247,7 @@ def test_native_dae_failure_preserves_error_and_allows_reuse(conn_str, failure_s
                             "CREATE TABLE #native_dae_failure "
                             "(value NVARCHAR(MAX), id INT CHECK (id > 0))"
                         )
-                        if stage == "binding":
+                        if stage in ("binding", "binding_without_cancel"):
                             value = TrackedText("x" * 4001)
                             columns = [[value], [object()]]
                             error_type, message = RuntimeError, "C type"
@@ -253,12 +261,23 @@ def test_native_dae_failure_preserves_error_and_allows_reuse(conn_str, failure_s
                             error_type, message = mssql_python.IntegrityError, "CHECK constraint"
                         value_ref = weakref.ref(value)
                         del value
+                        cancel_pointer = None
+                        if stage == "binding_without_cancel":
+                            import ctypes
+                            cancel_pointer = ctypes.c_void_p.from_address(
+                                ddbc.module._arrow_test_pointer_addresses["SQLCancel_ptr"]
+                            )
+                            original_cancel = cancel_pointer.value
+                            cancel_pointer.value = None
                         try:
                             ddbc.SQLExecuteMany(cur.hstmt, query, columns, infos, 1, {})
                         except error_type as exc:
                             assert message in str(exc), str(exc)
                         else:
                             raise AssertionError("Expected the native DAE call to fail")
+                        finally:
+                            if cancel_pointer is not None:
+                                cancel_pointer.value = original_cancel
                         del columns
                         gc.collect()
                         assert value_ref() is None

@@ -113,6 +113,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
   data lengths before reading numeric buffers; SQL NULL values remain unchanged.
 - Empty streamed text/binary parameters, including TVP cells, remain distinct
   from SQL NULL.
+- Failed DAE-row cleanup resets parameter bindings even when the provider omits
+  optional `SQLCancel` support.
 - Cursor fetch/Arrow batch sizes and bulk-copy batch/commit sizes are now capped
   at 1,000,000 rows; `arraysize` must be positive. Negative row counts raise
   `ValueError` and boolean row counts raise `TypeError`. Zero-size fetches remain
