@@ -4315,6 +4315,9 @@ static py::object FetchLobColumnDataImpl(
         if (sourceLength == SQL_NULL_DATA) {
             return py::none();
         }
+        if (sourceLength == 0) {
+            return py::str("");
+        }
         if (sourceLength == SQL_NO_TOTAL) {
             // VECTOR exposed as VARCHAR can report an unknown length on the binary
             // probe. Keep streaming instead of enforcing a size we did not obtain.
