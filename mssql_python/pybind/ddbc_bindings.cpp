@@ -657,7 +657,7 @@ std::string DescribeChar(unsigned char ch) {
 template<typename PutDataFn>
 // The callable hides whether the caller wraps SQLPutData with GIL management; chunk sizing stays shared.
 static SQLRETURN stream_dae_chunks(const void* data, size_t total_bytes, PutDataFn put_data_fn) {
-    if (total_bytes == 0) return put_data_fn(nullptr, 0);
+    if (total_bytes == 0) return put_data_fn(const_cast<void*>(data), 0);
     const char* bytes = static_cast<const char*>(data);
     for (size_t offset = 0; offset < total_bytes; offset += DAE_CHUNK_SIZE) {
         size_t len = std::min(static_cast<size_t>(DAE_CHUNK_SIZE), total_bytes - offset);
@@ -698,8 +698,7 @@ static SQLRETURN stream_unicode_dae_chunks(PyObject* value, const std::string& e
         if (PyBytes_AsStringAndSize(encoded.ptr(), &data, &size) != 0) {
             throw py::error_already_set();
         }
-        if (size > 0) return put_data_fn(data, static_cast<SQLLEN>(size));
-        return put_data_fn(nullptr, 0);
+        return put_data_fn(data, static_cast<SQLLEN>(size));
     }
     return SQL_SUCCESS;
 }
@@ -734,7 +733,7 @@ static SQLRETURN StreamDAEParameter(const ParamInfo& info,
     }
     if (PyByteArray_Check(value)) {
         const size_t totalBytes = static_cast<size_t>(PyByteArray_GET_SIZE(value));
-        if (totalBytes == 0) return putImmutableData(nullptr, 0);
+        if (totalBytes == 0) return putImmutableData(PyByteArray_AS_STRING(value), 0);
         std::vector<char> chunk(std::min(static_cast<size_t>(DAE_CHUNK_SIZE), totalBytes));
         for (size_t offset = 0; offset < totalBytes; offset += chunk.size()) {
             const size_t currentSize = static_cast<size_t>(PyByteArray_GET_SIZE(value));
