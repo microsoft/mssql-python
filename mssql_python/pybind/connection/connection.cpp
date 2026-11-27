@@ -469,6 +469,30 @@ SQLRETURN Connection::setAttribute(SQLINTEGER attribute, py::object value, bool&
         return SQL_ERROR;
     }
 
+    if (attribute == SQL_COPT_SS_ACCESS_TOKEN) {
+        const bool isBytes = py::isinstance<py::bytes>(value);
+        const Py_ssize_t bufferSize =
+            isBytes ? PyBytes_GET_SIZE(value.ptr()) : PyByteArray_GET_SIZE(value.ptr());
+        if (bufferSize < 4 || bufferSize > std::numeric_limits<SQLINTEGER>::max()) {
+            ThrowStdException(
+                "Invalid SQL_COPT_SS_ACCESS_TOKEN structure: expected a 4-byte length "
+                "header and a payload that fits SQLINTEGER.");
+        }
+        const char* data =
+            isBytes ? PyBytes_AS_STRING(value.ptr()) : PyByteArray_AS_STRING(value.ptr());
+        SQLUINTEGER payloadLength = 0;
+        for (int i = 0; i < 4; ++i) {
+            payloadLength |=
+                static_cast<SQLUINTEGER>(static_cast<unsigned char>(data[i])) << (8 * i);
+        }
+        if (payloadLength == 0 || payloadLength % 2 != 0 ||
+            static_cast<size_t>(payloadLength) != static_cast<size_t>(bufferSize - 4)) {
+            ThrowStdException(
+                "Invalid SQL_COPT_SS_ACCESS_TOKEN structure: the length header must "
+                "match a non-empty, even-length token payload.");
+        }
+    }
+
     if (py::isinstance<py::int_>(value)) {
         // Get the integer value
         int64_t longValue;
