@@ -198,6 +198,46 @@ def test_native_dae_preserves_empty_and_null(db_connection, c_type, sql_type, co
 
 
 @pytest.mark.skipif(not DDBC_AVAILABLE, reason="ddbc_bindings not available")
+def test_native_dae_checks_column_lengths_once(db_connection):
+    class CountedColumn(list):
+        length_checks = 0
+
+        def __len__(self):
+            self.length_checks += 1
+            return super().__len__()
+
+    texts = ["x" * 5000, None, ""]
+    columns = [CountedColumn(texts), CountedColumn([1, 2, 3])]
+    text_info = ddbc.ParamInfo()
+    text_info.paramCType = -8
+    text_info.paramSQLType = -10
+    text_info.inputOutputType = 1
+    text_info.columnSize = 6000
+    text_info.isDAE = True
+    int_info = ddbc.ParamInfo()
+    int_info.paramCType = 4
+    int_info.paramSQLType = 4
+    int_info.inputOutputType = 1
+    int_info.columnSize = 10
+    with db_connection.cursor() as cur:
+        cur.execute("CREATE TABLE #dae_column_checks (value NVARCHAR(MAX), id INT)")
+        try:
+            assert ddbc.SQLExecuteMany(
+                cur.hstmt,
+                "INSERT INTO #dae_column_checks VALUES (?, ?)",
+                columns,
+                [text_info, int_info],
+                3,
+                {},
+            ) in (0, 1)
+            assert [column.length_checks for column in columns] == [1, 1]
+            cur.execute("SELECT value, id FROM #dae_column_checks ORDER BY id")
+            assert [tuple(row) for row in cur.fetchall()] == list(zip(texts, [1, 2, 3]))
+        finally:
+            cur.execute("DROP TABLE #dae_column_checks")
+
+
+@pytest.mark.skipif(not DDBC_AVAILABLE, reason="ddbc_bindings not available")
 @pytest.mark.parametrize(
     "failure_stage", ["binding", "binding_without_cancel", "streaming", "completion"]
 )

@@ -118,6 +118,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 - Idempotent autocommit assignments preserve unread Arrow rows across native
   quota boundaries in both the dedicated and generic connection setters.
   Actual autocommit mode changes still invalidate pending rows.
+- DAE parameter-column lengths are validated once before the row-execution
+  loop instead of repeatedly for every row.
 - Cursor fetch/Arrow batch sizes and bulk-copy batch/commit sizes are now capped
   at 1,000,000 rows; `arraysize` must be positive. Negative row counts raise
   `ValueError` and boolean row counts raise `TypeError`. Zero-size fetches remain

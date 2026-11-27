@@ -225,6 +225,9 @@ def test_arrow_native_budget_pending_mixed_fetches(conn_str, sql_type, remaining
                 assert ddbc_bindings.DDBCSQLSetStmtAttr(
                     cur.hstmt, ConstantsDDBC.SQL_ATTR_QUERY_TIMEOUT.value, 0
                 ) in (0, 1)
+                assert ddbc_bindings.DDBCSQLSetStmtAttr(
+                    cur.hstmt, ConstantsDDBC.SQL_ATTR_ROW_ARRAY_SIZE.value, 1
+                ) in (0, 1)
                 if remaining == "mixed":
                     check_row(cur.fetchone(), n + 1)
                     n += 1
