@@ -692,7 +692,7 @@ def test_arrow_native_budget_pending_reset_cleanup(conn_str, sql_type, operation
 @pytest.mark.parametrize("sql_type", ["nvarchar(4000)", "nvarchar(max)"])
 @pytest.mark.parametrize("autocommit", [0, 1])
 def test_arrow_native_budget_pending_set_attr_autocommit(conn_str, sql_type, autocommit):
-    """Generic autocommit changes discard pending rows like the dedicated setter."""
+    """Generic autocommit assignments match the dedicated setter."""
     _run_arrow_budget_script(
         conn_str,
         """
@@ -725,6 +725,42 @@ def test_arrow_native_budget_pending_set_attr_autocommit(conn_str, sql_type, aut
         assert fetch_after_change(True) == expected
         """,
         sql_type,
+        str(autocommit),
+    )
+
+
+@pytest.mark.parametrize("autocommit", [0, 1])
+def test_arrow_native_budget_idempotent_autocommit_preserves_rows(conn_str, autocommit):
+    _run_arrow_budget_script(
+        conn_str,
+        """
+        from mssql_python.constants import ConstantsDDBC
+
+        autocommit = int(sys.argv[1])
+        with mssql_python.connect(
+            os.environ["DB_CONNECTION_STRING"], autocommit=not bool(autocommit)
+        ) as conn:
+            conn._conn.set_attr(ConstantsDDBC.SQL_ATTR_AUTOCOMMIT.value, autocommit)
+            assert conn.autocommit == bool(autocommit)
+            with conn.cursor() as cur:
+                cur.execute(wide_query("nvarchar(4000)", 9, identifiers=True))
+                first = cur.arrow_batch(8192)
+                count = first.num_rows
+                assert 0 < count < 8192
+                assert first.column(0).to_pylist() == list(range(1, count + 1))
+                del first
+
+                conn.autocommit = conn.autocommit
+                assert cur.fetchone()[0] == count + 1
+                conn._conn.set_attr(
+                    ConstantsDDBC.SQL_ATTR_AUTOCOMMIT.value, int(conn.autocommit)
+                )
+                next_id = count + 2
+                while rows := cur.fetchmany(64):
+                    assert [row[0] for row in rows] == list(range(next_id, next_id + len(rows)))
+                    next_id += len(rows)
+                assert next_id == 8193
+        """,
         str(autocommit),
     )
 
