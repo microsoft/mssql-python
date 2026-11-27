@@ -4956,7 +4956,6 @@ class Cursor:
                 f"Cannot move backward by {value} rows on a forward-only cursor",
             )
 
-        row_data: list[Any] = []
         # Absolute positioning not supported with forward-only cursors
         if mode == "absolute":
             raise NotSupportedError(
@@ -4980,12 +4979,10 @@ class Cursor:
                     for _ in range(value):
                         procedure_rows.popleft()
                 else:
-                    # For forward-only cursors, use multiple SQL_FETCH_NEXT calls
-                    # This matches pyodbc's approach for skip operations
+                    # Select logical rows without materializing pending Arrow payloads.
                     for i in range(value):
-                        ret = ddbc_bindings.DDBCSQLFetchScroll(
-                            self.hstmt, ddbc_sql_const.SQL_FETCH_NEXT.value, 0, row_data
-                        )
+                        ret = ddbc_bindings.DDBCSQLFetch(self.hstmt)
+                        check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
                         if ret == ddbc_sql_const.SQL_NO_DATA.value:
                             raise IndexError(
                                 "Cannot scroll to specified position: end of result set reached"

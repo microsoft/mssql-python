@@ -76,6 +76,57 @@ def _run_arrow_budget_script(conn_str, script, *args):
     assert result.returncode == 0, result.stdout + result.stderr
 
 
+def test_wide_lob_probe_respects_native_budget(conn_str):
+    from mssql_python import ddbc_bindings as ddbc
+
+    if not hasattr(ddbc.module, "_arrow_test_pointer_addresses"):
+        if os.environ.get("MSSQL_ARROW_TEST_INTERPOSITION", "").upper() in ("1", "ON"):
+            pytest.fail("Arrow test interposition was requested but is not compiled")
+        pytest.skip("Requires an Arrow test-interposition build")
+    _run_arrow_budget_script(
+        conn_str,
+        """
+        import ctypes
+        from mssql_python import ddbc_bindings as ddbc
+
+        callback = ctypes.WINFUNCTYPE if os.name == "nt" else ctypes.CFUNCTYPE
+        get_data_type = callback(
+            ctypes.c_short, ctypes.c_void_p, ctypes.c_ushort, ctypes.c_short,
+            ctypes.c_void_p, ctypes.c_ssize_t, ctypes.POINTER(ctypes.c_ssize_t),
+        )
+        with mssql_python.connect(os.environ["DB_CONNECTION_STRING"]) as conn:
+            pointer = ctypes.c_void_p.from_address(
+                ddbc.module._arrow_test_pointer_addresses["SQLGetData_ptr"]
+            )
+            original = pointer.value
+            calls = 0
+
+            @get_data_type
+            def get_data(stmt, column, ctype, buffer, length, indicator):
+                global calls
+                calls += 1
+                if calls == 1 and ctype == -2 and length == 0:
+                    indicator[0] = 128 * 1024 * 1024
+                    return 0
+                return -1
+
+            with conn.cursor() as cur:
+                cur.execute("SELECT CAST('x' AS VARCHAR(MAX)) AS value")
+                try:
+                    pointer.value = ctypes.cast(get_data, ctypes.c_void_p).value
+                    try:
+                        cur.fetchone()
+                    except RuntimeError as exc:
+                        assert "256 MiB allocation limit" in str(exc), str(exc)
+                    else:
+                        raise AssertionError("Oversized UTF-16 LOB probe was accepted")
+                    assert calls == 1, calls
+                finally:
+                    pointer.value = original
+        """,
+    )
+
+
 @pytest.mark.parametrize("sql_type", ["nvarchar(4000)", "nvarchar(max)"])
 @pytest.mark.parametrize("method", ["arrow", "arrow_batch"])
 @pytest.mark.parametrize("columns", [7, 9])

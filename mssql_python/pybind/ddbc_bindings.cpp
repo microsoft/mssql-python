@@ -4166,7 +4166,6 @@ py::object FetchLobColumnData(SQLHSTMT hStmt, SQLUSMALLINT colIndex, SQLSMALLINT
     std::vector<char> buffer;
     size_t dataSize = 0;
     size_t reservedBytes = 0;
-    ReserveNativeFetchBytes(reservedBytes, DAE_CHUNK_SIZE, sizeof(char));
     SQLRETURN ret = SQL_SUCCESS_WITH_INFO;
     int loopCount = 0;
     size_t chunkSize = DAE_CHUNK_SIZE;
@@ -4196,6 +4195,7 @@ py::object FetchLobColumnData(SQLHSTMT hStmt, SQLUSMALLINT colIndex, SQLSMALLINT
         }
     }
 
+    ReserveNativeFetchBytes(reservedBytes, chunkSize, sizeof(char));
     while (true) {
         ++loopCount;
         std::vector<char> chunk(chunkSize, 0);
@@ -6421,7 +6421,7 @@ SQLRETURN ReadArrowScalar(SQLHSTMT stmt, SQLUSMALLINT column, SQLSMALLINT cType,
                            std::vector<T>& buffer, SQLLEN* indicator, size_t& reservedBytes,
                            py::handle messages, size_t count = 1) {
     ResizeNativeFetchBuffer(buffer, count, reservedBytes);
-    const SQLRETURN ret = SQLGetData_ptr(stmt, column, cType, buffer.data(),
+    const SQLRETURN ret = CancellableGetData(stmt, column, cType, buffer.data(),
                                          count * sizeof(T), indicator);
     CaptureFetchDiagnostics(stmt, ret, messages);
     return ret;
