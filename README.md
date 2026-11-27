@@ -490,17 +490,20 @@ strings do not require a character-by-character scan.
 Wide-character retrieval of `VARCHAR(MAX)` values uses a non-consuming binary
 length probe to size the conversion buffer, avoiding character loss at truncated
 UTF-16 conversion boundaries while preserving embedded and trailing NULs.
-The experimental bounded-text path uses ordered, unbound reads for `fetchall()`
+The experimental bounded-text path uses complete, reusable rowsets for `fetchall()`
 and `fetchmany()` when a text column is wider than 256 declared characters,
 reusing storage rather than allocating every cell at its declared width.
-On Windows with `msodbcsql18`, short values need one read into a 512-byte starter
-buffer; longer values preserve that prefix and grow reusable storage.
-Up to 16 adjacent text/scalar reads share a GIL release, while retaining
-per-column cancellation and diagnostic handling. Other providers/platforms and
-narrow decoding retain conservative length probing.
+Bound storage targets 1 MiB including indicators, with at least one complete row
+and at most 1,000 rows (at most 100 initially). Values are decoded directly into
+actual-length Python results, without a second native copy or per-cell length probes.
+When observed payload occupies at least half the declared row width, storage
+can grow once to the ordinary 8 MiB rowset budget. Every driver fetch retains
+cancellation and diagnostic handling; rebinding preserves cleanup lifetimes.
 Fixed-width and short-text result sets retain rowset batching. Wide-text result
-sets still trade additional driver calls for lower temporary buffer use and can
-be slower for large results; they do not change the forward-only cursor type.
+sets trade smaller rowsets and additional driver calls for lower temporary
+buffer use. They do not change the forward-only cursor type or recover truncated
+multirow bindings with `SQLGetData`. A row larger than either budget remains
+complete; Python results and allocator overhead are outside those targets.
 Result sets containing LOB columns retain their existing streaming path.
 The 256-character cutoff is provisional, not a tuned throughput threshold.
 Explicit `setinputsizes()` SQL types and sizes still take precedence. An explicit

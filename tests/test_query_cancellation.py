@@ -445,13 +445,16 @@ def _grouped_scalar_boundary_probe(kind="scalar"):
         ctypes.c_void_p,
     )
     cancel_type = callback(ctypes.c_short, ctypes.c_void_p)
+    fetch_type = callback(ctypes.c_short, ctypes.c_void_p, ctypes.c_short, ctypes.c_ssize_t)
     with _connection() as connection, connection.cursor() as cursor:
         value = "CAST(N'text' AS nvarchar(4000))" if kind == "text" else "2"
         cursor.execute(f"SELECT 1, {value}, 3, 4 FROM (VALUES (1), (2)) AS source(n)")
         assert tuple(cursor.fetchone()) == (1, "text" if kind == "text" else 2, 3, 4)
         original_getdata = pointers["SQLGetData_ptr"].value
+        original_fetch = pointers["SQLFetchScroll_ptr"].value
         original_cancel = pointers["SQLCancel_ptr"].value
         getdata = getdata_type(original_getdata)
+        fetch = fetch_type(original_fetch)
         reads = []
 
         @getdata_type
@@ -462,6 +465,13 @@ def _grouped_scalar_boundary_probe(kind="scalar"):
                 cursor.cancel()
             return result
 
+        @fetch_type
+        def cancel_after_first_row(handle, orientation, offset):
+            reads.append("block")
+            result = fetch(handle, orientation, offset)
+            cursor.cancel()
+            return result
+
         @cancel_type
         def cancel(_):
             return 0
@@ -470,9 +480,14 @@ def _grouped_scalar_boundary_probe(kind="scalar"):
         if profiling is not None:
             profiling.reset()
             profiling.enable()
-        pointers["SQLGetData_ptr"].value = ctypes.cast(
-            cancel_after_second_column, ctypes.c_void_p
-        ).value
+        if kind == "text":
+            pointers["SQLFetchScroll_ptr"].value = ctypes.cast(
+                cancel_after_first_row, ctypes.c_void_p
+            ).value
+        else:
+            pointers["SQLGetData_ptr"].value = ctypes.cast(
+                cancel_after_second_column, ctypes.c_void_p
+            ).value
         pointers["SQLCancel_ptr"].value = ctypes.cast(cancel, ctypes.c_void_p).value
         try:
             with pytest.raises(OperationalError, match="Operation canceled"):
@@ -482,15 +497,16 @@ def _grouped_scalar_boundary_probe(kind="scalar"):
                     cursor.fetchone()
         finally:
             pointers["SQLGetData_ptr"].value = original_getdata
+            pointers["SQLFetchScroll_ptr"].value = original_fetch
             pointers["SQLCancel_ptr"].value = original_cancel
             if profiling is not None:
                 profiling.disable()
-        assert reads == [1, 2]
+        assert reads == (["block"] if kind == "text" else [1, 2])
         if profiling is not None:
             if kind == "scalar":
                 assert profiling.get_stats()["ddbc::SQLGetData::scalar_group"]["calls"] == 1
-            elif os.name == "nt" and connection.getinfo(6) == "msodbcsql18.dll":
-                assert profiling.get_stats()["ddbc::SQLGetData::short_cell_group"]["calls"] == 1
+            else:
+                assert profiling.get_stats()["ddbc::FetchReusableTextRows"]["calls"] == 1
         assert cursor._query_slot.active is None
         assert not connection._query_state.busy
         assert cursor.execute("SELECT 99").fetchone()[0] == 99

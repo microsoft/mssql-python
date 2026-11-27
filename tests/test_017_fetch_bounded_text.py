@@ -14,6 +14,42 @@ import pytest
 from mssql_python import SQL_CHAR, SQL_WCHAR
 
 
+@pytest.mark.parametrize("dense_first", [False, True])
+@pytest.mark.parametrize("batch_size", [None, 7, 9, 65], ids=["all", "many7", "many9", "many65"])
+def test_reusable_rowsets_preserve_density_transitions(db_connection, dense_first, batch_size):
+    full = "x" * 3998 + "\U0001f642"
+    expression = (
+        f"CAST(CASE WHEN {'n < 16' if dense_first else 'n >= 16'} THEN ? "
+        "WHEN n % 4 = 0 THEN NULL WHEN n % 4 = 1 THEN N'' "
+        "WHEN n % 4 = 2 THEN N'A' + NCHAR(0) + N'B' "
+        "ELSE CAST(0x3DD842DE AS nvarchar(2)) END AS nvarchar(4000))"
+    )
+    sql = (
+        "WITH d(n) AS (SELECT n FROM (VALUES (0),(1),(2),(3),(4),"
+        "(5),(6),(7),(8),(9)) AS v(n)), "
+        "numbers AS (SELECT a.n + 10*b.n + 100*c.n AS n "
+        "FROM d a CROSS JOIN d b CROSS JOIN d c) "
+        f"SELECT n, {', '.join([expression] * 8)} FROM numbers WHERE n < 137 ORDER BY n"
+    )
+    with db_connection.cursor() as cursor:
+        cursor.execute(sql, (full,) * 8)
+        if batch_size is None:
+            rows = cursor.fetchall()
+        else:
+            rows = []
+            while batch := cursor.fetchmany(batch_size):
+                assert len(batch) <= batch_size
+                rows.extend(batch)
+        expected = []
+        for n in range(137):
+            dense = n < 16 if dense_first else n >= 16
+            value = full if dense else (None, "", "A\0B", "\U0001f642")[n % 4]
+            expected.append((n,) + (value,) * 8)
+        assert [tuple(row) for row in rows] == expected
+        assert cursor.fetchmany(9) == []
+        assert cursor.fetchone() is None
+
+
 @pytest.fixture(scope="module")
 def utf8_collation(db_connection):
     with db_connection.cursor() as cursor:
@@ -25,6 +61,51 @@ def utf8_collation(db_connection):
     if row is None:
         pytest.skip("VARCHAR BOM payloads require SQL Server UTF-8 collation support")
     return row[0]
+
+
+def test_reusable_rowset_mixed_native_types_and_nulls(db_connection):
+    from datetime import date, datetime, time
+    from decimal import Decimal
+    from uuid import UUID
+
+    columns = [
+        ("N'wide'", "nvarchar(4000)", "wide"),
+        ("1", "int", 1),
+        ("2", "smallint", 2),
+        ("3", "bigint", 3),
+        ("4", "tinyint", 4),
+        ("1", "bit", True),
+        ("1.5", "real", 1.5),
+        ("2.5", "float", 2.5),
+        ("12.50", "decimal(10,2)", Decimal("12.50")),
+        ("0x0001", "varbinary(2)", b"\0\x01"),
+        ("'2026-01-02'", "date", date(2026, 1, 2)),
+        ("'03:04:05.123456'", "time(6)", time(3, 4, 5, 123456)),
+        (
+            "'2026-01-02T03:04:05.123456'",
+            "datetime2(6)",
+            datetime(2026, 1, 2, 3, 4, 5, 123456),
+        ),
+        (
+            "'2026-01-02T03:04:05.123456+05:30'",
+            "datetimeoffset(6)",
+            datetime.fromisoformat("2026-01-02T03:04:05.123456+05:30"),
+        ),
+        (
+            "'00112233-4455-6677-8899-aabbccddeeff'",
+            "uniqueidentifier",
+            UUID("00112233-4455-6677-8899-aabbccddeeff"),
+        ),
+    ]
+    expressions = [
+        f"CAST(CASE WHEN n = 0 THEN {literal} END AS {sqltype})" for literal, sqltype, _ in columns
+    ]
+    with db_connection.cursor() as cursor:
+        cursor.execute(f"SELECT {', '.join(expressions)} FROM (VALUES (0),(1)) AS v(n) ORDER BY n")
+        assert [tuple(row) for row in cursor.fetchall()] == [
+            tuple(value for _, _, value in columns),
+            (None,) * len(columns),
+        ]
 
 
 def _fetch_rows(cursor, method):
