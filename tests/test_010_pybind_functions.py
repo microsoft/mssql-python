@@ -161,6 +161,43 @@ def test_executemany_rejects_unsafe_size_before_handle_access(param_set_size):
 
 
 @pytest.mark.skipif(not DDBC_AVAILABLE, reason="ddbc_bindings not available")
+@pytest.mark.parametrize(
+    ("c_type", "sql_type", "column_type", "empty"),
+    [
+        (-8, -10, "NVARCHAR(MAX)", ""),
+        (1, -1, "VARCHAR(MAX)", ""),
+        (-2, -4, "VARBINARY(MAX)", b""),
+        (-2, -4, "VARBINARY(MAX)", bytearray()),
+    ],
+)
+def test_native_dae_preserves_empty_and_null(db_connection, c_type, sql_type, column_type, empty):
+    info = ddbc.ParamInfo()
+    info.paramCType = c_type
+    info.paramSQLType = sql_type
+    info.inputOutputType = 1
+    info.columnSize = 10000
+    info.isDAE = True
+    with db_connection.cursor() as cur:
+        cur.execute(f"CREATE TABLE #empty_native_dae (value {column_type})")
+        try:
+            assert ddbc.SQLExecuteMany(
+                cur.hstmt,
+                "INSERT INTO #empty_native_dae VALUES (?)",
+                [[empty, None]],
+                [info],
+                2,
+                {},
+            ) in (0, 1)
+            cur.execute(
+                "SELECT value FROM #empty_native_dae ORDER BY CASE WHEN value IS NULL THEN 1 ELSE 0 END"
+            )
+            expected = bytes(empty) if isinstance(empty, bytearray) else empty
+            assert [tuple(row) for row in cur.fetchall()] == [(expected,), (None,)]
+        finally:
+            cur.execute("DROP TABLE #empty_native_dae")
+
+
+@pytest.mark.skipif(not DDBC_AVAILABLE, reason="ddbc_bindings not available")
 @pytest.mark.parametrize("failure_stage", ["binding", "streaming", "completion"])
 def test_native_dae_failure_preserves_error_and_allows_reuse(conn_str, failure_stage):
     env = os.environ.copy()
