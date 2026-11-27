@@ -267,6 +267,133 @@ def output_converter_fetch(conn, table, ctx, batched=False):
                     conn.add_output_converter(SQL_WVARCHAR, previous)
 
 
+def text_conversion_fetchall(conn, ctx, storage, payload_size="medium"):
+    """Fetch declared-wide text with stored-byte evidence and explicit UTF-16 decoding."""
+    from mssql_python import SQL_CHAR, SQL_WCHAR
+
+    data_type, collation, encoding, text = {
+        "ascii": ("varchar(8000)", "Latin1_General_100_BIN2", "ascii", "Abcd1234"),
+        "cp1252": (
+            "varchar(8000)",
+            "Latin1_General_100_BIN2",
+            "cp1252",
+            "caf\u00e9 \u20ac\u00df!",
+        ),
+        "utf8": (
+            "varchar(8000)",
+            "Latin1_General_100_BIN2_UTF8",
+            "utf-8",
+            "A\u00e9\u4e2d\U0001f642Z\u6f22\u03a9!",
+        ),
+        "nvarchar": (
+            "nvarchar(4000)",
+            "Latin1_General_100_BIN2",
+            "utf-16le",
+            "A\u00e9\u4e2d\U0001f642Z\u6f22\u03a9!",
+        ),
+    }[storage]
+    for sql_type in (SQL_CHAR, SQL_WCHAR):
+        if conn.getdecoding(sql_type) != {"encoding": "utf-16le", "ctype": SQL_WCHAR}:
+            raise ValueError("Text conversion benchmarks require UTF-16LE / SQL_WCHAR decoding")
+    repeats = {"short": 1, "medium": 32, "full": 8000 // len(text.encode(encoding))}
+    expected = text * repeats[payload_size]
+    row_count = 200 if payload_size == "full" else 5000
+    expected_bytes = expected.encode(encoding)
+    literal = f"CAST(0x{expected.encode('utf-16le').hex()} AS nvarchar(max))"
+    with conn.cursor() as cursor:
+        created = False
+        try:
+            cursor.execute(
+                "CREATE TABLE #ci_text_conversion "
+                f"(id INT PRIMARY KEY, payload {data_type} COLLATE {collation})"
+            )
+            created = True
+            cursor.execute(
+                "WITH d(n) AS (SELECT n FROM (VALUES (0),(1),(2),(3),(4),"
+                "(5),(6),(7),(8),(9)) AS v(n)), "
+                "nums(n) AS (SELECT a.n+10*b.n+100*c.n+1000*e.n "
+                "FROM d a CROSS JOIN d b CROSS JOIN d c CROSS JOIN d e) "
+                f"INSERT INTO #ci_text_conversion SELECT n, {literal} "
+                f"FROM nums WHERE n < {row_count}"
+            )
+            cursor.execute(
+                "SELECT DATALENGTH(payload), CAST(payload AS varbinary(8000)) "
+                "FROM #ci_text_conversion WHERE id = 0"
+            )
+            assert tuple(cursor.fetchone()) == (len(expected_bytes), expected_bytes)
+            cursor.execute(
+                "SELECT "
+                + ", ".join(f"payload AS c{column}" for column in range(8))
+                + " FROM #ci_text_conversion ORDER BY id"
+            )
+            ctx.enable()
+            start = time.perf_counter()
+            rows = cursor.fetchall()
+            wall_ms = (time.perf_counter() - start) * 1000
+            cpp, py = ctx.collect()
+            assert len(rows) == row_count
+            assert all(
+                tuple(row) == (expected,) * 8 and all(type(value) is str for value in row)
+                for row in rows
+            )
+            assert not cursor.messages, "Clean text conversion unexpectedly produced diagnostics"
+            return dict(
+                title="Wide-declared text conversion / fetchall",
+                wall_ms=wall_ms,
+                cpp=cpp,
+                py=py,
+                detail=(
+                    f"Rows: {row_count}; columns: 8; storage: {data_type}/{encoding}; "
+                    f"payload chars: {len(expected)}; fetch: UTF-16LE; API: fetchall"
+                ),
+            )
+        finally:
+            ctx.disable()
+            if created:
+                cursor.execute("DROP TABLE #ci_text_conversion")
+
+
+def narrow_fetchall_control(conn, ctx, integers=False):
+    """Fetch 200,000 narrow rows; only fetching and row wrapping are timed."""
+    expression = "n" if integers else "CAST('control' AS varchar(32))"
+    with conn.cursor() as cursor:
+        cursor.execute(
+            "WITH d(n) AS (SELECT n FROM (VALUES (0),(1),(2),(3),(4),"
+            "(5),(6),(7),(8),(9)) AS v(n)), "
+            "nums(n) AS (SELECT a.n+10*b.n+100*c.n+1000*e.n+10000*f.n+100000*g.n "
+            "FROM d a CROSS JOIN d b CROSS JOIN d c CROSS JOIN d e "
+            "CROSS JOIN d f CROSS JOIN d g) SELECT "
+            + ", ".join(f"{expression} AS c{column}" for column in range(8))
+            + " FROM nums WHERE n < 200000 ORDER BY n"
+        )
+        ctx.enable()
+        try:
+            start = time.perf_counter()
+            rows = cursor.fetchall()
+            wall_ms = (time.perf_counter() - start) * 1000
+            cpp, py = ctx.collect()
+            assert len(rows) == 200_000
+            expected_type = int if integers else str
+            assert all(
+                tuple(row) == ((index if integers else "control"),) * 8
+                and all(type(value) is expected_type for value in row)
+                for index, row in enumerate(rows)
+            )
+            assert not cursor.messages, "Clean narrow fetch unexpectedly produced diagnostics"
+            return dict(
+                title="Narrow-result fetchall control",
+                wall_ms=wall_ms,
+                cpp=cpp,
+                py=py,
+                detail=(
+                    "Rows: 200000; columns: 8; "
+                    f"type: {'int' if integers else 'varchar(32)'}; API: fetchall"
+                ),
+            )
+        finally:
+            ctx.disable()
+
+
 def row_to_dict(conn, table, ctx):
     """Convert fetched rows with warm mapping metadata; fetch and validation are not timed."""
     names = tuple(f"c{column}" for column in range(32))
@@ -336,5 +463,18 @@ def registry():
     result["output_converter_fetchall"] = (output_converter_fetch, True)
     result["output_converter_fetchmany1000"] = (partial(output_converter_fetch, batched=True), True)
     result["fetchmany_one_text"] = (fetchmany_one_text, True)
+    for storage in ("ascii", "cp1252", "utf8", "nvarchar"):
+        result[f"text_conversion_{storage}_fetchall"] = (
+            partial(text_conversion_fetchall, storage=storage),
+            False,
+        )
+    for storage in ("ascii", "cp1252", "utf8", "nvarchar"):
+        for size in ("short", "full"):
+            result[f"text_conversion_{storage}_{size}_fetchall"] = (
+                partial(text_conversion_fetchall, storage=storage, payload_size=size),
+                False,
+            )
+    result["narrow_varchar_fetchall"] = (narrow_fetchall_control, False)
+    result["narrow_integer_fetchall"] = (partial(narrow_fetchall_control, integers=True), False)
     result["row_to_dict"] = (row_to_dict, True)
     return result

@@ -966,13 +966,13 @@ int main() {
                 std::weak_ptr<int> retained = storage;
                 statement->retainFailedParameters({storage});
                 storage.reset();
-                require(statement->get() == nullptr, "Poisoned statement remained executable");
+                expectFailure([&] { statement->get(); });
                 failNext = "free";
                 ErrorInfo error;
                 require(statement->freeHandle(&error) == SQL_ERROR, "Expected failed cleanup retry");
                 require(error.sqlState == "HY000" && error.ddbcErrorMsg == "failed",
                         "Checked cleanup lost the live poisoned handle's diagnostics");
-                require(statement->get() == nullptr, "Failed cleanup exposed poisoned statement");
+                expectFailure([&] { statement->get(); });
                 require(!retained.expired(), "Failed cleanup released bound parameter storage");
                 if (retrySucceeds) {
                     statement->freeChecked();
