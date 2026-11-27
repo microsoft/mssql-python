@@ -4,6 +4,7 @@
 #pragma once
 #include "../ddbc_bindings.h"
 #include <memory>
+#include <optional>
 #include <string>
 #include <mutex>
 #include <unordered_map>
@@ -103,7 +104,8 @@ class Connection {
     void allocateDbcHandle();
     void checkError(SQLRETURN ret) const;
     void applyAttrsBefore(const py::dict& attrs_before);
-    void clearResultMetadata(bool discardPendingRows = false);
+    void clearResultMetadata(bool discardPendingRows = false,
+                             std::optional<int64_t> requestedAutocommit = std::nullopt);
 
     std::u16string _connStr;
     bool _fromPool = false;

@@ -260,7 +260,8 @@ void Connection::checkError(SQLRETURN ret) const {
     }
 }
 
-void Connection::clearResultMetadata(bool discardPendingRows) {
+void Connection::clearResultMetadata(bool discardPendingRows,
+                                     std::optional<int64_t> requestedAutocommit) {
     std::vector<SqlHandlePtr> handles;
     {
         std::lock_guard<std::mutex> lock(_childHandlesMutex);
@@ -270,6 +271,13 @@ void Connection::clearResultMetadata(bool discardPendingRows) {
                 handles.push_back(std::move(handle));
             }
         }
+    }
+    // Pool checkout and setters without pending rows need no extra ODBC probe.
+    if (requestedAutocommit &&
+        std::any_of(handles.begin(), handles.end(),
+                    [](const auto& handle) { return bool(handle->pendingArrowRows()); })) {
+        const SQLINTEGER currentMode = getAutocommit() ? SQL_AUTOCOMMIT_ON : SQL_AUTOCOMMIT_OFF;
+        discardPendingRows = *requestedAutocommit != currentMode;
     }
     // Releasing the last handle can acquire the connection cleanup gate.
     // Keep that destruction outside the child-list lock.
@@ -336,8 +344,8 @@ void Connection::setAutocommit(bool enable, bool force) {
         _autocommit = true;
         return;
     }
-    clearResultMetadata(enable != getAutocommit());
     SQLINTEGER value = enable ? SQL_AUTOCOMMIT_ON : SQL_AUTOCOMMIT_OFF;
+    clearResultMetadata(true, value);
     LOG("Setting autocommit=%d", enable);
     SQLRETURN ret;
     {
@@ -492,9 +500,7 @@ SQLRETURN Connection::setAttribute(SQLINTEGER attribute, py::object value, bool&
             _poolProofDisabled = true;
         }
         if (attribute == SQL_ATTR_AUTOCOMMIT) {
-            const SQLINTEGER currentMode =
-                getAutocommit() ? SQL_AUTOCOMMIT_ON : SQL_AUTOCOMMIT_OFF;
-            clearResultMetadata(longValue != currentMode);
+            clearResultMetadata(true, longValue);
         }
 
         SQLRETURN ret;
