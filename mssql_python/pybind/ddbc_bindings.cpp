@@ -5706,7 +5706,7 @@ static SQLRETURN FetchReusableTextRows(const SqlHandlePtr& handle, SQLUSMALLINT 
                         bytes +=
                             static_cast<size_t>(guard.storage->columns.indicators[column][row]);
         count += fetched;
-        if (!dense && count < limit) {
+        if (!dense && count < limit && fetched == rowArray) {
             dense = bytes / fetched >= boundBytes / 2;
             // Dense values benefit from the regular larger rowset budget.
             const size_t targetRows =

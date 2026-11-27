@@ -79,6 +79,7 @@ def test_checked_fetch_buffer_preconditions(item_size, terminator):
         "lob",
         "compact-wide",
         "compact-medium",
+        "compact-small-dense",
         "compact-no-total",
         "compact-invalid-length",
         "compact-truncated",
@@ -155,6 +156,8 @@ def _run_case(case):
         count = 3
     if case in ("compact-wide", "compact-medium", "compact-dense-truncated"):
         count = 1207
+    if case == "compact-small-dense":
+        count = 1
 
     def install(name, args, handler):
         pointer = pointers[name]
@@ -325,6 +328,9 @@ def _run_case(case):
         elif case == "compact-medium":
             columns = ["CAST('x' AS varchar(257))"] * 8
             expected = ["x"] * 8
+        elif case == "compact-small-dense":
+            columns = ["CAST(REPLICATE(N'x', 4000) AS nvarchar(4000))"]
+            expected = ["x" * 4000]
         elif case.startswith("compact-"):
             columns = ["CAST('x' AS varchar(8000))"]
         sql = (
@@ -472,9 +478,13 @@ def _run_case(case):
                 initial = max(1, min(100, 1024 * 1024 // row_bytes))
                 assert rowsets[0] == initial
                 assert initial * row_bytes <= 1024 * 1024 or initial == 1
-                if case in ("compact-wide", "mixed", "oversized-row"):
+                sparse_narrow = case == "narrow" and sys.platform != "win32"
+                if case in ("compact-wide", "compact-small-dense", "mixed", "oversized-row") or (
+                    sparse_narrow
+                ):
                     assert all(size == initial for size in fetches)
                     assert len(fetches) == (count + initial - 1) // initial + 2
+                    assert len(bindings) == 2 * ncols  # Only the two fetchall invocations.
                 elif case in ("wide", "narrow", "unicode", "compact-medium"):
                     target_budget = 1024 * 1024 if case == "compact-medium" else budget
                     target = max(1, min(1000, target_budget // row_bytes))
