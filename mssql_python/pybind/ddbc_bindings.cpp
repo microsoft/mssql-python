@@ -6729,10 +6729,9 @@ SQLRETURN GetDataVar(SQLHSTMT hStmt, SQLUSMALLINT colNumber, SQLSMALLINT cType,
                     sizeNullTerminator, "Native fetch buffer size is too large");
             }
 
-            // A terminator-only probe can report truncation even for empty text.
-            // Give it payload space once; a stalled payload read still fails below.
-            if (localInd == 0 && start == 0 && sizeNullTerminator != 0 &&
-                dataVec.size() == sizeNullTerminator) {
+            // Text conversion can report truncation for an exactly filled chunk.
+            // Leave payload space to confirm completion; underfilled chunks still fail.
+            if (sizeNullTerminator != 0 && end == dataVec.size()) {
                 end = CheckedAddSize(dataVec.size(), 1,
                                      "Native fetch buffer size is too large");
             }
@@ -7009,6 +7008,22 @@ py::object RunFetchValidationTest(const std::string& scenario) {
             {static_cast<SQLRETURN>(scenario == "empty_text_probe" ? SQL_SUCCESS
                                                                  : SQL_SUCCESS_WITH_INFO),
              static_cast<SQLLEN>(0)},
+        };
+        testGetDataResultIndex = 0;
+        std::vector<SQLCHAR> buffer;
+        SQLLEN indicator = INVALID_FETCH_INDICATOR;
+        size_t reservedBytes = 0;
+        const SQLRETURN ret =
+            GetDataVar(nullptr, 1, SQL_C_CHAR, buffer, &indicator, reservedBytes,
+                       py::none(), false, TestSQLGetData, TestHasTruncationDiagnostic);
+        return py::make_tuple(ret, indicator, testGetDataResultIndex, buffer.size());
+    } else if (scenario == "exact_fit_text_chunk" || scenario == "underfilled_text_chunk") {
+        testGetDataResults = {
+            {static_cast<SQLRETURN>(SQL_SUCCESS_WITH_INFO), static_cast<SQLLEN>(5)},
+            {static_cast<SQLRETURN>(SQL_SUCCESS_WITH_INFO), static_cast<SQLLEN>(7)},
+            {static_cast<SQLRETURN>(SQL_SUCCESS_WITH_INFO),
+             static_cast<SQLLEN>(scenario == "exact_fit_text_chunk" ? 2 : 1)},
+            {static_cast<SQLRETURN>(SQL_SUCCESS), static_cast<SQLLEN>(0)},
         };
         testGetDataResultIndex = 0;
         std::vector<SQLCHAR> buffer;

@@ -125,8 +125,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 - Automatically detected time parameters measure their normalized UTF-16
   payload and select streaming consistently with explicit text input sizing.
 - Variable-length empty text probes retry with payload space before enforcing
-  no-progress checks. Fetch continuation checks reuse diagnostics captured for
-  the same ODBC call instead of enumerating mixed warning records twice.
+  no-progress checks. Exactly filled converted text chunks also leave room to
+  confirm completion, avoiding false truncation failures with narrow UTF-8 TEXT
+  fetches. Fetch continuation checks reuse diagnostics captured for the same
+  ODBC call instead of enumerating mixed warning records twice.
 - DAE parameter-column lengths are validated once before the row-execution
   loop instead of repeatedly for every row.
 - Cursor fetch/Arrow batch sizes and bulk-copy batch/commit sizes are now capped

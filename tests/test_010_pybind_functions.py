@@ -193,6 +193,7 @@ def test_arrow_batch_rejects_unsafe_size_before_handle_access(batch_size):
         ("unrelated_warning_oversized", "data indicator exceeds the fetch buffer capacity"),
         ("odd_direct_wchar", "invalid byte length"),
         ("odd_lob_wchar", "invalid byte length"),
+        ("underfilled_text_chunk", "truncation made no progress"),
     ],
 )
 def test_driver_fetch_validation_rejects_malformed_lengths(scenario, message):
@@ -225,6 +226,12 @@ assert size == 2
 def test_empty_text_truncation_probe_retries_with_payload_capacity():
     ret, indicator, calls, size = ddbc._test_fetch_validation("empty_text_probe")
     assert (ret, indicator, calls, size) == (0, 0, 2, 2)
+
+
+@pytest.mark.skipif(not DDBC_AVAILABLE, reason="ddbc_bindings not available")
+def test_exact_fit_text_chunk_reads_completion_without_discarding_prefix():
+    ret, indicator, calls, size = ddbc._test_fetch_validation("exact_fit_text_chunk")
+    assert (ret, indicator, calls, size) == (0, 7, 4, 9)
 
 
 @pytest.mark.skipif(not DDBC_AVAILABLE, reason="ddbc_bindings not available")
