@@ -20,6 +20,33 @@
 #include "logger_bridge.hpp"
 #include "performance_counter.hpp"
 
+static void validateAccessTokenStructure(const py::object& value) {
+    const bool isBytes = py::isinstance<py::bytes>(value);
+    if (!isBytes && !py::isinstance<py::bytearray>(value)) {
+        ThrowStdException("SQL_COPT_SS_ACCESS_TOKEN must be supplied as bytes or bytearray.");
+    }
+    const Py_ssize_t bufferSize =
+        isBytes ? PyBytes_GET_SIZE(value.ptr()) : PyByteArray_GET_SIZE(value.ptr());
+    if (bufferSize < 4 || bufferSize > std::numeric_limits<SQLINTEGER>::max()) {
+        ThrowStdException(
+            "Invalid SQL_COPT_SS_ACCESS_TOKEN structure: expected a 4-byte length "
+            "header and a payload that fits SQLINTEGER.");
+    }
+    const char* data =
+        isBytes ? PyBytes_AS_STRING(value.ptr()) : PyByteArray_AS_STRING(value.ptr());
+    SQLUINTEGER payloadLength = 0;
+    for (int i = 0; i < 4; ++i) {
+        payloadLength |=
+            static_cast<SQLUINTEGER>(static_cast<unsigned char>(data[i])) << (8 * i);
+    }
+    if (payloadLength == 0 || payloadLength % 2 != 0 ||
+        static_cast<size_t>(payloadLength) != static_cast<size_t>(bufferSize - 4)) {
+        ThrowStdException(
+            "Invalid SQL_COPT_SS_ACCESS_TOKEN structure: the length header must "
+            "match a non-empty, even-length token payload.");
+    }
+}
+
 static bool isPythonFinalizing() {
     if (Py_IsInitialized() == 0) {
         return true;
@@ -470,27 +497,7 @@ SQLRETURN Connection::setAttribute(SQLINTEGER attribute, py::object value, bool&
     }
 
     if (attribute == SQL_COPT_SS_ACCESS_TOKEN) {
-        const bool isBytes = py::isinstance<py::bytes>(value);
-        const Py_ssize_t bufferSize =
-            isBytes ? PyBytes_GET_SIZE(value.ptr()) : PyByteArray_GET_SIZE(value.ptr());
-        if (bufferSize < 4 || bufferSize > std::numeric_limits<SQLINTEGER>::max()) {
-            ThrowStdException(
-                "Invalid SQL_COPT_SS_ACCESS_TOKEN structure: expected a 4-byte length "
-                "header and a payload that fits SQLINTEGER.");
-        }
-        const char* data =
-            isBytes ? PyBytes_AS_STRING(value.ptr()) : PyByteArray_AS_STRING(value.ptr());
-        SQLUINTEGER payloadLength = 0;
-        for (int i = 0; i < 4; ++i) {
-            payloadLength |=
-                static_cast<SQLUINTEGER>(static_cast<unsigned char>(data[i])) << (8 * i);
-        }
-        if (payloadLength == 0 || payloadLength % 2 != 0 ||
-            static_cast<size_t>(payloadLength) != static_cast<size_t>(bufferSize - 4)) {
-            ThrowStdException(
-                "Invalid SQL_COPT_SS_ACCESS_TOKEN structure: the length header must "
-                "match a non-empty, even-length token payload.");
-        }
+        validateAccessTokenStructure(value);
     }
 
     if (py::isinstance<py::int_>(value)) {
@@ -944,6 +951,11 @@ ConnectionHandle::ConnectionHandle(const std::u16string& connStr, bool usePool,
                                    const py::object& tokenFactory)
     : _usePool(usePool), _connStr(connStr), _poolKey(poolKey.empty() ? connStr : poolKey) {
     PERF_TIMER("ConnectionHandle::ConnectionHandle");
+    // Pool hits skip setAttribute(), but explicit token buffers must still be valid.
+    const py::int_ tokenAttribute(SQL_COPT_SS_ACCESS_TOKEN);
+    if (!attrsBefore.is_none() && attrsBefore.contains(tokenAttribute)) {
+        validateAccessTokenStructure(attrsBefore[tokenAttribute]);
+    }
     if (_usePool) {
         _conn = ConnectionPoolManager::getInstance().acquireConnection(_connStr, attrsBefore,
                                                                        _poolKey, tokenFactory,

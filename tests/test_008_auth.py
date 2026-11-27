@@ -48,6 +48,8 @@ SAMPLE_TOKEN = secrets.token_hex(44)
 @pytest.mark.parametrize(
     "token, malformed",
     [
+        pytest.param(b"", True, id="empty-bytes"),
+        pytest.param(bytearray(), True, id="empty-bytearray"),
         pytest.param(b"a" * 3, True, id="truncated-header"),
         pytest.param(b"a" * 16, True, id="reported-16-bytes"),
         pytest.param(b"x" * 64, True, id="reported-64-bytes"),
@@ -65,8 +67,21 @@ SAMPLE_TOKEN = secrets.token_hex(44)
 )
 def test_access_token_structure_in_subprocess(conn_str, route, token, malformed):
     """Exercise the real native boundary without letting a regression crash pytest."""
+    _run_access_token_probe(conn_str, route, token, malformed)
+
+
+@pytest.mark.parametrize("route", ["public", "native"])
+@pytest.mark.parametrize("token", [b"", bytearray()], ids=["bytes", "bytearray"])
+def test_empty_access_token_rejected_before_pool_checkout(conn_str, route, token):
+    """An explicitly empty token must not reuse a token-free pooled connection."""
+    _run_access_token_probe(conn_str, "pooled_" + route, token, True)
+
+
+def _run_access_token_probe(conn_str, route, token, malformed):
     if not conn_str:
         pytest.skip("DB_CONNECTION_STRING is required for native token probes")
+    pooled = route.startswith("pooled_")
+    route = route.removeprefix("pooled_")
     body = textwrap.dedent(f"""
         import logging
         import os
@@ -80,13 +95,26 @@ def test_access_token_structure_in_subprocess(conn_str, route, token, malformed)
 
         logging.disable(logging.CRITICAL)
         logger.disabled = True
-        ms.pooling = False
+        pooled = {pooled!r}
+        if pooled:
+            ms.pooling(max_size=1, idle_timeout=30)
+        else:
+            ms.pooling = False
         parser = _ConnectionStringParser(validate_keywords=True)
         params = parser._normalize_params(parser._parse(os.environ["DB_CONNECTION_STRING"]))
-        for key in ("Driver", "UID", "PWD", "Authentication", "Trusted_Connection"):
+        # The token-free pool must warm with the endpoint's normal authentication.
+        removed_keys = ("Driver",) if pooled else (
+            "Driver", "UID", "PWD", "Authentication", "Trusted_Connection"
+        )
+        for key in removed_keys:
             params.pop(key, None)
         connection_string = _ConnectionStringBuilder(params).build()
         assert parser._normalize_params(parser._parse(connection_string)) == params
+        if pooled:
+            with ms.connect(connection_string, timeout=5) as warm:
+                with warm.cursor() as cursor:
+                    cursor.execute("SELECT 1")
+                    assert cursor.fetchone()[0] == 1
         attrs = {{1256: {token!r}, ms.SQL_ATTR_LOGIN_TIMEOUT: 5}}
         route = {route!r}
         malformed = {malformed!r}
@@ -100,7 +128,7 @@ def test_access_token_structure_in_subprocess(conn_str, route, token, malformed)
                 )
                 factory = (lambda: (attrs, None)) if route == "native_factory" else None
                 conn = ddbc_bindings.Connection(
-                    native_string, False, {{}} if factory else attrs, "", factory
+                    native_string, pooled, {{}} if factory else attrs, "", factory
                 )
         except (ms.Error, ms.Warning, RuntimeError) as exc:
             validation_error = "Invalid SQL_COPT_SS_ACCESS_TOKEN structure" in str(exc)
@@ -113,7 +141,13 @@ def test_access_token_structure_in_subprocess(conn_str, route, token, malformed)
                 assert getattr(exc, "sqlstate", None) or "SQLSTATE:" in str(exc)
         else:
             conn.close()
-            assert not malformed, "Malformed access token reached ODBC"
+            assert not malformed, "Malformed access token was accepted"
+        if pooled:
+            with ms.connect(connection_string, timeout=5) as healthy:
+                with healthy.cursor() as cursor:
+                    cursor.execute("SELECT 1")
+                    assert cursor.fetchone()[0] == 1
+            ms.pooling(enabled=False)
         """)
     env = os.environ.copy()
     env["DB_CONNECTION_STRING"] = str(conn_str)
