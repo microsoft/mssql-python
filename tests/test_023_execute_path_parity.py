@@ -450,6 +450,62 @@ def test_executemany_ignores_str_subclass_encode_override(cursor):
     assert [tuple(row) for row in cursor.fetchall()] == [("safe",), (str(large_value),)]
 
 
+@pytest.mark.parametrize("binary_type", [bytes, bytearray], ids=["bytes", "bytearray"])
+@pytest.mark.parametrize(
+    "sql_type",
+    [None, ddbc_sql_const.SQL_VARCHAR.value, ddbc_sql_const.SQL_VARBINARY.value],
+    ids=["automatic", "varchar", "varbinary"],
+)
+def test_executemany_ignores_binary_subclass_length_override(
+    cursor, monkeypatch, binary_type, sql_type
+):
+    from mssql_python import ddbc_bindings
+
+    class ShortLength(binary_type):
+        def __len__(self):
+            return 1
+
+    def unexpected_array_binding(*args):
+        pytest.fail("An oversized binary subclass reached the native array binder")
+
+    monkeypatch.setattr(ddbc_bindings, "SQLExecuteMany", unexpected_array_binding)
+    column_type = (
+        "VARCHAR(MAX)" if sql_type == ddbc_sql_const.SQL_VARCHAR.value else "VARBINARY(MAX)"
+    )
+    table = f"#binary_subclass_size_{uuid.uuid4().hex}"
+    cursor.execute(f"CREATE TABLE {table} (value {column_type})")
+    if sql_type is not None:
+        cursor.setinputsizes([(sql_type, 1, 0)])
+    values = [ShortLength(b"x"), ShortLength(b"x" * 8001)]
+    cursor.executemany(f"INSERT INTO {table} VALUES (?)", [(value,) for value in values])
+    cursor.execute(f"SELECT value FROM {table} ORDER BY DATALENGTH(value)")
+    actual = [
+        row[0].encode("ascii") if isinstance(row[0], str) else row[0] for row in cursor.fetchall()
+    ]
+    assert actual == [b"x", b"x" * 8001]
+
+
+@pytest.mark.parametrize(
+    "formatted",
+    ["x" * 4001, "\U0001f600" * 2000, "\U0001f600" * 2001],
+    ids=["ascii-dae", "astral-inline-limit", "astral-dae"],
+)
+def test_auto_time_detection_measures_normalized_utf16_payload(formatted):
+    from mssql_python import ddbc_bindings
+
+    class FormattedTime(datetime.time):
+        def isoformat(self, *args, **kwargs):
+            return formatted
+
+    info = ddbc_bindings._detect_param_types([FormattedTime(1, 2, 3)])[0]
+    units = len(formatted.encode("utf-16-le")) // 2
+    assert info.paramSQLType == ddbc_sql_const.SQL_TYPE_TIME.value
+    assert info.columnSize == units
+    assert info.isDAE is (units > 4000)
+    if info.isDAE:
+        assert info.dataPtr == formatted
+
+
 def test_setinputsizes_rejects_bytes_for_wide_character_binding(cursor):
     """Wide-character overrides require text rather than raw encoded bytes."""
     cursor.setinputsizes([(ddbc_sql_const.SQL_WVARCHAR.value, 1, 0)])

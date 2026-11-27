@@ -114,6 +114,10 @@ def _utf16_length_exceeds(value: str, limit: int) -> bool:
     return len(str.encode(bounded_value, "utf-16-le")) // 2 > limit
 
 
+def _binary_length(value: bytes | bytearray) -> int:
+    return bytes.__len__(value) if isinstance(value, bytes) else bytearray.__len__(value)
+
+
 # SQL BIGINT is a signed 64-bit integer. Ints outside this range have no BIGINT
 # encoding and must be rejected at detect time on both paths (see _map_sql_type).
 BIGINT_MIN: int = -(2**63)
@@ -3150,7 +3154,7 @@ class Cursor:
                                 for value in text_values
                             )
                         binary_is_large = narrow_text_type and any(
-                            len(value) > MAX_INLINE_BINARY for value in binary_values
+                            _binary_length(value) > MAX_INLINE_BINARY for value in binary_values
                         )
                         requires_row_fallback = bool(
                             narrow_text_type and text_values and binary_values
@@ -3179,7 +3183,7 @@ class Cursor:
                         for row in seq_of_parameters:
                             value = row[col_index]
                             if value is not None and isinstance(value, (bytes, bytearray)):
-                                max_binary_size = max(max_binary_size, len(value))
+                                max_binary_size = max(max_binary_size, _binary_length(value))
 
                         # For SQL Server VARBINARY(MAX), we need to use large object binding
                         if max_binary_size > MAX_INLINE_BINARY:
@@ -3308,7 +3312,7 @@ class Cursor:
                         for row in seq_of_parameters:
                             value = row[col_index]
                             if value is not None and isinstance(value, (bytes, bytearray)):
-                                max_binary_size = max(max_binary_size, len(value))
+                                max_binary_size = max(max_binary_size, _binary_length(value))
 
                         # For SQL Server VARBINARY(MAX), we need to use large object binding
                         if max_binary_size > MAX_INLINE_BINARY:

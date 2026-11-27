@@ -784,6 +784,15 @@ inline std::vector<ParamInfo> DetectParamTypes(PyObject* params, PyObject* input
             // isoformat(timespec="microseconds") via _normalize_time_param in cursor.py,
             // so calling the same method is what keeps the two paths in agreement.
             NormalizeTimeParam(params, i, info.columnSize);
+            obj = PyList_GET_ITEM(params, i);
+            info.utf16Len = UnicodeUtf16Length(obj);
+            info.isDAE = info.utf16Len > MAX_INLINE_CHAR;
+            info.columnSize = info.isDAE
+                ? DAEColumnSize(info.paramSQLType, static_cast<SQLULEN>(info.utf16Len))
+                : std::max(info.columnSize, static_cast<SQLULEN>(info.utf16Len));
+            if (info.isDAE) {
+                info.dataPtr = borrow(obj);
+            }
             continue;
         }
 

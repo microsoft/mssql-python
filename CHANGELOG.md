@@ -120,6 +120,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
   Actual autocommit mode changes still invalidate pending rows.
   Driver-mode reads are limited to setters with pending Arrow rows, preserving
   the native pool-checkout and empty-setter call sequences.
+- Binary subclass length overrides no longer bypass `executemany()` payload
+  sizing or streaming selection for automatic or explicit input types.
+- Automatically detected time parameters measure their normalized UTF-16
+  payload and select streaming consistently with explicit text input sizing.
 - DAE parameter-column lengths are validated once before the row-execution
   loop instead of repeatedly for every row.
 - Cursor fetch/Arrow batch sizes and bulk-copy batch/commit sizes are now capped
