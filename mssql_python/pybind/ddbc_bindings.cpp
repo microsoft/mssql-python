@@ -2730,8 +2730,9 @@ ErrorInfo SQLReadError(SQLSMALLINT handleType, SQLHANDLE rawHandle, SQLRETURN re
     return errorInfo;
 }
 
-static void AppendDiagRecords(SQLHANDLE rawHandle, SQLSMALLINT handleType, py::handle records,
-                              bool internalTruncation = false) {
+static std::optional<bool> AppendDiagRecords(SQLHANDLE rawHandle, SQLSMALLINT handleType,
+                                           py::handle records, bool internalTruncation = false) {
+    bool hasTruncation = false;
     // Iterate through all available diagnostic records
     for (SQLSMALLINT recNumber = 1;; recNumber++) {
         SQLWCHAR sqlState[6] = {0};
@@ -2747,8 +2748,10 @@ static void AppendDiagRecords(SQLHANDLE rawHandle, SQLSMALLINT handleType, py::h
             if (stateReturn == SQL_NO_DATA)
                 break;
             // Skip only this continuation record, without retrieving its message text.
-            if (stateReturn == SQL_SUCCESS && std::equal(sqlState, sqlState + 6, u"01004"))
+            if (stateReturn == SQL_SUCCESS && std::equal(sqlState, sqlState + 6, u"01004")) {
+                hasTruncation = true;
                 continue;
+            }
             if (stateReturn != SQL_SUCCESS)
                 LOG("AppendDiagRecords: SQLSTATE lookup returned %d; reading full record %d",
                     stateReturn, recNumber);
@@ -2764,13 +2767,18 @@ static void AppendDiagRecords(SQLHANDLE rawHandle, SQLSMALLINT handleType, py::h
                                            message, SQL_MAX_MESSAGE_LENGTH_SQLSERVER, &messageLen);
         }
 
-        if (diagReturn == SQL_NO_DATA || !SQL_SUCCEEDED(diagReturn))
+        if (diagReturn == SQL_NO_DATA)
             break;
+        if (!SQL_SUCCEEDED(diagReturn))
+            return std::nullopt;
 
         std::u16string sqlStateUtf16 = dupeSqlWCharAsUtf16Le(sqlState, 5);
         // A continuation/probe can also carry unrelated warnings; filter each record.
-        if (internalTruncation && sqlStateUtf16 == u"01004")
-            continue;
+        if (sqlStateUtf16 == u"01004") {
+            hasTruncation = true;
+            if (internalTruncation)
+                continue;
+        }
         std::u16string messageUtf16 = dupeSqlWCharAsUtf16Le(
             message, std::min(static_cast<size_t>(messageLen),
                               static_cast<size_t>(SQL_MAX_MESSAGE_LENGTH_SQLSERVER - 1)));
@@ -2786,6 +2794,7 @@ static void AppendDiagRecords(SQLHANDLE rawHandle, SQLSMALLINT handleType, py::h
         if (PyList_Append(records.ptr(), record.ptr()) < 0)
             throw py::error_already_set();
     }
+    return hasTruncation;
 }
 
 py::list SQLGetAllDiagRecords(SqlHandlePtr handle) {
@@ -2815,11 +2824,15 @@ static bool FetchDiagnosticsAreEmpty(SQLHSTMT hStmt) {
 }
 
 // Called only with the GIL held, immediately after the originating ODBC call.
-static void CaptureFetchDiagnostics(SQLHSTMT hStmt, SQLRETURN ret, py::handle messages,
-                                    bool internalTruncation = false) {
-    if ((ret == SQL_SUCCESS_WITH_INFO || ret == SQL_NO_DATA) && messages && !messages.is_none() &&
-        !FetchDiagnosticsAreEmpty(hStmt))
-        AppendDiagRecords(hStmt, SQL_HANDLE_STMT, messages, internalTruncation);
+static std::optional<bool> CaptureFetchDiagnostics(SQLHSTMT hStmt, SQLRETURN ret,
+                                                  py::handle messages,
+                                                  bool internalTruncation = false) {
+    if ((ret == SQL_SUCCESS_WITH_INFO || ret == SQL_NO_DATA) && messages && !messages.is_none()) {
+        if (FetchDiagnosticsAreEmpty(hStmt))
+            return false;
+        return AppendDiagRecords(hStmt, SQL_HANDLE_STMT, messages, internalTruncation);
+    }
+    return std::nullopt;
 }
 
 constexpr SQLLEN INVALID_FETCH_INDICATOR = std::numeric_limits<SQLLEN>::min();
@@ -4344,8 +4357,9 @@ static py::object FetchLobColumnDataImpl(
             return getData(hStmt, colIndex, cType, chunk.data(),
                            static_cast<SQLLEN>(chunkSize), &actualRead);
         });
+        std::optional<bool> capturedTruncation;
         if (captureDiagnostics) {
-            CaptureFetchDiagnostics(hStmt, ret, messages, true);
+            capturedTruncation = CaptureFetchDiagnostics(hStmt, ret, messages, true);
         }
 
         if (ret == SQL_NO_DATA) {
@@ -4375,7 +4389,9 @@ static py::object FetchLobColumnDataImpl(
         const size_t terminatorBytes = isBinary ? 0 : (isWideChar ? sizeof(SQLWCHAR) : 1);
         const size_t payloadCapacity = chunkSize - terminatorBytes;
         const bool continueForTruncation =
-            ret == SQL_SUCCESS_WITH_INFO && hasTruncationDiagnostic(hStmt);
+            ret == SQL_SUCCESS_WITH_INFO &&
+            (capturedTruncation.has_value() ? *capturedTruncation
+                                           : hasTruncationDiagnostic(hStmt));
         if (actualRead == SQL_NO_TOTAL && !continueForTruncation) {
             ThrowStdException("LOB SQL_NO_TOTAL requires a truncation diagnostic");
         }
@@ -6596,8 +6612,9 @@ SQLRETURN GetDataVar(SQLHSTMT hStmt, SQLUSMALLINT colNumber, SQLSMALLINT cType,
             hStmt, colNumber, cType, reinterpret_cast<uint8_t*>(dataVec.data() + start),
             static_cast<SQLLEN>(availableBytes),
             &localInd); });
+        std::optional<bool> capturedTruncation;
         if (captureDiagnostics) {
-            CaptureFetchDiagnostics(hStmt, ret, messages, true);
+            capturedTruncation = CaptureFetchDiagnostics(hStmt, ret, messages, true);
         }
 
         // Indicator contents are undefined when the ODBC call fails.
@@ -6661,7 +6678,9 @@ SQLRETURN GetDataVar(SQLHSTMT hStmt, SQLUSMALLINT colNumber, SQLSMALLINT cType,
 
         // SQL_SUCCESS_WITH_INFO means buffer was too small, need to continue fetching
         if (ret == SQL_SUCCESS_WITH_INFO) {
-            const bool isTruncation = hasTruncationDiagnostic(hStmt);
+            const bool isTruncation =
+                capturedTruncation.has_value() ? *capturedTruncation
+                                              : hasTruncationDiagnostic(hStmt);
             if (!isTruncation) {
                 if (localInd < 0) {
                     ThrowStdException(
@@ -6708,6 +6727,14 @@ SQLRETURN GetDataVar(SQLHSTMT hStmt, SQLUSMALLINT colNumber, SQLSMALLINT cType,
                     CheckedAddSize(start, static_cast<size_t>(localInd) / sizeof(T),
                                    "Native fetch buffer size is too large"),
                     sizeNullTerminator, "Native fetch buffer size is too large");
+            }
+
+            // A terminator-only probe can report truncation even for empty text.
+            // Give it payload space once; a stalled payload read still fails below.
+            if (localInd == 0 && start == 0 && sizeNullTerminator != 0 &&
+                dataVec.size() == sizeNullTerminator) {
+                end = CheckedAddSize(dataVec.size(), 1,
+                                     "Native fetch buffer size is too large");
             }
 
             // The next read starts where the null terminator would have been placed
@@ -6976,6 +7003,21 @@ py::object RunFetchValidationTest(const std::string& scenario) {
         size_t reservedBytes = 0;
         GetDataVar(nullptr, 1, SQL_C_BINARY, buffer, &indicator, reservedBytes, py::none(),
                    false, TestSQLGetData, TestHasTruncationDiagnostic);
+    } else if (scenario == "empty_text_probe" || scenario == "stalled_empty_text_probe") {
+        testGetDataResults = {
+            {static_cast<SQLRETURN>(SQL_SUCCESS_WITH_INFO), static_cast<SQLLEN>(0)},
+            {static_cast<SQLRETURN>(scenario == "empty_text_probe" ? SQL_SUCCESS
+                                                                 : SQL_SUCCESS_WITH_INFO),
+             static_cast<SQLLEN>(0)},
+        };
+        testGetDataResultIndex = 0;
+        std::vector<SQLCHAR> buffer;
+        SQLLEN indicator = INVALID_FETCH_INDICATOR;
+        size_t reservedBytes = 0;
+        const SQLRETURN ret =
+            GetDataVar(nullptr, 1, SQL_C_CHAR, buffer, &indicator, reservedBytes,
+                       py::none(), false, TestSQLGetData, TestHasTruncationDiagnostic);
+        return py::make_tuple(ret, indicator, testGetDataResultIndex, buffer.size());
     } else if (scenario == "unrelated_warning_no_progress") {
         testGetDataResults = {
             {static_cast<SQLRETURN>(SQL_SUCCESS_WITH_INFO), static_cast<SQLLEN>(0)},
@@ -8879,6 +8921,7 @@ PYBIND11_MODULE(ddbc_bindings, m) {
     arrowTestPointers["SQLFetch_ptr"] = reinterpret_cast<std::uintptr_t>(&SQLFetch_ptr);
     arrowTestPointers["SQLCancel_ptr"] = reinterpret_cast<std::uintptr_t>(&SQLCancel_ptr);
     arrowTestPointers["SQLGetDiagRec_ptr"] = reinterpret_cast<std::uintptr_t>(&SQLGetDiagRec_ptr);
+    arrowTestPointers["SQLGetDiagField_ptr"] = reinterpret_cast<std::uintptr_t>(&SQLGetDiagField_ptr);
     arrowTestPointers["SQLPrepare_ptr"] = reinterpret_cast<std::uintptr_t>(&SQLPrepare_ptr);
     arrowTestPointers["SQLDescribeParam_ptr"] = reinterpret_cast<std::uintptr_t>(&SQLDescribeParam_ptr);
     arrowTestPointers["SQLExecute_ptr"] = reinterpret_cast<std::uintptr_t>(&SQLExecute_ptr);

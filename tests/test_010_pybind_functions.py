@@ -222,6 +222,18 @@ assert size == 2
 
 
 @pytest.mark.skipif(not DDBC_AVAILABLE, reason="ddbc_bindings not available")
+def test_empty_text_truncation_probe_retries_with_payload_capacity():
+    ret, indicator, calls, size = ddbc._test_fetch_validation("empty_text_probe")
+    assert (ret, indicator, calls, size) == (0, 0, 2, 2)
+
+
+@pytest.mark.skipif(not DDBC_AVAILABLE, reason="ddbc_bindings not available")
+def test_empty_text_probe_still_rejects_stalled_payload_read():
+    with pytest.raises(RuntimeError, match="truncation made no progress"):
+        ddbc._test_fetch_validation("stalled_empty_text_probe")
+
+
+@pytest.mark.skipif(not DDBC_AVAILABLE, reason="ddbc_bindings not available")
 def test_sql_no_data_ignores_undefined_indicator():
     ret, indicator, calls, size = ddbc._test_fetch_validation("sql_no_total_no_data")
     assert ret == 0
