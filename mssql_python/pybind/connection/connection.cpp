@@ -329,13 +329,14 @@ void Connection::setAutocommit(bool enable, bool force) {
     if (!_dbcHandle) {
         ThrowStdException("Connection handle not allocated");
     }
-    clearResultMetadata(true);
     // Only successful native sanitation with no retained statement/raw handle
     // aliases proves ON. A new login or _autocommit alone is not proof.
     if (!force && enable && _dbcHandle->get() && _poolClean && !_poolProofDisabled) {
+        clearResultMetadata();
         _autocommit = true;
         return;
     }
+    clearResultMetadata(enable != getAutocommit());
     SQLINTEGER value = enable ? SQL_AUTOCOMMIT_ON : SQL_AUTOCOMMIT_OFF;
     LOG("Setting autocommit=%d", enable);
     SQLRETURN ret;
@@ -449,8 +450,7 @@ SQLRETURN Connection::setAttribute(SQLINTEGER attribute, py::object value, bool&
     if (!scalarLoginTimeout) {
         _poolProofDisabled = true;
     }
-    clearResultMetadata(attribute == SQL_ATTR_RESET_CONNECTION ||
-                        attribute == SQL_ATTR_AUTOCOMMIT);
+    clearResultMetadata(attribute == SQL_ATTR_RESET_CONNECTION);
     LOG("Setting SQL attribute=%d", attribute);
     // SQLPOINTER ptr = nullptr;
     // SQLINTEGER length = 0;
@@ -490,6 +490,11 @@ SQLRETURN Connection::setAttribute(SQLINTEGER attribute, py::object value, bool&
             (longValue < 0 ||
              static_cast<uint64_t>(longValue) > std::numeric_limits<SQLUINTEGER>::max())) {
             _poolProofDisabled = true;
+        }
+        if (attribute == SQL_ATTR_AUTOCOMMIT) {
+            const SQLINTEGER currentMode =
+                getAutocommit() ? SQL_AUTOCOMMIT_ON : SQL_AUTOCOMMIT_OFF;
+            clearResultMetadata(longValue != currentMode);
         }
 
         SQLRETURN ret;
