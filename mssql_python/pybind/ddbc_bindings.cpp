@@ -3877,11 +3877,11 @@ class DaeRowBindingGuard {
 
     ~DaeRowBindingGuard() noexcept {
         if (!finished) {
-            SQLRETURN cancelRc;
+            SQLRETURN cancelRc = SQL_ERROR;
             SQLRETURN resetRc;
             {
                 py::gil_scoped_release release;
-                cancelRc = SQLCancel_ptr(handle->get());
+                if (SQLCancel_ptr) cancelRc = SQLCancel_ptr(handle->get());
                 resetRc = SQLFreeStmt_ptr(handle->get(), SQL_RESET_PARAMS);
             }
             if (!SQL_SUCCEEDED(cancelRc)) {
