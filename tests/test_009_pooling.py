@@ -83,6 +83,36 @@ def reset_pooling_state():
 # =============================================================================
 
 
+def test_pooled_positive_login_timeout_reaches_native_attrs():
+    """Exercise the Python boundary paired with native timeout call-count tests."""
+    from unittest.mock import MagicMock, patch
+    from mssql_python.constants import ConstantsDDBC
+
+    pooling(enabled=True, max_size=2, idle_timeout=30)
+    native = MagicMock()
+    native.get_autocommit.return_value = True
+    with patch("mssql_python.connection.ddbc_bindings.Connection", return_value=native) as create:
+        for _ in range(3):
+            connection = connect(
+                "Server=testserver;Database=mydb;Trusted_Connection=yes;",
+                timeout=30,
+                autocommit=True,
+            )
+            assert create.call_args.args[1] is True
+            assert create.call_args.args[2] == {
+                ConstantsDDBC.SQL_ATTR_LOGIN_TIMEOUT.value: 30,
+                ConstantsDDBC.SQL_ATTR_AUTOCOMMIT.value: ConstantsDDBC.SQL_AUTOCOMMIT_ON.value,
+            }
+            assert connection.timeout == 0  # Query timeout is independent.
+            connection.close()
+    assert create.call_count == 3
+    assert native.get_autocommit.call_count == 3
+    native.set_autocommit.assert_not_called()
+    assert native.close.call_count == 3
+    native.close.assert_called_with(rollback_before_disconnect=True)
+    native.rollback.assert_not_called()
+
+
 def test_connection_pooling_basic(conn_str):
     """Test basic connection pooling functionality with multiple connections."""
     # Enable pooling with small pool size
@@ -127,6 +157,35 @@ def test_connection_pooling_reuse_spid(conn_str):
     assert spid1 == spid2, "Connections not reused - different SPIDs"
 
 
+def test_application_names_isolate_pools_and_aliases_reuse_sessions(conn_str):
+    _run_in_subprocess(
+        """
+        import os
+        from mssql_python import connect, pooling
+
+        pooling(max_size=1, idle_timeout=60)
+        base = os.environ["DB_CONNECTION_STRING"]
+
+        def identity(conn):
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT @@SPID, APP_NAME()")
+                return tuple(cursor.fetchone())
+
+        with connect(base, APP="Pool-A") as conn:
+            first = identity(conn)
+        with connect(base + ";Application Name=Pool-A") as conn:
+            equivalent = identity(conn)
+            with connect(base, APP="Pool-B") as other:
+                different = identity(other)
+        assert first == equivalent
+        assert first[1] == "MSSQL-Python|Pool-A"
+        assert different[1] == "MSSQL-Python|Pool-B"
+        assert different[0] != first[0]
+        """,
+        conn_str,
+    )
+
+
 def test_pooled_close_paths_leave_no_open_transaction(conn_str):
     """Every close path must leave the physical connection transaction-clean."""
     _run_in_subprocess(
@@ -169,6 +228,13 @@ def test_pooled_close_paths_leave_no_open_transaction(conn_str):
                     "explicit transaction in autocommit",
                     True,
                     "BEGIN TRANSACTION; SELECT 1",
+                    None,
+                    None,
+                ),
+                (
+                    "explicit transaction with noexec",
+                    True,
+                    "BEGIN TRANSACTION; SELECT 1; SET NOEXEC ON",
                     None,
                     None,
                 ),
@@ -224,7 +290,8 @@ def test_pooled_close_paths_leave_no_open_transaction(conn_str):
     )
 
 
-def test_autocommit_explicit_transaction_is_rolled_back_on_pool_checkin(conn_str):
+@pytest.mark.parametrize("execution", ["execute", "executemany", "failed_execute"])
+def test_autocommit_explicit_transaction_is_rolled_back_on_pool_checkin(conn_str, execution):
     """Autocommit normalization must not commit an explicit SQL transaction."""
     _run_in_subprocess(
         """
@@ -233,7 +300,8 @@ def test_autocommit_explicit_transaction_is_rolled_back_on_pool_checkin(conn_str
         import mssql_python
 
         conn_str = os.environ["DB_CONNECTION_STRING"]
-        table = "pytest_pool_explicit_autocommit_transaction"
+        execution = EXECUTION_MODE
+        table = f"pytest_pool_explicit_autocommit_transaction_{execution}"
         mssql_python.pooling(enabled=True, max_size=2, idle_timeout=30)
         observer = mssql_python.connect(conn_str, autocommit=True)
         try:
@@ -271,7 +339,38 @@ def test_autocommit_explicit_transaction_is_rolled_back_on_pool_checkin(conn_str
                 )
                 sys.exit(77)
 
-            subject_cursor.execute(f"BEGIN TRANSACTION; INSERT INTO {table} VALUES (1)")
+            subject_cursor.close()
+            subject.close()
+            # Exercise proven-clean, no-statement leases before reintroducing
+            # explicit work. Inspect the parked session without borrowing it.
+            for _ in range(3):
+                empty = mssql_python.connect(conn_str, autocommit=True)
+                empty.close()
+                observer_cursor.execute(
+                    "SELECT open_transaction_count "
+                    "FROM sys.dm_exec_sessions WHERE session_id = ?",
+                    [subject_spid],
+                )
+                row = observer_cursor.fetchone()
+                assert row is not None and row[0] == 0
+
+            subject = mssql_python.connect(conn_str, autocommit=True)
+            subject_cursor = subject.cursor()
+            subject_cursor.execute("BEGIN TRANSACTION")
+            if execution == "executemany":
+                subject_cursor.executemany(
+                    f"INSERT INTO {table} VALUES (?)", [(1,), (2,)]
+                )
+            elif execution == "failed_execute":
+                subject_cursor.execute(f"INSERT INTO {table} VALUES (1)")
+                try:
+                    subject_cursor.execute(f"INSERT INTO {table} VALUES (1)")
+                except mssql_python.IntegrityError:
+                    pass
+                else:
+                    raise AssertionError("Expected duplicate-key execution failure")
+            else:
+                subject_cursor.execute(f"INSERT INTO {table} VALUES (1)")
             subject_cursor.close()
             subject.close()
 
@@ -303,12 +402,13 @@ def test_autocommit_explicit_transaction_is_rolled_back_on_pool_checkin(conn_str
         finally:
             observer.close()
             mssql_python.pooling(enabled=False)
-        """,
+        """.replace("EXECUTION_MODE", repr(execution)),
         conn_str,
     )
 
 
-def test_connection_pooling_isolation_level_reset(conn_str):
+@pytest.mark.parametrize("use_sql", [False, True], ids=["attribute", "sql"])
+def test_connection_pooling_isolation_level_reset(conn_str, use_sql):
     """Test that pooling correctly resets session state for isolation level.
 
     This test verifies that when a connection is returned to the pool and then
@@ -325,7 +425,11 @@ def test_connection_pooling_isolation_level_reset(conn_str):
     conn1 = connect(conn_str)
 
     # Set isolation level to SERIALIZABLE (non-default)
-    conn1.set_attr(mssql_python.SQL_ATTR_TXN_ISOLATION, mssql_python.SQL_TXN_SERIALIZABLE)
+    if use_sql:
+        with conn1.cursor() as cur:
+            cur.execute("SET TRANSACTION ISOLATION LEVEL SERIALIZABLE")
+    else:
+        conn1.set_attr(mssql_python.SQL_ATTR_TXN_ISOLATION, mssql_python.SQL_TXN_SERIALIZABLE)
 
     # Verify the isolation level was set
     cursor1 = conn1.cursor()
@@ -385,6 +489,34 @@ def test_connection_pooling_isolation_level_reset(conn_str):
     # Clean up
     cursor2.close()
     conn2.close()
+
+
+def test_pooled_autocommit_close_after_query(conn_str):
+    """Closing a used pooled connection must also work on dedicated SQL pools."""
+    _run_in_subprocess(
+        """
+        import os
+        import mssql_python
+
+        mssql_python.pooling(enabled=True, max_size=1, idle_timeout=30)
+        try:
+            for _ in range(2):
+                conn = mssql_python.connect(
+                    os.environ["DB_CONNECTION_STRING"], autocommit=True
+                )
+                try:
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT 1")
+                    assert cursor.fetchone()[0] == 1
+                    cursor.close()
+                finally:
+                    conn.close()
+                assert conn.closed
+        finally:
+            mssql_python.pooling(enabled=False)
+        """,
+        conn_str,
+    )
 
 
 def test_connection_pooling_speed(conn_str):
@@ -851,6 +983,450 @@ def test_checked_out_pool_is_not_evicted(conn_str):
 # =============================================================================
 
 
+@pytest.mark.parametrize(
+    "pool_size,autocommit,options,replacement_fails,mixed_pool",
+    [
+        pytest.param(
+            pool_size,
+            autocommit,
+            options,
+            False,
+            False,
+            id=f"{name}-{pool_size}-{autocommit}",
+        )
+        for name, options in (
+            ("constructor", {"timeout": 1}),
+            (
+                "attrs_before",
+                {"timeout": 30, "attrs_before": {mssql_python.SQL_ATTR_LOGIN_TIMEOUT: 1}},
+            ),
+        )
+        for pool_size in (1, 3)
+        for autocommit in (False, True)
+    ]
+    + [pytest.param(3, False, {"timeout": 0}, False, False, id="finite-default")]
+    + [
+        pytest.param(
+            1,
+            autocommit,
+            {
+                "timeout": login_timeout,
+                "attrs_before": {mssql_python.SQL_ATTR_CONNECTION_TIMEOUT: 1},
+            },
+            False,
+            False,
+            id=f"connection-timeout-{login_timeout}-{autocommit}",
+        )
+        for login_timeout in (15, 0)
+        for autocommit in (False, True)
+    ]
+    + [
+        pytest.param(
+            size,
+            autocommit,
+            {"timeout": 1},
+            fails,
+            mixed,
+            id=f"recovery-{size}-{autocommit}-{fails}-{mixed}",
+        )
+        for size, fails, mixed in ((1, True, False), (3, False, True), (3, True, True))
+        for autocommit in (False, True)
+    ],
+)
+def test_pool_checkout_validation_timeout(
+    conn_str, autocommit, pool_size, options, replacement_fails, mixed_pool
+):
+    """GH #854/#893: bound stalled checkout, respecting a shorter connection timeout."""
+    _run_in_subprocess(
+        """
+        import os
+        import socket
+        import sys
+        import threading
+        import time
+        from mssql_python import connect, pooling, SQL_ATTR_CONNECTION_TIMEOUT
+        from mssql_python.connection_string_parser import _ConnectionStringParser
+        from mssql_python.connection_string_builder import _ConnectionStringBuilder
+
+        params = _ConnectionStringParser._normalize_params(
+            _ConnectionStringParser()._parse(os.environ["DB_CONNECTION_STRING"])
+        )
+        server = params["Server"]
+        if server.lower().startswith("tcp:"):
+            server = server[4:]
+        host, _, port = server.partition(",")
+        if "\\\\" in host:
+            print("Socket proxy requires an explicit TCP endpoint", file=sys.stderr)
+            sys.exit(77)
+        port = int(port) if port else 1433
+        pool_size = POOL_SIZE
+        autocommit = AUTOCOMMIT
+        options = TIMEOUT_OPTIONS
+        mixed_pool = MIXED_POOL
+        reject_login = threading.Event()
+        if REPLACEMENT_FAILS:
+            reject_login.set()
+        rejected = []
+        use_default = (
+            options.get("timeout") == 0
+            and not options.get("attrs_before", {}).get(SQL_ATTR_CONNECTION_TIMEOUT)
+        )
+        gate = threading.Event()
+        gate.set()
+        probed = set()
+        stopping = threading.Event()
+        sockets = []
+        threads = []
+        errors = []
+        listener = socket.socket()
+        loopback = "127.0.0.1"  # DevSkim: ignore DS162092
+        listener.bind((loopback, 0))
+        listener.listen()
+        listener.settimeout(0.2)
+
+        def relay(source, destination, allowed, index):
+            try:
+                while not stopping.is_set():
+                    data = source.recv(65536)
+                    if not data:
+                        return
+                    if not allowed.is_set():
+                        probed.add(index)
+                    allowed.wait()
+                    if not stopping.is_set():
+                        destination.sendall(data)
+            except (ConnectionResetError, BrokenPipeError):
+                return
+            except OSError as exc:
+                if not stopping.is_set():
+                    errors.append(str(exc))
+
+        def accept():
+            try:
+                while not stopping.is_set():
+                    try:
+                        client, _ = listener.accept()
+                    except socket.timeout:
+                        continue
+                    if len(sockets) // 2 >= pool_size and reject_login.is_set():
+                        rejected.append(True)
+                        client.close()
+                        continue
+                    sockets.append(client)
+                    upstream = socket.create_connection((host, port), timeout=10)
+                    upstream.settimeout(None)
+                    sockets.append(upstream)
+                    index = len(sockets) // 2
+                    stalled = index == 1 if mixed_pool else index <= pool_size
+                    allowed = gate if stalled else threading.Event()
+                    if allowed is not gate:
+                        allowed.set()
+                    for source, destination in ((client, upstream), (upstream, client)):
+                        thread = threading.Thread(
+                            target=relay, args=(source, destination, allowed, index), daemon=True
+                        )
+                        threads.append(thread)
+                        thread.start()
+            except OSError as exc:
+                if not stopping.is_set():
+                    errors.append(str(exc))
+
+        accept_thread = threading.Thread(target=accept, daemon=True)
+        accept_thread.start()
+        params["Server"] = f"{loopback},{listener.getsockname()[1]}"
+        params.setdefault("HostNameInCertificate", host)
+        params["ConnectRetryCount"] = "0"
+        proxied = _ConnectionStringBuilder(params).build()
+        leases = []
+        resume = None
+        try:
+            pooling(max_size=pool_size, idle_timeout=600)
+            identities = set()
+            ordered_identities = []
+            for _ in range(pool_size):
+                conn = connect(proxied, autocommit=autocommit, **options)
+                leases.append(conn)
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT connection_id FROM sys.dm_exec_connections "
+                        "WHERE session_id = @@SPID"
+                    )
+                    identity = cur.fetchone()[0]
+                    identities.add(identity)
+                    ordered_identities.append(identity)
+            assert len(identities) == pool_size
+            for conn in leases:
+                conn.close()
+            leases.clear()
+
+            # Keep both TCP peers open but withhold all TDS responses. The
+            # timer bounds the old implementation's hang without killing it.
+            gate.clear()
+            resume = threading.Timer(60 if use_default else 20, gate.set)
+            resume.start()
+            start = time.monotonic()
+            if reject_login.is_set():
+                from mssql_python import Error
+                try:
+                    connect(proxied, autocommit=autocommit, **options)
+                except Error:
+                    pass
+                else:
+                    raise AssertionError("Replacement login failure did not reach caller")
+                assert rejected, "Replacement login was not attempted"
+                reject_login.clear()
+            else:
+                leases.append(connect(proxied, autocommit=autocommit, **options))
+            elapsed = time.monotonic() - start
+            assert len(probed) == 1, f"Checkout probed {len(probed)} unresponsive sockets"
+            lower, upper = (10, 55) if use_default else (0.5, 12)
+            assert lower <= elapsed < upper, f"Validation timeout not honored: {elapsed:.2f}s"
+            assert not gate.is_set(), "Safety timer fired before checkout finished"
+            if mixed_pool or REPLACEMENT_FAILS:
+                while len(leases) < pool_size:
+                    leases.append(connect(proxied, autocommit=autocommit, **options))
+            recovered = set()
+            for conn in leases:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT connection_id, @@TRANCOUNT FROM sys.dm_exec_connections "
+                        "WHERE session_id = @@SPID"
+                    )
+                    spid, transaction_count = cur.fetchone()
+                    recovered.add(spid)
+                    stale = {ordered_identities[0]} if mixed_pool else identities
+                    assert spid not in stale, "Unresponsive session was reused"
+                    assert transaction_count == (0 if autocommit else 1)
+            assert len(recovered) == len(leases), "Pool capacity was not recovered"
+            if mixed_pool:
+                assert set(ordered_identities[1:]) <= recovered, "Healthy idle session was lost"
+            assert len(sockets) // 2 == pool_size + 1
+            assert not errors, errors
+        finally:
+            gate.set()
+            if resume is not None:
+                resume.cancel()
+                resume.join()
+            try:
+                for conn in leases:
+                    conn.close()
+                pooling(enabled=False)
+            finally:
+                stopping.set()
+                for sock in sockets:
+                    try:
+                        sock.shutdown(socket.SHUT_RDWR)
+                    except OSError:
+                        pass
+                    sock.close()
+                accept_thread.join(timeout=12)
+                listener.close()
+                for thread in threads:
+                    thread.join(timeout=2)
+                assert not accept_thread.is_alive()
+                assert all(not thread.is_alive() for thread in threads)
+        """.replace("POOL_SIZE", str(pool_size))
+        .replace("AUTOCOMMIT", repr(autocommit))
+        .replace("TIMEOUT_OPTIONS", repr(options))
+        .replace("REPLACEMENT_FAILS", repr(replacement_fails))
+        .replace("MIXED_POOL", repr(mixed_pool)),
+        conn_str,
+    )
+
+
+@pytest.mark.parametrize("original_timeout", [0, 7])
+def test_pool_checkout_restores_connection_timeout(conn_str, original_timeout):
+    """Checkout must restore the native timeout, not just the Python query field."""
+    _run_in_subprocess(
+        """
+        import os
+        import mssql_python as ms
+
+        ms.pooling(max_size=1)
+        conn_str = os.environ["DB_CONNECTION_STRING"]
+        first = ms.connect(conn_str, autocommit=True, timeout=1)
+        original_timeout = ORIGINAL_TIMEOUT
+        first.set_attr(ms.SQL_ATTR_CONNECTION_TIMEOUT, original_timeout)
+        assert first._conn._get_connection_timeout() == original_timeout
+        with first.cursor() as cur:
+            cur.execute("SELECT @@SPID")
+            identity = cur.fetchone()[0]
+        first.close()
+        with ms.connect(conn_str, autocommit=True, timeout=1) as reused:
+            assert reused._conn._get_connection_timeout() == original_timeout
+            assert reused.timeout == 0
+            with reused.cursor() as cur:
+                cur.execute("WAITFOR DELAY '00:00:02'; SELECT @@SPID")
+                assert cur.fetchone()[0] == identity
+        ms.pooling(enabled=False)
+        """.replace("ORIGINAL_TIMEOUT", str(original_timeout)),
+        conn_str,
+    )
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Windows does not export the native ODBC function-pointer globals",
+)
+@pytest.mark.parametrize("failure", ["read", "set", "restore", "autocommit"])
+@pytest.mark.parametrize("replacement_fails", [False, True])
+def test_pool_checkout_attribute_failure_recovery(conn_str, failure, replacement_fails):
+    """Inject failures at the native boundary without adding production test hooks."""
+    _run_in_subprocess(
+        """
+        import ctypes as ct
+        import os
+        from pathlib import Path
+        import mssql_python as ms
+        from mssql_python.constants import ConstantsDDBC
+
+        failure = FAILURE
+        replacement_fails = REPLACEMENT_FAILS
+        ms.pooling(max_size=2)
+        conn_str = os.environ["DB_CONNECTION_STRING"]
+
+        def identity(conn):
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT connection_id FROM sys.dm_exec_connections "
+                    "WHERE session_id = @@SPID"
+                )
+                return cur.fetchone()[0]
+
+        first = ms.connect(conn_str, autocommit=True, timeout=1)
+        sibling = ms.connect(conn_str, autocommit=True, timeout=1)
+        discarded_identity, healthy_identity = identity(first), identity(sibling)
+        first.set_attr(ms.SQL_ATTR_CONNECTION_TIMEOUT, 7)
+        first.close()
+        sibling.close()
+
+        native = Path(ms.ddbc_bindings.module.__file__).resolve()
+        library = ct.CDLL(str(native))
+        signatures = {
+            "SQLGetConnectAttr_ptr": (ct.c_void_p, ct.c_int, ct.c_void_p,
+                                      ct.c_int, ct.c_void_p),
+            "SQLSetConnectAttr_ptr": (ct.c_void_p, ct.c_int, ct.c_void_p, ct.c_int),
+            "SQLDisconnect_ptr": (ct.c_void_p,),
+        }
+        pointers = {name: ct.c_void_p.in_dll(library, name) for name in signatures}
+        addresses = {name: pointer.value for name, pointer in pointers.items()}
+        types = {name: ct.CFUNCTYPE(ct.c_short, *args) for name, args in signatures.items()}
+        originals = {name: types[name](address) for name, address in addresses.items()}
+        target = None
+        injected = []
+        timeouts = []
+        disconnected = []
+
+        @types["SQLGetConnectAttr_ptr"]
+        def get_attr(handle, attr, output, length, actual):
+            global target
+            if target is None and attr == ms.SQL_ATTR_CONNECTION_TIMEOUT:
+                target = handle
+                if failure == "read":
+                    injected.append(failure)
+                    return -1
+            return originals["SQLGetConnectAttr_ptr"](handle, attr, output, length, actual)
+
+        @types["SQLSetConnectAttr_ptr"]
+        def set_attr(handle, attr, value, length):
+            if handle == target:
+                if attr == ms.SQL_ATTR_CONNECTION_TIMEOUT:
+                    timeouts.append(value)
+                should_fail = (
+                    (failure == "set" and attr == ms.SQL_ATTR_CONNECTION_TIMEOUT and value == 1)
+                    or (failure == "restore"
+                        and attr == ms.SQL_ATTR_CONNECTION_TIMEOUT and value == 7)
+                    or (failure == "autocommit"
+                        and attr == ConstantsDDBC.SQL_ATTR_AUTOCOMMIT.value)
+                )
+                if should_fail and not injected:
+                    injected.append(failure)
+                    return -1
+            return originals["SQLSetConnectAttr_ptr"](handle, attr, value, length)
+
+        @types["SQLDisconnect_ptr"]
+        def disconnect(handle):
+            disconnected.append(handle)
+            return originals["SQLDisconnect_ptr"](handle)
+
+        callbacks = {
+            "SQLGetConnectAttr_ptr": get_attr,
+            "SQLSetConnectAttr_ptr": set_attr,
+            "SQLDisconnect_ptr": disconnect,
+        }
+        leases = []
+        try:
+            for name, callback in callbacks.items():
+                pointers[name].value = ct.cast(callback, ct.c_void_p).value
+            if replacement_fails:
+                # Only the replacement's ODBC login receives the invalid credential;
+                # changing connect() arguments would select a different pool.
+                from mssql_python.connection_string_parser import _ConnectionStringParser
+                from mssql_python.connection_string_builder import _ConnectionStringBuilder
+                params = _ConnectionStringParser._normalize_params(
+                    _ConnectionStringParser()._parse(conn_str)
+                )
+                params["UID"] = "issue854_nonexistent_login"
+                invalid_text = _ConnectionStringBuilder(params).build()
+                invalid = ct.create_string_buffer(invalid_text.encode("utf-16le") + b"\\0\\0")
+                login_pointer = ct.c_void_p.in_dll(library, "SQLDriverConnect_ptr")
+                login_address = login_pointer.value
+                login_type = ct.CFUNCTYPE(
+                    ct.c_short, ct.c_void_p, ct.c_void_p, ct.c_void_p, ct.c_short,
+                    ct.c_void_p, ct.c_short, ct.c_void_p, ct.c_ushort,
+                )
+                original_login = login_type(login_address)
+                login_calls = []
+                @login_type
+                def login(handle, window, text, count, output, capacity, actual, completion):
+                    login_calls.append(handle)
+                    return original_login(
+                        handle, window, ct.cast(invalid, ct.c_void_p), -3,
+                        output, capacity, actual, completion,
+                    )
+                try:
+                    login_pointer.value = ct.cast(login, ct.c_void_p).value
+                    try:
+                        ms.connect(conn_str, autocommit=True, timeout=1)
+                    except ms.Error:
+                        pass
+                    else:
+                        raise AssertionError("Replacement login failure did not reach caller")
+                    assert len(login_calls) == 1
+                finally:
+                    login_pointer.value = login_address
+            else:
+                leases.append(ms.connect(conn_str, autocommit=True, timeout=1))
+            assert injected == [failure], injected
+            assert disconnected.count(target) == 1, "Failed candidate was not cleaned up once"
+            expected_timeouts = {
+                "read": [], "set": [1], "restore": [1, 7], "autocommit": [1],
+            }
+            assert timeouts == expected_timeouts[failure], timeouts
+        finally:
+            for name, address in addresses.items():
+                pointers[name].value = address
+
+        while len(leases) < 2:
+            leases.append(ms.connect(conn_str, autocommit=True, timeout=1))
+        identities = {identity(conn) for conn in leases}
+        assert len(identities) == 2, "Pool did not recover its full configured capacity"
+        assert discarded_identity not in identities, "Failed candidate was returned"
+        assert healthy_identity in identities, "Healthy idle sibling was lost"
+        try:
+            ms.connect(conn_str, autocommit=True, timeout=1)
+        except ms.Error:
+            pass
+        else:
+            raise AssertionError("Pool exceeded configured capacity")
+        for conn in leases:
+            conn.close()
+        ms.pooling(enabled=False)
+        """.replace("FAILURE", repr(failure)).replace("REPLACEMENT_FAILS", repr(replacement_fails)),
+        conn_str,
+    )
+
+
 def test_pool_removes_invalid_connections(conn_str):
     """Pool must replace a pooled connection whose server-side session has died.
 
@@ -1120,6 +1696,180 @@ def test_unclosed_native_handle_destructor_releases_pool_capacity(conn_str):
 
 
 @pytest.mark.parametrize("use_pool", [False, True])
+def test_native_checked_cleanup_and_discard(conn_str, use_pool):
+    """Checked release reports invalid handles; discard retires rather than parks a DBC."""
+    _run_in_subprocess(
+        f"use_pool = {use_pool!r}\n" + textwrap.dedent("""
+            import os
+            import uuid
+            from mssql_python import ddbc_bindings as ddbc, pooling, OperationalError
+
+            pooling(max_size=1, idle_timeout=30)
+            key = "checked_cleanup_" + uuid.uuid4().hex
+            conn_str = os.environ["DB_CONNECTION_STRING"]
+            native = ddbc.Connection(conn_str, use_pool, {}, key, None)
+
+            def connection_id(connection):
+                statement = connection.alloc_statement_handle()
+                try:
+                    result = ddbc.DDBCSQLExecDirect(
+                        statement,
+                        "SELECT connection_id FROM sys.dm_exec_connections "
+                        "WHERE session_id = @@SPID",
+                    )
+                    assert result in (0, 1), ddbc.DDBCSQLGetAllDiagRecords(statement)
+                    row = []
+                    assert ddbc.DDBCSQLFetchOne(statement, row) in (0, 1)
+                    assert len(row) == 1
+                    return row[0]
+                finally:
+                    statement._free_checked()
+
+            try:
+                original_id = connection_id(native)
+                statement = native.alloc_statement_handle()
+                statement._free_checked()
+                try:
+                    statement._free_checked()
+                except OperationalError as error:
+                    assert "Invalid handle!" in str(error)
+                else:
+                    raise AssertionError("Checked release suppressed SQL_INVALID_HANDLE")
+
+                native.set_autocommit(False)
+                pending = native.alloc_statement_handle()
+                assert ddbc.DDBCSQLExecDirect(
+                    pending, "CREATE TABLE #discard_pending (id INT); "
+                    "INSERT INTO #discard_pending VALUES (1)"
+                ) in (0, 1)
+                native.discard()
+                native.discard()
+                pending._free_checked()
+                del pending
+                replacement = ddbc.Connection(conn_str, use_pool, {}, key, None)
+                try:
+                    assert connection_id(replacement) != original_id, "Discard parked the DBC"
+                    # The size-one pool must remain usable after explicit retirement.
+                    replacement.close()
+                finally:
+                    replacement.discard()
+            finally:
+                native.discard()
+                pooling(enabled=False)
+            """),
+        conn_str,
+    )
+
+
+@pytest.mark.parametrize("use_pool", [False, True])
+def test_native_checked_cleanup_failure_diagnostics(conn_str, use_pool):
+    """Failure injection stays isolated and never frees a live handle prematurely."""
+    from mssql_python import ddbc_bindings
+
+    addresses = getattr(ddbc_bindings.module, "_arrow_test_pointer_addresses", {})
+    if "SQLFreeHandle_ptr" not in addresses:
+        if os.getenv("MSSQL_ARROW_TEST_INTERPOSITION", "").upper() in ("1", "ON"):
+            pytest.fail("Requested native cleanup pointer interposition is unavailable")
+        pytest.skip("Requires a test-interposition build")
+    _run_in_subprocess(
+        f"use_pool = {use_pool!r}\n" + textwrap.dedent("""
+            import ctypes as ct
+            import os
+            from mssql_python import ddbc_bindings as ddbc, pooling, OperationalError
+
+            pooling(max_size=1, idle_timeout=30)
+            native = ddbc.Connection(os.environ["DB_CONNECTION_STRING"], use_pool)
+            addresses = getattr(ddbc.module, "_arrow_test_pointer_addresses", {})
+            library = ct.CDLL(ddbc.module.__file__)
+            def pointer(name):
+                if name in addresses:
+                    return ct.c_void_p.from_address(addresses[name])
+                return ct.c_void_p.in_dll(library, name)
+            free_pointer = pointer("SQLFreeHandle_ptr")
+            diag_pointer = pointer("SQLGetDiagRec_ptr")
+            original_free, original_diag = free_pointer.value, diag_pointer.value
+            callback = ct.WINFUNCTYPE if os.name == "nt" else ct.CFUNCTYPE
+            free_type = callback(ct.c_short, ct.c_short, ct.c_void_p)
+            diag_type = callback(
+                ct.c_short, ct.c_short, ct.c_void_p, ct.c_short,
+                ct.POINTER(ct.c_uint16), ct.POINTER(ct.c_int),
+                ct.POINTER(ct.c_uint16), ct.c_short, ct.POINTER(ct.c_short),
+            )
+            try:
+                for result, has_record in [(-1, True), (-1, False), (-2, False)]:
+                    statement = native.alloc_statement_handle()
+                    diag_calls = []
+                    @free_type
+                    def fail_free(handle_type, handle):
+                        return result
+                    @diag_type
+                    def diagnostic(handle_type, handle, record, state, number, message,
+                                   capacity, length):
+                        diag_calls.append((handle_type, record))
+                        if not has_record:
+                            return 100
+                        for index, value in enumerate("HY008\\0"):
+                            state[index] = ord(value)
+                        text = "injected cleanup failure"
+                        for index, value in enumerate(text + "\\0"):
+                            message[index] = ord(value)
+                        number[0] = 0
+                        length[0] = len(text)
+                        return 0
+                    free_pointer.value = ct.cast(fail_free, ct.c_void_p).value
+                    diag_pointer.value = ct.cast(diagnostic, ct.c_void_p).value
+                    try:
+                        try:
+                            statement._free_checked()
+                        except OperationalError as error:
+                            if has_record:
+                                assert error.driver_error == "Operation canceled"
+                                assert error.ddbc_error == "injected cleanup failure"
+                            else:
+                                assert error.driver_error == "General error"
+                                assert error.ddbc_error == (
+                                    "Invalid handle!" if result == -2 else ""
+                                )
+                        else:
+                            raise AssertionError("Checked release suppressed a native failure")
+                        assert diag_calls == ([] if result == -2 else [(3, 1)])
+                    finally:
+                        free_pointer.value, diag_pointer.value = original_free, original_diag
+                        statement._free_checked()
+                native.discard()
+                replacement = ddbc.Connection(os.environ["DB_CONNECTION_STRING"], use_pool)
+                replacement.close()
+            finally:
+                free_pointer.value, diag_pointer.value = original_free, original_diag
+                native.discard()
+                pooling(enabled=False)
+            """),
+        conn_str,
+    )
+
+
+@pytest.mark.parametrize("platform", ["win32", "linux", "darwin"])
+@pytest.mark.parametrize("requested", [None, "1", "ON"])
+def test_native_checked_cleanup_requires_compiled_controls(monkeypatch, platform, requested):
+    from mssql_python import ddbc_bindings
+
+    monkeypatch.delattr(ddbc_bindings.module, "_arrow_test_pointer_addresses", raising=False)
+    monkeypatch.setattr(sys, "platform", platform)
+    if requested is None:
+        monkeypatch.delenv("MSSQL_ARROW_TEST_INTERPOSITION", raising=False)
+    else:
+        monkeypatch.setenv("MSSQL_ARROW_TEST_INTERPOSITION", requested)
+
+    def unexpected_subprocess(*args):
+        pytest.fail("Exported ODBC globals must not bypass compiled test controls")
+
+    monkeypatch.setitem(globals(), "_run_in_subprocess", unexpected_subprocess)
+    expected = pytest.skip.Exception if requested is None else pytest.fail.Exception
+    with pytest.raises(expected, match="test-interposition build|interposition is unavailable"):
+        test_native_checked_cleanup_failure_diagnostics("", False)
+
+
+@pytest.mark.parametrize("use_pool", [False, True])
 @pytest.mark.parametrize("autocommit", [False, True])
 def test_native_destructor_rolls_back_pending_dml(conn_str, use_pool, autocommit):
     """Native destruction must release transactions, locks, and the server session."""
@@ -1132,6 +1882,7 @@ def test_native_destructor_rolls_back_pending_dml(conn_str, use_pool, autocommit
             import uuid
 
             from mssql_python import connect, ddbc_bindings as ddbc, pooling
+            from mssql_python.constants import ConstantsDDBC
 
             conn_str = os.environ["DB_CONNECTION_STRING"]
             pool_key = "pytest_native_cleanup_" + uuid.uuid4().hex
@@ -1141,17 +1892,37 @@ def test_native_destructor_rolls_back_pending_dml(conn_str, use_pool, autocommit
             native = ddbc.Connection(conn_str, use_pool, {}, pool_key, None)
             statement = native.alloc_statement_handle()
             try:
-                assert ddbc.DDBCSQLExecDirect(statement, "SELECT @@SPID") in (0, 1)
+                ret = ddbc.DDBCSQLExecDirect(
+                    statement,
+                    "SELECT CONVERT(nvarchar(36), connection_id) "
+                    "FROM sys.dm_exec_connections "
+                    "WHERE session_id = @@SPID AND parent_connection_id IS NULL",
+                )
+                if ret not in (0, 1):
+                    error = ddbc.DDBCSQLCheckError(
+                        ConstantsDDBC.SQL_HANDLE_STMT.value, statement, ret
+                    )
+                    if error.sqlState == "42000" and "permission" in error.ddbcErrorMsg.lower():
+                        print(
+                            "Native identity query requires VIEW SERVER STATE / "
+                            "VIEW SERVER PERFORMANCE STATE",
+                            file=sys.stderr,
+                        )
+                        sys.exit(77)
+                    raise AssertionError(
+                        f"Native identity query failed ({error.sqlState}): {error.ddbcErrorMsg}"
+                    )
                 row = []
                 assert ddbc.DDBCSQLFetchOne(statement, row) in (0, 1)
-                session_id = row[0]
+                connection_id = row[0]
                 statement.free()
 
                 cursor = observer.cursor()
                 try:
                     cursor.execute(
-                        "SELECT session_id FROM sys.dm_exec_sessions WHERE session_id = ?",
-                        [session_id],
+                        "SELECT connection_id FROM sys.dm_exec_connections "
+                        "WHERE connection_id = CONVERT(uniqueidentifier, ?)",
+                        [connection_id],
                     )
                 except Exception as exc:
                     if "permission" in str(exc).lower():
@@ -1179,20 +1950,24 @@ def test_native_destructor_rolls_back_pending_dml(conn_str, use_pool, autocommit
                     cursor.execute(f"SELECT COUNT(*) FROM {table} WITH (READCOMMITTEDLOCK)")
                     assert cursor.fetchone()[0] == 0, "Destructor committed abandoned work"
 
-                    deadline = time.monotonic() + 5
-                    while True:
-                        cursor.execute(
-                            "SELECT session_id FROM sys.dm_exec_sessions WHERE session_id = ?",
-                            [session_id],
-                        )
-                        if cursor.fetchone() is None:
-                            break
-                        assert time.monotonic() < deadline, "Native session survived destruction"
-                        time.sleep(0.05)
-
+                    # A new login can immediately reuse the old SPID, but must
+                    # never reuse the destroyed physical connection.
                     replacement = ddbc.Connection(conn_str, use_pool, {}, pool_key, None)
                     replacement_statement = replacement.alloc_statement_handle()
                     try:
+                        deadline = time.monotonic() + 5
+                        while True:
+                            cursor.execute(
+                                "SELECT connection_id FROM sys.dm_exec_connections "
+                                "WHERE connection_id = CONVERT(uniqueidentifier, ?)",
+                                [connection_id],
+                            )
+                            if cursor.fetchone() is None:
+                                break
+                            assert time.monotonic() < deadline, (
+                                "Native physical connection survived destruction"
+                            )
+                            time.sleep(0.05)
                         assert ddbc.DDBCSQLExecDirect(replacement_statement, "SELECT 1") in (0, 1)
                         row = []
                         assert ddbc.DDBCSQLFetchOne(replacement_statement, row) in (0, 1)
@@ -1363,10 +2138,17 @@ def test_cursor_cyclic_finalizer_with_concurrent_native_disconnect(conn_str, exp
 
                     cleanup_barrier.wait()
                     if explicit_close:
-                        connection.close()
+                        try:
+                            connection.close()
+                        except mssql_python.ProgrammingError as exc:
+                            assert "operation in progress" in str(exc)
+                            assert not connection.closed
+                            assert connection._conn is not None
                     else:
                         native = None
                     collect_barrier.wait()
+                    if explicit_close:
+                        connection.close()
 
                     remaining_cursor = cursor_ref()
                     if remaining_cursor is not None:

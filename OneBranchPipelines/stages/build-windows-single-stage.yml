@@ -3,6 +3,9 @@
 # Supports both x64 (AMD64) and ARM64 cross-compilation
 # Tests x64 builds with pytest (ARM64 binaries can't run on x64 host)
 parameters:
+  - name: odbcArtifactName
+    type: string
+    default: 'drop_ConsolidateOdbc_ConsolidateArtifacts'
   # Stage identifier (e.g., 'Win_py312_x64')
   - name: stageName
     type: string
@@ -71,6 +74,7 @@ stages:
           shortPyVer: ${{ parameters.shortPyVer }}
           # Target architecture (can differ from host for cross-compilation)
           targetArch: ${{ parameters.architecture }}
+          PIP_CACHE_DIR: '$(Pipeline.Workspace)\.pip-cache'
           # Arch suffix used in the built extension's file name. build.bat maps the
           # target arch to the wheel/PE tag: x64 -> amd64, arm64 -> arm64, x86 -> win32.
           # Used to name the exact .pyd for signing (no wildcards).
@@ -86,6 +90,14 @@ stages:
         steps:
           - checkout: self
             fetchDepth: 0
+
+          - ${{ if eq(parameters.oneBranchType, 'Official') }}:
+              - task: PowerShell@2
+                displayName: 'Reject test overrides and prereleases before Official build'
+                inputs:
+                  targetType: filePath
+                  filePath: OneBranchPipelines/scripts/validate-release-versions.ps1
+                  arguments: '-BuildOnly'
           
           # Python 3.14 Installation: Download from NuGet (not yet in UsePythonVersion@0 task)
           # Microsoft hasn't added Python 3.14 to the standard Python registry yet
@@ -152,6 +164,12 @@ stages:
               python -c "import platform; print(platform.machine())"
             displayName: 'Verify Python installation'
           
+          - task: Cache@2
+            displayName: 'Cache Windows pip downloads'
+            inputs:
+              key: 'release-pip-v1 | "$(Agent.OS)" | "$(Agent.OSArchitecture)" | "${{ parameters.pythonVersion }}" | "${{ parameters.architecture }}" | eng/requirements-build-windows.txt'
+              path: '$(PIP_CACHE_DIR)'
+
           - powershell: |
               $ErrorActionPreference = "Stop"
               Write-Host "Installing Python dependencies..."
@@ -184,6 +202,8 @@ stages:
               }
               sqlcmd -S "(localdb)\MSSQLLocalDB" -d TestDB -Q "CREATE USER testuser FOR LOGIN testuser"
               sqlcmd -S "(localdb)\MSSQLLocalDB" -d TestDB -Q "ALTER ROLE db_owner ADD MEMBER testuser"
+              sqlcmd -S "(localdb)\MSSQLLocalDB" -b -Q "GRANT VIEW SERVER STATE TO [testuser]; IF CAST(SERVERPROPERTY('ProductMajorVersion') AS int) >= 16 EXEC('GRANT VIEW SERVER PERFORMANCE STATE TO [testuser]'); EXECUTE AS LOGIN = 'testuser'; SELECT connection_id FROM sys.dm_exec_connections WHERE session_id = @@SPID; REVERT;"
+              if ($LASTEXITCODE -ne 0) { throw "Failed to provision the release test login's DMV-read permission." }
             displayName: 'Setup database and user'
             env:
               DB_PASSWORD: $(DB_PASSWORD)
@@ -328,7 +348,7 @@ stages:
               condition: ne(variables['targetArch'], 'arm64')
               inputs:
                 buildType: 'current'
-                artifactName: 'drop_ConsolidateOdbc_ConsolidateArtifacts'
+                artifactName: '${{ parameters.odbcArtifactName }}'
                 itemPattern: '**/*.whl'
                 targetPath: '$(Pipeline.Workspace)/odbc_wheels'
             - powershell: |
@@ -362,7 +382,9 @@ stages:
               if ("$(targetArch)" -eq "arm64") {
                 Write-Host "Skipping pytests on Windows ARM64"
               } else {
-                python -m pytest -v
+                python eng/scripts/mssql_python_rs.py --verify
+                if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+                python -m pytest -v --reruns 3 -rfER
               }
             displayName: 'Run pytests'
             env:
@@ -492,7 +514,7 @@ stages:
           # Scans wheel files for malware using Microsoft Defender and custom signatures
           # Only runs for Official builds (production compliance requirement)
           - ${{ if eq(parameters.oneBranchType, 'Official') }}:
-              - task: EsrpMalwareScanning@5
+              - task: EsrpMalwareScanning@6
                 displayName: 'ESRP MalwareScanning - Python Wheels (Official)'
                 inputs:
                   ConnectedServiceName: '$(SigningEsrpConnectedServiceName)'

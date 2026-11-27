@@ -7,17 +7,22 @@ Warning:
 """
 
 import asyncio
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from contextlib import asynccontextmanager
-from typing import Any, Optional
+from typing import Any, Optional, TYPE_CHECKING, AsyncIterator
 import uuid
 
-from ..exceptions import OperationalError
+from ..exceptions import NotSupportedError, OperationalError
+from ..constants import SQL_SS_JSON
 from ..helpers import get_settings
 from ..logging import logger
-from ..row import Row
+from ..row import Row, _ColumnNames
 from . import async_execute, async_fetch
 from .exception_translator import translate_py_core_exceptions
+
+if TYPE_CHECKING:
+    from .._pycore_types import AsyncCoreCursor
+    from .async_connection import _AsyncConnection
 
 
 class _AsyncCursor:
@@ -28,7 +33,9 @@ class _AsyncCursor:
         Its signatures, behavior, error handling, and compatibility may change without notice.
     """
 
-    def __init__(self, py_core_async_cursor: Any, connection: Any = None) -> None:
+    def __init__(
+        self, py_core_async_cursor: "AsyncCoreCursor", connection: "_AsyncConnection | None" = None
+    ) -> None:
         self._py_core_async_cursor = py_core_async_cursor
         self._connection = connection
         self._closed = False
@@ -64,7 +71,7 @@ class _AsyncCursor:
             ((column[0].lower() if settings.lowercase else column[0]), *column[1:])
             for column in description
         ]
-        self._column_names = tuple(column[0] for column in self._description)
+        self._column_names = _ColumnNames(column[0] for column in self._description)
         self._column_map = {column[0]: index for index, column in enumerate(self._description)}
         self._column_map_lower = (
             {name.lower(): index for name, index in self._column_map.items()}
@@ -82,7 +89,7 @@ class _AsyncCursor:
         self._fetch_rowcount = None
 
     @asynccontextmanager
-    async def _result_transition(self):
+    async def _result_transition(self) -> AsyncIterator[None]:
         async with self._result_transition_lock:
             self._result_ready.clear()
             try:
@@ -142,7 +149,7 @@ class _AsyncCursor:
     async def executemany(
         self,
         operation: str,
-        seq_of_parameters: Sequence[Sequence[Any]] | Sequence[Mapping[str, Any]],
+        seq_of_parameters: Iterable[Sequence[Any] | Mapping[str, Any]],
         *,
         use_prepare: bool = True,
     ) -> None:
@@ -164,6 +171,11 @@ class _AsyncCursor:
         return await async_fetch.fetchall(self)
 
     async def nextset(self) -> bool:
+        """Discard remaining rows and advance to the next statement result.
+
+        Return True for another result, including DML results, or False at
+        batch end. Fetch counts are reset rather than carried between results.
+        """
         async with self._result_transition():
             try:
                 with translate_py_core_exceptions():
@@ -178,6 +190,13 @@ class _AsyncCursor:
             return has_next
 
     async def close(self) -> None:
+        """Close this cursor; repeated calls are harmless.
+
+        Successful close clears description and resets rowcount to -1, unlike
+        the synchronous cursor, which retains its last metadata and count.
+        Rejected close preserves the cursor; accepted but interrupted cleanup
+        retires the wrapper without guaranteeing native cleanup has completed.
+        """
         logger.debug("AsyncCursor.close: starting")
         async with self._result_transition():
             with translate_py_core_exceptions():
@@ -199,9 +218,24 @@ class _AsyncCursor:
                     self._clear_result_metadata()
         logger.debug("AsyncCursor.close: completed")
 
-    def setinputsizes(self, sizes: Any) -> None:
+    def setinputsizes(self, sizes: Sequence[int | tuple[int, ...]] | None) -> None:
+        if sizes and any(
+            (size[0] if isinstance(size, tuple) and size else size) == SQL_SS_JSON for size in sizes
+        ):
+            raise NotSupportedError(
+                "Native JSON input sizes are not supported by async execution", ""
+            )
         with translate_py_core_exceptions():
             self._py_core_async_cursor.setinputsizes(sizes)
+
+    @property
+    def closed(self) -> bool:
+        """Whether the wrapper is retired or its parent connection is closed.
+
+        This does not indicate completion of native cleanup or an in-flight
+        close operation. A rejected close leaves this value unchanged.
+        """
+        return self._closed or (self._connection is not None and self._connection.closed)
 
     @property
     def timeout(self) -> int:
@@ -209,11 +243,18 @@ class _AsyncCursor:
             return self._py_core_async_cursor.timeout
 
     @property
-    def description(self) -> Any:
+    def description(self) -> list[tuple[Any, ...]] | None:
+        """Seven-item column descriptors, or None when no row result is published."""
         return self._description
 
     @property
     def rowcount(self) -> int:
+        """Fetched rows for the current SELECT, or the native affected-row count.
+
+        SELECT counts start at -1 and accumulate as rows are fetched; fetching
+        an empty result sets the count to zero. Unlike the synchronous cursor,
+        nextset() does not retain fetched counts from the previous result.
+        """
         if self._fetch_rowcount is not None:
             return self._fetch_rowcount
         with translate_py_core_exceptions():

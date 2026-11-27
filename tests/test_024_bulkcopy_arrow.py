@@ -25,7 +25,7 @@ import pytest
 # containers without the extension, or pyarrow absent). exc_type=ImportError
 # so a module that imports but fails its native extension is skipped, not
 # collected as an error (pytest >= 9.1 default only skips ModuleNotFoundError).
-mssql_py_core = pytest.importorskip("mssql_py_core", exc_type=ImportError)
+mssql_py_core = pytest.importorskip("mssql_py_core.mssql_py_core", exc_type=ImportError)
 pa = pytest.importorskip("pyarrow")
 
 LIVE_DB = pytest.mark.skipif(
@@ -40,18 +40,15 @@ SAMPLE_TOKEN = secrets.token_hex(44)
 
 
 def _bare_cursor():
-    """A Cursor instance with no wiring — enough for pure validation/detection."""
-    from mssql_python.cursor import Cursor
-
-    cursor = Cursor.__new__(Cursor)
-    cursor.closed = True  # keep __del__ a no-op during GC teardown
-    return cursor
+    """An idle Cursor with enough wiring for public validation/detection."""
+    return _cursor_with_conn("")
 
 
 def _cursor_with_conn(connection_str, auth_type=None, credential_kwargs=None):
     """A Cursor whose .connection is a mock carrying just the auth wiring that
     _build_pycore_context reads."""
     from mssql_python.cursor import Cursor
+    from mssql_python._query_operation import QueryConnectionState, QuerySlot
 
     mock_conn = MagicMock()
     mock_conn.connection_str = connection_str
@@ -62,10 +59,13 @@ def _cursor_with_conn(connection_str, auth_type=None, credential_kwargs=None):
     # _build_pycore_context down the custom-credential (token_provider) branch.
     mock_conn._token_provider = None
     mock_conn._is_connected = True
+    mock_conn.closed = False
+    mock_conn._query_state = QueryConnectionState()
 
     cursor = Cursor.__new__(Cursor)
+    cursor._query_slot = QuerySlot()
     cursor._connection = mock_conn
-    cursor.closed = True  # keep __del__ a no-op during GC teardown
+    cursor.closed = False
     cursor.hstmt = None
     cursor._timeout = 0  # timeout snapshot _build_pycore_context reads (0 = no override)
     return cursor
@@ -228,7 +228,7 @@ class TestBulkcopyArrowValidation:
 
     def test_missing_pycore_raises_importerror(self):
         cur = _bare_cursor()
-        with patch.dict("sys.modules", {"mssql_py_core": None}):
+        with patch.dict("sys.modules", {"mssql_py_core.mssql_py_core": None}):
             with pytest.raises(ImportError, match="mssql_py_core"):
                 cur.bulkcopy_arrow("t", pa.table({"a": [1]}))
 
@@ -381,7 +381,7 @@ class TestBulkcopyArrowDispatch:
         module, pyc_cursor, _, _ = _mock_pycore()
         src = pa.table({"a": [1, 2]})
 
-        with patch.dict("sys.modules", {"mssql_py_core": module}):
+        with patch.dict("sys.modules", {"mssql_py_core.mssql_py_core": module}):
             result = cur.bulkcopy_arrow(
                 "dbo.t", src, batch_size=7, timeout=15, column_mappings=["a"]
             )
@@ -403,7 +403,7 @@ class TestBulkcopyArrowDispatch:
         module, pyc_cursor, _, _ = _mock_pycore()
         src = pa.table({"a": [1, 2]})
 
-        with patch.dict("sys.modules", {"mssql_py_core": module}):
+        with patch.dict("sys.modules", {"mssql_py_core.mssql_py_core": module}):
             cur.bulkcopy_arrow("dbo.t", src, 7, 15)
 
         _, kwargs = pyc_cursor.bulkcopy_arrow.call_args
@@ -416,7 +416,7 @@ class TestBulkcopyArrowDispatch:
         cur = _cursor_with_conn("Server=localhost;Database=d;UID=sa;PWD=secret")
         module, _, _, captured = _mock_pycore()
 
-        with patch.dict("sys.modules", {"mssql_py_core": module}):
+        with patch.dict("sys.modules", {"mssql_py_core.mssql_py_core": module}):
             cur.bulkcopy_arrow("t", pa.table({"a": [1]}))
 
         ctx = captured["ctx"]
@@ -429,7 +429,7 @@ class TestBulkcopyArrowDispatch:
         cur = _cursor_with_conn("Server=localhost;Database=d;UID=sa;PWD=p")
         module, pyc_cursor, pyc_conn, _ = _mock_pycore()
 
-        with patch.dict("sys.modules", {"mssql_py_core": module}):
+        with patch.dict("sys.modules", {"mssql_py_core.mssql_py_core": module}):
             cur.bulkcopy_arrow("t", pa.table({"a": [1]}))
 
         pyc_cursor.close.assert_called_once()
@@ -441,7 +441,7 @@ class TestBulkcopyArrowDispatch:
         cur = _cursor_with_conn("Server=localhost;Database=d;UID=sa;PWD=p")
         module, pyc_cursor, pyc_conn, captured = _mock_pycore(raise_exc=ValueError("boom"))
 
-        with patch.dict("sys.modules", {"mssql_py_core": module}):
+        with patch.dict("sys.modules", {"mssql_py_core.mssql_py_core": module}):
             with pytest.raises(ValueError, match="boom"):
                 cur.bulkcopy_arrow("t", pa.table({"a": [1]}))
 
@@ -458,7 +458,7 @@ class TestBulkcopyArrowDispatch:
         module, pyc_cursor, pyc_conn, _ = _mock_pycore()
         pyc_cursor.close.side_effect = RuntimeError("close failed")
 
-        with patch.dict("sys.modules", {"mssql_py_core": module}):
+        with patch.dict("sys.modules", {"mssql_py_core.mssql_py_core": module}):
             result = cur.bulkcopy_arrow("t", pa.table({"a": [1]}))
 
         # result is still returned; the close error was swallowed and logged

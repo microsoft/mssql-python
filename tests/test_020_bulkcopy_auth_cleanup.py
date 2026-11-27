@@ -10,7 +10,10 @@ combined with those fields (ODBC parity).
 """
 
 import secrets
+import sys
 from enum import IntEnum
+from importlib.machinery import ModuleSpec
+from types import ModuleType
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -23,19 +26,59 @@ SAMPLE_TOKEN = secrets.token_hex(44)
 def _make_cursor(connection_str, auth_type):
     """Build a mock Cursor with just enough wiring for bulkcopy's auth path."""
     from mssql_python.cursor import Cursor
+    from mssql_python._query_operation import QueryConnectionState, QuerySlot
 
     mock_conn = MagicMock()
     mock_conn.connection_str = connection_str
     mock_conn._auth_type = auth_type
     mock_conn._token_provider = None
     mock_conn._is_connected = True
+    mock_conn.closed = False
+    mock_conn._query_state = QueryConnectionState()
 
     cursor = Cursor.__new__(Cursor)
+    cursor._query_slot = QuerySlot()
     cursor._connection = mock_conn
     cursor._timeout = 0
     cursor.closed = False
     cursor.hstmt = None
     return cursor
+
+
+@pytest.mark.parametrize("method", ["bulkcopy", "bulkcopy_arrow"])
+def test_bulkcopy_without_package_initializer(monkeypatch, method):
+    package = ModuleType("mssql_py_core")
+    package.__path__ = []
+    package.__spec__ = ModuleSpec("mssql_py_core", loader=None, is_package=True)
+    native = ModuleType("mssql_py_core.mssql_py_core")
+    native.PyCoreConnection = MagicMock()
+    connection = native.PyCoreConnection.return_value
+    core_cursor = connection.cursor.return_value
+    expected = {"rows_copied": 1, "batch_count": 1, "elapsed_time": 0.1}
+    getattr(core_cursor, method).return_value = expected
+    monkeypatch.setitem(sys.modules, "mssql_py_core", package)
+    monkeypatch.setitem(sys.modules, "mssql_py_core.mssql_py_core", native)
+    cursor = _make_cursor("Server=example.test;Database=testdb;Trusted_Connection=yes", None)
+    source = [(1,)] if method == "bulkcopy" else object()
+
+    assert not hasattr(package, "PyCoreConnection")
+    assert getattr(cursor, method)("dbo.test_table", source) == expected
+    native.PyCoreConnection.assert_called_once()
+    getattr(core_cursor, method).assert_called_once()
+    core_cursor.close.assert_called_once()
+    connection.close.assert_called_once()
+
+
+@pytest.mark.parametrize("method", ["bulkcopy", "bulkcopy_arrow"])
+def test_bulkcopy_reports_missing_native_dependency(monkeypatch, method):
+    monkeypatch.setitem(sys.modules, "mssql_py_core.mssql_py_core", None)
+    cursor = _make_cursor("Server=example.test;Database=testdb;Trusted_Connection=yes", None)
+    source = [(1,)] if method == "bulkcopy" else object()
+
+    with pytest.raises(ImportError, match="Bulk copy requires") as exc_info:
+        getattr(cursor, method)("dbo.test_table", source)
+
+    assert isinstance(exc_info.value.__cause__, ImportError)
 
 
 class TestBulkcopyAuthCleanup:
@@ -71,7 +114,7 @@ class TestBulkcopyAuthCleanup:
         mock_pycore_module.PyCoreConnection = capture_context
 
         with (
-            patch.dict("sys.modules", {"mssql_py_core": mock_pycore_module}),
+            patch.dict("sys.modules", {"mssql_py_core.mssql_py_core": mock_pycore_module}),
             patch("mssql_python.auth.AADAuth.get_raw_token", return_value=SAMPLE_TOKEN),
         ):
             cursor.bulkcopy("dbo.test_table", [(1, "row")], timeout=10)
@@ -109,7 +152,7 @@ class TestBulkcopyAuthCleanup:
         mock_pycore_module = MagicMock()
         mock_pycore_module.PyCoreConnection = capture_context
 
-        with patch.dict("sys.modules", {"mssql_py_core": mock_pycore_module}):
+        with patch.dict("sys.modules", {"mssql_py_core.mssql_py_core": mock_pycore_module}):
             cursor.bulkcopy("dbo.test_table", [(1, "row")], timeout=10)
 
         assert "access_token" not in captured_context
@@ -159,7 +202,7 @@ class TestBulkcopyTokenProvider:
         mock_pycore_module = MagicMock()
         mock_pycore_module.PyCoreConnection = capture_context
 
-        with patch.dict("sys.modules", {"mssql_py_core": mock_pycore_module}):
+        with patch.dict("sys.modules", {"mssql_py_core.mssql_py_core": mock_pycore_module}):
             cursor.bulkcopy("dbo.test_table", [(1, "row")], timeout=10)
 
         # The credential was consulted for a fresh token.
@@ -186,7 +229,7 @@ class TestBulkcopyTokenProvider:
 
         mock_pycore_module = MagicMock()
 
-        with patch.dict("sys.modules", {"mssql_py_core": mock_pycore_module}):
+        with patch.dict("sys.modules", {"mssql_py_core.mssql_py_core": mock_pycore_module}):
             with pytest.raises(OperationalError) as exc_info:
                 cursor.bulkcopy("dbo.test_table", [(1, "row")], timeout=10)
 
@@ -219,7 +262,7 @@ class TestBulkcopyTokenProvider:
         mock_pycore_module = MagicMock()
         mock_pycore_module.PyCoreConnection = lambda ctx, **kwargs: mock_pycore_conn
 
-        with patch.dict("sys.modules", {"mssql_py_core": mock_pycore_module}):
+        with patch.dict("sys.modules", {"mssql_py_core.mssql_py_core": mock_pycore_module}):
             cursor.bulkcopy("dbo.t", [(1, "a")], timeout=10)
             cursor.bulkcopy("dbo.t", [(2, "b")], timeout=10)
             cursor.bulkcopy("dbo.t", [(3, "c")], timeout=10)
@@ -255,7 +298,7 @@ class TestBulkcopyTokenProvider:
         mock_pycore_module = MagicMock()
         mock_pycore_module.PyCoreConnection = lambda ctx, **kwargs: mock_pycore_conn
 
-        with patch.dict("sys.modules", {"mssql_py_core": mock_pycore_module}):
+        with patch.dict("sys.modules", {"mssql_py_core.mssql_py_core": mock_pycore_module}):
             with pytest.raises(OperationalError):
                 cursor.bulkcopy("dbo.t", [(1, "a")], timeout=10)
             # Cursor still works after the transient failure.
@@ -285,7 +328,7 @@ class TestBulkcopyTokenProvider:
 
         mock_pycore_module = MagicMock()
 
-        with patch.dict("sys.modules", {"mssql_py_core": mock_pycore_module}):
+        with patch.dict("sys.modules", {"mssql_py_core.mssql_py_core": mock_pycore_module}):
             with pytest.raises(InterfaceError) as exc_info:
                 cursor.bulkcopy("dbo.test_table", [(1, "row")], timeout=10)
 
@@ -312,7 +355,7 @@ def _capture_bulkcopy_context(cursor):
     mock_pycore_module = MagicMock()
     mock_pycore_module.PyCoreConnection = capture_context
 
-    with patch.dict("sys.modules", {"mssql_py_core": mock_pycore_module}):
+    with patch.dict("sys.modules", {"mssql_py_core.mssql_py_core": mock_pycore_module}):
         cursor.bulkcopy("dbo.test_table", [(1, "row")], timeout=10)
 
     return captured_context

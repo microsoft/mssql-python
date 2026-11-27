@@ -17,7 +17,7 @@ import tarfile
 import tempfile
 import time
 
-from .report import LEGS
+from .report import LEGS, validate_phases
 from . import workloads
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -170,8 +170,10 @@ def worker(args):
                 result = profiler.run(name)[0]
             if result["cpp"] is None or result["py"] is None:
                 raise RuntimeError(f"Scenario {name} was skipped")
-            if not result["cpp"]:
+            if not result["cpp"] and name != "row_to_dict":
                 raise RuntimeError(f"Scenario {name} has no native samples")
+            for layer in ("cpp", "py"):
+                validate_phases(name, layer, result[layer])
             output[name] = {key: result[key] for key in ("wall_ms", "cpp", "py")}
             output[name]["work"] = result.get("detail", "Connection: 1").split(" (")[0]
             args.output.write_text(

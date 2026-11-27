@@ -15,7 +15,7 @@ from typing import Optional
 from .helpers import Settings, get_settings, _settings, _settings_lock
 
 # Driver version
-__version__ = "1.16.0"
+__version__ = "1.18.0"
 
 # Exceptions
 # https://www.python.org/dev/peps/pep-0249/#exceptions
@@ -52,10 +52,14 @@ from .type import (
 )
 
 # Connection Objects
+from .json import Json
 from .db_connection import connect, Connection
 
 # Token provider protocol (structural type for the token_provider= parameter)
 from .connection import TokenProvider
+
+# Retry policy for transient failures at connect() time (the retry_policy= parameter)
+from .retry import RetryPolicy
 
 # Connection String Handling
 from .connection_string_parser import _ConnectionStringParser
@@ -66,6 +70,8 @@ from .cursor import Cursor
 
 # Row Objects
 from .row import Row, RowMapping
+from .vector import Vector, OutputParameter, InputOutputParameter
+from .table_valued_parameter import TableValuedParameter
 
 # Logging Configuration (Simplified single-level DEBUG system)
 from .logging import logger, setup_logging, driver_logger
@@ -80,7 +86,7 @@ from .pooling import PoolingManager
 from .odbc_provider import ProviderManager
 
 
-def get_native_provider_info() -> dict:
+def get_native_provider_info() -> dict[str, object]:
     """Return the selected native provider for diagnostics.
 
     Reports the provider ``id``, package ``version``, resolved ``driver_path``,
@@ -91,17 +97,17 @@ def get_native_provider_info() -> dict:
 
 
 # Global registry for tracking active connections (using weak references)
-_active_connections = weakref.WeakSet()
+_active_connections: weakref.WeakSet[Connection] = weakref.WeakSet()
 _connections_lock = threading.Lock()
 
 
-def _register_connection(conn):
+def _register_connection(conn: Connection) -> None:
     """Register a connection for cleanup before shutdown."""
     with _connections_lock:
         _active_connections.add(conn)
 
 
-def _cleanup_connections():
+def _cleanup_connections() -> None:
     """
     Cleanup function called by atexit to close all active connections.
 
@@ -182,7 +188,10 @@ from .constants import (  # noqa: F401
     # SQL Server-specific type constants (pyodbc parity)
     SQL_SS_TIME2,
     SQL_SS_XML,
+    SQL_SS_JSON,
+    SQL_JSON,
     SQL_SS_VARIANT,
+    SQL_SS_VECTOR,
     # Connection attribute constants
     SQL_ATTR_ACCESS_MODE,
     SQL_ATTR_CONNECTION_TIMEOUT,
@@ -324,6 +333,11 @@ from .constants import (  # noqa: F401
 )
 
 __all__ = [
+    "Vector",
+    "OutputParameter",
+    "InputOutputParameter",
+    "SQL_SS_VECTOR",
+    "TableValuedParameter",
     # Exception classes
     "Warning",
     "Error",
@@ -356,6 +370,8 @@ __all__ = [
     "Cursor",
     "Row",
     "RowMapping",
+    # Retry policy
+    "RetryPolicy",
     # Settings
     "Settings",
     "get_settings",
@@ -404,6 +420,9 @@ __all__ = [
     # SQL Server-specific type constants (pyodbc parity)
     "SQL_SS_TIME2",
     "SQL_SS_XML",
+    "SQL_SS_JSON",
+    "SQL_JSON",
+    "Json",
     "SQL_SS_VARIANT",
     # Connection attribute constants
     "SQL_ATTR_ACCESS_MODE",
@@ -579,7 +598,7 @@ def pooling(max_size: int = 100, idle_timeout: int = 600, enabled: bool = True) 
 _original_module_setattr = sys.modules[__name__].__setattr__
 
 
-def _custom_setattr(name, value):
+def _custom_setattr(name: str, value: object) -> None:
     if name == "lowercase":
         with _settings_lock:
             _settings.lowercase = bool(value)
@@ -590,7 +609,7 @@ def _custom_setattr(name, value):
 
 
 # Replace the module's __setattr__ with our custom version
-sys.modules[__name__].__setattr__ = _custom_setattr
+setattr(sys.modules[__name__], "__setattr__", _custom_setattr)
 
 
 # Create a custom module class that uses properties instead of __setattr__
@@ -660,3 +679,7 @@ sys.modules[__name__] = new_module
 # Initialize property values
 lowercase: bool = _settings.lowercase
 native_uuid: bool = _settings.native_uuid
+
+from ._query_operation import _initialize_native_runtime
+
+_initialize_native_runtime()

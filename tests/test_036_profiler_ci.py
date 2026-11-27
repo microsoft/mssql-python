@@ -16,6 +16,7 @@ import time
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 from urllib.error import URLError
+import weakref
 import zipfile
 import zlib
 
@@ -91,7 +92,10 @@ def report():
             ),
             scenarios={
                 name: dict(
-                    wall_ms=10 * scale, work="Rows: 100", cpp={"ddbc::query": counter}, py={}
+                    wall_ms=10 * scale,
+                    work="Rows: 100",
+                    cpp={} if name == "row_to_dict" else {"ddbc::query": counter},
+                    py={},
                 )
                 for name in reporting.CASES
             },
@@ -146,9 +150,34 @@ def test_phase_call_changes_are_reported_without_summing_nested_totals(report):
     row = reporting.comparisons(report)[1]
     assert row["counts"] == ["ddbc::query (1 -> 2 calls)"]
     assert row["phases"] == [(4.0, "ddbc::query")]
+    reporting.validate(report)
+    conversion = reporting.comparisons(report)[-1]
+    assert conversion["name"] == "row_to_dict"
+    assert conversion["counts"] == conversion["phases"] == []
+    sample = report["pairs"][0]["candidate"]["scenarios"]
+    for invalid in (
+        None,
+        [],
+        {"ddbc::query": {"calls": 0}},
+        {"ddbc::query": dict(calls=1, total_us=2, min_us=2, max_us=1)},
+        {"ddbc::query": dict(calls=1, total_us=1, min_us=1, max_us=2)},
+    ):
+        sample["row_to_dict"]["cpp"] = invalid
+        with pytest.raises(ValueError):
+            reporting.validate(report)
+    sample["row_to_dict"]["cpp"] = {}
+    sample["row_to_dict"]["py"] = None
+    with pytest.raises(ValueError):
+        reporting.validate(report)
+    sample["row_to_dict"]["py"] = {}
+    sample["select"]["cpp"] = {}
+    with pytest.raises(ValueError, match="Missing or oversized profiling data"):
+        reporting.validate(report)
 
 
-@pytest.mark.parametrize("case", ["nan", "missing", "environment", "work", "few", "prefix", "zero"])
+@pytest.mark.parametrize(
+    "case", ["nan", "missing", "environment", "work", "few", "prefix", "zero", "empty-native"]
+)
 def test_reject_invalid_or_incomparable_data(report, case):
     sample = report["pairs"][0]["candidate"]
     if case == "nan":
@@ -167,6 +196,8 @@ def test_reject_invalid_or_incomparable_data(report, case):
         sample["scenarios"]["select"]["cpp"] = {
             "not-native": sample["scenarios"]["select"]["cpp"]["ddbc::query"]
         }
+    elif case == "empty-native":
+        sample["scenarios"]["output_converter_fetchall"]["cpp"] = {}
     with pytest.raises(ValueError):
         reporting.validate(report)
 
@@ -690,11 +721,360 @@ def test_checkout_is_safe_and_compatible_with_python_310(tmp_path, monkeypatch, 
 def test_report_cases_match_the_executed_workload_registry():
     _, workloads = controller.load_suite()
     assert tuple(workloads.registry()) == reporting.CASES
-    assert len(reporting.CASES) == 22
+    assert len(reporting.CASES) == 40
+    assert reporting.CASES[-1] == "row_to_dict"
+    assert workloads.registry()["row_to_dict"] == (workloads.row_to_dict, True)
     assert workloads.registry()["scalar_fetchval"] == (workloads.scalar_fetchval, True)
+    assert workloads.registry()["fetchmany_one_text"] == (workloads.fetchmany_one_text, True)
+    assert workloads.registry()["output_converter_fetchall"] == (
+        workloads.output_converter_fetch,
+        True,
+    )
+    batch, needs_table = workloads.registry()["output_converter_fetchmany1000"]
+    assert needs_table and batch.func is workloads.output_converter_fetch
+    assert batch.keywords == {"batched": True}
     assert [name for name in reporting.CASES if name.startswith("lob_")] == [
         "lob_varchar_256k_fetchall",
     ]
+
+
+def test_fetchmany_one_text_workload_boundaries_and_report(monkeypatch, report):
+    cursor = MagicMock()
+    cursor.messages = []
+    connection = MagicMock()
+    connection.cursor.return_value.__enter__.return_value = cursor
+    context = MagicMock()
+    counters = {"ddbc::FetchSingleRow": dict(calls=10001, total_us=10001, min_us=1, max_us=1)}
+    context.collect.return_value = (counters, {})
+    references = []
+
+    class RetainedRow(list):
+        def __iter__(self):
+            context.collect.assert_called_once()
+            return super().__iter__()
+
+    def fetch(size):
+        assert size == 1 and clock.call_count == 1
+        context.collect.assert_not_called()
+        index = len(references)
+        if index == 10_000:
+            return []
+        row = RetainedRow((index, f"unicode_row_{index}"))
+        references.append(weakref.ref(row))
+        return [row]
+
+    cursor.fetchmany.side_effect = fetch
+
+    def tick():
+        cursor.execute.assert_called_once_with(
+            "SELECT TOP (10000) int_col, nvarchar_col FROM #perf_test ORDER BY id"
+        )
+        context.enable.assert_called_once()
+        context.collect.assert_not_called()
+        if clock.call_count == 1:
+            cursor.fetchmany.assert_not_called()
+        else:
+            assert cursor.fetchmany.call_count == 10_001
+            assert len(references) == 10_000 and all(ref() is not None for ref in references)
+        return 1.0 if clock.call_count == 1 else 1.1
+
+    clock = MagicMock(side_effect=tick)
+    monkeypatch.setattr(benchmark_workloads.time, "perf_counter", clock)
+    result = benchmark_workloads.fetchmany_one_text(connection, "#perf_test", context)
+    assert clock.call_count == 2
+    assert result["wall_ms"] == pytest.approx(100)
+    assert result["cpp"] is counters
+    assert result["detail"] == "Rows: 10000; types: int,nvarchar; API: fetchmany(1)"
+    cursor.fetchone.assert_not_called()
+    cursor.fetchall.assert_not_called()
+    context.collect.assert_called_once()
+    context.disable.assert_called_once()
+    connection.cursor.return_value.__exit__.assert_called_once()
+
+    # Equal-valued floats must not pass the INT contract.
+    cursor.fetchmany.side_effect = iter(
+        [[(float(index), f"unicode_row_{index}")] for index in range(10_000)] + [[]]
+    )
+    context.reset_mock()
+    connection.cursor.return_value.__exit__.reset_mock()
+    clock.side_effect = (1.0, 1.1)
+    with pytest.raises(AssertionError):
+        benchmark_workloads.fetchmany_one_text(connection, "#perf_test", context)
+    context.collect.assert_called_once()
+    context.disable.assert_called_once()
+    connection.cursor.return_value.__exit__.assert_called_once()
+
+    context.reset_mock()
+    connection.cursor.return_value.__exit__.reset_mock()
+    cursor.fetchmany.side_effect = RuntimeError("fetch failed")
+    clock.side_effect = (1.0,)
+    with pytest.raises(RuntimeError, match="fetch failed"):
+        benchmark_workloads.fetchmany_one_text(connection, "#perf_test", context)
+    context.disable.assert_called_once()
+    connection.cursor.return_value.__exit__.assert_called_once()
+
+    clear_slowdowns(report)
+    for pair in report["pairs"]:
+        pair["candidate"]["scenarios"]["fetchmany_one_text"]["wall_ms"] = 7
+    reporting.validate(report)
+    row = next(row for row in reporting.comparisons(report) if row["name"] == "fetchmany_one_text")
+    assert row["status"] == "improvement" and row["change_pct"] == pytest.approx(-30)
+    assert (
+        f"| {reporting.TASK_NAMES['fetchmany_one_text']} | 10.000 ms | 7.000 ms | -30.0% | consistent improvement |"
+        in reporting.render([report], "c" * 40, 42)
+    )
+
+
+@pytest.mark.parametrize("batched", (False, True), ids=("fetchall", "fetchmany1000"))
+def test_output_converter_workload_boundaries_and_report(monkeypatch, report, batched):
+    from mssql_python import SQL_WVARCHAR
+
+    cursor = MagicMock()
+    cursor.messages = []
+    connection = MagicMock()
+    connection.cursor.return_value.__enter__.return_value = cursor
+    previous = (lambda raw: raw) if batched else None
+    connection.get_output_converter.return_value = previous
+    context = MagicMock()
+    counters = {"ddbc::FetchBatchData": dict(calls=1, total_us=1000, min_us=1000, max_us=1000)}
+    context.collect.return_value = (counters, {})
+    references = []
+    callback_inputs = []
+    index = 0
+
+    class RetainedRow(list):
+        def __iter__(self):
+            context.collect.assert_called_once()
+            return super().__iter__()
+
+    def fetch(size=10_000):
+        nonlocal index
+        assert clock.call_count == 1
+        context.collect.assert_not_called()
+        converter = connection.add_output_converter.call_args.args[1]
+        rows = []
+        for i in range(index, min(index + size, 10_000)):
+            raw = f"unicode_row_{i}".encode("utf-16le")
+            callback_inputs.append(raw)
+            rows.append(RetainedRow((i, converter(raw))))
+        index += len(rows)
+        references.extend(weakref.ref(row) for row in rows)
+        return rows
+
+    cursor.fetchall.side_effect = fetch
+    cursor.fetchmany.side_effect = fetch
+
+    def tick():
+        cursor.execute.assert_called_once_with(
+            "SELECT TOP (10000) int_col, nvarchar_col FROM #perf_test ORDER BY id"
+        )
+        connection.get_output_converter.assert_called_once_with(SQL_WVARCHAR)
+        assert connection.add_output_converter.call_count == 1
+        assert connection.add_output_converter.call_args.args[0] == SQL_WVARCHAR
+        connection.remove_output_converter.assert_not_called()
+        context.enable.assert_called_once()
+        context.collect.assert_not_called()
+        if clock.call_count == 1:
+            assert not references
+        else:
+            assert len(references) == 10_000 and all(ref() is not None for ref in references)
+        return 1.0 if clock.call_count == 1 else 1.1
+
+    clock = MagicMock(side_effect=tick)
+    monkeypatch.setattr(benchmark_workloads.time, "perf_counter", clock)
+    result = benchmark_workloads.output_converter_fetch(
+        connection, "#perf_test", context, batched=batched
+    )
+    assert clock.call_count == 2
+    assert result["wall_ms"] == pytest.approx(100)
+    assert result["cpp"] is counters
+    assert callback_inputs == [f"unicode_row_{i}".encode("utf-16le") for i in range(10_000)]
+    api = "fetchmany(1000)" if batched else "fetchall()"
+    assert result["detail"] == (
+        f"Rows: 10000; types: int,nvarchar; converter: UTF-16LE upper; API: {api}"
+    )
+    if batched:
+        assert [call.args for call in cursor.fetchmany.call_args_list] == [(1000,)] * 11
+        cursor.fetchall.assert_not_called()
+        connection.add_output_converter.assert_called_with(SQL_WVARCHAR, previous)
+        assert connection.add_output_converter.call_count == 2
+        connection.remove_output_converter.assert_not_called()
+    else:
+        cursor.fetchall.assert_called_once_with()
+        cursor.fetchmany.assert_not_called()
+        connection.remove_output_converter.assert_called_once_with(SQL_WVARCHAR)
+    cursor.fetchone.assert_not_called()
+    connection.clear_output_converters.assert_not_called()
+    context.collect.assert_called_once()
+    context.disable.assert_called_once()
+    connection.cursor.return_value.__exit__.assert_called_once()
+
+    clear_slowdowns(report)
+    name = "output_converter_fetchmany1000" if batched else "output_converter_fetchall"
+    for pair in report["pairs"]:
+        pair["candidate"]["scenarios"][name]["wall_ms"] = 7
+    reporting.validate(report)
+    row = next(row for row in reporting.comparisons(report) if row["name"] == name)
+    assert row["status"] == "improvement" and row["change_pct"] == pytest.approx(-30)
+    assert (
+        f"| {reporting.TASK_NAMES[name]} | 10.000 ms | 7.000 ms | -30.0% | consistent improvement |"
+        in reporting.render([report], "c" * 40, 42)
+    )
+
+
+def test_row_to_dict_workload_times_only_warm_conversion(monkeypatch, report):
+    from mssql_python.row import Row
+
+    names = tuple(f"c{column}" for column in range(32))
+    columns = dict(zip(names, range(32)))
+    visits = [0] * 10_000
+    context = MagicMock()
+    context.collect.return_value = ({}, {})
+    clock = MagicMock()
+
+    class ObservedRow:
+        def __init__(self, index):
+            self.index = index
+            self.row = Row(
+                [None if index % 7 == 0 else index + column for column in range(32)],
+                columns,
+                column_names=names,
+            )
+
+        @property
+        def _mapping(self):
+            if visits[self.index] == 0:
+                context.enable.assert_not_called()
+                clock.assert_not_called()
+            else:
+                context.enable.assert_called_once()
+                assert clock.call_count == 1
+            context.collect.assert_not_called()
+            visits[self.index] += 1
+            return self.row._mapping
+
+    rows = [ObservedRow(index) for index in range(10_000)]
+    cursor = MagicMock()
+    cursor.fetchall.return_value = rows
+    cursor.messages = []
+    connection = MagicMock()
+    connection.cursor.return_value.__enter__.return_value = cursor
+    sql = "SELECT TOP (10000) " + ", ".join(
+        f"CASE WHEN int_col % 7 = 0 THEN CAST(NULL AS INT) "
+        f"ELSE int_col + {column} END AS {name}"
+        for column, name in enumerate(names)
+    )
+    sql += " FROM #perf_test ORDER BY id"
+
+    def tick():
+        cursor.execute.assert_called_once_with(sql)
+        cursor.fetchall.assert_called_once_with()
+        context.enable.assert_called_once()
+        context.collect.assert_not_called()
+        assert visits == [clock.call_count] * 10_000
+        return 1.0 if clock.call_count == 1 else 1.1
+
+    clock.side_effect = tick
+    monkeypatch.setattr(benchmark_workloads.time, "perf_counter", clock)
+    result = benchmark_workloads.row_to_dict(connection, "#perf_test", context)
+    assert result["wall_ms"] == pytest.approx(100)
+    assert result["detail"] == (
+        "Rows: 10000; columns: 32; types: int/NULL; API: dict(row._mapping); mode: warm"
+    )
+    assert result["cpp"] == result["py"] == {}
+    assert clock.call_count == 2
+    assert visits == [2] * 10_000
+    cursor.fetchone.assert_not_called()
+    cursor.fetchmany.assert_not_called()
+    context.collect.assert_called_once()
+    context.disable.assert_called_once()
+    connection.cursor.return_value.__exit__.assert_called_once()
+    assert reporting.TASK_NAMES["row_to_dict"] in reporting.render([report], "c" * 40, 42)
+
+    # Equality alone would accept True as the expected integer 1.
+    rows[1].row._values[0] = True
+    visits[:] = [0] * 10_000
+    clock.reset_mock()
+    context.reset_mock()
+    cursor.reset_mock()
+    connection.cursor.return_value.__exit__.reset_mock()
+    with pytest.raises(AssertionError):
+        benchmark_workloads.row_to_dict(connection, "#perf_test", context)
+    assert clock.call_count == 2
+    context.collect.assert_called_once()
+    context.disable.assert_called_once()
+    connection.cursor.return_value.__exit__.assert_called_once()
+
+    context.reset_mock()
+    connection.cursor.return_value.__exit__.reset_mock()
+    cursor.fetchall.side_effect = RuntimeError("fetch failed")
+    with pytest.raises(RuntimeError, match="fetch failed"):
+        benchmark_workloads.row_to_dict(connection, "#perf_test", context)
+    context.enable.assert_not_called()
+    context.disable.assert_called_once()
+    connection.cursor.return_value.__exit__.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    ("batched", "problem"),
+    (
+        (False, "setup"),
+        (True, "fetch"),
+        (False, "output"),
+        (True, "output-type"),
+        (True, "missing"),
+        (False, "warning"),
+        (True, "collect"),
+    ),
+)
+def test_output_converter_workload_rejects_invalid_results_and_restores(batched, problem):
+    from mssql_python import SQL_WVARCHAR
+
+    cursor = MagicMock()
+    cursor.messages = [("01000", "unexpected")] if problem == "warning" else []
+    connection = MagicMock()
+    connection.cursor.return_value.__enter__.return_value = cursor
+    previous = lambda raw: raw
+    connection.get_output_converter.return_value = previous
+    context = MagicMock()
+    context.collect.return_value = ({}, {})
+    if problem == "setup":
+        cursor.execute.side_effect = RuntimeError("setup failed")
+    if problem == "collect":
+        context.collect.side_effect = RuntimeError("collect failed")
+    index = 0
+
+    def fetch(size=10_000):
+        nonlocal index
+        if problem == "fetch":
+            raise RuntimeError("fetch failed")
+        converter = connection.add_output_converter.call_args.args[1]
+        rows = []
+        for i in range(index, min(index + size, 10_000)):
+            raw = f"unicode_row_{i}".encode("utf-16le")
+            converted = converter(raw)
+            rows.append(
+                (
+                    float(i) if problem == "output-type" else i,
+                    "wrong" if problem == "output" else converted,
+                )
+            )
+        index += len(rows)
+        return rows[1:] if problem == "missing" else rows
+
+    cursor.fetchall.side_effect = fetch
+    cursor.fetchmany.side_effect = fetch
+    expected_error = RuntimeError if problem in ("setup", "fetch", "collect") else AssertionError
+    with pytest.raises(expected_error):
+        benchmark_workloads.output_converter_fetch(
+            connection, "#perf_test", context, batched=batched
+        )
+    context.disable.assert_called_once()
+    connection.add_output_converter.assert_called_with(SQL_WVARCHAR, previous)
+    assert connection.add_output_converter.call_count == 2
+    connection.remove_output_converter.assert_not_called()
+    connection.clear_output_converters.assert_not_called()
+    connection.cursor.return_value.__exit__.assert_called_once()
 
 
 def test_scalar_fetchval_workload_times_only_fetch_and_reaches_eof(monkeypatch, report):
@@ -764,6 +1144,160 @@ def test_scalar_fetchval_workload_rejects_invalid_measurements(monkeypatch, prob
     else:
         context.disable.assert_called_once()
         connection.cursor.return_value.__exit__.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    "storage,encoding,text",
+    [
+        ("ascii", "ascii", "Abcd1234"),
+        ("cp1252", "cp1252", "caf\u00e9 \u20ac\u00df!"),
+        ("utf8", "utf-8", "A\u00e9\u4e2d\U0001f642Z\u6f22\u03a9!"),
+        ("nvarchar", "utf-16le", "A\u00e9\u4e2d\U0001f642Z\u6f22\u03a9!"),
+    ],
+)
+def test_text_conversion_workload_excludes_setup_and_validates_bytes(
+    monkeypatch, report, storage, encoding, text
+):
+    from mssql_python import SQL_WCHAR
+
+    expected = text * 32
+    raw = expected.encode(encoding)
+    cursor = MagicMock()
+    cursor.fetchone.return_value = (len(raw), raw)
+    cursor.fetchall.return_value = [(expected,) * 8] * 5000
+    cursor.messages = []
+    connection = MagicMock()
+    connection.getdecoding.return_value = {"encoding": "utf-16le", "ctype": SQL_WCHAR}
+    connection.cursor.return_value.__enter__.return_value = cursor
+    context = MagicMock()
+    context.collect.return_value = ({}, {})
+
+    def clock():
+        assert cursor.execute.call_count == 4
+        cursor.fetchone.assert_called_once_with()
+        context.enable.assert_called_once()
+        context.collect.assert_not_called()
+        return 1.1 if cursor.fetchall.called else 1.0
+
+    monkeypatch.setattr(benchmark_workloads.time, "perf_counter", clock)
+    result = benchmark_workloads.text_conversion_fetchall(connection, context, storage)
+    assert result["wall_ms"] == pytest.approx(100)
+    assert "payload chars: 256; fetch: UTF-16LE" in result["detail"]
+    cursor.execute.assert_called_with("DROP TABLE #ci_text_conversion")
+    context.disable.assert_called_once()
+    context.collect.assert_called_once()
+    name = f"text_conversion_{storage}_fetchall"
+    assert reporting.TASK_NAMES[name] in reporting.render([report], "c" * 40, 42)
+
+
+@pytest.mark.parametrize(
+    "storage,encoding,text,size",
+    [
+        ("ascii", "ascii", "Abcd1234", "short"),
+        ("cp1252", "cp1252", "caf\u00e9 \u20ac\u00df!", "full"),
+        ("utf8", "utf-8", "A\u00e9\u4e2d\U0001f642Z\u6f22\u03a9!", "full"),
+        ("nvarchar", "utf-16le", "A\u00e9\u4e2d\U0001f642Z\u6f22\u03a9!", "full"),
+    ],
+)
+def test_text_payload_sweep_uses_stored_byte_limits(storage, encoding, text, size):
+    from mssql_python import SQL_WCHAR
+
+    expected = text * (1 if size == "short" else 8000 // len(text.encode(encoding)))
+    raw = expected.encode(encoding)
+    count = 5000 if size == "short" else 200
+    cursor = MagicMock()
+    cursor.fetchone.return_value = (len(raw), raw)
+    cursor.fetchall.return_value = [(expected,) * 8] * count
+    cursor.messages = []
+    connection = MagicMock()
+    connection.getdecoding.return_value = {"encoding": "utf-16le", "ctype": SQL_WCHAR}
+    connection.cursor.return_value.__enter__.return_value = cursor
+    context = MagicMock()
+    context.collect.return_value = ({}, {})
+    result = benchmark_workloads.text_conversion_fetchall(
+        connection, context, storage, payload_size=size
+    )
+    assert f"Rows: {count};" in result["detail"]
+    assert f"payload chars: {len(expected)};" in result["detail"]
+    assert "AS nvarchar(max)" in cursor.execute.call_args_list[1].args[0]
+    cursor.execute.assert_called_with("DROP TABLE #ci_text_conversion")
+
+
+@pytest.mark.parametrize("sql_type", ["SQL_CHAR", "SQL_WCHAR"])
+def test_text_conversion_rejects_mislabeled_fetch_encoding(sql_type):
+    import mssql_python as ms
+
+    connection = MagicMock()
+    connection.getdecoding.side_effect = lambda value: (
+        {"encoding": "utf-8", "ctype": ms.SQL_CHAR}
+        if value == getattr(ms, sql_type)
+        else {"encoding": "utf-16le", "ctype": ms.SQL_WCHAR}
+    )
+    with pytest.raises(ValueError, match="require UTF-16LE"):
+        benchmark_workloads.text_conversion_fetchall(connection, MagicMock(), "utf8")
+    connection.cursor.assert_not_called()
+
+
+@pytest.mark.parametrize("integers", [False, True])
+def test_narrow_controls_validate_all_rows_and_exclude_query(monkeypatch, integers):
+    cursor = MagicMock()
+    rows = [(index,) * 8 for index in range(200_000)] if integers else [("control",) * 8] * 200_000
+    cursor.fetchall.return_value = rows
+    cursor.messages = []
+    connection = MagicMock()
+    connection.cursor.return_value.__enter__.return_value = cursor
+    context = MagicMock()
+    context.collect.return_value = ({}, {})
+
+    def clock():
+        cursor.execute.assert_called_once()
+        context.enable.assert_called_once()
+        context.collect.assert_not_called()
+        return 1.1 if cursor.fetchall.called else 1.0
+
+    monkeypatch.setattr(benchmark_workloads.time, "perf_counter", clock)
+    result = benchmark_workloads.narrow_fetchall_control(connection, context, integers=integers)
+    assert result["wall_ms"] == pytest.approx(100)
+    assert "Rows: 200000; columns: 8;" in result["detail"]
+    rows[-1] = ("wrong",) * 8
+    cursor.execute.reset_mock()
+    cursor.fetchall.reset_mock()
+    context.reset_mock()
+    with pytest.raises(AssertionError):
+        benchmark_workloads.narrow_fetchall_control(connection, context, integers=integers)
+
+
+@pytest.mark.parametrize("problem", ("stored-bytes", "truncated", "wrong-type", "count", "error"))
+def test_text_conversion_workload_rejects_invalid_conversion_and_cleans_up(problem):
+    from mssql_python import SQL_WCHAR
+
+    expected = "A\u00e9\u4e2d\U0001f642Z\u6f22\u03a9!" * 32
+    raw = expected.encode("utf-8")
+    cursor = MagicMock()
+    cursor.fetchone.return_value = (len(raw), raw)
+    cursor.fetchall.return_value = [(expected,) * 8] * 5000
+    cursor.messages = []
+    if problem == "stored-bytes":
+        cursor.fetchone.return_value = (len(raw), b"wrong")
+    elif problem == "truncated":
+        cursor.fetchall.return_value[-1] = (expected[:-1],) * 8
+    elif problem == "wrong-type":
+        cursor.fetchall.return_value[-1] = (raw,) * 8
+    elif problem == "count":
+        cursor.fetchall.return_value.pop()
+    else:
+        cursor.fetchall.side_effect = RuntimeError("fetch failed")
+    connection = MagicMock()
+    connection.getdecoding.return_value = {"encoding": "utf-16le", "ctype": SQL_WCHAR}
+    connection.cursor.return_value.__enter__.return_value = cursor
+    context = MagicMock()
+    context.collect.return_value = ({}, {})
+    with pytest.raises(RuntimeError if problem == "error" else AssertionError):
+        benchmark_workloads.text_conversion_fetchall(connection, context, "utf8")
+    cursor.execute.assert_called_with("DROP TABLE #ci_text_conversion")
+    context.disable.assert_called_once()
+    if problem == "stored-bytes":
+        context.enable.assert_not_called()
 
 
 def test_lob_workload_validates_payload_and_times_only_fetch(monkeypatch):
@@ -871,7 +1405,12 @@ def test_legacy_insert_workload_executes_both_variants(input_sizes):
 @pytest.mark.parametrize("fail", [False, True])
 def test_worker_checkpoints_completed_and_active_scenarios(tmp_path, monkeypatch, capsys, fail):
     output = tmp_path / "base-0.json"
-    result = dict(wall_ms=10.0, cpp={"ddbc::run": {}}, py={}, detail="Rows: 10")
+    result = dict(
+        wall_ms=10.0,
+        cpp={"ddbc::run": dict(calls=1, total_us=1, min_us=1, max_us=1)},
+        py={},
+        detail="Rows: 10",
+    )
     profiler = MagicMock()
     profiler.__enter__.return_value = profiler
     profiler._conn.cursor.return_value.__enter__.return_value.fetchone.return_value = ("16.0",)
@@ -880,14 +1419,14 @@ def test_worker_checkpoints_completed_and_active_scenarios(tmp_path, monkeypatch
         partial = json.loads(output.read_text())
         assert partial["active_scenario"] == name
         if name == "second":
-            assert set(partial["scenarios"]) == {"first"}
+            assert set(partial["scenarios"]) == {"row_to_dict"}
             if fail:
                 raise RuntimeError("workload failure")
-        return [result]
+        return [dict(result, cpp={}) if name == "row_to_dict" else result]
 
     profiler.run.side_effect = run
     core = SimpleNamespace(Profiler=lambda: profiler)
-    workloads = SimpleNamespace(registry=lambda: {"first": None, "second": None})
+    workloads = SimpleNamespace(registry=lambda: {"row_to_dict": None, "second": None})
     monkeypatch.setattr(controller, "check_build", lambda *a, **kw: None)
     monkeypatch.setattr(controller, "load_suite", lambda: (core, workloads))
     args = SimpleNamespace(source_root=tmp_path, scenarios=None, output=output)
@@ -899,10 +1438,30 @@ def test_worker_checkpoints_completed_and_active_scenarios(tmp_path, monkeypatch
         controller.worker(args)
         final = json.loads(output.read_text())
         assert final["environment"]["sql_version"] == "16.0"
-        assert set(final["scenarios"]) == {"first", "second"}
+        assert set(final["scenarios"]) == {"row_to_dict", "second"}
+        assert final["scenarios"]["row_to_dict"]["cpp"] == {}
         assert "active_scenario" not in final
     assert "Starting scenario: second" in capsys.readouterr().out
     profiler.__exit__.assert_called_once()
+    if not fail:
+        profiler.run.side_effect = None
+        for name, cpp, error in (
+            ("second", {}, RuntimeError),
+            ("row_to_dict", None, RuntimeError),
+            ("row_to_dict", [], ValueError),
+            ("row_to_dict", {"ddbc::run": {"calls": 0}}, ValueError),
+        ):
+            args.scenarios = [name]
+            profiler.run.return_value = [dict(result, cpp=cpp)]
+            with pytest.raises(error):
+                controller.worker(args)
+            partial = json.loads(output.read_text())
+            assert partial["active_scenario"] == name
+            assert partial["scenarios"] == {}
+        args.scenarios = ["row_to_dict"]
+        profiler.run.return_value = [dict(result, cpp={}, py=None)]
+        with pytest.raises(RuntimeError, match="was skipped"):
+            controller.worker(args)
 
 
 def test_measure_timeout_retains_partial_results_and_log(tmp_path, monkeypatch):
@@ -1840,8 +2399,8 @@ def test_comment_workflow_separates_same_repo_and_fork_trust():
         "github.event.pull_request.base.sha"
     ) in workflow
     assert "persist-credentials: false" in workflow
-    assert "actions/checkout@11d5960a326750d5838078e36cf38b85af677262" in workflow
-    assert "actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065" in workflow
+    assert "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1" in workflow
+    assert "actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0" in workflow
     coverage = (ROOT / ".github/workflows/pr-code-coverage.yml").read_text(encoding="utf-8")
     assert coverage.count("extract_coverage_artifact.py") == 2
     assert coverage.count("--max-filesize 268435456") == 2

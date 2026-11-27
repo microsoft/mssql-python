@@ -6,9 +6,13 @@ required for setup and is never an argument. Use --database TestDB on Linux
 test legs, --colima on macOS, and --cleanup for the always-running final step.
 Cleanup refuses containers without the matching owner label.
 
-Only SQL lookup/pull/create/start/readiness/database setup is retried. Colima
-starts once within the remaining overall setup budget, without a separate
-startup timeout. The owned-container lookup also checks Docker availability, so
+Only SQL lookup/pull/create/start/readiness/database setup is retried by default.
+Colima starts once within the remaining overall setup budget. Release jobs can
+opt into --retry-colima for two startup attempts, each capped at 600 seconds,
+with a verified daemon and clean disposable-profile reset between attempts.
+Release startup uses explicit public DNS resolvers for the VM, avoiding the
+Lima host DNS forwarder when pulling the public SQL Server image.
+The owned-container lookup also checks Docker availability, so
 transient read-only failures can consume the same two attempts without creating
 or removing anything. Missing tools, invalid configuration/lookup results,
 ownership conflicts and unsafe cleanup are terminal.
@@ -588,14 +592,32 @@ class SqlSetup:
 
     def prepare_runtime(self):
         if self.args.colima and not self.args.cleanup:
-            self.log("Starting Colima once (outside SQL retry)")
-            result = self.command(
-                ["colima", "start", "--cpu", "4", "--memory", "8", "--disk", "50"],
-                self.deadline - time.monotonic(),
-                launcher=True,
-            )
-            self.log("Colima launcher completed; Docker and SQL readiness still require checks")
-            self.log(result.output)
+            attempts = 2 if self.args.retry_colima else 1
+            for number in range(1, attempts + 1):
+                self.log(f"Colima startup attempt {number}/{attempts} (outside SQL retry)")
+                try:
+                    command = ["colima", "start", "--cpu", "4", "--memory", "8", "--disk", "50"]
+                    if self.args.retry_colima:
+                        command.extend(["--dns", "1.1.1.1", "--dns", "8.8.8.8"])
+                    result = self.command(
+                        command,
+                        600 if self.args.retry_colima else self.deadline - time.monotonic(),
+                        launcher=True,
+                    )
+                    self.log(result.output)
+                    if self.args.retry_colima:
+                        self.docker_command("info", timeout=30)
+                except SetupFailure as exc:
+                    self.log(f"Colima startup failed: {exc}")
+                    if not exc.retryable or number == attempts:
+                        raise
+                    self.log(self.command(["colima", "status"], 15, check=False).output)
+                    # Reset only the disposable default profile on this hosted job.
+                    self.command(["colima", "stop", "--force"], 60)
+                    self.command(["colima", "delete", "--force"], 60)
+                else:
+                    self.log("Colima launcher completed; SQL readiness still requires checks")
+                    return
 
     def acquire_image(self):
         if self.image_id is not None:
@@ -775,8 +797,11 @@ def arguments(argv):
     parser.add_argument("--image")
     parser.add_argument("--database", choices=("TestDB",))
     parser.add_argument("--colima", action="store_true")
+    parser.add_argument("--retry-colima", action="store_true")
     parser.add_argument("--cleanup", action="store_true")
     args = parser.parse_args(argv)
+    if args.retry_colima and (not args.colima or args.cleanup):
+        raise SetupFailure("--retry-colima requires --colima setup", retryable=False)
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", args.name):
         raise SetupFailure("Invalid SQL container name", retryable=False)
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]*", args.owner):

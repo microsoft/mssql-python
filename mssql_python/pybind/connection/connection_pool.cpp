@@ -6,6 +6,7 @@
 #include <chrono>
 #include <exception>
 #include <memory>
+#include <limits>
 #include <vector>
 
 // Logging uses LOG() macro for all diagnostic output
@@ -60,6 +61,22 @@ std::shared_ptr<Connection> ConnectionPool::acquire(const std::u16string& connSt
                                                     const py::dict& attrs_before,
                                                     const py::object& token_factory) {
     PERF_TIMER("ConnectionPool::acquire");
+    // A login timeout does not cover SQLSetConnectAttr on an existing socket.
+    // Use it for bounded candidate reset as well; zero/unspecified
+    // retains a finite validation default rather than an OS TCP retry budget.
+    unsigned int validation_timeout = 15;
+    const py::int_ login_timeout_attr(SQL_ATTR_LOGIN_TIMEOUT);
+    if (attrs_before.contains(login_timeout_attr)) {
+        const auto requested = attrs_before[login_timeout_attr].cast<long long>();
+        if (requested > 0) {
+            validation_timeout = static_cast<unsigned int>(std::min<long long>(
+                requested, std::numeric_limits<unsigned int>::max()));
+        }
+    }
+    const py::int_ autocommit_attr(SQL_ATTR_AUTOCOMMIT);
+    const bool autocommit = attrs_before.contains(autocommit_attr)
+                                ? attrs_before[autocommit_attr].cast<int>() != SQL_AUTOCOMMIT_OFF
+                                : true;
     std::vector<std::shared_ptr<Connection>> to_disconnect;
     std::shared_ptr<Connection> valid_conn = nullptr;
     bool needs_connect = false;
@@ -131,6 +148,7 @@ std::shared_ptr<Connection> ConnectionPool::acquire(const std::u16string& connSt
 
         // Validate the candidate outside the mutex.
         bool reuse_candidate = false;
+        bool validation_attempted = false;
         try {
             if (token_factory && !token_factory.is_none() &&
                 candidate->isTokenNearExpiry(TOKEN_EXPIRY_THRESHOLD_SECS)) {
@@ -169,7 +187,10 @@ std::shared_ptr<Connection> ConnectionPool::acquire(const std::u16string& connSt
                     // is taken in practice. We favor never handing out a token
                     // that may expire mid-query over avoiding the churn.
                     candidate->setTokenExpiry(fresh_expiry);
-                    reuse_candidate = candidate->isAlive() && candidate->reset();
+                    if (candidate->isAlive()) {
+                        validation_attempted = true;
+                        reuse_candidate = candidate->reset(validation_timeout, autocommit);
+                    }
                     if (!reuse_candidate) {
                         // The token is still valid but the socket is dead
                         // (isAlive()/reset() failed). We already minted the
@@ -213,7 +234,10 @@ std::shared_ptr<Connection> ConnectionPool::acquire(const std::u16string& connSt
                     }
                 }
             } else {
-                reuse_candidate = candidate->isAlive() && candidate->reset();
+                if (candidate->isAlive()) {
+                    validation_attempted = true;
+                    reuse_candidate = candidate->reset(validation_timeout, autocommit);
+                }
             }
         } catch (const std::exception& ex) {
             LOG("Candidate connection validation failed: %s", ex.what());
@@ -232,10 +256,10 @@ std::shared_ptr<Connection> ConnectionPool::acquire(const std::u16string& connSt
             if (_current_size > 0) --_current_size;
         }
 
-        // If a rotated token was captured, reserve a slot and reopen with it
-        // immediately instead of churning through the remaining candidates
-        // (which hold the same stale token and would all be discarded anyway).
-        if (have_pending_token) {
+        // After a reset failure, open a replacement instead of spending another
+        // timeout on each idle socket. Token rotation likewise opens directly
+        // using the captured token.
+        if (have_pending_token || validation_attempted) {
             std::lock_guard<std::mutex> lock(_mutex);
             if (_current_size < _max_size) {
                 // Reserve the slot here but construct the Connection outside
@@ -246,11 +270,12 @@ std::shared_ptr<Connection> ConnectionPool::acquire(const std::u16string& connSt
                 needs_connect = true;
                 break;
             }
-            // Pool momentarily full; fall through and retry the loop. On the
-            // retry another near-expiry candidate may re-invoke the factory and
-            // overwrite pending_attrs/pending_expiry with a newer token. That
-            // needs a full pool AND a simultaneous rotation, is rare, and is
-            // harmless: we simply reopen with the most recently minted token.
+            if (validation_attempted) {
+                throw std::runtime_error(
+                    "ConnectionPool::acquire: pool size limit reached");
+            }
+            // A concurrent acquire reserved the slot freed by token rotation.
+            // Retry token comparison with another idle candidate.
         }
     }
 

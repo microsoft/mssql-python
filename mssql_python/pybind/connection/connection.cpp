@@ -6,6 +6,7 @@
 #include "utf_utils.h"
 #include <algorithm>
 #include <cstdio>
+#include <limits>
 #include <memory>
 #include <pybind11/pybind11.h>
 #include <regex>
@@ -173,6 +174,10 @@ void Connection::disconnect(bool rollbackBeforeDisconnect) {
                 for (const auto& handle : childHandles) {
                     handle->markImplicitlyFreed();
                 }
+                for (const auto& buffers : _cleanupState->failedBindingBuffers) {
+                    buffers->release();
+                }
+                _cleanupState->failedBindingBuffers.clear();
                 _childStatementHandles.clear();
                 _allocationsSinceCompaction = 0;
             }
@@ -248,21 +253,10 @@ void Connection::abandonDuringFinalization() noexcept {
     _dbcHandle.reset();
 }
 
-// TODO(microsoft): Add an exception class in C++ for error handling,
-// DB spec compliant
 void Connection::checkError(SQLRETURN ret) const {
     if (!SQL_SUCCEEDED(ret)) {
-        // Format: "SQLSTATE:XXXXX:<odbc_error_message>" — parsed by _raise_connection_error()
         ErrorInfo err = SQLCheckError_Wrap(SQL_HANDLE_DBC, _dbcHandle, ret);
-        std::string sqlState = err.sqlState;
-        std::string errorMsg = err.ddbcErrorMsg;
-        // Only add SQLSTATE prefix if we have a valid 5-character code
-        if (sqlState.length() == 5) {
-            ThrowStdException("SQLSTATE:" + sqlState + ":" + errorMsg);
-        } else {
-            // No valid SQLSTATE (e.g., SQL_INVALID_HANDLE) — throw clean error message
-            ThrowStdException(errorMsg);
-        }
+        throw NativeDatabaseError(err);
     }
 }
 
@@ -290,6 +284,8 @@ void Connection::clearResultMetadata(bool discardPendingRows) {
 
 void Connection::commit() {
     PERF_TIMER("Connection::commit");
+    _poolClean = false;
+    _poolSessionReset = false;
     if (!_dbcHandle) {
         ThrowStdException("Connection handle not allocated");
     }
@@ -307,6 +303,8 @@ void Connection::commit() {
 
 void Connection::rollback() {
     PERF_TIMER("Connection::rollback");
+    _poolClean = false;
+    _poolSessionReset = false;
     if (!_dbcHandle) {
         ThrowStdException("Connection handle not allocated");
     }
@@ -322,12 +320,22 @@ void Connection::rollback() {
     checkError(ret);
 }
 
-void Connection::setAutocommit(bool enable) {
+void Connection::setAutocommit(bool enable, bool force) {
     PERF_TIMER("Connection::setAutocommit");
+    if (!enable) {
+        _poolClean = false;
+        _poolSessionReset = false;
+    }
     if (!_dbcHandle) {
         ThrowStdException("Connection handle not allocated");
     }
     clearResultMetadata(true);
+    // Only successful native sanitation with no retained statement/raw handle
+    // aliases proves ON. A new login or _autocommit alone is not proof.
+    if (!force && enable && _dbcHandle->get() && _poolClean && !_poolProofDisabled) {
+        _autocommit = true;
+        return;
+    }
     SQLINTEGER value = enable ? SQL_AUTOCOMMIT_ON : SQL_AUTOCOMMIT_OFF;
     LOG("Setting autocommit=%d", enable);
     SQLRETURN ret;
@@ -340,7 +348,10 @@ void Connection::setAutocommit(bool enable) {
         ret = SQLSetConnectAttr_ptr(_dbcHandle->get(), SQL_ATTR_AUTOCOMMIT,
                                     reinterpret_cast<SQLPOINTER>(static_cast<SQLULEN>(value)), 0);
     }
-    checkError(ret);
+    if (!SQL_SUCCEEDED(ret)) {
+        _poolClean = false;
+        checkError(ret);
+    }
     if (value == SQL_AUTOCOMMIT_ON) {
         LOG("Autocommit enabled");
     } else {
@@ -358,12 +369,20 @@ bool Connection::getAutocommit() const {
     SQLINTEGER string_length;
     SQLRETURN ret = SQLGetConnectAttr_ptr(_dbcHandle->get(), SQL_ATTR_AUTOCOMMIT, &value,
                                           sizeof(value), &string_length);
-    checkError(ret);
+    if (!SQL_SUCCEEDED(ret)) {
+        _poolClean = false;
+        checkError(ret);
+    }
     return value == SQL_AUTOCOMMIT_ON;
 }
 
 SqlHandlePtr Connection::allocStatementHandle() {
     PERF_TIMER("Connection::allocStatementHandle");
+    // Invalidate before allocation (including failures), not by parsing SQL.
+    // Every execution/catalog/fetch path, including direct native calls, needs
+    // a statement handle. Retained handles also prevent re-establishing proof.
+    _poolClean = false;
+    _poolSessionReset = false;
     LOG("Allocating statement handle");
     // Keep the wrapper outside the lock scope: unwinding a failed registration
     // frees the statement through the same cleanup gate.
@@ -382,9 +401,7 @@ SqlHandlePtr Connection::allocStatementHandle() {
         if (!SQL_SUCCEEDED(ret)) {
             // Snapshot diagnostics before disconnect can overwrite/free the DBC.
             ErrorInfo err = SQLReadError(SQL_HANDLE_DBC, _dbcHandle->get(), ret);
-            ThrowStdException(err.sqlState.length() == 5
-                                  ? "SQLSTATE:" + err.sqlState + ":" + err.ddbcErrorMsg
-                                  : err.ddbcErrorMsg);
+            throw NativeDatabaseError(err);
         }
         stmtHandle = std::make_shared<SqlHandle>(static_cast<SQLSMALLINT>(SQL_HANDLE_STMT),
                                                 stmt, _cleanupState);
@@ -420,8 +437,20 @@ SqlHandlePtr Connection::allocStatementHandle() {
     return stmtHandle;
 }
 
-SQLRETURN Connection::setAttribute(SQLINTEGER attribute, py::object value) {
-    clearResultMetadata(attribute == SQL_ATTR_RESET_CONNECTION);
+SQLRETURN Connection::setAttribute(SQLINTEGER attribute, py::object value, bool& odbcCalled) {
+    odbcCalled = false;
+    _poolClean = false;
+    _poolSessionReset = false;
+    // A scalar login timeout only bounds connection establishment; it cannot
+    // execute user work or retain a deferred buffer. Keep all other attributes
+    // conservative, and never clear an earlier permanent invalidation.
+    const bool scalarLoginTimeout =
+        attribute == SQL_ATTR_LOGIN_TIMEOUT && PyLong_CheckExact(value.ptr());
+    if (!scalarLoginTimeout) {
+        _poolProofDisabled = true;
+    }
+    clearResultMetadata(attribute == SQL_ATTR_RESET_CONNECTION ||
+                        attribute == SQL_ATTR_AUTOCOMMIT);
     LOG("Setting SQL attribute=%d", attribute);
     // SQLPOINTER ptr = nullptr;
     // SQLINTEGER length = 0;
@@ -447,19 +476,35 @@ SQLRETURN Connection::setAttribute(SQLINTEGER attribute, py::object value) {
 
     if (py::isinstance<py::int_>(value)) {
         // Get the integer value
-        int64_t longValue = value.cast<int64_t>();
+        int64_t longValue;
+        try {
+            longValue = value.cast<int64_t>();
+        } catch (const py::cast_error&) {
+            _poolProofDisabled = true;
+            throw;
+        } catch (const py::error_already_set&) {
+            _poolProofDisabled = true;
+            throw;
+        }
+        if (scalarLoginTimeout &&
+            (longValue < 0 ||
+             static_cast<uint64_t>(longValue) > std::numeric_limits<SQLUINTEGER>::max())) {
+            _poolProofDisabled = true;
+        }
 
         SQLRETURN ret;
         {
             // Release the GIL around the ODBC call for consistency with the
             // other connection-attribute paths; some attributes can block.
             py::gil_scoped_release release;
+            odbcCalled = true;
             ret = SQLSetConnectAttr_ptr(
                 _dbcHandle->get(), attribute,
                 reinterpret_cast<SQLPOINTER>(static_cast<SQLULEN>(longValue)), SQL_IS_INTEGER);
         }
 
         if (!SQL_SUCCEEDED(ret)) {
+            _poolProofDisabled = true;
             LOG("Failed to set integer attribute=%d, ret=%d", attribute, ret);
         } else {
             LOG("Set integer attribute=%d successfully", attribute);
@@ -503,6 +548,7 @@ SQLRETURN Connection::setAttribute(SQLINTEGER attribute, py::object value) {
             SQLRETURN ret;
             {
                 py::gil_scoped_release release;
+                odbcCalled = true;
                 ret = SQLSetConnectAttr_ptr(_dbcHandle->get(), attribute, ptr, length);
             }
             if (!SQL_SUCCEEDED(ret)) {
@@ -557,6 +603,7 @@ SQLRETURN Connection::setAttribute(SQLINTEGER attribute, py::object value) {
             SQLRETURN ret;
             {
                 py::gil_scoped_release release;
+                odbcCalled = true;
                 ret = SQLSetConnectAttr_ptr(_dbcHandle->get(), attribute, ptr, length);
             }
             if (!SQL_SUCCEEDED(ret)) {
@@ -584,12 +631,28 @@ void Connection::applyAttrsBefore(const py::dict& attrs) {
             continue;
         }
 
-        // Apply all supported attributes
-        SQLRETURN ret = setAttribute(key, py::reinterpret_borrow<py::object>(item.second));
+        // Python injects the requested lease mode into attrs_before so pooled
+        // checkout can configure it under a bounded timeout. Unlike arbitrary
+        // attributes, this scalar is fully tracked and must not permanently
+        // disable the clean-connection proof.
+        const bool preservePoolProof =
+            key == SQL_ATTR_AUTOCOMMIT && PyLong_CheckExact(item.second.ptr());
+        const bool poolProofDisabled = _poolProofDisabled;
+        bool odbcCalled;
+        SQLRETURN ret = setAttribute(key, py::reinterpret_borrow<py::object>(item.second),
+                                    odbcCalled);
+        if (preservePoolProof) {
+            _poolProofDisabled = poolProofDisabled;
+        }
         if (!SQL_SUCCEEDED(ret)) {
             std::string attrName = std::to_string(key);
             std::string errorMsg = "Failed to set attribute " + attrName + " before connect";
-            ThrowStdException(errorMsg);
+            ErrorInfo error;
+            // Local validation/conversion failures leave previous DBC diagnostics intact.
+            if (odbcCalled) {
+                error = SQLCheckError_Wrap(SQL_HANDLE_DBC, _dbcHandle, ret);
+            }
+            throw NativeDatabaseError(error, errorMsg);
         }
     }
 }
@@ -604,73 +667,197 @@ bool Connection::isAlive() const {
     return SQL_SUCCEEDED(ret) && status == SQL_CD_FALSE;
 }
 
-bool Connection::reset() {
+bool Connection::reset(unsigned int timeoutSeconds, bool autocommit) {
     if (!_dbcHandle) {
         ThrowStdException("Connection handle not allocated");
     }
-    clearResultMetadata(true);
-    LOG("Resetting connection via SQL_ATTR_RESET_CONNECTION");
-    // NOTE: SQL_ATTR_RESET_CONNECTION is a pool-checkin reset: it asks the
-    // driver to wipe per-session state (temp tables, open cursors, SET
-    // options, etc.) on the next use. It does NOT tear down the underlying
-    // TCP/TLS connection nor the driver-side authentication context, and
-    // it does NOT discard the deferred connect attributes the driver has
-    // stashed (e.g., the SQL_COPT_SS_ACCESS_TOKEN pointer used to build
-    // the FedAuth Login7 packet). The driver may still dereference those
-    // pointers after this reset on Idle Connection Resiliency re-auth or
-    // a transparent reconnect, so the per-attribute buffers owned by this
-    // Connection (_attrStringBuffers / _attrBytesBuffers) are intentionally
-    // retained here. Clearing them would reintroduce issue #594 in a new
-    // form (UAF during silent reconnect).
-    SQLRETURN ret;
-    {
-        // Release the GIL around the ODBC call for consistency with the
-        // other connection-attribute paths; some attributes can block.
-        py::gil_scoped_release release;
-        ret = SQLSetConnectAttr_ptr(_dbcHandle->get(), SQL_ATTR_RESET_CONNECTION,
-                                    (SQLPOINTER)SQL_RESET_CONNECTION_YES, SQL_IS_INTEGER);
-    }
-    if (!SQL_SUCCEEDED(ret)) {
-        LOG("Failed to reset connection (ret=%d). Marking as dead.", ret);
+    if (_cleanupState->childFreeFailed) {
+        _poolClean = false;
+        _poolSessionReset = false;
+        LOG("Cannot reuse connection after a statement handle failed to free");
         return false;
     }
+    const bool sessionClean = _poolClean && _poolSessionReset && !_poolProofDisabled;
+    clearResultMetadata(true);
+    // Login and statement timeouts do not bound connection-attribute calls.
+    // Keep a finite connection timeout through reset and lease configuration;
+    // retain it on failure so discarding the candidate is bounded too (#854).
+    SQLULEN originalTimeout = 0;
+    SQLRETURN ret = SQLGetConnectAttr_ptr(_dbcHandle->get(), SQL_ATTR_CONNECTION_TIMEOUT,
+                                         &originalTimeout, 0, nullptr);
+    if (!SQL_SUCCEEDED(ret)) {
+        LOG("Failed to read pooled connection timeout (ret=%d). Marking as dead.", ret);
+        return false;
+    }
+    const SQLULEN validationTimeout = originalTimeout > 0
+        ? std::min(originalTimeout, static_cast<SQLULEN>(timeoutSeconds))
+        : static_cast<SQLULEN>(timeoutSeconds);
+    {
+        py::gil_scoped_release release;
+        ret = SQLSetConnectAttr_ptr(
+            _dbcHandle->get(), SQL_ATTR_CONNECTION_TIMEOUT,
+            reinterpret_cast<SQLPOINTER>(validationTimeout), SQL_IS_UINTEGER);
+    }
+    if (!SQL_SUCCEEDED(ret)) {
+        LOG("Failed to set pooled connection timeout (ret=%d). Marking as dead.", ret);
+        return false;
+    }
+    if (!sessionClean) {
+        LOG("Resetting connection via SQL_ATTR_RESET_CONNECTION");
+        // NOTE: SQL_ATTR_RESET_CONNECTION is a pool-checkin reset: it asks the
+        // driver to wipe per-session state (temp tables, open cursors, SET
+        // options, etc.) on the next use. It does NOT tear down the underlying
+        // TCP/TLS connection nor the driver-side authentication context, and
+        // it does NOT discard the deferred connect attributes the driver has
+        // stashed (e.g., the SQL_COPT_SS_ACCESS_TOKEN pointer used to build
+        // the FedAuth Login7 packet). The driver may still dereference those
+        // pointers after this reset on Idle Connection Resiliency re-auth or
+        // a transparent reconnect, so the per-attribute buffers owned by this
+        // Connection (_attrStringBuffers / _attrBytesBuffers) are intentionally
+        // retained here. Clearing them would reintroduce issue #594 in a new
+        // form (UAF during silent reconnect).
+        {
+            // Release the GIL around the ODBC call for consistency with the
+            // other connection-attribute paths; some attributes can block.
+            py::gil_scoped_release release;
+            ret = SQLSetConnectAttr_ptr(_dbcHandle->get(), SQL_ATTR_RESET_CONNECTION,
+                                        (SQLPOINTER)SQL_RESET_CONNECTION_YES, SQL_IS_INTEGER);
+        }
+        if (!SQL_SUCCEEDED(ret)) {
+            _poolClean = false;
+            LOG("Failed to reset connection (ret=%d). Marking as dead.", ret);
+            return false;
+        }
 
-    // SQL_ATTR_RESET_CONNECTION does NOT reset the transaction isolation level.
-    // Explicitly reset it to the default (SQL_TXN_READ_COMMITTED) to prevent
-    // isolation level settings from leaking between pooled connection usages.
-    LOG("Resetting transaction isolation level to READ COMMITTED");
+    }
+
+    // This both completes a pending session reset and gives proven-clean
+    // leases a bounded server round-trip before reuse.
+    LOG("Setting transaction isolation level to READ COMMITTED");
     {
         py::gil_scoped_release release;
         ret = SQLSetConnectAttr_ptr(_dbcHandle->get(), SQL_ATTR_TXN_ISOLATION,
                                     (SQLPOINTER)SQL_TXN_READ_COMMITTED, SQL_IS_INTEGER);
     }
     if (!SQL_SUCCEEDED(ret)) {
-        LOG("Failed to reset transaction isolation level (ret=%d). Marking as dead.", ret);
+        _poolClean = false;
+        LOG("Failed to set transaction isolation level (ret=%d). Marking as dead.", ret);
+        return false;
+    }
+    setAutocommit(autocommit, true);
+    {
+        py::gil_scoped_release release;
+        ret = SQLSetConnectAttr_ptr(
+            _dbcHandle->get(), SQL_ATTR_CONNECTION_TIMEOUT,
+            reinterpret_cast<SQLPOINTER>(originalTimeout), SQL_IS_UINTEGER);
+    }
+    if (!SQL_SUCCEEDED(ret)) {
+        _poolClean = false;
+        LOG("Failed to restore pooled connection timeout (ret=%d). Marking as dead.", ret);
         return false;
     }
 
+    // A retained child can finish cleanup while either attribute call releases the GIL.
+    if (_cleanupState->childFreeFailed) {
+        _poolClean = false;
+        _poolSessionReset = false;
+        LOG("Cannot reuse connection after a statement handle failed to free");
+        return false;
+    }
     updateLastUsed();
     return true;
 }
 
-void Connection::prepareForPool(bool transactionAlreadyRolledBack) {
+void Connection::prepareForPool() {
+    PERF_TIMER("Connection::prepareForPool");
     if (!_dbcHandle) {
         ThrowStdException("Connection handle not allocated");
     }
+    if (_cleanupState->childFreeFailed) {
+        ThrowStdException("Cannot pool connection after a statement handle failed to free");
+    }
+    if (_poolClean && !_poolProofDisabled) {
+        PERF_TIMER("Connection::prepareForPool::clean");
+        return;
+    }
 
-    // Explicit BEGIN TRANSACTION is valid while ODBC autocommit is on, but
-    // SQLEndTran does not end that transaction until the connection enters
-    // manual-commit mode.
-    if (getAutocommit()) {
-        setAutocommit(false);
+    _poolClean = false;
+    _poolSessionReset = false;
+    clearResultMetadata();
+    SQLRETURN ret;
+    std::optional<ErrorInfo> statementError;
+    bool sessionReset = false;
+    {
+        // One GIL release and metadata invalidation for the whole sequence.
+        // Do not trust Python mode/rollback hints: native callers and set_attr
+        // can change the state, and autocommit permits explicit BEGIN TRAN.
+        py::gil_scoped_release release;
+        PERF_TIMER("Connection::prepareForPool::sanitize");
+        SQLINTEGER mode = SQL_AUTOCOMMIT_OFF;
+        SQLINTEGER length = 0;
+        {
+            PERF_TIMER("Connection::prepareForPool::get_autocommit");
+            ret = SQLGetConnectAttr_ptr(_dbcHandle->get(), SQL_ATTR_AUTOCOMMIT,
+                                       &mode, sizeof(mode), &length);
+        }
+        if (SQL_SUCCEEDED(ret) && mode == SQL_AUTOCOMMIT_ON) {
+            // SQLEndTran is a no-op in autocommit mode, but SQL Server still
+            // permits an explicit BEGIN TRANSACTION. Schedule the driver's
+            // session reset first so states such as SET NOEXEC ON cannot suppress
+            // the rollback batch that triggers it.
+            PERF_TIMER("Connection::prepareForPool::rollback_autocommit");
+            ret = SQLSetConnectAttr_ptr(_dbcHandle->get(), SQL_ATTR_RESET_CONNECTION,
+                                        reinterpret_cast<SQLPOINTER>(SQL_RESET_CONNECTION_YES),
+                                        SQL_IS_INTEGER);
+            if (SQL_SUCCEEDED(ret)) {
+                SQLHANDLE statement = nullptr;
+                ret = SQLAllocHandle_ptr(SQL_HANDLE_STMT, _dbcHandle->get(), &statement);
+                if (SQL_SUCCEEDED(ret)) {
+                    // Checkout restores isolation. Doing so here is redundant
+                    // and rejects dedicated SQL pools that do not support READ COMMITTED.
+                    const std::u16string rollbackQuery =
+                        u"IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION";
+                    ret = SQLExecDirect_ptr(statement,
+                                            reinterpretU16stringAsSqlWChar(rollbackQuery), SQL_NTS);
+                    if (!SQL_SUCCEEDED(ret)) {
+                        statementError = SQLReadError(SQL_HANDLE_STMT, statement, ret);
+                    }
+                    SQLRETURN freeRet = SQLFreeHandle_ptr(SQL_HANDLE_STMT, statement);
+                    if (SQL_SUCCEEDED(ret) && !SQL_SUCCEEDED(freeRet)) {
+                        statementError = SQLReadError(SQL_HANDLE_STMT, statement, freeRet);
+                        ret = freeRet;
+                    }
+                    sessionReset = SQL_SUCCEEDED(ret);
+                }
+            }
+        } else if (SQL_SUCCEEDED(ret)) {
+            PERF_TIMER("Connection::prepareForPool::rollback_manual");
+            ret = SQLEndTran_ptr(SQL_HANDLE_DBC, _dbcHandle->get(), SQL_ROLLBACK);
+            // Never enable autocommit after a failed rollback: it could commit
+            // abandoned work. Manual mode can leave even an empty transaction open.
+            if (SQL_SUCCEEDED(ret)) {
+                PERF_TIMER("Connection::prepareForPool::autocommit_on");
+                ret = SQLSetConnectAttr_ptr(_dbcHandle->get(), SQL_ATTR_AUTOCOMMIT,
+                                            reinterpret_cast<SQLPOINTER>(SQL_AUTOCOMMIT_ON), 0);
+            }
+        }
     }
-    if (!transactionAlreadyRolledBack) {
-        rollback();
+    if (statementError) {
+        throw NativeDatabaseError(*statementError);
     }
-    // The SQL Server ODBC driver can leave an empty transaction visible after
-    // SQLEndTran while manual-commit mode remains enabled, so always park the
-    // physical connection in autocommit mode.
-    setAutocommit(true);
+    checkError(ret);
+    // A weak_ptr expires before its destructor finishes. Read the count before
+    // the failure latch so a completed destructor cannot hide a failed native free.
+    const bool noChildren = _cleanupState->childStatementCount == 0;
+    if (_cleanupState->childFreeFailed) {
+        ThrowStdException("Cannot pool connection after a statement handle failed to free");
+    }
+    _autocommit = true;
+    _poolSessionReset = sessionReset;
+    updateLastUsed();
+    // A native statement alias can execute again without another allocation,
+    // even in a later lease. All wrappers must finish cleanup before the fast path.
+    _poolClean = !_poolProofDisabled && noChildren;
 }
 
 void Connection::updateLastUsed() {
@@ -785,30 +972,47 @@ ConnectionHandle::~ConnectionHandle() {
     }
 }
 
-void ConnectionHandle::close(bool transactionAlreadyRolledBack) {
+void ConnectionHandle::close(bool rollbackBeforeDisconnect) {
     PERF_TIMER("ConnectionHandle::close");
     if (!_conn) {
         ThrowStdException("Connection object is not initialized");
     }
-    if (_usePool) {
-        try {
-            _conn->prepareForPool(transactionAlreadyRolledBack);
-        } catch (...) {
-            // Never retain a connection whose transaction state could not be
-            // sanitized. Discarding also releases this connection's reserved
-            // pool capacity. Preserve the original check-in error.
-            try {
-                ConnectionPoolManager::getInstance().discardConnection(_originPool, _conn);
-            } catch (...) {
+    try {
+        if (_usePool) {
+            _conn->prepareForPool();
+        } else {
+            // Preserve unpooled close semantics without doing pool sanitation.
+            if (rollbackBeforeDisconnect && !_conn->getAutocommit()) {
+                _conn->rollback();
             }
-            _conn = nullptr;
+            _conn->disconnect();
+        }
+    } catch (...) {
+        // A low-level unpooled close still allows the caller to recover from
+        // SQLDisconnect failure using the existing connection and children.
+        if (!_usePool && !rollbackBeforeDisconnect) {
             throw;
         }
+        // Never retain a connection whose transaction state could not be
+        // sanitized. Release capacity and preserve the original cleanup error.
+        try {
+            ConnectionPoolManager::getInstance().discardConnection(_originPool, _conn);
+        } catch (...) {
+        }
+        _conn = nullptr;
+        throw;
+    }
+    if (_usePool) {
         ConnectionPoolManager::getInstance().returnConnection(_poolKey, _originPool, _conn);
-    } else {
-        _conn->disconnect();
     }
     _conn = nullptr;
+}
+
+void ConnectionHandle::discard() {
+    if (_conn) {
+        ConnectionPoolManager::getInstance().discardConnection(_originPool, _conn);
+        _conn = nullptr;
+    }
 }
 
 void ConnectionHandle::commit() {
@@ -853,6 +1057,12 @@ SqlHandlePtr ConnectionHandle::allocStatementHandle() {
 }
 
 py::object Connection::getInfo(SQLUSMALLINT infoType) const {
+    _poolClean = false;
+    _poolSessionReset = false;
+    if (infoType == SQL_DRIVER_HDBC || infoType == SQL_DRIVER_HENV ||
+        infoType == SQL_DRIVER_HSTMT || infoType == SQL_DRIVER_HLIB) {
+        _poolProofDisabled = true;
+    }
     if (!_dbcHandle) {
         ThrowStdException("Connection handle not allocated");
     }
@@ -909,6 +1119,21 @@ py::object Connection::getInfo(SQLUSMALLINT infoType) const {
     return result;
 }
 
+SQLULEN ConnectionHandle::getConnectionTimeout() const {
+    if (!_conn) {
+        ThrowStdException("Connection object is not initialized");
+    }
+    SQLULEN timeout = 0;
+    const auto& handle = _conn->getDbcHandle();
+    SQLRETURN ret = SQLGetConnectAttr_ptr(handle->get(), SQL_ATTR_CONNECTION_TIMEOUT,
+                                         &timeout, 0, nullptr);
+    if (!SQL_SUCCEEDED(ret)) {
+        ErrorInfo error = SQLCheckError_Wrap(SQL_HANDLE_DBC, handle, ret);
+        throw NativeDatabaseError(error, "Failed to read connection timeout: " + error.ddbcErrorMsg);
+    }
+    return timeout;
+}
+
 py::object ConnectionHandle::getInfo(SQLUSMALLINT infoType) const {
     PERF_TIMER("ConnectionHandle::getInfo");
     if (!_conn) {
@@ -924,26 +1149,22 @@ void ConnectionHandle::setAttr(int attribute, py::object value) {
     }
 
     // Use existing setAttribute with better error handling
-    SQLRETURN ret = _conn->setAttribute(static_cast<SQLINTEGER>(attribute), value);
+    bool odbcCalled;
+    SQLRETURN ret = _conn->setAttribute(static_cast<SQLINTEGER>(attribute), value, odbcCalled);
     if (!SQL_SUCCEEDED(ret)) {
-        // Get detailed error information from ODBC
+        const std::string errorMsg =
+            "Failed to set connection attribute " + std::to_string(attribute);
+        ErrorInfo errorInfo;
         try {
-            ErrorInfo errorInfo = SQLCheckError_Wrap(SQL_HANDLE_DBC, _conn->getDbcHandle(), ret);
-
-            std::string errorMsg =
-                "Failed to set connection attribute " + std::to_string(attribute);
-            if (!errorInfo.ddbcErrorMsg.empty()) {
-                errorMsg += ": " + errorInfo.ddbcErrorMsg;
+            if (odbcCalled) {
+                errorInfo = SQLCheckError_Wrap(SQL_HANDLE_DBC, _conn->getDbcHandle(), ret);
             }
-
-            LOG("Connection setAttribute failed: %s", errorMsg.c_str());
-            ThrowStdException(errorMsg);
-        } catch (...) {
-            // Fallback to generic error if detailed error retrieval fails
-            std::string errorMsg =
-                "Failed to set connection attribute " + std::to_string(attribute);
-            LOG("Connection setAttribute failed: %s", errorMsg.c_str());
+        } catch (const std::runtime_error& error) {
+            LOG("Connection setAttribute diagnostics failed: %s", error.what());
             ThrowStdException(errorMsg);
         }
+        LOG("Connection setAttribute failed: %s", errorMsg.c_str());
+        // Retain the legacy generic message and Python exception selection.
+        throw NativeDatabaseError(errorInfo, errorMsg);
     }
 }

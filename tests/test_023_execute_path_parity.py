@@ -380,23 +380,50 @@ def test_executemany_auto_text_uses_wide_array_binding(cursor, monkeypatch):
     from mssql_python import ddbc_bindings
 
     values = ["x" * 4000, "\u0800" * 2000]
-    expected = []
-    for value in values:
-        cursor.execute("SELECT CONVERT(NVARCHAR(MAX), CONVERT(VARCHAR(MAX), ?))", [value])
-        expected.append(cursor.fetchone()[0])
     cursor.execute("CREATE TABLE #auto_wide_array (value NVARCHAR(MAX))")
     array_calls = []
     execute_many = ddbc_bindings.SQLExecuteMany
 
     def capture_array_binding(*args):
-        array_calls.append((args[3][0].paramCType, args[3][0].columnSize))
+        array_calls.append((args[3][0].paramCType, args[3][0].paramSQLType, args[3][0].columnSize))
         return execute_many(*args)
 
     monkeypatch.setattr(ddbc_bindings, "SQLExecuteMany", capture_array_binding)
     cursor.executemany("INSERT INTO #auto_wide_array (value) VALUES (?)", [(v,) for v in values])
-    assert array_calls == [(ddbc_sql_const.SQL_C_WCHAR.value, 4000)]
+    assert array_calls == [
+        (
+            ddbc_sql_const.SQL_C_WCHAR.value,
+            ddbc_sql_const.SQL_WVARCHAR.value,
+            4000,
+        )
+    ]
     cursor.execute("SELECT value FROM #auto_wide_array ORDER BY DATALENGTH(value) DESC")
-    assert [row[0] for row in cursor.fetchall()] == expected
+    assert [row[0] for row in cursor.fetchall()] == values
+
+
+@pytest.mark.parametrize("binary_type", [bytes, bytearray], ids=["bytes", "bytearray"])
+@pytest.mark.parametrize("unicode_first", [False, True], ids=["ascii-sample", "unicode-sample"])
+def test_executemany_auto_mixed_text_bytes_uses_scalar_binding(
+    db_connection, monkeypatch, binary_type, unicode_first
+):
+    from mssql_python import ddbc_bindings
+
+    def unexpected_array_binding(*args):
+        pytest.fail("Mixed text and bytes reached the native array binder")
+
+    monkeypatch.setattr(ddbc_bindings, "SQLExecuteMany", unexpected_array_binding)
+    values = ["ascii", binary_type(b"x"), "\u00e9"]
+    if unicode_first:
+        values.reverse()
+    table = f"#auto_mixed_text_bytes_{uuid.uuid4().hex}"
+    with db_connection.cursor() as cur:
+        cur.execute(f"CREATE TABLE {table} (id INT, value NVARCHAR(MAX))")
+        cur.executemany(f"INSERT INTO {table} VALUES (?, ?)", list(enumerate(values)))
+        cur.execute(f"SELECT value FROM {table} ORDER BY id")
+        expected = ["ascii", "x", "\u00e9"]
+        if unicode_first:
+            expected.reverse()
+        assert [row[0] for row in cur.fetchall()] == expected
 
 
 def test_executemany_ignores_str_subclass_encode_override(cursor):

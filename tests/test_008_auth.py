@@ -838,6 +838,7 @@ class TestManagedIdentity:
         self.connection.connection_str, OR if Connection stops persisting
         _credential_kwargs."""
         from mssql_python.cursor import Cursor
+        from mssql_python._query_operation import QueryConnectionState, QuerySlot
 
         client_id = "11111111-2222-3333-4444-555555555555"
 
@@ -851,8 +852,11 @@ class TestManagedIdentity:
         mock_conn._credential_kwargs = {"client_id": client_id}
         mock_conn._token_provider = None
         mock_conn._is_connected = True
+        mock_conn.closed = False
+        mock_conn._query_state = QueryConnectionState()
 
         cursor = Cursor.__new__(Cursor)
+        cursor._query_slot = QuerySlot()
         cursor._connection = mock_conn
         cursor._timeout = 0
         cursor.closed = False
@@ -877,7 +881,7 @@ class TestManagedIdentity:
         mock_pycore_module.PyCoreConnection = lambda ctx, **kwargs: mock_pycore_conn
 
         with (
-            patch.dict("sys.modules", {"mssql_py_core": mock_pycore_module}),
+            patch.dict("sys.modules", {"mssql_py_core.mssql_py_core": mock_pycore_module}),
             patch("mssql_python.auth.AADAuth.get_raw_token", side_effect=fake_get_raw_token),
         ):
             cursor.bulkcopy("dbo.test_table", [(1, "row")], timeout=10)
@@ -1554,19 +1558,33 @@ class TestCustomTokenProviderConnect:
     @patch("mssql_python.connection.ddbc_bindings.Connection")
     def test_concurrent_connections_with_same_token_provider(self, mock_ddbc_conn):
         """Concurrent connect() calls with one token provider should succeed."""
-        mock_ddbc_conn.return_value = MagicMock()
-        mock_cred = MagicMock()
-        mock_cred.get_token.return_value = MagicMock(token=SAMPLE_TOKEN)
+
+        def create_native_connection(*_args, **_kwargs):
+            native_connection = MagicMock()
+            native_connection.get_autocommit.return_value = True
+            return native_connection
+
+        mock_ddbc_conn.side_effect = create_native_connection
+        token_calls = []
+        token_lock = threading.Lock()
+
+        class SharedCredential:
+            def get_token(self, scope):
+                with token_lock:
+                    token_calls.append(scope)
+                return _AccessToken(SAMPLE_TOKEN, 1893456000)
+
+        credential = SharedCredential()
         from mssql_python import connect
 
         def _open_and_close(i):
-            conn = connect(f"Server=test{i};Database=testdb", token_provider=mock_cred)
-            conn.close()
+            with connect(f"Server=test{i};Database=testdb", token_provider=credential) as conn:
+                assert conn._token_provider is credential
 
         with ThreadPoolExecutor(max_workers=8) as executor:
             list(executor.map(_open_and_close, range(20)))
 
-        assert mock_cred.get_token.call_count == 20
+        assert token_calls == [_SQL_SCOPE] * 20
 
 
 class TestTokenProviderValidation:

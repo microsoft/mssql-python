@@ -39,6 +39,24 @@ TASK_NAMES = {
     "cte": "Common table expression queries",
     "lob_varchar_256k_fetchall": "256 KiB VARCHAR(MAX) / fetchall()",
     "scalar_fetchval": "10,000 scalar values / fetchval() (debug disabled)",
+    "output_converter_fetchall": "10,000 output-converted rows / fetchall()",
+    "output_converter_fetchmany1000": "10,000 output-converted rows / fetchmany(1000)",
+    "fetchmany_one_text": "10,000 INT/NVARCHAR rows / fetchmany(1)",
+    "text_conversion_ascii_fetchall": "5,000 x 8 VARCHAR(8000) / ASCII to UTF-16",
+    "text_conversion_cp1252_fetchall": "5,000 x 8 VARCHAR(8000) / CP1252 to UTF-16",
+    "text_conversion_utf8_fetchall": "5,000 x 8 VARCHAR(8000) / UTF-8 to UTF-16 (astral)",
+    "text_conversion_nvarchar_fetchall": "5,000 x 8 NVARCHAR(4000) / UTF-16 (astral)",
+    "text_conversion_ascii_short_fetchall": "5,000 x 8 VARCHAR(8000) / short ASCII",
+    "text_conversion_ascii_full_fetchall": "200 x 8 VARCHAR(8000) / full-width ASCII",
+    "text_conversion_cp1252_short_fetchall": "5,000 x 8 VARCHAR(8000) / short CP1252",
+    "text_conversion_cp1252_full_fetchall": "200 x 8 VARCHAR(8000) / full-width CP1252",
+    "text_conversion_utf8_short_fetchall": "5,000 x 8 VARCHAR(8000) / short UTF-8 (astral)",
+    "text_conversion_utf8_full_fetchall": "200 x 8 VARCHAR(8000) / full-width UTF-8 (astral)",
+    "text_conversion_nvarchar_short_fetchall": "5,000 x 8 NVARCHAR(4000) / short UTF-16 (astral)",
+    "text_conversion_nvarchar_full_fetchall": "200 x 8 NVARCHAR(4000) / full-width UTF-16 (astral)",
+    "narrow_varchar_fetchall": "200,000 x 8 VARCHAR(32) / fetchall control",
+    "narrow_integer_fetchall": "200,000 x 8 INT / fetchall control",
+    "row_to_dict": "10,000 rows x 32 columns / dict(row._mapping) (warm)",
 }
 CASES = tuple(TASK_NAMES)
 MAX_BYTES = 8 * 1024 * 1024
@@ -104,6 +122,29 @@ def text(value, limit=160):
     if any(ord(char) < 32 or ord(char) == 127 for char in value):
         raise ValueError("Control character in performance label")
     return value
+
+
+def validate_phases(name, layer, stats):
+    """Only warm row-to-dictionary conversion may have no native instrumentation."""
+    if (
+        not isinstance(stats, dict)
+        or len(stats) > 300
+        or (layer == "cpp" and not stats and name != "row_to_dict")
+    ):
+        raise ValueError("Missing or oversized profiling data")
+    for label, counter in stats.items():
+        text(label)
+        if not label.startswith("ddbc::" if layer == "cpp" else "py::"):
+            raise ValueError("Invalid phase prefix")
+        if not isinstance(counter, dict):
+            raise ValueError("Invalid phase counter")
+        calls = counter["calls"]
+        if type(calls) is not int or not 1 <= calls <= 100_000_000:
+            raise ValueError("Invalid call count")
+        for field in ("total_us", "min_us", "max_us"):
+            number(counter[field])
+        if not counter["min_us"] <= counter["max_us"] <= counter["total_us"]:
+            raise ValueError("Inconsistent phase totals")
 
 
 def validate(report, build_id=None, head=None, source=None, base=None):
@@ -186,26 +227,7 @@ def _validate(report, build_id=None, head=None, source=None, base=None):
                     raise ValueError(f"Workload changed for {name}")
                 work[name] = identity
                 for layer in ("cpp", "py"):
-                    stats = scenario[layer]
-                    if (
-                        not isinstance(stats, dict)
-                        or len(stats) > 300
-                        or (layer == "cpp" and not stats)
-                    ):
-                        raise ValueError("Missing or oversized profiling data")
-                    for label, counter in stats.items():
-                        text(label)
-                        if not label.startswith("ddbc::" if layer == "cpp" else "py::"):
-                            raise ValueError("Invalid phase prefix")
-                        if not isinstance(counter, dict):
-                            raise ValueError("Invalid phase counter")
-                        calls = counter["calls"]
-                        if type(calls) is not int or not 1 <= calls <= 100_000_000:
-                            raise ValueError("Invalid call count")
-                        for field in ("total_us", "min_us", "max_us"):
-                            number(counter[field])
-                        if not counter["min_us"] <= counter["max_us"] <= counter["total_us"]:
-                            raise ValueError("Inconsistent phase totals")
+                    validate_phases(name, layer, scenario[layer])
     return report
 
 

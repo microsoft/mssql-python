@@ -22,10 +22,14 @@ Functions:
 from mssql_python.exceptions import InterfaceError, ProgrammingError, DatabaseError
 import mssql_python
 import decimal
+import os
 import sys
 import pytest
 import time
-from mssql_python import connect, Connection, SQL_CHAR, SQL_WCHAR
+from mssql_python import connect, Connection, ConnectionStringParseError, SQL_CHAR, SQL_WCHAR
+from mssql_python.connection_string_parser import _ConnectionStringParser
+from unittest.mock import Mock, patch
+from uuid import uuid4
 
 # Import all exception classes for testing
 from mssql_python.exceptions import (
@@ -44,6 +48,142 @@ import struct
 from datetime import datetime, timedelta, timezone
 from mssql_python.constants import ConstantsDDBC
 from conftest import is_azure_sql_connection
+
+
+@pytest.mark.parametrize(
+    "name", ["a" * 116, "\U0001f600" * 58, "a" * 114 + "\U0001f600", "e\u0301" * 58]
+)
+def test_app_length_uses_utf16_units_without_echoing_input(name):
+    with pytest.raises(ValueError, match="128 UTF-16.*provided: 129") as error:
+        Connection._construct_connection_string(
+            None, "Server=test-server.example.invalid", APP=name
+        )
+    assert name not in str(error.value)
+
+
+@pytest.mark.skipif(not os.getenv("DB_CONNECTION_STRING"), reason="Requires SQL Server")
+@pytest.mark.parametrize(
+    ("suffix", "kwargs", "name"),
+    [
+        ("", {}, None),
+        (";aPp=Orders", {}, "Orders"),
+        (";Application Name=Orders", {}, "Orders"),
+        (";APP=First;Application Name=Second", {}, "First"),
+        (";Application Name=First;APP=Second", {}, "First"),
+        (";APP=First", {"Application Name": "Second"}, "Second"),
+        (";Application Name=First", {"app": "Second"}, "Second"),
+        ("", {"APP": "First", "Application Name": "Second"}, "Second"),
+        (";APP={ Orders }", {}, " Orders "),
+        (";APP={\t}", {}, "\t"),
+        (";APP={ }", {}, " "),
+        ("", {"APP": "Orders\t"}, "Orders\t"),
+        ("", {"APP": "Orders;Database=other}{"}, "Orders;Database=other}{"),
+        ("", {"APP": "MSSQL-Python|Orders"}, "MSSQL-Python|Orders"),
+        ("", {"APP": "a" * 115}, "a" * 115),
+        ("", {"APP": "\u4e2d" * 115}, "\u4e2d" * 115),
+        ("", {"APP": "\U0001f600" * 57 + "x"}, "\U0001f600" * 57 + "x"),
+        (";  aPpLiCaTiOn NaMe =Orders", {}, "Orders"),
+        (";APP={}}}", {}, "}"),
+        (";APP={" + "}" * 230 + "}", {}, "}" * 115),
+        ("", {"APP": "a" * 113 + "\U0001f600"}, "a" * 113 + "\U0001f600"),
+        ("", {"APP": "e\u0301" * 57 + "x"}, "e\u0301" * 57 + "x"),
+        (";APP=" + "a" * 116, {"APP": "Orders"}, "Orders"),
+        (";APP=Orders;Application Name=" + "a" * 116, {}, "Orders"),
+        ("", {"Application Name": "First", "APP": "Second"}, "Second"),
+        ("", {"APP": "", "Application Name": "Orders"}, "Orders"),
+    ],
+)
+def test_application_name_construction_and_server_value(conn_str, suffix, kwargs, name):
+    expected = "MSSQL-Python" if name is None else f"MSSQL-Python|{name}"
+    built, params = Connection._construct_connection_string(
+        None, "Server=test-server.example.invalid;Database=test" + suffix, **kwargs
+    )
+    parsed = _ConnectionStringParser()._parse(built)
+    assert params["APP"] == parsed["app"] == expected
+    assert parsed["database"] == "test"
+    assert list(parsed).count("app") == 1
+    with connect(conn_str + suffix, **kwargs) as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT APP_NAME(), program_name FROM sys.dm_exec_sessions "
+                "WHERE session_id = @@SPID"
+            )
+            assert tuple(cursor.fetchone()) == (expected, expected)
+
+
+@pytest.mark.parametrize(
+    ("suffix", "kwargs", "error"),
+    [
+        (";APP=", {}, ConnectionStringParseError),
+        (";Application Name={}", {}, ConnectionStringParseError),
+        (";APP=First;app=Second", {}, ConnectionStringParseError),
+        ("", {"APP": ""}, ValueError),
+        ("", {"APP": None}, TypeError),
+        ("", {"Application Name": 42}, TypeError),
+        ("", {"APP": b"Orders"}, TypeError),
+        ("", {"APP": "x" * 116}, ValueError),
+        (";APP=" + "\U0001f600" * 58, {}, ValueError),
+        (";APP=\ud800", {}, ValueError),
+        ("", {"APP": "\udfff"}, ValueError),
+        (";APP=Orders\x00other", {}, InterfaceError),
+        ("", {"APP": "Orders\x00other"}, InterfaceError),
+        (";APP=   ", {}, ConnectionStringParseError),
+        (";APP={Orders", {}, ConnectionStringParseError),
+        (";Application Name=First;APPLICATION NAME=Second", {}, ConnectionStringParseError),
+        (";APP=", {"APP": "Orders"}, ConnectionStringParseError),
+        (";APP=Orders", {"APP": ""}, ValueError),
+        (";APP=Orders", {"Application Name": "a" * 116}, ValueError),
+        ("", {"APP": True}, TypeError),
+        ("", {"Application Name": ["Orders"]}, TypeError),
+        ("", {"Application Name": "Orders\x00other"}, InterfaceError),
+    ],
+)
+def test_invalid_app_fails_before_authentication_or_native_connect(suffix, kwargs, error):
+    credential = Mock()
+    with patch("mssql_python.connection.ddbc_bindings.Connection") as native:
+        with pytest.raises(error):
+            connect(
+                "Server=test-server.example.invalid" + suffix, token_provider=credential, **kwargs
+            )
+        credential.get_token.assert_not_called()
+        native.assert_not_called()
+
+
+@pytest.mark.skipif(not os.getenv("DB_CONNECTION_STRING"), reason="Requires SQL Server")
+@pytest.mark.parametrize("arrow", [False, True], ids=["rows", "arrow"])
+@pytest.mark.parametrize("name", [None, "Orders;West}", "\U0001f600" * 57 + "x"])
+def test_bulkcopy_login_name_is_inherited(conn_str, arrow, name):
+    pytest.importorskip("mssql_py_core", exc_type=ImportError)
+    if arrow:
+        pa = pytest.importorskip("pyarrow")
+    table = "app_name_" + uuid4().hex
+    kwargs = {} if name is None else {"APP": name}
+    with connect(conn_str, autocommit=True, **kwargs) as conn:
+        with conn.cursor() as cursor:
+            # Defaults are evaluated by the server on the bulk-copy session.
+            cursor.execute(
+                f"CREATE TABLE [{table}] (id INT NOT NULL, "
+                "app NVARCHAR(128) DEFAULT APP_NAME(), login_spid INT DEFAULT @@SPID)"
+            )
+            try:
+                cursor.execute("SELECT @@SPID")
+                parent_spid = cursor.fetchone()[0]
+                if arrow:
+                    result = cursor.bulkcopy_arrow(
+                        table,
+                        pa.table({"id": pa.array([1], type=pa.int32())}),
+                        column_mappings=["id"],
+                    )
+                else:
+                    result = cursor.bulkcopy(table, [(1,)], column_mappings=["id"])
+                assert result["rows_copied"] == 1
+                cursor.execute(f"SELECT app, login_spid FROM [{table}]")
+                row = cursor.fetchone()
+                expected = "MSSQL-Python" if name is None else f"MSSQL-Python|{name}"
+                assert row[0] == expected
+                assert row[1] != parent_spid
+            finally:
+                cursor.execute(f"DROP TABLE [{table}]")
 
 
 @pytest.fixture(autouse=True)

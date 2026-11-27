@@ -21,6 +21,8 @@ struct FetchColumnMetadata {
 struct ResultMetadata {
     std::vector<FetchColumnMetadata> columns;
     bool namesValidated = false;
+    // DDBCSQLGetData may publish only a prefix, which is not a result-set count.
+    bool completeResult = false;
 };
 
 // Native-only ownership: cleanup/cancellation may run without the GIL. No ODBC,

@@ -10,6 +10,9 @@ from mssql_python import OperationalError, ProgrammingError
 async def test_properties_and_setinputsizes_use_py_core_async_cursor(async_connection):
     cursor = async_connection.cursor()
     try:
+        assert cursor.closed is False
+        with pytest.raises(AttributeError):
+            cursor.closed = True
         assert cursor.timeout == async_connection.timeout
         assert cursor.description is None
         assert cursor.rowcount == -1
@@ -33,7 +36,67 @@ async def test_close_is_idempotent(async_connection):
     cursor = async_connection.cursor()
 
     assert await cursor.close() is None
+    assert cursor.closed is True
     assert await cursor.close() is None
+    assert cursor.closed is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("use_context_manager", (False, True))
+async def test_cursor_closed_reflects_parent_connection(async_connection, use_context_manager):
+    cursor = async_connection.cursor()
+    assert cursor.closed is False
+
+    if use_context_manager:
+        async with async_connection:
+            assert cursor.closed is False
+    else:
+        await async_connection.close()
+
+    assert cursor.closed is True
+    assert await cursor.close() is None
+    assert cursor.closed is True
+
+
+@pytest.mark.asyncio
+async def test_nextset_tracks_rowcount_and_description_per_result(async_connection):
+    cursor = async_connection.cursor()
+    try:
+        await cursor.execute(
+            "SET NOCOUNT OFF; DECLARE @values TABLE (value INT); "
+            "INSERT INTO @values VALUES (1), (2); "
+            "SELECT value FROM @values ORDER BY value; "
+            "UPDATE @values SET value = value + 1; "
+            "SELECT value AS empty_value FROM @values WHERE 1 = 0;"
+        )
+        assert cursor.description is None
+        assert cursor.rowcount == 2
+
+        assert await cursor.nextset() is True
+        assert cursor.description is not None
+        assert cursor.description[0][0] == "value"
+        assert cursor.rowcount == -1
+        assert await cursor.fetchone() == [1]
+        assert cursor.rowcount == 1
+
+        assert await cursor.nextset() is True
+        assert cursor.description is None
+        assert cursor.rowcount == 2
+
+        assert await cursor.nextset() is True
+        assert cursor.description is not None
+        assert cursor.description[0][0] == "empty_value"
+        assert cursor.rowcount == -1
+        assert await cursor.fetchall() == []
+        assert cursor.rowcount == 0
+
+        assert await cursor.nextset() is False
+        assert cursor.description is None
+        assert cursor.rowcount == -1
+        assert await cursor.nextset() is False
+        assert cursor.closed is False
+    finally:
+        await cursor.close()
 
 
 @pytest.mark.asyncio
@@ -45,6 +108,8 @@ async def test_close_clears_cached_fetch_rowcount(async_connection):
 
     await cursor.close()
 
+    assert cursor.closed is True
+    assert cursor.description is None
     assert cursor.rowcount == -1
 
 
@@ -93,6 +158,7 @@ async def test_interrupted_close_retires_result_before_releasing_fetch(
                 await close_task
             assert caught.value is close_error
 
+        assert cursor.closed is True
         assert cursor.description is None
         assert cursor.rowcount == native_cursor.rowcount
         assert getattr(cursor, "_result_generation") > previous_generation
@@ -137,6 +203,7 @@ async def test_close_call_time_rejection_preserves_result(
             with pytest.raises(public_error, match=message):
                 await cursor.close()
 
+        assert cursor.closed is False
         assert cursor.description is previous_description
         assert getattr(cursor, "_result_generation") == previous_generation
         assert cursor.rowcount == 1

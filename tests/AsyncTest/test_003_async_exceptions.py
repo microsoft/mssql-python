@@ -36,6 +36,8 @@ def test_translates_each_native_dbapi_exception(name):
     assert isinstance(translated, getattr(public_exceptions, name))
     assert translated.driver_error == "Async operation failed"
     assert translated.ddbc_error == "native failure"
+    assert translated.sqlstate is None
+    assert translated.native_error is None
 
 
 def test_translation_normalizes_native_detail_as_backend_error():
@@ -117,6 +119,16 @@ def test_translation_context_preserves_native_error_as_cause():
             raise native_error
 
     assert caught.value.__cause__ is native_error
+
+
+@pytest.mark.parametrize("native_type", [RuntimeError, mssql_py_core.InterfaceError])
+def test_busy_connection_translation_preserves_public_contract(native_type):
+    native_error = native_type("Connection is busy with another cursor operation")
+    with pytest.raises(public_exceptions.OperationalError) as caught:
+        with translate_py_core_exceptions():
+            raise native_error
+    assert caught.value.__cause__ is native_error
+    assert caught.value.ddbc_error == str(native_error)
 
 
 @pytest.mark.asyncio
@@ -305,6 +317,61 @@ async def test_executemany_integrity_error_reports_row_and_preserves_partial_pro
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("use_prepare", (False, True))
+@pytest.mark.parametrize("batch", (False, True))
+@pytest.mark.parametrize("supplementary", (False, True))
+async def test_string_truncation_diagnostics_partial_progress_and_recovery(
+    async_cursor, use_prepare, batch, supplementary
+):
+    value = "\U0001f600" * 3 if supplementary else "abcdef"
+    await async_cursor.execute(
+        "CREATE TABLE #async_truncation (id INT, value NVARCHAR(5))", use_prepare=False
+    )
+    try:
+        with pytest.raises(
+            (public_exceptions.DataError, public_exceptions.OperationalError)
+        ) as raised:
+            if batch:
+                await async_cursor.executemany(
+                    "INSERT INTO #async_truncation VALUES (?, ?)",
+                    [(1, "ok"), (2, value), (3, "later")],
+                    use_prepare=use_prepare,
+                )
+            else:
+                await async_cursor.execute(
+                    "INSERT INTO #async_truncation VALUES (?, ?)",
+                    2,
+                    value,
+                    use_prepare=use_prepare,
+                )
+        error = cast(Any, raised.value)
+        native_decode_failure = (
+            supplementary
+            and isinstance(error, public_exceptions.OperationalError)
+            and "invalid utf-16: lone surrogate found" in str(error)
+            and not getattr(error, "sql_errors", None)
+        )
+        if not native_decode_failure:
+            assert isinstance(error, public_exceptions.DataError)
+            diagnostics = getattr(error, "sql_errors", [])
+            assert diagnostics
+            assert any(item["number"] in (8152, 2628) for item in diagnostics)
+        assert error.__cause__ is not None
+        await async_cursor.execute("SELECT id, value FROM #async_truncation ORDER BY id")
+        assert [tuple(row) for row in await async_cursor.fetchall()] == (
+            [(1, "ok")] if batch else []
+        )
+        await async_cursor.execute("INSERT INTO #async_truncation VALUES (4, N'new')")
+        assert async_cursor.rowcount == 1
+        await async_cursor.execute("SELECT value FROM #async_truncation WHERE id = 4")
+        assert tuple(await async_cursor.fetchone()) == ("new",)
+        if native_decode_failure:
+            pytest.xfail("py-core truncation diagnostic decoder rejects split UTF-16 surrogate")
+    finally:
+        await async_cursor.execute("DROP TABLE IF EXISTS #async_truncation", use_prepare=False)
+
+
+@pytest.mark.asyncio
 async def test_timeout_is_operational_error_and_cursor_is_reusable(async_connection_string):
     connection = await _AsyncConnection.connect(async_connection_string)
     connection.timeout = 1
@@ -330,7 +397,7 @@ async def test_busy_connection_is_operational_error(async_connection):
         with pytest.raises(public_exceptions.OperationalError) as caught:
             await blocked_cursor.execute("SELECT 3")
 
-        assert isinstance(caught.value.__cause__, RuntimeError)
+        assert isinstance(caught.value.__cause__, (RuntimeError, mssql_py_core.InterfaceError))
         await owning_cursor.close()
         assert await blocked_cursor.execute("SELECT 3") is blocked_cursor
     finally:
