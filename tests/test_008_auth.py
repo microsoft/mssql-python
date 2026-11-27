@@ -77,7 +77,26 @@ def test_empty_access_token_rejected_before_pool_checkout(conn_str, route, token
     _run_access_token_probe(conn_str, "pooled_" + route, token, True)
 
 
-def _run_access_token_probe(conn_str, route, token, malformed):
+@pytest.mark.parametrize("route", ["native", "pooled_native"])
+@pytest.mark.parametrize("token", ["not-binary", 1256, None], ids=["str", "int", "none"])
+def test_native_non_binary_access_token_rejected_before_checkout(conn_str, route, token):
+    """Bypass Python's type guard and exercise native rejection before acquisition."""
+    _run_access_token_probe(
+        conn_str,
+        route,
+        token,
+        True,
+        expected_error="SQL_COPT_SS_ACCESS_TOKEN must be supplied as bytes or bytearray.",
+    )
+
+
+def _run_access_token_probe(
+    conn_str,
+    route,
+    token,
+    malformed,
+    expected_error="Invalid SQL_COPT_SS_ACCESS_TOKEN structure",
+):
     if not conn_str:
         pytest.skip("DB_CONNECTION_STRING is required for native token probes")
     pooled = route.startswith("pooled_")
@@ -131,7 +150,7 @@ def _run_access_token_probe(conn_str, route, token, malformed):
                     native_string, pooled, {{}} if factory else attrs, "", factory
                 )
         except (ms.Error, ms.Warning, RuntimeError) as exc:
-            validation_error = "Invalid SQL_COPT_SS_ACCESS_TOKEN structure" in str(exc)
+            validation_error = {expected_error!r} in str(exc)
             assert validation_error == malformed, type(exc).__name__
             if malformed:
                 expected = ms.OperationalError if route == "public" else RuntimeError
