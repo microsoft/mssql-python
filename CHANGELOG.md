@@ -118,7 +118,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
   native default batching. Native array-bound `executemany()` calls are also
   capped at 1,000,000 parameter sets.
 - Native fetch buffers and parameter-array buffers each have a cumulative
-  256 MiB allocation budget. Array limits depend on batch size and column widths,
+  256 MiB allocation budget, including probed UTF-16 LOB conversion buffers.
+  Array limits depend on batch size and column widths,
   including slots for NULLs; reduce batch sizes or oversized `setinputsizes()`
   hints when a budget is exceeded. Non-numeric hints are capped at 268,435,456
   size units, while numeric precision/scale normalization is preserved.
