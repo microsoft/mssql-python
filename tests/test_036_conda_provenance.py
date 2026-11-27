@@ -792,6 +792,35 @@ def test_exact_recorded_wheel_run_is_verified_not_packaging_mode_or_build_number
     assert result["versions"] == {"mssql-python": "1.15.0", "mssql-python-odbc": "18.6.2.1"}
 
 
+@pytest.mark.parametrize("problem", [None, "false", "numeric", "duplicate-key", "missing-scan"])
+def test_manual_wheel_run_requires_unambiguous_matrix_and_successful_checks(chain, problem):
+    params = chain["pipelines/2199/runs/173176?api-version=7.1"]["templateParameters"]
+    params.update(
+        runSdlTasks="True",
+        signWindowsBinaries="True",
+        windowsConfigs="- pyVer: 312\r\n  arch: x64\r\n- pyVer: 312\r\n  arch: arm64",
+        macosConfigs="- pyVer: 312",
+        linuxConfigs="- tag: manylinux_2_28\n  arch: aarch64\n  pythonBins: cp310 cp311",
+    )
+    if problem is None:
+        assert _verify(chain)["productionEligible"]
+        return
+    if problem in ("false", "numeric"):
+        params["runSdlTasks"] = "False" if problem == "false" else 1
+        error = "runSdlTasks was not enabled"
+    elif problem == "duplicate-key":
+        params["windowsConfigs"] += "\n  arch: x64"
+        error = "invalid|Invalid"
+    else:
+        records = chain["build/builds/173176/timeline?api-version=7.1"]["records"]
+        records.remove(
+            next(r for r in records if r["id"] == "Win_py312_arm64.BuildWheel.__default-0")
+        )
+        error = "lacks completed/succeeded"
+    with pytest.raises(ValueError, match=error):
+        _verify(chain)
+
+
 @pytest.mark.parametrize("selection", ["all", "x64"])
 @pytest.mark.parametrize("problem", [None, "missing-job", "missing-scan"])
 def test_sharded_linux_matrix_requires_each_selected_jobs_security(chain, selection, problem):
