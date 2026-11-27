@@ -23,6 +23,7 @@
 #include "ddbc_bindings.h"    // ParamInfo consumers, SQL Server ODBC constants
 #include "py_ref.hpp"         // steal / borrow
 #include "py_type_cache.hpp"  // PyTypeCache::get_*_class
+#include "vector_support.hpp"
 
 #include <Python.h>
 #include <datetime.h>  // CPython datetime API (PyDateTime_Check, PyDateTime_GET_*, etc.)
@@ -32,11 +33,19 @@
 #include <cstdio>  // snprintf
 #include <cstring>  // std::memcpy
 #include <string>
+#include <utility>
 #include <vector>
 
 //-------------------------------------------------------------------------------------------------
 // Parameter description types
 //-------------------------------------------------------------------------------------------------
+
+// External linkage for ParamInfo ownership; match its pybind11 members' visibility.
+#ifdef __GNUC__
+struct __attribute__((visibility("hidden"))) TableParamState;
+#else
+struct TableParamState;
+#endif
 
 // This struct is shared between C++ & Python code.
 // Suppress -Wattributes warning for ParamInfo struct
@@ -51,14 +60,19 @@ struct ParamInfo {
     SQLSMALLINT paramCType = SQL_C_DEFAULT;
     SQLSMALLINT paramSQLType = SQL_UNKNOWN_TYPE;
     SQLULEN columnSize = 0;
+    // Array text capacity excludes the terminator and is independent of SQL precision.
+    SQLULEN arrayBufferSize = 0;
     SQLSMALLINT decimalDigits = 0;
     SQLLEN strLenOrInd = 0;  // Required for DAE
     bool isDAE = false;      // Indicates if we need to stream
+    bool isTVP = false;
+    std::shared_ptr<TableParamState> table;
     // Strong reference to the Python object for DAE (data-at-execution) streaming.
     // py::object owns the refcount, so the compiler-generated destructor, copy and
     // move operations are all correct and this struct needs no rule-of-five.
     py::object dataPtr;
     Py_ssize_t utf16Len = 0;  // UTF-16 code unit count for string params
+    std::shared_ptr<VectorBinding> vectorBinding;
 };
 #ifdef __GNUC__
 #pragma GCC diagnostic pop
@@ -298,6 +312,9 @@ inline void ValidateInputSizes(PyObject* inputSizes) {
     const Py_ssize_t count = PyList_GET_SIZE(inputSizes);
     for (Py_ssize_t index = 0; index < count; ++index) {
         PyObject* entry = PyList_GET_ITEM(inputSizes, index);
+        if (entry == Py_None) {
+            continue;
+        }
         if (!PyTuple_Check(entry) || PyTuple_GET_SIZE(entry) != 4) {
             throw py::type_error("each inputSizes entry must be a four-item tuple");
         }
@@ -388,6 +405,25 @@ inline void ApplyInputSizeOverride(PyObject* params, PyObject* inputSize, Py_ssi
     }
 
     PyObject* obj = PyList_GET_ITEM(params, index);
+    if (info.paramSQLType == SQL_SS_VECTOR) {
+        auto dimensions = static_cast<size_t>(info.columnSize);
+        py::object vector = py::module_::import("mssql_python.vector")
+            .attr("_vector_from_hint")(borrow(obj), dimensions, info.decimalDigits);
+        if (PyList_SetItem(params, index, vector.release().ptr()) != 0) {
+            throw py::error_already_set();
+        }
+        obj = PyList_GET_ITEM(params, index);
+        info.paramCType = SQL_C_SS_VECTOR;
+        info.vectorBinding = obj == Py_None
+            ? std::make_shared<VectorBinding>(dimensions, info.decimalDigits)
+            : std::make_shared<VectorBinding>(borrow(obj));
+        if (info.vectorBinding->value.dimension != dimensions ||
+            info.vectorBinding->value.type != info.decimalDigits)
+            throw py::value_error("Vector dimensions and subtype must match setinputsizes");
+        info.columnSize = VectorBufferSize(dimensions);
+        info.isDAE = false;
+        return;
+    }
     if (obj == Py_None) {
         info.paramCType = SQL_C_DEFAULT;
         return;
@@ -452,6 +488,23 @@ inline void ApplyInputSizeOverride(PyObject* params, PyObject* inputSize, Py_ssi
     }
 }
 
+inline std::pair<bool, Py_ssize_t> BatchTextMetadata(const py::list& column) {
+    bool needsUnicode = false;
+    Py_ssize_t maxLength = 0;
+    for (Py_ssize_t i = 0; i < PyList_GET_SIZE(column.ptr()); ++i) {
+        PyObject* value = PyList_GET_ITEM(column.ptr(), i);
+        if (value == Py_None) {
+            continue;
+        }
+        if (!PyUnicode_Check(value)) {
+            throw py::type_error("Batch text metadata requires str or None values");
+        }
+        needsUnicode = needsUnicode || !PyUnicode_IS_ASCII(value);
+        maxLength = std::max(maxLength, UnicodeUtf16Length(value));
+    }
+    return {needsUnicode, maxLength};
+}
+
 // ---------------------------------------------------------------------------
 // DetectParamTypes: Raw CPython parameter type detection for the primary execute path.
 //
@@ -486,6 +539,9 @@ inline std::vector<ParamInfo> DetectParamTypes(PyObject* params, PyObject* input
     ValidateInputSizes(inputSizes);
 
     const Py_ssize_t n = PyList_GET_SIZE(params);
+    if (inputSizes != Py_None && !PyList_Check(inputSizes)) {
+        throw py::type_error("input_sizes must be a list or None");
+    }
     const Py_ssize_t inputSizeCount = inputSizes == Py_None ? 0 : PyList_GET_SIZE(inputSizes);
     std::vector<ParamInfo> infos(n);
 
@@ -496,13 +552,48 @@ inline std::vector<ParamInfo> DetectParamTypes(PyObject* params, PyObject* input
         ParamInfo& info = infos[i];
         info.inputOutputType = SQL_PARAM_INPUT;
         info.isDAE = false;
+        info.isTVP = false;
 
-        if (i < inputSizeCount) {
-            ApplyInputSizeOverride(params, PyList_GET_ITEM(inputSizes, i), i, info, charEncoding);
+        PyObject* obj = PyList_GET_ITEM(params, i);
+        const bool isJson =
+            PyObject_TypeCheck(obj, reinterpret_cast<PyTypeObject*>(PyTypeCache::get_json_class()));
+        PyObject* inputSize = i < inputSizeCount ? PyList_GET_ITEM(inputSizes, i) : Py_None;
+        if (inputSize != Py_None &&
+            (!PyTuple_Check(inputSize) || PyTuple_GET_SIZE(inputSize) != 4)) {
+            throw py::type_error("Each input size must be a four-item tuple or None");
+        }
+        const bool jsonOverride = inputSize != Py_None &&
+            PyLong_AsLong(PyTuple_GET_ITEM(inputSize, 0)) == SQL_SS_JSON;
+        if (PyErr_Occurred()) throw py::error_already_set();
+        if (isJson || jsonOverride) {
+            if (isJson && inputSize != Py_None && !jsonOverride)
+                throw py::type_error("Json requires SQL_JSON input sizing");
+            if (!isJson && obj != Py_None)
+                throw py::type_error("SQL_JSON requires Json or None");
+            if (isJson) {
+                py::object text = steal(PyObject_GetAttrString(obj, "_text"));
+                if (!text) throw py::error_already_set();
+                if (PyList_SetItem(params, i, text.release().ptr()) != 0)
+                    throw py::error_already_set();
+                obj = PyList_GET_ITEM(params, i);
+            }
+            info.paramSQLType = SQL_SS_JSON;
+            info.paramCType = SQL_C_WCHAR;
+            info.columnSize = 0;
+            if (obj != Py_None) {
+                if (!PyUnicode_Check(obj))
+                    throw py::type_error("Json snapshot must be text");
+                info.utf16Len = UnicodeUtf16Length(obj);
+                info.isDAE = info.utf16Len > MAX_INLINE_CHAR;
+                if (info.isDAE) info.dataPtr = borrow(obj);
+            }
             continue;
         }
 
-        PyObject* obj = PyList_GET_ITEM(params, i);
+        if (inputSize != Py_None) {
+            ApplyInputSizeOverride(params, inputSize, i, info, charEncoding);
+            continue;
+        }
 
         // --- None ---
         if (obj == Py_None) {
@@ -808,6 +899,26 @@ inline std::vector<ParamInfo> DetectParamTypes(PyObject* params, PyObject* input
                 // PyList_SetItem steals (decrefs) the item even on failure.
                 throw py::error_already_set();
             }
+            continue;
+        }
+
+        int isVector = PyObject_IsInstance(obj, PyTypeCache::vector_class);
+        if (isVector < 0) throw py::error_already_set();
+        if (isVector) {
+            info.vectorBinding = std::make_shared<VectorBinding>(borrow(obj));
+            info.paramSQLType = SQL_SS_VECTOR;
+            info.paramCType = SQL_C_SS_VECTOR;
+            info.columnSize = VectorBufferSize(info.vectorBinding->elements.size());
+            info.decimalDigits = static_cast<SQLSMALLINT>(info.vectorBinding->value.type);
+            continue;
+        }
+
+        py::object tvpType = py::module_::import("mssql_python.table_valued_parameter")
+                                 .attr("TableValuedParameter");
+        if (py::isinstance(borrow(obj), tvpType)) {
+            info.paramSQLType = SQL_SS_TABLE;
+            info.paramCType = SQL_C_BINARY;
+            info.isTVP = true;
             continue;
         }
 

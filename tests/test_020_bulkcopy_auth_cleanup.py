@@ -26,14 +26,18 @@ SAMPLE_TOKEN = secrets.token_hex(44)
 def _make_cursor(connection_str, auth_type):
     """Build a mock Cursor with just enough wiring for bulkcopy's auth path."""
     from mssql_python.cursor import Cursor
+    from mssql_python._query_operation import QueryConnectionState, QuerySlot
 
     mock_conn = MagicMock()
     mock_conn.connection_str = connection_str
     mock_conn._auth_type = auth_type
     mock_conn._token_provider = None
     mock_conn._is_connected = True
+    mock_conn.closed = False
+    mock_conn._query_state = QueryConnectionState()
 
     cursor = Cursor.__new__(Cursor)
+    cursor._query_slot = QuerySlot()
     cursor._connection = mock_conn
     cursor._timeout = 0
     cursor.closed = False

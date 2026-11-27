@@ -1,6 +1,6 @@
 import pytest
 
-pytest.importorskip("mssql_py_core", exc_type=ImportError)
+mssql_py_core = pytest.importorskip("mssql_py_core", exc_type=ImportError)
 
 from mssql_python import (
     ConnectionStringParseError,
@@ -11,6 +11,49 @@ from mssql_python.async_query import _AsyncConnection  # pyright: ignore[reportP
 from mssql_python.async_query import _AsyncCursor  # pyright: ignore[reportPrivateUsage]
 from mssql_python.async_query._connection_context import build_async_connection_context
 from mssql_python.helpers import connstr_to_pycore_params
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "suffix",
+    [";APP=", ";APP=\ud800", ";APP=" + "a" * 116, ";APP=" + "\U0001f600" * 58],
+)
+async def test_invalid_async_app_fails_before_loading_backend(suffix):
+    from unittest.mock import patch
+
+    with patch("mssql_python.async_query.async_connection.load_py_core") as load:
+        with pytest.raises((ValueError, ConnectionStringParseError)):
+            await _AsyncConnection.connect("Server=test-server.example.invalid" + suffix)
+        load.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("suffix", "name"),
+    [
+        ("", None),
+        (";APP=Orders", "Orders"),
+        (";Application Name=Orders", "Orders"),
+        (";APP=First;Application Name=Second", "First"),
+        (";Application Name=First;APP=Second", "First"),
+        (";APP={ Orders;West}} }", " Orders;West} "),
+        (";APP=" + "a" * 115, "a" * 115),
+        (";APP=" + "\U0001f600" * 57 + "x", "\U0001f600" * 57 + "x"),
+    ],
+)
+async def test_async_application_name_received_by_server(async_connection_string, suffix, name):
+    async with await _AsyncConnection.connect(async_connection_string + suffix) as connection:
+        cursor = connection.cursor()
+        try:
+            await cursor.execute(
+                "SELECT APP_NAME(), program_name FROM sys.dm_exec_sessions "
+                "WHERE session_id = @@SPID"
+            )
+            row = await cursor.fetchone()
+            expected = "MSSQL-Python" if name is None else f"MSSQL-Python|{name}"
+            assert tuple(row) == (expected, expected)
+        finally:
+            await cursor.close()
 
 
 @pytest.mark.asyncio
@@ -50,6 +93,7 @@ def test_sql_password_authentication_is_forwarded_to_py_core():
         "authentication": "SqlPassword",
         "user_name": "user",
         "password": "password",
+        "application_name": "MSSQL-Python",
     }
 
 
@@ -62,6 +106,7 @@ def test_trusted_connection_is_forwarded_to_py_core():
     assert context == {
         "server": "test-server.example.invalid",
         "trusted_connection": "Yes",
+        "application_name": "MSSQL-Python",
     }
 
 
@@ -320,19 +365,19 @@ async def test_operations_after_close_translate_native_errors(async_connection_s
 
     with pytest.raises(InterfaceError, match="Connection is closed") as cursor_error:
         connection.cursor()
-    assert isinstance(cursor_error.value.__cause__, RuntimeError)
+    assert isinstance(cursor_error.value.__cause__, (RuntimeError, mssql_py_core.InterfaceError))
 
     with pytest.raises(InterfaceError, match="Connection is closed") as commit_error:
         await connection.commit()
-    assert isinstance(commit_error.value.__cause__, RuntimeError)
+    assert isinstance(commit_error.value.__cause__, (RuntimeError, mssql_py_core.InterfaceError))
 
     with pytest.raises(InterfaceError, match="Connection is closed") as rollback_error:
         await connection.rollback()
-    assert isinstance(rollback_error.value.__cause__, RuntimeError)
+    assert isinstance(rollback_error.value.__cause__, (RuntimeError, mssql_py_core.InterfaceError))
 
     with pytest.raises(InterfaceError, match="Connection is closed") as enter_error:
         await connection.__aenter__()
-    assert isinstance(enter_error.value.__cause__, RuntimeError)
+    assert isinstance(enter_error.value.__cause__, (RuntimeError, mssql_py_core.InterfaceError))
 
 
 @pytest.mark.asyncio

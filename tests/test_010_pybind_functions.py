@@ -42,6 +42,104 @@ from mssql_python.exceptions import (
 
 
 @pytest.mark.skipif(not DDBC_AVAILABLE, reason="ddbc_bindings not available")
+@pytest.mark.parametrize("data_type", [2, 3])
+@pytest.mark.parametrize("indicator", [0, -4, 64, 65])
+def test_bound_decimal_rejects_malformed_indicator(data_type, indicator):
+    with pytest.raises(RuntimeError, match="Decimal data exceeds|Unexpected negative data length"):
+        ddbc._test_bound_decimal_rows(data_type, indicator)
+
+
+@pytest.mark.skipif(not DDBC_AVAILABLE, reason="ddbc_bindings not available")
+@pytest.mark.parametrize("data_type", [2, 3])
+@pytest.mark.parametrize("indicator", [-1, 1, 63])
+def test_bound_decimal_preserves_null_and_valid_lengths(data_type, indicator):
+    from decimal import Decimal
+
+    expected = None if indicator == -1 else Decimal(0)
+    assert ddbc._test_bound_decimal_rows(data_type, indicator) == [[expected]]
+
+
+@pytest.mark.skipif(not DDBC_AVAILABLE, reason="ddbc_bindings not available")
+def test_arrow_decimal_rejects_malformed_bound_indicators(conn_str):
+    if not hasattr(ddbc.module, "_arrow_test_pointer_addresses"):
+        if os.environ.get("MSSQL_ARROW_TEST_INTERPOSITION", "").upper() in ("1", "ON"):
+            pytest.fail("Arrow test interposition was requested but is not compiled")
+        pytest.skip("Requires an Arrow test-interposition build")
+    env = os.environ.copy()
+    env["DB_CONNECTION_STRING"] = str(conn_str)
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            textwrap.dedent("""
+                import ctypes
+                import os
+                import mssql_python
+                from mssql_python import ddbc_bindings as ddbc
+
+                callback = ctypes.WINFUNCTYPE if os.name == "nt" else ctypes.CFUNCTYPE
+                bind_type = callback(
+                    ctypes.c_short, ctypes.c_void_p, ctypes.c_ushort,
+                    ctypes.c_short, ctypes.c_void_p, ctypes.c_ssize_t,
+                    ctypes.POINTER(ctypes.c_ssize_t),
+                )
+                fetch_type = callback(ctypes.c_short, ctypes.c_void_p)
+                with mssql_python.connect(os.environ["DB_CONNECTION_STRING"]) as conn:
+                    addresses = ddbc.module._arrow_test_pointer_addresses
+                    pointers = {
+                        name: ctypes.c_void_p.from_address(addresses[name])
+                        for name in ("SQLBindCol_ptr", "SQLFetch_ptr")
+                    }
+                    original = {name: pointer.value for name, pointer in pointers.items()}
+                    real_bind = bind_type(original["SQLBindCol_ptr"])
+                    real_fetch = fetch_type(original["SQLFetch_ptr"])
+                    bound_indicator = None
+                    injected_indicator = 0
+
+                    @bind_type
+                    def bind(stmt, col, ctype, data, capacity, indicator):
+                        global bound_indicator
+                        bound_indicator = indicator
+                        return real_bind(stmt, col, ctype, data, capacity, indicator)
+
+                    @fetch_type
+                    def fetch(stmt):
+                        ret = real_fetch(stmt)
+                        if ret in (0, 1):
+                            bound_indicator[0] = injected_indicator
+                        return ret
+
+                    try:
+                        pointers["SQLBindCol_ptr"].value = ctypes.cast(bind, ctypes.c_void_p).value
+                        pointers["SQLFetch_ptr"].value = ctypes.cast(fetch, ctypes.c_void_p).value
+                        for sql_type in ("DECIMAL", "NUMERIC"):
+                            for injected_indicator in (0, -4, 64, 65):
+                                with conn.cursor() as cur:
+                                    cur.execute(f"SELECT CAST(1.25 AS {sql_type}(10,2)) AS value")
+                                    try:
+                                        cur.arrow_batch(2)
+                                    except RuntimeError as exc:
+                                        assert (
+                                            "Decimal data exceeds" in str(exc)
+                                            or "Unexpected negative data length" in str(exc)
+                                        ), str(exc)
+                                    else:
+                                        raise AssertionError((sql_type, injected_indicator))
+                    finally:
+                        for name, value in original.items():
+                            pointers[name].value = value
+            """),
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.skipif(not DDBC_AVAILABLE, reason="ddbc_bindings not available")
 @pytest.mark.parametrize("fetch_size", [-1, 1_000_001, True])
 def test_fetchmany_rejects_unsafe_size_before_handle_access(fetch_size):
     with pytest.raises(RuntimeError, match="Fetch size"):
@@ -151,7 +249,7 @@ def test_native_dae_failure_preserves_error_and_allows_reuse(conn_str, failure_s
     ("input_sizes", "message"),
     [
         ((12, -8, 1, 0), "inputSizes must be None or a list"),
-        ([None], "four-item tuple"),
+        ([True], "four-item tuple"),
         ([(12, -8, 1)], "four-item tuple"),
         ([(12, -8, True, 0)], "must be integers"),
         ([(12, -8, -1, 0)], "column size must be non-negative"),

@@ -13,9 +13,12 @@
 #include <pybind11/pytypes.h>  // Add this line for datetime support
 #include <pybind11/stl.h>
 
+#include <atomic>
 #include <cstring>
 #include <exception>
 #include <memory>
+#include <optional>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -52,13 +55,23 @@ using py::literals::operator""_a;
 #define MAX_DIGITS_IN_NUMERIC 64
 #define SQL_MAX_NUMERIC_LEN 16
 #define SQL_SS_XML (-152)
+#ifndef SQL_SS_JSON
+#define SQL_SS_JSON (-157)
+#endif
 #define SQL_SS_UDT (-151)
 #define SQL_SS_VARIANT (-150)
+#define SQL_SS_TABLE (-153)
 #define SQL_CA_SS_VARIANT_TYPE (1215)
+#define SQL_SS_VECTOR (-156)
+#define SQL_C_SS_VECTOR (0x4002)
+#define SQL_SOPT_SS_PARAM_FOCUS (1236)
+#define SQL_CA_SS_SCHEMA_NAME (1226)
+#define SQL_CA_SS_TYPE_NAME (1227)
 
 // Include logger bridge for LOG macros
 #include "logger_bridge.hpp"
 #include "fetch_text.hpp"
+#include "output_converter.hpp"
 
 #if defined(__APPLE__) || defined(__linux__)
 #include <dlfcn.h>
@@ -288,12 +301,51 @@ struct DescribedParamInfo {
     SQLSMALLINT decimalDigits;
 };
 
+class FailedBindingBuffers {
+  public:
+    explicit FailedBindingBuffers(std::vector<std::shared_ptr<void>> buffers);
+    ~FailedBindingBuffers();
+    void release() { _buffers.reset(); }
+#ifdef MSSQL_ARROW_TEST_INTERPOSITION
+    std::weak_ptr<void> firstBufferForTest() const {
+        if (_buffers && !_buffers->empty()) return _buffers->front();
+        return {};
+    }
+#endif
+
+  private:
+    std::unique_ptr<std::vector<std::shared_ptr<void>>> _buffers;
+};
+
+// The SQLBindParameter arguments that define a parameter (direction, C type, SQL
+// type, size, digits and data-at-execution), excluding the data pointers.
+struct ParamBindSignature {
+    SQLSMALLINT inputOutputType;
+    SQLSMALLINT cType;
+    SQLSMALLINT sqlType;
+    SQLULEN columnSize;
+    SQLSMALLINT decimalDigits;
+    bool isDAE;
+
+    bool operator==(const ParamBindSignature& other) const {
+        return inputOutputType == other.inputOutputType && cType == other.cType &&
+               sqlType == other.sqlType && columnSize == other.columnSize &&
+               decimalDigits == other.decimalDigits && isDAE == other.isDAE;
+    }
+    bool operator!=(const ParamBindSignature& other) const { return !(*this == other); }
+};
+
 struct ConnectionCleanupState {
     std::mutex mutex;
     bool disconnected = false;  // Protected by mutex, shared with every child.
+    std::vector<std::shared_ptr<FailedBindingBuffers>> failedBindingBuffers;
+    // Unlike weak_ptr expiration, this count includes destructors still freeing handles.
+    std::atomic<size_t> childStatementCount{0};
+    std::atomic<bool> childFreeFailed{false};  // Sticky for this physical connection.
 };
 
 struct PendingArrowRows;
+struct ErrorInfo;
 
 class SqlHandle {
   public:
@@ -303,7 +355,8 @@ class SqlHandle {
     SQLHANDLE get() const;
     SQLSMALLINT type() const;
     void free();
-    SQLRETURN freeHandle();
+    void freeChecked();
+    SQLRETURN freeHandle(ErrorInfo* error = nullptr);
     void close_cursor();
     // Cancel an in-progress statement (SQLCancel). Safe to call from a
     // thread other than the one running the fetch — this is the *only*
@@ -313,6 +366,15 @@ class SqlHandle {
     // unavailable.
     void cancel();
     bool isImplicitlyFreed() const { return _implicitly_freed; }
+    void retainFailedParameters(std::vector<std::shared_ptr<void>> buffers);
+    void retainFailedBindings(std::shared_ptr<FailedBindingBuffers> buffers);
+    bool cleanupFailed() const { return _cleanupState && _cleanupState->childFreeFailed; }
+#ifdef MSSQL_ARROW_TEST_INTERPOSITION
+    std::weak_ptr<void> bindingStorageForTest() const {
+        return _failedBindingBuffers ? _failedBindingBuffers->firstBufferForTest()
+                                     : std::weak_ptr<void>{};
+    }
+#endif
 
     // Mark this handle as implicitly freed (freed by parent handle)
     // This prevents double-free attempts when the ODBC driver automatically
@@ -365,6 +427,31 @@ class SqlHandle {
         ++_pendingRowsGeneration;
         _pendingArrowRows.reset();
     }
+    // Only fetch calls under the GIL access this flag. Batch bindings are
+    // invalidated before installation and become reusable only after unbinding.
+    bool fetchColumnsUnbound = false;
+
+    // Parameter bindings that execute() leaves on the statement. Drivers
+    // re-prepare (sp_prepexec instead of sp_execute) when SQL_RESET_PARAMS
+    // clears the IPD or a parameter definition changes, so a re-execution of
+    // the same prepared SQL with an identical signature rebinds over these
+    // records instead of resetting them. Same threading contract as
+    // describeCache: only the thread that owns the statement touches these.
+    //
+    // paramsBound: SQLBindParameter may have been called since the last
+    //   SQL_RESET_PARAMS issued through this handle.
+    // boundParamSignature: definitions of the last complete execute() binding;
+    //   empty when that binding must not be reused.
+    // boundParamBuffers: buffers the bound APD records point at. Kept alive
+    //   until they are rebound, reset or the statement is freed (the member
+    //   outlives SQLFreeHandle in ~SqlHandle), so the APD never references
+    //   freed memory between executions.
+    bool paramsBound = false;
+    std::vector<ParamBindSignature> boundParamSignature;
+    std::vector<std::shared_ptr<void>> boundParamBuffers;
+    // SQL_ATTR_CURSOR_TYPE / SQL_ATTR_CONCURRENCY were set to forward-only /
+    // read-only on this statement. They persist for the handle's lifetime.
+    bool cursorAttrsApplied = false;
 
   private:
     mutable std::mutex _pendingRowsMutex;
@@ -376,18 +463,123 @@ class SqlHandle {
     SQLHANDLE _handle;
     bool _implicitly_freed = false;  // Tracks if handle was freed by parent
     std::shared_ptr<ConnectionCleanupState> _cleanupState;
+    // Native parameter or fetch storage left installed after failed cleanup.
+    // The connection also retains this native storage if the wrapper is dropped.
+    std::shared_ptr<FailedBindingBuffers> _failedBindingBuffers;
 };
 using SqlHandlePtr = std::shared_ptr<SqlHandle>;
+
+// One logical Python operation can contain multiple blocking ODBC calls.
+// Only its owner changes the binding or finishes; other threads may cancel.
+class StatementOperation {
+  public:
+    explicit StatementOperation(SqlHandlePtr handle, bool cancellable = true);
+    ~StatementOperation();
+    void bind(SqlHandlePtr handle);
+    void cancel();
+    bool finish();
+    bool finishUncaptured();
+    bool failed() const { return cancelFailed || (handle && handle->cleanupFailed()); }
+    void restartUnreferenced(bool cancellable = true);
+    bool matches(const SqlHandlePtr& statement) const { return handle == statement; }
+    static StatementOperation* current(SQLHSTMT handle);
+    bool beginCall();
+    void endCall();
+    SQLRETURN checkResult(SQLHSTMT handle, SQLRETURN result, bool attempted);
+
+  private:
+    std::mutex mutex;
+    SqlHandlePtr handle;
+    StatementOperation* previous;
+    std::atomic<bool> running{false};
+    std::atomic<bool> requested{false};
+    std::atomic<bool> finished{false};
+    bool cancelFailed = false;
+    bool cancellable = true;
+};
+
+// Accessed with the GIL held, including the Python admission fallback.
+struct QueryAdmission {
+    bool busy = false;
+    bool reserve(const void* owner = nullptr) {
+        if (busy)
+            return false;
+        reservationOwner = owner;
+        busy = true;
+        return true;
+    }
+    void releaseFor(const void* owner) {
+        if (busy && reservationOwner == owner) {
+            busy = false;
+            reservationOwner = nullptr;
+        }
+    }
+
+  private:
+    // Identity only; the Python admission frame or active slot keeps it alive.
+    const void* reservationOwner = nullptr;
+};
+
+struct QueryOperationSlot {
+    std::shared_ptr<StatementOperation> active;
+    std::shared_ptr<StatementOperation> idle;
+};
+
+template <typename Call>
+SQLRETURN CancellableCallWithoutGIL(StatementOperation* operation, Call&& call,
+                                   bool& admitted) {
+    SQLRETURN result = SQL_ERROR;
+    admitted = !operation || operation->beginCall();
+    if (admitted) {
+        try {
+            result = call();
+        } catch (...) {
+            if (operation)
+                operation->endCall();
+            throw;
+        }
+        if (operation)
+            operation->endCall();
+    }
+    return result;
+}
+
+template <typename Call>
+SQLRETURN CancellableCall(SQLHSTMT handle, Call&& call) {
+    auto* operation = StatementOperation::current(handle);
+    SQLRETURN result;
+    bool admitted;
+    {
+        py::gil_scoped_release release;
+        result = CancellableCallWithoutGIL(operation, std::forward<Call>(call), admitted);
+    }
+    return operation ? operation->checkResult(handle, result, admitted) : result;
+}
 
 // This struct is used to relay error info obtained from SQLDiagRec API to the
 // Python module
 struct ErrorInfo {
     std::string sqlState;
     std::string ddbcErrorMsg;
+    std::optional<SQLINTEGER> nativeError;
+};
+class NativeDatabaseError : public std::runtime_error {
+  public:
+    explicit NativeDatabaseError(const ErrorInfo& error)
+        : std::runtime_error(error.sqlState.length() == 5
+                                 ? "SQLSTATE:" + error.sqlState + ":" + error.ddbcErrorMsg
+                                 : error.ddbcErrorMsg),
+          diagnostic(error) {}
+    NativeDatabaseError(const ErrorInfo& error, const std::string& message)
+        : std::runtime_error(message), diagnostic(error), mapSqlState(false) {}
+    ErrorInfo diagnostic;
+    // Some connection operations historically use a generic Python exception.
+    bool mapSqlState = true;
 };
 ErrorInfo SQLCheckError_Wrap(SQLSMALLINT handleType, SqlHandlePtr handle, SQLRETURN retcode);
 // Driver must be initialized; reads diagnostics without Python logging/callbacks.
-ErrorInfo SQLReadError(SQLSMALLINT handleType, SQLHANDLE handle, SQLRETURN retcode);
+ErrorInfo SQLReadError(SQLSMALLINT handleType, SQLHANDLE handle, SQLRETURN retcode,
+                       SQLSMALLINT record = 1);
 
 // Thread-safe decimal separator accessor class
 class ThreadSafeDecimalSeparator {
@@ -519,13 +711,14 @@ struct ColumnInfoExt {
     bool useWideChar;          // True when charCtype == SQL_C_WCHAR (VARCHAR fetched as UTF-16)
     std::string charEncoding;  // Effective decoding encoding for SQL_C_CHAR data
     PyObject* messages = nullptr;  // Borrowed from the enclosing native fetch call.
+    bool converterText = false;
 };
 
 // Forward declare FetchLobColumnData (defined in ddbc_bindings.cpp) - MUST be
 // outside namespace
 py::object FetchLobColumnData(SQLHSTMT hStmt, SQLUSMALLINT col, SQLSMALLINT cType, bool isWideChar,
                               bool isBinary, const std::string& charEncoding = "utf-8",
-                              py::handle messages = {});
+                              py::handle messages = {}, bool sizeWideConversion = false);
 
 // Specialized column processors for each data type (eliminates switch in hot
 // loop)
@@ -650,6 +843,15 @@ inline void ProcessChar(PyObject* row, ColumnBuffers& buffers, const void* colIn
                         SQLUSMALLINT col, SQLULEN rowIdx, SQLHSTMT hStmt) {
     const ColumnInfoExt* colInfo = static_cast<const ColumnInfoExt*>(colInfoPtr);
     SQLLEN dataLen = buffers.indicators[col - 1][rowIdx];
+    if (colInfo->converterText && colInfo->useWideChar && !colInfo->isLob && dataLen >= 0 &&
+        static_cast<uint64_t>(dataLen / sizeof(SQLWCHAR)) < colInfo->fetchBufferSize) {
+        const auto* data = &buffers.wcharBuffers[col - 1][rowIdx * colInfo->fetchBufferSize];
+        py::object text = OutputConverters::text(reinterpret_cast<const char*>(data), dataLen);
+        if (text) {
+            PyList_SET_ITEM(row, col - 1, text.release().ptr());
+            return;
+        }
+    }
 
     // Handle empty strings
     if (dataLen == 0) {
@@ -698,7 +900,7 @@ inline void ProcessChar(PyObject* row, ColumnBuffers& buffers, const void* colIn
             // LOB / truncated: stream with SQL_C_WCHAR
             PyList_SET_ITEM(row, col - 1,
                             FetchLobColumnData(hStmt, col, SQL_C_WCHAR, true, false, "utf-16le",
-                                               py::handle(colInfo->messages))
+                                               py::handle(colInfo->messages), true)
                                 .release()
                                 .ptr());
         }
@@ -763,6 +965,15 @@ inline void ProcessWChar(PyObject* row, ColumnBuffers& buffers, const void* colI
                          SQLUSMALLINT col, SQLULEN rowIdx, SQLHSTMT hStmt) {
     const ColumnInfoExt* colInfo = static_cast<const ColumnInfoExt*>(colInfoPtr);
     SQLLEN dataLen = buffers.indicators[col - 1][rowIdx];
+    if (colInfo->converterText && !colInfo->isLob && dataLen >= 0 &&
+        static_cast<uint64_t>(dataLen / sizeof(SQLWCHAR)) < colInfo->fetchBufferSize) {
+        const auto* data = &buffers.wcharBuffers[col - 1][rowIdx * colInfo->fetchBufferSize];
+        py::object text = OutputConverters::text(reinterpret_cast<const char*>(data), dataLen);
+        if (text) {
+            PyList_SET_ITEM(row, col - 1, text.release().ptr());
+            return;
+        }
+    }
 
     // Handle empty strings
     if (dataLen == 0) {
@@ -781,38 +992,9 @@ inline void ProcessWChar(PyObject* row, ColumnBuffers& buffers, const void* colI
     // fetchBufferSize includes null-terminator, numCharsInData doesn't. Hence
     // '<'
     if (!colInfo->isLob && numCharsInData < colInfo->fetchBufferSize) {
-#if defined(__APPLE__) || defined(__linux__)
-        // Performance: Direct UTF-16 decode (SQLWCHAR is 2 bytes on
-        // Linux/macOS)
         SQLWCHAR* wcharData = &buffers.wcharBuffers[col - 1][rowIdx * colInfo->fetchBufferSize];
-        PyObject* pyStr = FetchText::decode_utf16_native(
-            reinterpret_cast<const char*>(wcharData), numCharsInData * sizeof(SQLWCHAR));
-        if (pyStr) {
-            PyList_SET_ITEM(row, col - 1, pyStr);
-        } else {
-            PyErr_Clear();  // Ignore decode error, return empty string
-            PyObject* emptyStr = PyUnicode_FromStringAndSize("", 0);
-            if (!emptyStr) {
-                Py_INCREF(Py_None);
-                PyList_SET_ITEM(row, col - 1, Py_None);
-            } else {
-                PyList_SET_ITEM(row, col - 1, emptyStr);
-            }
-        }
-#else
-        // Performance: Direct Python C API call (Windows where SQLWCHAR ==
-        // wchar_t)
-        PyObject* pyStr = PyUnicode_FromWideChar(
-            reinterpret_cast<wchar_t*>(
-                &buffers.wcharBuffers[col - 1][rowIdx * colInfo->fetchBufferSize]),
-            numCharsInData);
-        if (!pyStr) {
-            Py_INCREF(Py_None);
-            PyList_SET_ITEM(row, col - 1, Py_None);
-        } else {
-            PyList_SET_ITEM(row, col - 1, pyStr);
-        }
-#endif
+        PyList_SET_ITEM(row, col - 1, FetchText::decode_batch_utf16_native(
+            reinterpret_cast<const char*>(wcharData), numCharsInData * sizeof(SQLWCHAR)));
     } else {
         // Slow path: LOB data requires separate fetch call
         PyList_SET_ITEM(row, col - 1,

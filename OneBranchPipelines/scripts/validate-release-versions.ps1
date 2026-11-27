@@ -3,47 +3,62 @@
 
 <#
 .SYNOPSIS
-    Validates that a version file contains a stable (non-prerelease) version.
-
+    Gates Official builds and releases on an exact public PyPI runtime release.
 .DESCRIPTION
-    Reads a single .version file and rejects any version containing
-    dev, alpha, beta, or rc tags. Intended to gate official releases.
-
-.PARAMETER VersionFile
-    Path to a .version file. Defaults to eng/versions/mssql-python-rs.version
-    relative to the repository root.
-
-.EXAMPLE
-    # Run from repo root (uses default path):
-    .\eng\scripts\validate-release-versions.ps1
-
-    # Explicit path:
-    .\OneBranchPipelines\scripts\validate-release-versions.ps1 -VersionFile C:\work\mssql-python\eng\versions\mssql-python-rs.version
+    BuildOnly rejects overrides and non-release source pins without network access.
+    Release validation additionally requires the selected artifact's transport
+    receipt and verifies the exact version exists on public PyPI before ESRP.
 #>
-
 param(
-    [string]$VersionFile
+    [string]$VersionFile,
+    [string]$ReceiptFile,
+    [switch]$BuildOnly
 )
 
 $ErrorActionPreference = 'Stop'
 
 if (-not $VersionFile) {
-    $repoRoot = (Resolve-Path "$PSScriptRoot\..\..").Path
-    $VersionFile = Join-Path $repoRoot 'eng\versions\mssql-python-rs.version'
+    $VersionFile = Join-Path $PSScriptRoot '../../eng/versions/mssql-python-rs.version'
 }
 
-if (-not (Test-Path $VersionFile)) {
-    Write-Error "Version file not found: $VersionFile"
-    exit 1
+if (-not [string]::IsNullOrWhiteSpace($env:MSSQL_PYTHON_RS_VERSION)) {
+    throw 'Official builds and releases forbid MSSQL_PYTHON_RS_VERSION overrides, including stable versions.'
 }
 
-$version = (Get-Content $VersionFile -Raw).Trim()
-$name = [System.IO.Path]::GetFileNameWithoutExtension($VersionFile)
-
-if ($version -match '(dev|alpha|beta|rc)') {
-    Write-Host "FAIL: $name version '$version' is a pre-release ($($Matches[1]))" -ForegroundColor Red
-    Write-Error "$name version is pre-release. Official releases require stable versions."
-    exit 1
+$version = (Get-Content -LiteralPath $VersionFile -Raw).Trim()
+if ($version -cnotmatch '^[0-9]+\.[0-9]+\.[0-9]+$') {
+    throw "Official builds and releases require an exact stable X.Y.Z runtime version, got '$version'."
 }
 
-Write-Host "OK: $name version '$version'" -ForegroundColor Green
+if (-not $BuildOnly) {
+    if (-not $ReceiptFile) {
+        $ReceiptFile = Join-Path (Split-Path -Parent $VersionFile) 'transport.json'
+    }
+    $receipt = Get-Content -LiteralPath $ReceiptFile -Raw | ConvertFrom-Json
+    if ($receipt.version_override -isnot [bool] -or $receipt.version_override) {
+        throw 'Official releases require a receipt with version_override=false.'
+    }
+    if ($receipt.distribution_version -cne $version) {
+        throw 'The staged runtime version and transport receipt disagree.'
+    }
+    if ($receipt.index_url -cnotmatch '^https://pypi\.org/simple/?$') {
+        throw 'Official releases require the public PyPI runtime source.'
+    }
+    if (-not $receipt.wheel_sha256 -or @($receipt.wheel_sha256.PSObject.Properties).Count -eq 0) {
+        throw 'The runtime receipt must record wheel SHA256 hashes.'
+    }
+    foreach ($hash in $receipt.wheel_sha256.PSObject.Properties) {
+        if ($hash.Name -notlike '*.whl' -or $hash.Value -cnotmatch '^[a-f0-9]{64}$') {
+            throw 'The runtime receipt contains an invalid wheel SHA256 entry.'
+        }
+    }
+
+    $release = Invoke-RestMethod -Uri "https://pypi.org/pypi/mssql-python-rs/$version/json" -Method Get
+    if ($release.info.version -cne $version -or
+        $release.info.name -notmatch '^mssql[-_]python[-_]rs$' -or
+        @($release.urls | Where-Object { $_.packagetype -eq 'bdist_wheel' -and -not $_.yanked }).Count -eq 0) {
+        throw "mssql-python-rs==$version has no matching public PyPI wheel release."
+    }
+}
+
+Write-Host "OK: mssql-python-rs==$version is eligible for Official $(if ($BuildOnly) { 'build' } else { 'release' })."

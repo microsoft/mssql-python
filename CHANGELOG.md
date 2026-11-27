@@ -6,7 +6,52 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [Unreleased]
 
+### Changed
+- `fetchall()` starts bounded-column fetching with at most 100 rows, growing
+  once after a full batch to at most 1,000 rows. Batch sizing targets 8 MiB
+  of native column data and length/null indicators, accounting for character
+  conversion and terminators; a single wider row is still allowed. This is
+  not a limit on retained Python results or total process memory. Declared-width
+  string buffers and the existing LOB streaming path remain unchanged (#455,
+  partially addressed). Smaller rowsets can increase driver fetch calls; these
+  calls do not necessarily correspond to network round trips.
+- Batch fetch cleanup failures retire the statement and retain native column,
+  indicator, and rows-fetched storage until successful statement release or
+  connection disconnect, including partially rebound batches.
+
 ### Added
+- Preview synchronous native JSON support with immutable `Json(dict | list | str)`
+  inputs, `SQL_JSON` / `SQL_SS_JSON` binding, typed NULLs and large-value streaming.
+  Text results remain the default; execution-scoped `cursor.json_output="objects"`
+  decodes native JSON result metadata, including buffered procedure results.
+  Custom converters retain precedence. Requires a qualified JSON-capable classic
+  ODBC provider; shipped binaries are unchanged. Async, bulk, TVP and Arrow JSON
+  support remains deferred.
+- **AB#50711:** DB-API exceptions now expose optional `native_error` metadata
+  alongside `sqlstate` for synchronous ODBC errors. Native numbers come from the
+  same diagnostic record as SQLSTATE; zero is retained and unavailable metadata
+  is `None`. Async Rust/TDS errors still use `None`.
+- Opt-in synchronous native vector support with immutable `Vector` values,
+  FLOAT32/FLOAT16 subtype metadata, scalar/array parameter binding, and row
+  fetches. `base_type` selects SQL storage; values are normalized to float32 at
+  construction, with early finite/float32 and conservative FLOAT16 range checks.
+  Explicit vector hints accept numeric lists with the same
+  validation; unhinted lists keep their existing meanings. Added buffered
+  `callproc()` (1-3 part names, optionally bracket-quoted) with
+  `OutputParameter(sql_type, size, scale)` / `InputOutputParameter` wrappers;
+  output parameters currently support `SQL_SS_VECTOR`. Buffered `fetchmany()` and
+  `fetchall()` calls use one output-converter snapshot per batch. Procedure calls invalidate
+  the previous prepared-query cache even when the procedure fails; overwritten
+  non-vector INPUT_OUTPUT values are rejected before binding. FLOAT16 requires
+  Microsoft ODBC Driver 18.7.1.1+ (not supplied by the current bundled driver); ODBC
+  encodes/decodes FLOAT16 elements and SQL Server converts between base types.
+  Vector bulk copy remains pending pycore's contract,
+  and Arrow vector fetches are not supported.
+
+- **AB#48177:** Added explicit `TableValuedParameter(type_name, columns, rows,
+  schema=...)` input values. Sync `execute()` streams lists, tuples and iterators
+  through native ODBC data-at-execution using one row of additional storage and
+  one procedure invocation, without discovering table metadata.
 - New feature: Support for macOS and Linux.
 - Documentation: Added API documentation in the Wiki.
 - New `token_provider=` parameter on `connect()` / `Connection` for Microsoft
@@ -55,8 +100,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
   for diagnostics (selected id, package, version, driver path, source, and
   whether it's frozen). This PR
   does not change the default provider or ship any Rust driver binaries.
+- **GH-682:** New optional `RetryPolicy` class and `retry_policy=` parameter on
+  `connect()` / `Connection(...)` that retries a connection attempt failing with
+  a transient SQLSTATE (login and connection timeouts, a lost link, `40001`,
+  `40003`) using exponential or fixed backoff with a delay cap and full jitter
+  (on by default; `jitter=False` gives exact delays). `max_attempts` counts
+  total tries including the first; without a policy
+  `connect()` behaves exactly as before.
 
 ### Changed
+- Bound DECIMAL/NUMERIC row and Arrow fetches reject zero, unknown, and oversized
+  data lengths before reading numeric buffers; SQL NULL values remain unchanged.
 - Cursor fetch/Arrow batch sizes and bulk-copy batch/commit sizes are now capped
   at 1,000,000 rows; `arraysize` must be positive. Negative row counts raise
   `ValueError` and boolean row counts raise `TypeError`. Zero-size fetches remain
@@ -81,6 +135,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
   result-set changes, cancellation, close, connection reset, or transaction/
   autocommit changes, but not metadata-only connection-attribute changes.
   Total retained-result memory is still not limited by the per-fetch budget.
+- Pooled check-in skips transaction sanitation only after a prior successful
+  native rollback/autocommit restore and no subsequent statement allocation or
+  uncertain operation. Used connections still roll back explicit transactions
+  before parking; sanitation uses one native attribute probe and one GIL release.
+  Raw-handle exposure and arbitrary connection attributes disable the fast path;
+  successfully applied scalar login timeouts (including `connect(timeout=30)`)
+  do not permanently disable it.
 - Fetches reuse owned native metadata for stable columns within a result set;
   `fetchmany()` avoids the Python metadata-dictionary roundtrip. Re-execution,
   result transitions and statement/connection cleanup invalidate this metadata.
@@ -129,6 +190,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
   before; users should call `cursor.setinputsizes()` to work around this.
 
 ### Fixed
+- JSON decoding errors identify the failing column without its payload.
+- Async busy-connection errors retain the public `OperationalError` classification
+  with both stable and nightly Rust-core exception representations.
+- **GH-863:** `Cursor.nextset()` now refreshes `Cursor.rowcount` for
+  the result it moves to, as `execute()` does: the affected-row count for an
+  INSERT/UPDATE/DELETE/MERGE result and -1 for a result set. Previously
+  `rowcount` kept the value of the first statement of a multi-statement batch,
+  so the rows affected by later statements (for example each INSERT of a
+  T-SQL `WHILE` loop) could not be read. This matches pyodbc.
 - **GH-855:** Bulk copy and internal async queries load the Rust extension directly
   when upgrading from 1.15.0 removes `mssql_py_core/__init__.py`. Existing affected
   installations can restore the initializer with
@@ -147,6 +217,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
   decoding on Linux/macOS. Existing platform-specific decode-error fallbacks
   remain unchanged. Actual MAX/LOB text decoding
   is unchanged; its existing BOM and trailing-NUL loss is not fixed here.
+- **GH-745:** `executemany` auto-detect binds money-range `Decimal`
+  values as `SQL_NUMERIC` with a batch-wide precision/scale (still via
+  `SQL_C_CHAR` string values), so a comparison against a smaller numeric
+  column no longer overflows. SQL precision/scale stay on `columnSize` /
+  `decimalDigits`; the CHAR array stride uses a separate `arrayBufferSize`
+  sized from the longest fixed-point encoding (e.g. `Decimal("1E-38")`),
+  so near-max precision values are not rejected by the array buffer.
+  Zero contributes no integer digits to the batch precision, so
+  `Decimal("0")` plus `Decimal("1E-38")` stays `NUMERIC(38,38)`.
+  The `setinputsizes` DECIMAL/NUMERIC string path uses the same buffer-width
+  split; buffer width is derived from text produced by the protected
+  conversion path so failed conversions still raise a sanitized `ValueError`
+  with row/column details (no raw MemoryError/RuntimeError leakage).
 - **GH-769:** Corrected 11 `GetInfoConstants` IDs for scalar functions, outer
   joins, driver handles, cursor attributes, catalog support, and parameter
   descriptions. Added the ODBC name `SQL_TIMEDATE_FUNCTIONS` as an alias of
@@ -184,8 +267,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
   `sql_variant` stores them as `numeric`, and because `numeric` outranks
   `money`/`varchar` in data-type precedence, `WHERE money_or_varchar_col = ?` can
   add a `CONVERT_IMPLICIT` on the column side that turns an index seek into a scan.
-  `executemany` intentionally keeps its batch `VARCHAR` string binding (GH-503);
-  the remaining money-range case there is tracked in #745.
+  The `executemany` auto-detect path is covered separately by GH-745.
 - **GH-725:** The `timeout` parameter of `connect()` / `Connection(...)` now
   correctly sets the **login (connection-attempt) timeout**
   (`SQL_ATTR_LOGIN_TIMEOUT`), matching pyodbc and its own docstring. Previously

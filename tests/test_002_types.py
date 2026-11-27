@@ -67,6 +67,20 @@ def test_timestamp_constructor():
     assert timestamp.microsecond == 123456, "Timestamp constructor returned incorrect fraction"
 
 
+def test_timestamp_constructor_without_microsecond():
+    timestamp = Timestamp(2023, 10, 5, 12, 30, 45)
+    assert isinstance(
+        timestamp, datetime.datetime
+    ), "Timestamp constructor did not return a datetime object"
+    assert (
+        timestamp.year == 2023 and timestamp.month == 10 and timestamp.day == 5
+    ), "Timestamp constructor returned incorrect date"
+    assert (
+        timestamp.hour == 12 and timestamp.minute == 30 and timestamp.second == 45
+    ), "Timestamp constructor returned incorrect time"
+    assert timestamp.microsecond == 0, "Timestamp constructor returned incorrect fraction"
+
+
 def test_date_from_ticks():
     ticks = 1696500000  # Corresponds to 2023-10-05
     date = DateFromTicks(ticks)

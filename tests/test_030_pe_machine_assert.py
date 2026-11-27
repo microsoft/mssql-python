@@ -118,12 +118,17 @@ def test_zstd_backend_is_available_for_conda_audit_tests():
     )
 
 
-def test_binding_wheel_excludes_core_and_requires_source_rs_version(tmp_path):
-    pytest.importorskip("setuptools", reason="Wheel archive regression requires setuptools")
-    pytest.importorskip("wheel", reason="Wheel archive regression requires the wheel build backend")
+def test_binding_wheel_excludes_core_and_requires_source_rs_version(tmp_path, monkeypatch):
+    monkeypatch.delenv("MSSQL_PYTHON_RS_VERSION", raising=False)
+    # Packaging backends must run independently of pytest's imported distutils/pip state.
+    monkeypatch.setitem(sys.modules, "setuptools", None)
+    monkeypatch.setitem(sys.modules, "wheel", None)
     shutil.copy2(_ROOT / "setup.py", tmp_path / "setup.py")
     sources = {
         "PyPI_Description.md": "Packaging fixture",
+        "eng/scripts/mssql_python_rs.py": (_ROOT / "eng/scripts/mssql_python_rs.py").read_text(
+            encoding="utf-8"
+        ),
         "mssql_python/__init__.py": "",
         "mssql_python_odbc/__init__.py": '__version__ = "18.6.2.1"\n',
         "mssql_py_core/__init__.py": "from .mssql_py_core import *\n",

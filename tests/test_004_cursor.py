@@ -114,6 +114,40 @@ PARAM_TEST_DATA = [
 ]
 
 
+@pytest.mark.parametrize("nonfinite", ["NaN", "sNaN", "Infinity", "-Infinity"])
+@pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.parametrize(
+    "other_values",
+    [[], [None], [decimal.Decimal("1.25")], [decimal.Decimal("0")], [0], [5], [True], [5, None]],
+)
+def test_compute_column_type_rejects_nonfinite_precision(
+    nonfinite: str, reverse: bool, other_values: list[object]
+) -> None:
+    cur = mssql_python.Cursor.__new__(mssql_python.Cursor)
+    cur.closed = True
+    values = [*other_values, decimal.Decimal(nonfinite)]
+    if reverse:
+        values.reverse()
+    with pytest.raises(ValueError, match="non-finite Decimal"):
+        cur._compute_column_type(values)
+
+
+@pytest.mark.parametrize(
+    "values, expected",
+    [
+        ([], (None, None, None, 0)),
+        ([None], (None, None, None, 0)),
+        ([-2, None, 5], (5, -2, 5, 0)),
+        ([None, decimal.Decimal("1.25")], (decimal.Decimal("1.25"), None, None, 4)),
+        ([5, decimal.Decimal("1.25")], (5, 5, 5, 0)),
+    ],
+)
+def test_compute_column_type_finite_values(values, expected):
+    cur = mssql_python.Cursor.__new__(mssql_python.Cursor)
+    cur.closed = True
+    assert cur._compute_column_type(values) == expected
+
+
 def test_package_sources_compile_with_warnings_as_errors():
     """Every package source must compile when warnings are promoted to errors."""
     package_dir = Path(__file__).parents[1] / "mssql_python"
@@ -1970,6 +2004,690 @@ def test_executemany_unicode_and_empty_strings(cursor, db_connection):
         db_connection.commit()
 
 
+@pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.parametrize("named", [False, True], ids=["qmark", "pyformat"])
+@pytest.mark.parametrize(
+    "values, sql_type, column_size",
+    [
+        (
+            [
+                "plain ASCII text, the longest value in the column",
+                "a \u2212 b",
+                "\u0158\u00edm",
+                "\u0e23\u0e49\u0e32\u0e19",
+                None,
+                "",
+            ],
+            mssql_python.SQL_WVARCHAR,
+            49,
+        ),
+        (["AB", "\u0158x"], mssql_python.SQL_WVARCHAR, 2),
+        (["A" * 10, "\U0001f600" * 6], mssql_python.SQL_WVARCHAR, 12),
+        (["\u0158" * 10, "\U0001f600" * 6], mssql_python.SQL_WVARCHAR, 12),
+        (["A" * 3999, "\U0001f600" * 2000], mssql_python.SQL_WVARCHAR, 4000),
+        (["A" * 3999, "\U0001f600" * 2001], mssql_python.SQL_WVARCHAR, 4002),
+        (["A" * 4001, "\u0158"], mssql_python.SQL_WVARCHAR, 4001),
+        (["ascii text", "short", None, ""], mssql_python.SQL_VARCHAR, 10),
+        (["", None, ""], mssql_python.SQL_VARCHAR, 0),
+        (["A\x00B", "\u0158\x00\U0001f600", None], mssql_python.SQL_WVARCHAR, 4),
+        (["A\x00B", "\x00", None, ""], mssql_python.SQL_VARCHAR, 3),
+        (["\u0158" * 4000, None, ""], mssql_python.SQL_WVARCHAR, 4000),
+        (["\u0158" * 4001, None, ""], mssql_python.SQL_WVARCHAR, 4001),
+        (["\U0001f600" * 1999 + "\x00A", ""], mssql_python.SQL_WVARCHAR, 4000),
+        (["\U0001f600" * 2000 + "\x00", ""], mssql_python.SQL_WVARCHAR, 4001),
+        (["\u2212" * 3999, "\U0001f600" * 1999 + "A"], mssql_python.SQL_WVARCHAR, 3999),
+        (
+            ["A" * 10, "\u007f", "\u0080", "\u00ff", "\uffff", "\U00010000", "\U0010ffff"],
+            mssql_python.SQL_WVARCHAR,
+            10,
+        ),
+    ],
+    ids=[
+        "mixed",
+        "tie",
+        "utf16-size",
+        "unicode-utf16-size",
+        "inline-limit",
+        "utf16-streaming",
+        "ascii-streaming",
+        "ascii-only",
+        "empty",
+        "embedded-nul",
+        "ascii-embedded-nul",
+        "bmp-inline-limit",
+        "bmp-streaming",
+        "nul-inline-limit",
+        "nul-streaming",
+        "equal-utf16-size",
+        "unicode-storage-kinds",
+    ],
+)
+def test_executemany_string_column_inference(
+    db_connection, reverse, named, values, sql_type, column_size
+):
+    """GH-906: infer text type and UTF-16 capacity from the entire column."""
+    from mssql_python import ddbc_bindings
+
+    values = list(reversed(values)) if reverse else values
+    with db_connection.cursor() as cur:
+        cur.execute(
+            "CREATE TABLE #gh906 (id INT, txt NVARCHAR(MAX) COLLATE SQL_Latin1_General_CP1_CI_AS)"
+        )
+        try:
+            rows = list(enumerate(values))
+            operation = "INSERT INTO #gh906 VALUES (?, ?)"
+            if named:
+                operation = "INSERT INTO #gh906 VALUES (%(id)s, %(txt)s)"
+                rows = [{"id": i, "txt": value} for i, value in rows]
+
+            with (
+                patch.object(
+                    ddbc_bindings, "SQLExecuteMany", wraps=ddbc_bindings.SQLExecuteMany
+                ) as batch,
+                patch.object(cur, "_execute", wraps=cur._execute) as single,
+            ):
+                cur.executemany(operation, rows)
+
+            assert cur.rowcount == len(values)
+            if column_size > 4000:
+                batch.assert_not_called()
+                assert single.call_count == len(values)
+            else:
+                batch.assert_called_once()
+                single.assert_not_called()
+                info = batch.call_args.args[3][1]
+                assert info.paramSQLType == sql_type
+                assert info.paramCType == mssql_python.SQL_WCHAR
+                assert info.columnSize == column_size
+
+            cur.execute("SELECT id, txt FROM #gh906 ORDER BY id")
+            assert [tuple(row) for row in cur.fetchall()] == list(enumerate(values))
+        finally:
+            cur.execute("DROP TABLE #gh906")
+
+
+@pytest.mark.parametrize("sql_type", [mssql_python.SQL_VARCHAR, mssql_python.SQL_WVARCHAR])
+def test_executemany_string_column_preserves_explicit_type(db_connection, sql_type):
+    """GH-906: caller-specified SQL types take precedence over batch inference."""
+    from mssql_python import ddbc_bindings
+
+    with db_connection.cursor() as cur:
+        cur.execute("CREATE TABLE #gh906_explicit (txt NVARCHAR(100))")
+        try:
+            cur.setinputsizes([(sql_type, 100, 0)])
+            with patch.object(
+                ddbc_bindings, "SQLExecuteMany", wraps=ddbc_bindings.SQLExecuteMany
+            ) as batch:
+                cur.executemany(
+                    "INSERT INTO #gh906_explicit VALUES (?)",
+                    [("longer ASCII sample",), ("\u0158\u00edm",)],
+                )
+            batch.assert_called_once()
+            info = batch.call_args.args[3][0]
+            assert info.paramSQLType == sql_type
+            assert info.columnSize == 100
+            if sql_type == mssql_python.SQL_WVARCHAR:
+                cur.execute("SELECT txt FROM #gh906_explicit ORDER BY LEN(txt) DESC")
+                assert [row[0] for row in cur.fetchall()] == [
+                    "longer ASCII sample",
+                    "\u0158\u00edm",
+                ]
+        finally:
+            cur.execute("DROP TABLE #gh906_explicit")
+
+
+def test_executemany_string_column_inference_is_per_column(db_connection):
+    """GH-906: one column's Unicode requirement must not affect other columns."""
+    from mssql_python import ddbc_bindings
+
+    rows = [
+        (0, "longer ASCII sample", "ASCII only", "\u0158"),
+        (1, "\u0e23\u0e49\u0e32\u0e19", "short", "A" * 60),
+    ]
+    with db_connection.cursor() as cur:
+        cur.execute(
+            "CREATE TABLE #gh906_columns "
+            "(id INT, a NVARCHAR(100), b VARCHAR(100), c NVARCHAR(100))"
+        )
+        try:
+            with patch.object(
+                ddbc_bindings, "SQLExecuteMany", wraps=ddbc_bindings.SQLExecuteMany
+            ) as batch:
+                cur.executemany("INSERT INTO #gh906_columns VALUES (?, ?, ?, ?)", rows)
+            batch.assert_called_once()
+            assert [info.paramSQLType for info in batch.call_args.args[3][1:]] == [
+                mssql_python.SQL_WVARCHAR,
+                mssql_python.SQL_VARCHAR,
+                mssql_python.SQL_WVARCHAR,
+            ]
+            cur.execute("SELECT id, a, b, c FROM #gh906_columns ORDER BY id")
+            assert [tuple(row) for row in cur.fetchall()] == rows
+        finally:
+            cur.execute("DROP TABLE #gh906_columns")
+
+
+@pytest.mark.parametrize("mixed", [False, True], ids=["subclasses", "mixed-text"])
+@pytest.mark.parametrize("reverse", [False, True])
+def test_executemany_unicode_subclass_uses_native_payload(db_connection, mixed, reverse):
+    from mssql_python import ddbc_bindings
+
+    class Text(str):
+        def encode(self, *args, **kwargs):
+            raise AssertionError("Native binding does not call subclass encode()")
+
+        def isascii(self):
+            return True
+
+        def __len__(self):
+            return 0
+
+    values = [Text("\u0158"), Text("\U0001f600" * 6)]
+    if mixed:
+        values.insert(0, "longer ASCII sample")
+    if reverse:
+        values.reverse()
+    with db_connection.cursor() as cur:
+        cur.execute("CREATE TABLE #unicode_subclass (id INT, value NVARCHAR(20))")
+        try:
+            with patch.object(
+                ddbc_bindings, "SQLExecuteMany", wraps=ddbc_bindings.SQLExecuteMany
+            ) as batch:
+                cur.executemany(
+                    "INSERT INTO #unicode_subclass VALUES (?, ?)", list(enumerate(values))
+                )
+            batch.assert_called_once()
+            cur.execute("SELECT value FROM #unicode_subclass ORDER BY id")
+            assert [row[0] for row in cur.fetchall()] == values
+        finally:
+            cur.execute("DROP TABLE #unicode_subclass")
+
+
+@pytest.mark.parametrize("payload", ["\ud800", "\udfff"], ids=["high-surrogate", "low-surrogate"])
+def test_executemany_invalid_unicode_recovers(db_connection, payload):
+    with db_connection.cursor() as cur:
+        cur.execute("CREATE TABLE #invalid_unicode (value NVARCHAR(20))")
+        try:
+            with pytest.raises(RuntimeError, match="Unable to cast Python instance"):
+                cur.executemany("INSERT INTO #invalid_unicode VALUES (?)", [("ASCII",), (payload,)])
+            cur.execute("SELECT COUNT(*) FROM #invalid_unicode")
+            assert cur.fetchone()[0] == 0
+            cur.executemany("INSERT INTO #invalid_unicode VALUES (?)", [("\u0158",), ("ASCII",)])
+            cur.execute("SELECT value FROM #invalid_unicode ORDER BY LEN(value)")
+            assert [row[0] for row in cur.fetchall()] == ["\u0158", "ASCII"]
+        finally:
+            cur.execute("DROP TABLE #invalid_unicode")
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.parametrize(
+    "values, sql_type, precision, scale",
+    [
+        (
+            [decimal.Decimal("1234567890123456.7"), decimal.Decimal("0.001")],
+            "DECIMAL(38,10)",
+            19,
+            3,
+        ),
+        ([decimal.Decimal("123456.78"), decimal.Decimal("0.0000001234")], "DECIMAL(38,10)", 16, 10),
+        ([decimal.Decimal("-" + "9" * 38), decimal.Decimal("1")], "DECIMAL(38,0)", 38, 0),
+        ([decimal.Decimal("-0." + "0" * 37 + "1"), decimal.Decimal("0")], "DECIMAL(38,38)", 38, 38),
+        ([decimal.Decimal("1E+37"), decimal.Decimal("2")], "DECIMAL(38,0)", 38, 0),
+        ([decimal.Decimal("1E+37"), decimal.Decimal("1E-38")], "NVARCHAR(100)", 76, 38),
+    ],
+    ids=[
+        "mixed-scale",
+        "money-range",
+        "signed-38",
+        "fractional-38",
+        "positive-exponent",
+        "incompatible-shapes",
+    ],
+)
+def test_executemany_decimal_column_inference(
+    db_connection, reverse, values, sql_type, precision, scale
+):
+    """A Decimal batch needs independent maxima for integer digits and scale."""
+    from mssql_python import ddbc_bindings
+
+    values = list(reversed(values)) if reverse else values
+    with db_connection.cursor() as cur:
+        cur.execute(f"CREATE TABLE #decimal_shapes (id INT, value {sql_type})")
+        try:
+            for i, value in enumerate(values):
+                cur.execute("INSERT INTO #decimal_shapes VALUES (?, ?)", (i, value))
+            cur.execute("SELECT value FROM #decimal_shapes ORDER BY id")
+            expected = [row[0] for row in cur.fetchall()]
+            cur.execute("DELETE FROM #decimal_shapes")
+            with patch.object(
+                ddbc_bindings, "SQLExecuteMany", wraps=ddbc_bindings.SQLExecuteMany
+            ) as batch:
+                cur.executemany(
+                    "INSERT INTO #decimal_shapes VALUES (?, ?)", list(enumerate(values))
+                )
+            if precision > 38:
+                batch.assert_not_called()
+            else:
+                batch.assert_called_once()
+                info = batch.call_args.args[3][1]
+                assert info.paramSQLType == mssql_python.SQL_NUMERIC
+                assert info.columnSize == precision
+                assert info.decimalDigits == scale
+            cur.execute("SELECT value FROM #decimal_shapes ORDER BY id")
+            assert [row[0] for row in cur.fetchall()] == expected
+        finally:
+            cur.execute("DROP TABLE #decimal_shapes")
+
+
+@pytest.mark.parametrize("named", [False, True], ids=["qmark", "pyformat"])
+@pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.parametrize(
+    "values, sql_type",
+    [
+        ([True, -1, None], "DECIMAL(38,10)"),
+        ([True, 0.5, None], "DECIMAL(38,10)"),
+        ([1, decimal.Decimal("0.001"), None], "DECIMAL(38,10)"),
+        ([1, 0.5, None], "DECIMAL(38,10)"),
+        ([date(2026, 1, 1), datetime(2026, 1, 2, 12, 34, 56), None], "DATETIME2(6)"),
+        (
+            [
+                datetime(2026, 1, 1),
+                datetime(2026, 1, 2, 12, 34, 56, tzinfo=timezone(timedelta(hours=5, minutes=30))),
+                None,
+            ],
+            "DATETIMEOFFSET(6)",
+        ),
+    ],
+    ids=["bool-negative", "bool-float", "int-decimal", "int-float", "date-datetime", "naive-aware"],
+)
+def test_executemany_mixed_column_preserves_single_execute(
+    db_connection, reverse, named, values, sql_type
+):
+    """Incompatible types must not be coerced through one representative value."""
+    values = list(reversed(values)) if reverse else values
+    with db_connection.cursor() as cur:
+        cur.execute(f"CREATE TABLE #mixed_shapes (id INT, value {sql_type})")
+        try:
+            for i, value in enumerate(values):
+                cur.execute("INSERT INTO #mixed_shapes VALUES (?, ?)", (i, value))
+            cur.execute("SELECT value FROM #mixed_shapes ORDER BY id")
+            expected = [row[0] for row in cur.fetchall()]
+            cur.execute("DELETE FROM #mixed_shapes")
+            if named:
+                cur.executemany(
+                    "INSERT INTO #mixed_shapes VALUES (%(id)s, %(value)s)",
+                    [{"id": i, "value": value} for i, value in enumerate(values)],
+                )
+            else:
+                cur.executemany("INSERT INTO #mixed_shapes VALUES (?, ?)", list(enumerate(values)))
+            assert cur.rowcount == len(values)
+            cur.execute("SELECT value FROM #mixed_shapes ORDER BY id")
+            assert [row[0] for row in cur.fetchall()] == expected
+        finally:
+            cur.execute("DROP TABLE #mixed_shapes")
+
+
+@pytest.mark.parametrize("sql_type", [mssql_python.SQL_DECIMAL, mssql_python.SQL_NUMERIC])
+def test_executemany_decimal_precision_is_not_buffer_capacity(db_connection, sql_type):
+    from mssql_python import ddbc_bindings
+
+    values = [decimal.Decimal("-0.01"), decimal.Decimal("12.34"), None]
+    with db_connection.cursor() as cur:
+        cur.execute("CREATE TABLE #decimal_capacity (id INT, value DECIMAL(4,2))")
+        try:
+            cur.setinputsizes([(mssql_python.SQL_INTEGER, 0, 0), (sql_type, 4, 2)])
+            with patch.object(
+                ddbc_bindings, "SQLExecuteMany", wraps=ddbc_bindings.SQLExecuteMany
+            ) as batch:
+                cur.executemany(
+                    "INSERT INTO #decimal_capacity VALUES (?, ?)", list(enumerate(values))
+                )
+            info = batch.call_args.args[3][1]
+            assert info.paramSQLType == sql_type
+            assert info.columnSize == 4
+            assert info.decimalDigits == 2
+            cur.execute("SELECT value FROM #decimal_capacity ORDER BY id")
+            assert [row[0] for row in cur.fetchall()] == values
+        finally:
+            cur.execute("DROP TABLE #decimal_capacity")
+
+
+def test_executemany_money_range_numeric_comparison(db_connection):
+    """GH-745: a numeric parameter must not be coerced through VARCHAR."""
+    with db_connection.cursor() as cur:
+        cur.execute("CREATE TABLE #numeric_comparison (value NUMERIC(5,2), touched BIT)")
+        try:
+            cur.execute("INSERT INTO #numeric_comparison VALUES (1.25, 0)")
+            cur.executemany(
+                "UPDATE #numeric_comparison SET touched = 1 WHERE value = ?",
+                [(decimal.Decimal("12345.6789"),), (decimal.Decimal("0.001"),)],
+            )
+            cur.execute("SELECT touched FROM #numeric_comparison")
+            assert cur.fetchone()[0] is False
+        finally:
+            cur.execute("DROP TABLE #numeric_comparison")
+
+
+def test_executemany_mixed_fallback_reapplies_partial_overrides(db_connection):
+    with db_connection.cursor() as cur:
+        cur.execute("CREATE TABLE #mixed_overrides (kind NVARCHAR(20), value DECIMAL(38,10))")
+        try:
+            cur.setinputsizes([(mssql_python.SQL_WVARCHAR, 20, 0)])
+            with pytest.warns(Warning, match="Number of input sizes"):
+                cur.executemany(
+                    "INSERT INTO #mixed_overrides SELECT "
+                    "CAST(SQL_VARIANT_PROPERTY(?, 'BaseType') AS NVARCHAR(20)), ?",
+                    [("ASCII", 1), ("ASCII", decimal.Decimal("0.001"))],
+                )
+            assert cur.rowcount == 2
+            assert cur._inputsizes is None
+            cur.execute("SELECT kind, value FROM #mixed_overrides ORDER BY value DESC")
+            assert [tuple(row) for row in cur.fetchall()] == [
+                ("nvarchar", decimal.Decimal("1")),
+                ("nvarchar", decimal.Decimal("0.001")),
+            ]
+        finally:
+            cur.execute("DROP TABLE #mixed_overrides")
+
+
+@pytest.mark.parametrize("streamed", [False, True], ids=["mixed-types", "streaming"])
+def test_executemany_fallback_accepts_generic_row_sequences(db_connection, streamed):
+    from collections import UserList
+    from mssql_python import ddbc_bindings
+
+    values = ["A" * 4001, "\u0158"] if streamed else [1, 0.5]
+    with db_connection.cursor() as cur:
+        cur.execute("CREATE TABLE #generic_batch_rows (id INT, value NVARCHAR(MAX))")
+        try:
+            for index, value in enumerate(values):
+                cur.execute("INSERT INTO #generic_batch_rows VALUES (?, ?)", (index, value))
+            cur.execute("SELECT value FROM #generic_batch_rows ORDER BY id")
+            expected = [row[0] for row in cur.fetchall()]
+            cur.execute("DELETE FROM #generic_batch_rows")
+            with patch.object(
+                ddbc_bindings, "SQLExecuteMany", wraps=ddbc_bindings.SQLExecuteMany
+            ) as batch:
+                cur.executemany(
+                    "INSERT INTO #generic_batch_rows VALUES (?, ?)",
+                    [UserList([index, value]) for index, value in enumerate(values)],
+                )
+            batch.assert_not_called()
+            assert cur.rowcount == len(values)
+            cur.execute("SELECT value FROM #generic_batch_rows ORDER BY id")
+            assert [row[0] for row in cur.fetchall()] == expected
+        finally:
+            cur.execute("DROP TABLE #generic_batch_rows")
+
+
+@pytest.mark.parametrize("sql_type", [mssql_python.SQL_DECIMAL, mssql_python.SQL_NUMERIC])
+@pytest.mark.parametrize("streamed", [False, True], ids=["mixed-types", "streaming"])
+def test_executemany_fallback_normalizes_numeric_overrides(db_connection, sql_type, streamed):
+    from mssql_python import ddbc_bindings
+
+    values = [(42, 1), (19.99, 0.5), (None, None)]
+    if streamed:
+        values = [(42, "A" * 4001), (19.99, "\u0158"), (None, None)]
+    second_type = "NVARCHAR(MAX)" if streamed else "DECIMAL(18,2)"
+    with db_connection.cursor() as cur:
+        cur.execute(f"CREATE TABLE #fallback_numeric (amount DECIMAL(18,2), value {second_type})")
+        try:
+            cur.setinputsizes([(sql_type, 18, 2)])
+            with (
+                pytest.warns(Warning, match="Number of input sizes"),
+                patch.object(
+                    ddbc_bindings, "SQLExecuteMany", wraps=ddbc_bindings.SQLExecuteMany
+                ) as batch,
+            ):
+                cur.executemany("INSERT INTO #fallback_numeric VALUES (?, ?)", values)
+            batch.assert_not_called()
+            assert cur.rowcount == 3
+            assert cur._inputsizes is None
+            cur.execute("SELECT amount, value FROM #fallback_numeric ORDER BY amount DESC")
+            assert [tuple(row) for row in cur.fetchall()] == [
+                (decimal.Decimal("42.00"), "A" * 4001 if streamed else decimal.Decimal("1")),
+                (decimal.Decimal("19.99"), "\u0158" if streamed else decimal.Decimal("0.5")),
+                (None, None),
+            ]
+        finally:
+            cur.execute("DROP TABLE #fallback_numeric")
+
+
+@pytest.mark.parametrize("exploding", [False, True], ids=["invalid-text", "str-error"])
+def test_executemany_fallback_numeric_error_no_leak(db_connection, exploding):
+    secret = "sensitive-invalid-numeric-value"
+
+    class ExplodingStr:
+        def __str__(self):
+            raise ValueError(secret)
+
+    with db_connection.cursor() as cur:
+        cur.execute("CREATE TABLE #fallback_numeric_error (amount DECIMAL(18,2), value FLOAT)")
+        try:
+            cur.setinputsizes([(mssql_python.SQL_DECIMAL, 18, 2)])
+            with (
+                pytest.warns(Warning, match="Number of input sizes"),
+                pytest.raises(ValueError) as exc_info,
+            ):
+                cur.executemany(
+                    "INSERT INTO #fallback_numeric_error VALUES (?, ?)",
+                    [(ExplodingStr() if exploding else secret, 1), ("19.99", 0.5)],
+                )
+            assert "row 0, column 0" in str(exc_info.value)
+            assert secret not in str(exc_info.value)
+            assert exc_info.value.__cause__ is None
+            assert exc_info.value.__context__ is None
+            assert secret not in "".join(traceback.format_exception(exc_info.value))
+            assert cur._inputsizes is None
+            cur.executemany("INSERT INTO #fallback_numeric_error VALUES (?, ?)", [(1, 1), (2, 2)])
+            assert cur.rowcount == 2
+        finally:
+            cur.execute("DROP TABLE #fallback_numeric_error")
+
+
+@pytest.mark.parametrize("nocount", [False, True])
+def test_executemany_mixed_fallback_aggregates_rowcounts(db_connection, nocount):
+    with db_connection.cursor() as cur:
+        cur.execute("CREATE TABLE #mixed_counts (value DECIMAL(38,10), touched BIT)")
+        try:
+            cur.execute("INSERT INTO #mixed_counts VALUES (1, 0), (1, 0), (1, 0), (2, 0)")
+            if nocount:
+                cur.execute("SET NOCOUNT ON")
+            cur.executemany(
+                "UPDATE #mixed_counts SET touched = 1 WHERE value = ?",
+                [(True,), (decimal.Decimal("999"),)],
+            )
+            assert cur.rowcount == (-1 if nocount else 3)
+            cur.execute("SELECT COUNT(*) FROM #mixed_counts WHERE touched = 1")
+            assert cur.fetchone()[0] == 3
+        finally:
+            cur.execute("SET NOCOUNT OFF")
+            cur.execute("DROP TABLE #mixed_counts")
+
+
+@pytest.mark.parametrize(
+    "values, error",
+    [
+        ([decimal.Decimal("12345"), decimal.Decimal("1E+38")], ValueError),
+        ([decimal.Decimal("1.25"), decimal.Decimal("NaN")], ValueError),
+        ([True, decimal.Decimal("Infinity")], ValueError),
+        (["valid", object()], TypeError),
+    ],
+    ids=["hidden-precision-overflow", "nonfinite", "mixed-nonfinite", "unsupported"],
+)
+def test_executemany_inference_error_recovery(db_connection, values, error):
+    with db_connection.cursor() as cur:
+        cur.execute("CREATE TABLE #inference_recovery (value NVARCHAR(100))")
+        try:
+            with pytest.raises(error):
+                cur.executemany(
+                    "INSERT INTO #inference_recovery VALUES (?)", [(value,) for value in values]
+                )
+            cur.execute("DELETE FROM #inference_recovery")
+            cur.executemany(
+                "INSERT INTO #inference_recovery VALUES (?)",
+                [("longer ASCII sample",), ("\u0158\u00edm",)],
+            )
+            cur.execute("SELECT value FROM #inference_recovery ORDER BY LEN(value) DESC")
+            assert [row[0] for row in cur.fetchall()] == ["longer ASCII sample", "\u0158\u00edm"]
+        finally:
+            cur.execute("DROP TABLE #inference_recovery")
+
+
+@pytest.mark.parametrize(
+    "kind", ["text", "decimal", "integer", "binary", "mixed-numeric", "temporal"]
+)
+def test_executemany_generated_batches_match_execute(db_connection, kind):
+    """Exercise deterministic combinations, boundaries, and order permutations."""
+    scenarios = {
+        "text": (
+            "NVARCHAR(MAX)",
+            [
+                None,
+                "",
+                "plain ASCII text",
+                "\u0158\u00edm",
+                "\u0e23\u0e49\u0e32\u0e19",
+                "\U0001f600" * 6,
+                "A\x00B",
+                "A" * 3999,
+                "\U0001f600" * 2000,
+                "\U0001f600" * 2001,
+            ],
+        ),
+        "decimal": (
+            "DECIMAL(38,10)",
+            [
+                None,
+                decimal.Decimal("0"),
+                decimal.Decimal("-0.0001"),
+                decimal.Decimal("1E+20"),
+                decimal.Decimal("1E-10"),
+                decimal.Decimal("-99999999999999999999.1234567890"),
+            ],
+        ),
+        "integer": (
+            "BIGINT",
+            [None, True, False, -1, 0, 1, 255, 256, -(2**31), 2**31, -(2**63), 2**63 - 1],
+        ),
+        "binary": (
+            "VARBINARY(MAX)",
+            [None, b"", b"\x00", bytearray(b"\xff\x00\x01"), b"A" * 8000, b"B" * 8001],
+        ),
+        "mixed-numeric": (
+            "DECIMAL(38,10)",
+            [None, True, False, -1, 1, 0.5, decimal.Decimal("0.001")],
+        ),
+        "temporal": (
+            "DATETIMEOFFSET(6)",
+            [
+                None,
+                date(2026, 1, 1),
+                datetime(2026, 1, 2, 12, 34, 56, 123456),
+                datetime(2026, 1, 3, 12, 34, 56, 654321, tzinfo=timezone.utc),
+                datetime(
+                    2026, 1, 4, 12, 34, 56, 123456, tzinfo=timezone(timedelta(hours=5, minutes=30))
+                ),
+            ],
+        ),
+    }
+    sql_type, pool = scenarios[kind]
+    operation = "INSERT INTO #generated_batches VALUES (?, ?)"
+    if kind == "binary":
+        # Give the single-row reference typed NULL context for its temporary table.
+        operation = "INSERT INTO #generated_batches VALUES (?, CAST(? AS VARBINARY(MAX)))"
+    with db_connection.cursor() as cur:
+        cur.execute(f"CREATE TABLE #generated_batches (id INT, value {sql_type})")
+        try:
+            for case in range(20):
+                values = [pool[(case * (i + 1) + i * i) % len(pool)] for i in range(6)]
+                for i, value in enumerate(values):
+                    cur.execute(operation, (i, value))
+                cur.execute("SELECT value FROM #generated_batches ORDER BY id")
+                expected = [row[0] for row in cur.fetchall()]
+                cur.execute("DELETE FROM #generated_batches")
+                cur.executemany(operation, list(enumerate(values)))
+                assert cur.rowcount == len(values), f"{kind} rowcount case {case}"
+                cur.execute("SELECT value FROM #generated_batches ORDER BY id")
+                actual = [row[0] for row in cur.fetchall()]
+                assert actual == expected, f"{kind} case {case}"
+                if kind == "temporal":
+                    assert [
+                        value.utcoffset() if value is not None else None for value in actual
+                    ] == [
+                        value.utcoffset() if value is not None else None for value in expected
+                    ], f"{kind} offsets case {case}"
+                cur.execute("DELETE FROM #generated_batches")
+        finally:
+            cur.execute("DROP TABLE #generated_batches")
+
+
+@pytest.mark.parametrize("kind", ["text", "bool-int", "decimal"])
+def test_executemany_small_domain_combinations(db_connection, kind):
+    """Exhaust small domains so every ordering, tie and NULL position is covered."""
+    from itertools import product
+
+    pools = {
+        "text": ("NVARCHAR(20)", [None, "", "ASCII", "\u0158", "\U0001f600", "A\x00"]),
+        "bool-int": ("BIGINT", [None, False, True, -1, 0, 1]),
+        "decimal": (
+            "DECIMAL(38,10)",
+            [None, decimal.Decimal("0"), decimal.Decimal("-0.001"), decimal.Decimal("9999.9")],
+        ),
+    }
+    sql_type, pool = pools[kind]
+    with db_connection.cursor() as cur:
+        cur.execute(f"CREATE TABLE #domain_batches (id INT PRIMARY KEY, value {sql_type})")
+        try:
+            for values in product(pool, repeat=3):
+                cur.executemany(
+                    "INSERT INTO #domain_batches VALUES (?, ?)", list(enumerate(values))
+                )
+                assert cur.rowcount == 3
+                cur.execute("SELECT value FROM #domain_batches ORDER BY id")
+                actual = [row[0] for row in cur.fetchall()]
+                assert actual == list(values), f"{kind}: {values!r}"
+                cur.execute("DELETE FROM #domain_batches")
+        finally:
+            cur.execute("DROP TABLE #domain_batches")
+
+
+def test_executemany_typed_nulls_through_procedure(db_connection):
+    procedure = f"pytest_batch_nulls_{uuid.uuid4().hex}"
+    identifier = uuid.UUID("12345678-1234-5678-1234-567812345678")
+    values = [
+        (2, b"\x00\xff", identifier, "<r>\u0158</r>", decimal.Decimal("1234567890123456.7")),
+        (3, None, None, None, None),
+        (4, bytearray(b"\xff"), identifier, "<r>x</r>", decimal.Decimal("0.001")),
+    ]
+    with db_connection.cursor() as cur:
+        cur.execute(
+            "CREATE TABLE #typed_nulls "
+            "(id INT, payload VARBINARY(8), identifier UNIQUEIDENTIFIER, "
+            "document XML, amount DECIMAL(38,10))"
+        )
+        try:
+            cur.execute(
+                f"CREATE PROCEDURE {procedure} @id INT, @payload VARBINARY(8), "
+                "@identifier UNIQUEIDENTIFIER, @document XML, @amount DECIMAL(38,10) AS "
+                "INSERT INTO #typed_nulls VALUES (@id, @payload, @identifier, @document, @amount)"
+            )
+            operation = f"{{CALL {procedure} (?, ?, ?, ?, ?)}}"
+            cur.executemany(operation, [(0, None, None, None, None), (1, None, None, None, None)])
+            cur.executemany(operation, values)
+            cur.execute(
+                "SELECT id, payload, identifier, document, amount FROM #typed_nulls ORDER BY id"
+            )
+            assert [tuple(row) for row in cur.fetchall()] == [
+                (0, None, None, None, None),
+                (1, None, None, None, None),
+                values[0],
+                values[1],
+                (4, b"\xff", identifier, "<r>x</r>", decimal.Decimal("0.001")),
+            ]
+        finally:
+            cur.execute(f"DROP PROCEDURE IF EXISTS {procedure}")
+            cur.execute("DROP TABLE #typed_nulls")
+
+
 def test_executemany_large_batch_with_empty_strings(cursor, db_connection):
     """Test executemany with large batch containing empty strings"""
     try:
@@ -3721,6 +4439,8 @@ def test_row_mapping_none_column_map():
     assert mapping.get("missing", "fallback") == "fallback"
     assert mapping.get("missing") is None
     assert ("missing" in mapping) is False
+    with pytest.raises(AttributeError, match="missing"):
+        _ = row.missing
 
 
 def test_row_mapping_dedup_fallback():
@@ -7793,7 +8513,79 @@ def test_cursor_messages_nextset_trailing_print(cursor):
     assert not cursor.nextset()
 
 
-def test_tables_setup(cursor, db_connection):
+def test_nextset_updates_rowcount(cursor, db_connection):
+    """Test that nextset() refreshes rowcount for each statement of a batch.
+
+    execute() sets rowcount from the first statement only; each later
+    INSERT/UPDATE/DELETE result must report its own count after nextset(),
+    and a result set must report -1, as after execute().
+    """
+    try:
+        cursor.execute("CREATE TABLE #nextset_rowcount (id INT)")
+        db_connection.commit()
+
+        cursor.execute("""
+            INSERT INTO #nextset_rowcount VALUES (1);
+            INSERT INTO #nextset_rowcount VALUES (2), (3);
+            SELECT id FROM #nextset_rowcount;
+            UPDATE #nextset_rowcount SET id = id + 10;
+            DELETE FROM #nextset_rowcount WHERE id = 99;
+            """)
+        assert cursor.rowcount == 1, "execute() should report the first INSERT"
+
+        assert cursor.nextset()
+        assert cursor.rowcount == 2, "nextset() should report the second INSERT"
+
+        assert cursor.nextset()
+        assert cursor.description is not None
+        assert cursor.rowcount == -1, "A result set should report -1 before fetching"
+        assert len(cursor.fetchall()) == 3
+
+        assert cursor.nextset()
+        assert cursor.rowcount == 3, "nextset() should report the UPDATE"
+
+        assert cursor.nextset()
+        assert cursor.rowcount == 0, "nextset() should report a DELETE matching no rows"
+
+        assert not cursor.nextset()
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #nextset_rowcount")
+        db_connection.commit()
+
+
+def test_nextset_rowcount_in_loop_batch(cursor, db_connection):
+    """Test that the per-statement counts of a T-SQL loop can be summed.
+
+    A WHILE loop sends one result per INSERT; summing rowcount over
+    nextset() must give the number of rows the batch inserted. Each
+    iteration inserts a different number of rows (1, 2, 3), so a stale
+    rowcount cannot add up to the right total by accident.
+    """
+    try:
+        cursor.execute("CREATE TABLE #nextset_loop (id INT)")
+        db_connection.commit()
+
+        cursor.execute("""
+            DECLARE @i INT = 1;
+            WHILE @i <= 3
+            BEGIN
+                INSERT INTO #nextset_loop
+                SELECT TOP (@i) n FROM (VALUES (1), (2), (3)) AS v(n);
+                SET @i = @i + 1;
+            END;
+            """)
+        counts = [cursor.rowcount]
+        while cursor.nextset():
+            counts.append(cursor.rowcount)
+
+        assert counts == [1, 2, 3], f"Per-statement rowcounts should be [1, 2, 3], got {counts}"
+        assert sum(counts) == 6
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #nextset_loop")
+        db_connection.commit()
+
+
+def _setup_tables(cursor, db_connection):
     """Create test objects for tables method testing"""
     try:
         # Create a test schema for isolation
@@ -7837,7 +8629,7 @@ def test_tables_all(cursor, db_connection):
     """Test tables returns information about all tables/views"""
     try:
         # First set up our test tables
-        test_tables_setup(cursor, db_connection)
+        _setup_tables(cursor, db_connection)
 
         # Get all tables (no filters)
         tables_list = cursor.tables().fetchall()
@@ -9577,32 +10369,6 @@ def test_fetchmany_uuids(cursor, db_connection):
         db_connection.commit()
 
 
-def test_uuid_insert_with_none(cursor, db_connection):
-    """Test inserting None into a UUID column results in a NULL value."""
-    table_name = "#pytest_uuid_none"
-    try:
-        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
-        cursor.execute(f"""
-            CREATE TABLE {table_name} (
-                id UNIQUEIDENTIFIER,
-                name NVARCHAR(50)
-            )
-        """)
-        db_connection.commit()
-
-        cursor.execute(f"INSERT INTO {table_name} (id, name) VALUES (?, ?)", [None, "Alice"])
-        db_connection.commit()
-
-        cursor.execute(f"SELECT id, name FROM {table_name}")
-        retrieved_uuid, retrieved_name = cursor.fetchone()
-
-        assert retrieved_uuid is None, f"Expected NULL UUID, got {retrieved_uuid}"
-        assert retrieved_name == "Alice"
-    finally:
-        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
-        db_connection.commit()
-
-
 def test_invalid_uuid_inserts(cursor, db_connection):
     """Test inserting invalid UUID values raises appropriate errors."""
     table_name = "#pytest_uuid_invalid"
@@ -10529,20 +11295,21 @@ def test_setinputsizes_sql_decimal_unconvertible_value(db_connection):
 
 
 def test_setinputsizes_sql_decimal_str_raises_no_leak(db_connection):
-    """A parameter whose str() raises must not leak the exception text (GH-503).
+    """A parameter whose str() raises RuntimeError must not leak the text (GH-503).
 
     Exception chaining (raise ... from e) can surface a value-bearing cause
     through __cause__ and formatted tracebacks. For a value whose str() raises,
     the chain must be suppressed so the metadata-only guarantee holds across
-    tracebacks and APM/log shippers, not just str(exc).
+    tracebacks and APM/log shippers, not just str(exc). The sizing pass must
+    not convert independently, or a raw RuntimeError escapes sanitization.
     """
     cursor = db_connection.cursor()
 
-    secret = "secret-987-65-4321"
+    secret = "synthetic-private-parameter"
 
     class ExplodingStr:
         def __str__(self):
-            raise ValueError(secret)
+            raise RuntimeError(secret)
 
     cursor.execute("DROP TABLE IF EXISTS #test_sis_dec_explode")
     try:
@@ -11359,7 +12126,7 @@ def test_gettypeinfo_cached_results(cursor):
         ), f"Expected SQL_VARCHAR type, got {row.data_type}"
 
 
-def test_procedures_setup(cursor, db_connection):
+def _setup_procedures(cursor, db_connection):
     """Create a test schema and procedures for testing"""
     try:
         # Create a test schema for isolation
@@ -11395,7 +12162,7 @@ def test_procedures_setup(cursor, db_connection):
 def test_procedures_all(cursor, db_connection):
     """Test getting information about all procedures"""
     # First set up our test procedures
-    test_procedures_setup(cursor, db_connection)
+    _setup_procedures(cursor, db_connection)
 
     try:
         # Get all procedures
@@ -11638,7 +12405,7 @@ def test_procedures_cleanup(cursor, db_connection):
         pytest.fail(f"Test cleanup failed: {e}")
 
 
-def test_foreignkeys_setup(cursor, db_connection):
+def _setup_foreignkeys(cursor, db_connection):
     """Create tables with foreign key relationships for testing"""
     try:
         # Create a test schema for isolation
@@ -11690,7 +12457,7 @@ def test_foreignkeys_all(cursor, db_connection):
     """Test getting all foreign keys"""
     try:
         # First set up our test tables
-        test_foreignkeys_setup(cursor, db_connection)
+        _setup_foreignkeys(cursor, db_connection)
 
         # Get all foreign keys
         fks = cursor.foreignKeys(table="orders", schema="pytest_fk_schema").fetchall()
@@ -11720,7 +12487,7 @@ def test_foreignkeys_specific_table(cursor, db_connection):
     """Test getting foreign keys for a specific table"""
     try:
         # First set up our test tables
-        test_foreignkeys_setup(cursor, db_connection)
+        _setup_foreignkeys(cursor, db_connection)
 
         # Get foreign keys for the orders table
         fks = cursor.foreignKeys(table="orders", schema="pytest_fk_schema").fetchall()
@@ -11746,7 +12513,7 @@ def test_foreignkeys_specific_foreign_table(cursor, db_connection):
     """Test getting foreign keys that reference a specific table"""
     try:
         # First set up our test tables
-        test_foreignkeys_setup(cursor, db_connection)
+        _setup_foreignkeys(cursor, db_connection)
 
         # Get foreign keys that reference the customers table
         fks = cursor.foreignKeys(
@@ -11776,7 +12543,7 @@ def test_foreignkeys_both_tables(cursor, db_connection):
     """Test getting foreign keys with both table and foreignTable specified"""
     try:
         # First set up our test tables
-        test_foreignkeys_setup(cursor, db_connection)
+        _setup_foreignkeys(cursor, db_connection)
 
         # Get foreign keys between the two tables
         fks = cursor.foreignKeys(
@@ -11817,7 +12584,7 @@ def test_foreignkeys_catalog_schema(cursor, db_connection):
     """Test foreignKeys() with catalog and schema filters"""
     try:
         # First set up our test tables
-        test_foreignkeys_setup(cursor, db_connection)
+        _setup_foreignkeys(cursor, db_connection)
 
         # Get current database name
         cursor.execute("SELECT DB_NAME() AS current_db")
@@ -11848,7 +12615,7 @@ def test_foreignkeys_result_structure(cursor, db_connection):
     """Test the structure of foreignKeys result rows"""
     try:
         # First set up our test tables
-        test_foreignkeys_setup(cursor, db_connection)
+        _setup_foreignkeys(cursor, db_connection)
 
         # Get foreign keys for the orders table
         fks = cursor.foreignKeys(table="orders", schema="pytest_fk_schema").fetchall()
@@ -11979,7 +12746,7 @@ def test_cleanup_schema(cursor, db_connection):
         pytest.fail(f"Schema cleanup failed: {e}")
 
 
-def test_primarykeys_setup(cursor, db_connection):
+def _setup_primarykeys(cursor, db_connection):
     """Create tables with primary keys for testing"""
     try:
         # Create a test schema for isolation
@@ -12019,7 +12786,7 @@ def test_primarykeys_simple(cursor, db_connection):
     """Test primaryKeys returns information about a simple primary key"""
     try:
         # First set up our test tables
-        test_primarykeys_setup(cursor, db_connection)
+        _setup_primarykeys(cursor, db_connection)
 
         # Get primary key information
         pks = cursor.primaryKeys("single_pk_test", schema="pytest_pk_schema").fetchall()
@@ -12714,7 +13481,7 @@ def test_specialcolumns_cleanup(cursor, db_connection):
         pytest.fail(f"Test cleanup failed: {e}")
 
 
-def test_statistics_setup(cursor, db_connection):
+def _setup_statistics(cursor, db_connection):
     """Create test tables and indexes for statistics testing"""
     try:
         # Create a test schema for isolation
@@ -12765,7 +13532,7 @@ def test_statistics_basic(cursor, db_connection):
     """Test basic functionality of statistics method"""
     try:
         # First set up our test tables
-        test_statistics_setup(cursor, db_connection)
+        _setup_statistics(cursor, db_connection)
 
         # Get statistics for the test table (all indexes)
         stats = cursor.statistics(table="stats_test", schema="pytest_stats_schema").fetchall()
@@ -13006,7 +13773,7 @@ def test_statistics_cleanup(cursor, db_connection):
         pytest.fail(f"Test cleanup failed: {e}")
 
 
-def test_columns_setup(cursor, db_connection):
+def _setup_columns(cursor, db_connection):
     """Create test tables for columns method testing"""
     try:
         # Create a test schema for isolation
@@ -13057,7 +13824,7 @@ def test_columns_all(cursor, db_connection):
     """Test columns returns information about all columns in all tables"""
     try:
         # First set up our test tables
-        test_columns_setup(cursor, db_connection)
+        _setup_columns(cursor, db_connection)
 
         # Get all columns (no filters)
         cols_cursor = cursor.columns()
@@ -14877,12 +15644,10 @@ def test_tables_error_handling(cursor):
         pass
 
 
-def test_callproc_not_supported_error(cursor):
-    """Test callproc NotSupportedError (Lines 2413-2421)."""
-
-    # This should always raise NotSupportedError (lines 2417-2420)
-    with pytest.raises(mssql_python.NotSupportedError, match="callproc.*is not yet implemented"):
-        cursor.callproc("test_proc")
+def test_callproc_invalid_name(cursor):
+    """Reject invalid procedure names before sending a request."""
+    with pytest.raises(ValueError, match="procedure"):
+        cursor.callproc("dbo..test_proc")
 
 
 def test_setoutputsize_no_op(cursor):
@@ -16738,6 +17503,20 @@ def _make_bare_cursor():
     return cur
 
 
+def _initialize_mock_query_operation(cur, monkeypatch):
+    from unittest.mock import MagicMock
+    from mssql_python import ddbc_bindings
+    from mssql_python._query_operation import QueryConnectionState, QuerySlot
+
+    cur.json_output = "text"
+    cur._connection.closed = False
+    cur._connection._query_state = QueryConnectionState()
+    cur._query_slot = QuerySlot()
+    operation = MagicMock()
+    operation.return_value.finish.return_value = False
+    monkeypatch.setattr(ddbc_bindings, "_StatementOperation", operation)
+
+
 def test_compute_column_type_large_decimal():
     """_compute_column_type picks the highest-precision Decimal as sample."""
     cur = _make_bare_cursor()
@@ -16771,6 +17550,415 @@ def test_map_sql_type_decimal_in_money_returns_varchar():
     sql_type, c_type, _, _, _ = cur._map_sql_type(val, dummy_row, 0)
     assert sql_type == _C.SQL_VARCHAR.value
     assert c_type == _C.SQL_C_CHAR.value
+
+
+def test_gh745_executemany_money_range_binds_as_numeric(monkeypatch):
+    """executemany auto-detect binds money-range Decimals as SQL_NUMERIC (GH-745)."""
+    from unittest.mock import MagicMock
+    from mssql_python import ddbc_bindings
+    from mssql_python.cursor import Cursor
+
+    cur = Cursor.__new__(Cursor)
+    cur._inputsizes = None
+    cur._timeout = 0
+    cur.closed = False
+    cur.hstmt = MagicMock()
+    cur.messages = []
+    cur.is_stmt_prepared = [False]
+    cur._connection = MagicMock()
+    cur._connection._encoding = "utf-8"
+    cur._connection._conn = MagicMock()
+    _initialize_mock_query_operation(cur, monkeypatch)
+    captured = {}
+
+    def fake_sql_execute_many(hstmt, op, col_params, param_types, row_count, enc):
+        captured["parameters_type"] = param_types
+        captured["columnwise_params"] = col_params
+        return 0
+
+    monkeypatch.setattr(cur, "_check_closed", lambda: None)
+    monkeypatch.setattr(cur, "_reset_cursor", lambda: None)
+    monkeypatch.setattr(ddbc_bindings, "SQLExecuteMany", fake_sql_execute_many)
+    monkeypatch.setattr(ddbc_bindings, "DDBCSQLGetAllDiagRecords", lambda h: [])
+    monkeypatch.setattr(ddbc_bindings, "DDBCSQLRowCount", lambda h: 2)
+    data = [
+        (decimal.Decimal("12.34"),),
+        (decimal.Decimal("12345.6789"),),
+        (decimal.Decimal("-0.1"),),
+    ]
+    cur.executemany("UPDATE t SET x = 1 WHERE v = ?", data)
+    pt = captured["parameters_type"]
+    assert len(pt) == 1
+    assert pt[0].paramSQLType == _C.SQL_NUMERIC.value
+    assert pt[0].paramCType == _C.SQL_C_CHAR.value
+    # columnSize is NUMERIC precision (not formatted-string length).
+    assert pt[0].columnSize == 9
+    assert pt[0].columnSize <= 38
+    assert pt[0].decimalDigits >= 4
+    longest = max(len(v) for v in captured["columnwise_params"][0])
+    assert pt[0].arrayBufferSize >= longest
+    for val in captured["columnwise_params"][0]:
+        assert isinstance(val, str)
+
+
+def test_gh745_executemany_near_max_precision_stays_within_38(monkeypatch):
+    """NUMERIC columnSize stays <= 38; CHAR bufferWidth fits Decimal("1E-38")."""
+    from unittest.mock import MagicMock
+    from mssql_python import ddbc_bindings
+    from mssql_python.cursor import Cursor
+
+    cur = Cursor.__new__(Cursor)
+    cur._inputsizes = None
+    cur._timeout = 0
+    cur.closed = False
+    cur.hstmt = MagicMock()
+    cur.messages = []
+    cur.is_stmt_prepared = [False]
+    cur._connection = MagicMock()
+    cur._connection._encoding = "utf-8"
+    cur._connection._conn = MagicMock()
+    _initialize_mock_query_operation(cur, monkeypatch)
+    captured = {}
+
+    def fake_sql_execute_many(hstmt, op, col_params, param_types, row_count, enc):
+        captured["parameters_type"] = param_types
+        captured["columnwise_params"] = col_params
+        return 0
+
+    monkeypatch.setattr(cur, "_check_closed", lambda: None)
+    monkeypatch.setattr(cur, "_reset_cursor", lambda: None)
+    monkeypatch.setattr(ddbc_bindings, "SQLExecuteMany", fake_sql_execute_many)
+    monkeypatch.setattr(ddbc_bindings, "DDBCSQLGetAllDiagRecords", lambda h: [])
+    monkeypatch.setattr(ddbc_bindings, "DDBCSQLRowCount", lambda h: 1)
+    # Decimal('1E-38') needs precision=38, scale=38. Formatted string length is > 38,
+    # so columnSize must stay at precision while arrayBufferSize covers the encoding.
+    tiny = decimal.Decimal("1E-38")
+    encoded = format(tiny, "f")
+    data = [(tiny,)]
+    cur.executemany("UPDATE t SET x = 1 WHERE v = ?", data)
+    pt = captured["parameters_type"][0]
+    assert pt.paramSQLType == _C.SQL_NUMERIC.value
+    assert pt.columnSize == 38
+    assert pt.decimalDigits == 38
+    assert len(encoded) == 40
+    assert pt.arrayBufferSize >= len(encoded)
+    assert captured["columnwise_params"][0][0] == encoded
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        [(decimal.Decimal("0"),), (decimal.Decimal("1E-38"),)],
+        [(decimal.Decimal("1E-38"),), (decimal.Decimal("0"),)],
+        [(decimal.Decimal("0"),), (None,), (decimal.Decimal("1E-38"),)],
+    ],
+    ids=["zero-then-tiny", "tiny-then-zero", "zero-null-tiny"],
+)
+def test_gh745_executemany_zero_and_tiny_stays_within_38(monkeypatch, data):
+    """Zero plus Decimal("1E-38") must stay NUMERIC(38,38) (jahnvi480)."""
+    from unittest.mock import MagicMock
+    from mssql_python import ddbc_bindings
+    from mssql_python.cursor import Cursor
+
+    cur = Cursor.__new__(Cursor)
+    cur._inputsizes = None
+    cur._timeout = 0
+    cur.closed = False
+    cur.hstmt = MagicMock()
+    cur.messages = []
+    cur.is_stmt_prepared = [False]
+    cur._connection = MagicMock()
+    cur._connection._encoding = "utf-8"
+    cur._connection._conn = MagicMock()
+    _initialize_mock_query_operation(cur, monkeypatch)
+    captured = {}
+
+    def fake_sql_execute_many(hstmt, op, col_params, param_types, row_count, enc):
+        captured["parameters_type"] = param_types
+        return 0
+
+    monkeypatch.setattr(cur, "_check_closed", lambda: None)
+    monkeypatch.setattr(cur, "_reset_cursor", lambda: None)
+    monkeypatch.setattr(ddbc_bindings, "SQLExecuteMany", fake_sql_execute_many)
+    monkeypatch.setattr(ddbc_bindings, "DDBCSQLGetAllDiagRecords", lambda h: [])
+    monkeypatch.setattr(ddbc_bindings, "DDBCSQLRowCount", lambda h: len(data))
+    cur.executemany("UPDATE t SET x = 1 WHERE v = ?", data)
+    pt = captured["parameters_type"][0]
+    assert pt.paramSQLType == _C.SQL_NUMERIC.value
+    assert pt.columnSize == 38
+    assert pt.decimalDigits == 38
+
+
+def test_gh745_executemany_buffer_fits_mixed_sign_short_precision(monkeypatch):
+    """Mixed-sign Decimals must fit CHAR buffer even when precision is small.
+
+    e.g. [-12.34, 56.78] -> NUMERIC(4,2) but "-12.34" is 6 characters.
+    """
+    from unittest.mock import MagicMock
+    from mssql_python import ddbc_bindings
+    from mssql_python.cursor import Cursor
+
+    cur = Cursor.__new__(Cursor)
+    cur._inputsizes = None
+    cur._timeout = 0
+    cur.closed = False
+    cur.hstmt = MagicMock()
+    cur.messages = []
+    cur.is_stmt_prepared = [False]
+    cur._connection = MagicMock()
+    cur._connection._encoding = "utf-8"
+    cur._connection._conn = MagicMock()
+    _initialize_mock_query_operation(cur, monkeypatch)
+    captured = {}
+
+    def fake_sql_execute_many(hstmt, op, col_params, param_types, row_count, enc):
+        captured["parameters_type"] = param_types
+        captured["columnwise_params"] = col_params
+        return 0
+
+    monkeypatch.setattr(cur, "_check_closed", lambda: None)
+    monkeypatch.setattr(cur, "_reset_cursor", lambda: None)
+    monkeypatch.setattr(ddbc_bindings, "SQLExecuteMany", fake_sql_execute_many)
+    monkeypatch.setattr(ddbc_bindings, "DDBCSQLGetAllDiagRecords", lambda h: [])
+    monkeypatch.setattr(ddbc_bindings, "DDBCSQLRowCount", lambda h: 2)
+    data = [(decimal.Decimal("-12.34"),), (decimal.Decimal("56.78"),)]
+    cur.executemany("UPDATE t SET x = 1 WHERE v = ?", data)
+    pt = captured["parameters_type"][0]
+    encoded = [format(decimal.Decimal("-12.34"), "f"), format(decimal.Decimal("56.78"), "f")]
+    assert pt.paramSQLType == _C.SQL_NUMERIC.value
+    assert pt.columnSize == 4
+    assert pt.decimalDigits == 2
+    assert pt.arrayBufferSize >= max(len(s) for s in encoded)
+    assert pt.arrayBufferSize > pt.columnSize
+    assert captured["columnwise_params"][0] == encoded
+
+
+def test_setinputsizes_sql_decimal_memoryerror_no_leak_unit(monkeypatch):
+    """Huge scientific string must raise sanitized ValueError, not MemoryError."""
+    from unittest.mock import MagicMock
+    from mssql_python import ddbc_bindings
+    from mssql_python.cursor import Cursor
+
+    cur = Cursor.__new__(Cursor)
+    cur._timeout = 0
+    cur.closed = False
+    cur.hstmt = MagicMock()
+    cur.messages = []
+    cur.is_stmt_prepared = [False]
+    cur._connection = MagicMock()
+    cur._connection._encoding = "utf-8"
+    cur._connection._conn = MagicMock()
+    _initialize_mock_query_operation(cur, monkeypatch)
+
+    monkeypatch.setattr(cur, "_check_closed", lambda: None)
+    monkeypatch.setattr(cur, "_reset_cursor", lambda: None)
+    monkeypatch.setattr(ddbc_bindings, "SQLExecuteMany", lambda *a, **k: 0)
+    monkeypatch.setattr(ddbc_bindings, "DDBCSQLGetAllDiagRecords", lambda h: [])
+    monkeypatch.setattr(ddbc_bindings, "DDBCSQLRowCount", lambda h: 0)
+
+    sensitive_value = "1e999999999999999999"
+    cur.setinputsizes([(mssql_python.SQL_DECIMAL, 18, 2)])
+    with pytest.raises(ValueError) as exc_info:
+        cur.executemany("INSERT INTO t VALUES (?)", [(sensitive_value,)])
+
+    message = str(exc_info.value)
+    assert "Failed to convert parameter" in message
+    assert "row 0" in message
+    assert "column 0" in message
+    assert exc_info.value.__cause__ is None
+    assert sensitive_value not in message
+    formatted = "".join(
+        traceback.format_exception(
+            type(exc_info.value), exc_info.value, exc_info.value.__traceback__
+        )
+    )
+    assert sensitive_value not in formatted
+
+
+def test_setinputsizes_sql_decimal_runtimeerror_no_leak_unit(monkeypatch):
+    """str() raising RuntimeError must become sanitized ValueError (no marker leak)."""
+    from unittest.mock import MagicMock
+    from mssql_python import ddbc_bindings
+    from mssql_python.cursor import Cursor
+
+    cur = Cursor.__new__(Cursor)
+    cur._timeout = 0
+    cur.closed = False
+    cur.hstmt = MagicMock()
+    cur.messages = []
+    cur.is_stmt_prepared = [False]
+    cur._connection = MagicMock()
+    cur._connection._encoding = "utf-8"
+    cur._connection._conn = MagicMock()
+    _initialize_mock_query_operation(cur, monkeypatch)
+
+    monkeypatch.setattr(cur, "_check_closed", lambda: None)
+    monkeypatch.setattr(cur, "_reset_cursor", lambda: None)
+    monkeypatch.setattr(ddbc_bindings, "SQLExecuteMany", lambda *a, **k: 0)
+    monkeypatch.setattr(ddbc_bindings, "DDBCSQLGetAllDiagRecords", lambda h: [])
+    monkeypatch.setattr(ddbc_bindings, "DDBCSQLRowCount", lambda h: 0)
+
+    marker = "synthetic-private-parameter"
+
+    class ExplodingStr:
+        def __str__(self):
+            raise RuntimeError(marker)
+
+    cur.setinputsizes([(mssql_python.SQL_DECIMAL, 18, 2)])
+    with pytest.raises(ValueError) as exc_info:
+        cur.executemany("INSERT INTO t VALUES (?)", [(ExplodingStr(),)])
+
+    assert marker not in str(exc_info.value)
+    assert exc_info.value.__cause__ is None
+    assert "row 0" in str(exc_info.value)
+    assert "column 0" in str(exc_info.value)
+    formatted = "".join(
+        traceback.format_exception(
+            type(exc_info.value), exc_info.value, exc_info.value.__traceback__
+        )
+    )
+    assert marker not in formatted
+
+
+def test_setinputsizes_sql_numeric_keeps_declared_precision_scale(monkeypatch):
+    """Explicit setinputsizes NUMERIC(10,2) must not widen after conversion (sumitmsft).
+
+    arrayBufferSize may still grow to fit the encoded text, but columnSize/decimalDigits
+    stay at the declared (10, 2) even when Decimal("1.234") needs scale 3.
+    """
+    from unittest.mock import MagicMock
+    from mssql_python import ddbc_bindings
+    from mssql_python.cursor import Cursor
+
+    cur = Cursor.__new__(Cursor)
+    cur._timeout = 0
+    cur.closed = False
+    cur.hstmt = MagicMock()
+    cur.messages = []
+    cur.is_stmt_prepared = [False]
+    cur._connection = MagicMock()
+    cur._connection._encoding = "utf-8"
+    cur._connection._conn = MagicMock()
+    _initialize_mock_query_operation(cur, monkeypatch)
+    captured = {}
+
+    def fake_sql_execute_many(hstmt, op, col_params, param_types, row_count, enc):
+        captured["parameters_type"] = param_types
+        captured["columnwise_params"] = col_params
+        return 0
+
+    monkeypatch.setattr(cur, "_check_closed", lambda: None)
+    monkeypatch.setattr(cur, "_reset_cursor", lambda: None)
+    monkeypatch.setattr(ddbc_bindings, "SQLExecuteMany", fake_sql_execute_many)
+    monkeypatch.setattr(ddbc_bindings, "DDBCSQLGetAllDiagRecords", lambda h: [])
+    monkeypatch.setattr(ddbc_bindings, "DDBCSQLRowCount", lambda h: 1)
+
+    cur.setinputsizes([(mssql_python.SQL_NUMERIC, 10, 2)])
+    cur.executemany("SELECT ?", [(decimal.Decimal("1.234"),)])
+    pt = captured["parameters_type"][0]
+    encoded = format(decimal.Decimal("1.234"), "f")
+    assert pt.paramSQLType == _C.SQL_NUMERIC.value
+    assert pt.columnSize == 10
+    assert pt.decimalDigits == 2
+    assert pt.arrayBufferSize >= len(encoded)
+    assert captured["columnwise_params"][0][0] == encoded
+
+
+def test_setinputsizes_sql_decimal_buffer_from_protected_conversion(monkeypatch):
+    """setinputsizes DECIMAL arrayBufferSize comes from protected conversion text.
+
+    Provisional sizing must not convert non-Decimals (that leaked MemoryError /
+    RuntimeError). After the protected loop, arrayBufferSize must still fit
+    Decimal("1E-38") and string inputs like "1E-38".
+    """
+    from unittest.mock import MagicMock
+    from mssql_python import ddbc_bindings
+    from mssql_python.cursor import Cursor
+
+    def _run(data):
+        cur = Cursor.__new__(Cursor)
+        cur._timeout = 0
+        cur.closed = False
+        cur.hstmt = MagicMock()
+        cur.messages = []
+        cur.is_stmt_prepared = [False]
+        cur._connection = MagicMock()
+        cur._connection._encoding = "utf-8"
+        cur._connection._conn = MagicMock()
+        _initialize_mock_query_operation(cur, monkeypatch)
+        captured = {}
+
+        def fake_sql_execute_many(hstmt, op, col_params, param_types, row_count, enc):
+            captured["parameters_type"] = param_types
+            captured["columnwise_params"] = col_params
+            return 0
+
+        monkeypatch.setattr(cur, "_check_closed", lambda: None)
+        monkeypatch.setattr(cur, "_reset_cursor", lambda: None)
+        monkeypatch.setattr(ddbc_bindings, "SQLExecuteMany", fake_sql_execute_many)
+        monkeypatch.setattr(ddbc_bindings, "DDBCSQLGetAllDiagRecords", lambda h: [])
+        monkeypatch.setattr(ddbc_bindings, "DDBCSQLRowCount", lambda h: len(data))
+        cur.setinputsizes([(mssql_python.SQL_DECIMAL, 38, 38)])
+        cur.executemany("INSERT INTO t VALUES (?)", data)
+        return captured
+
+    tiny = decimal.Decimal("1E-38")
+    encoded = format(tiny, "f")
+    assert len(encoded) == 40
+
+    for payload in ([(tiny,)], [("1E-38",)]):
+        captured = _run(payload)
+        pt = captured["parameters_type"][0]
+        assert pt.paramSQLType == _C.SQL_DECIMAL.value
+        assert pt.columnSize == 38
+        assert pt.decimalDigits == 38
+        assert pt.arrayBufferSize >= len(encoded)
+        assert captured["columnwise_params"][0][0] == encoded
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        [(decimal.Decimal("1.0"),), (decimal.Decimal("NaN"),)],
+        [(decimal.Decimal("NaN"),), (decimal.Decimal("1.0"),)],
+        [(decimal.Decimal("Infinity"),), (decimal.Decimal("1.0"),)],
+        [(decimal.Decimal("1.0"),), (decimal.Decimal("-Infinity"),)],
+    ],
+    ids=["finite-then-nan", "nan-then-finite", "inf-then-finite", "finite-then-neginf"],
+)
+def test_gh745_executemany_rejects_non_finite_both_orders(monkeypatch, data):
+    """executemany must raise ValueError for NaN/Inf, not TypeError (sumitmsft)."""
+    from unittest.mock import MagicMock
+    from mssql_python import ddbc_bindings
+    from mssql_python.cursor import Cursor
+
+    cur = Cursor.__new__(Cursor)
+    cur._inputsizes = None
+    cur._timeout = 0
+    cur.closed = False
+    cur.hstmt = MagicMock()
+    cur.messages = []
+    cur.is_stmt_prepared = [False]
+    cur._connection = MagicMock()
+    cur._connection._encoding = "utf-8"
+    cur._connection._conn = MagicMock()
+    _initialize_mock_query_operation(cur, monkeypatch)
+
+    monkeypatch.setattr(cur, "_check_closed", lambda: None)
+    monkeypatch.setattr(cur, "_reset_cursor", lambda: None)
+    monkeypatch.setattr(ddbc_bindings, "SQLExecuteMany", lambda *a, **k: 0)
+    monkeypatch.setattr(ddbc_bindings, "DDBCSQLGetAllDiagRecords", lambda h: [])
+    monkeypatch.setattr(ddbc_bindings, "DDBCSQLRowCount", lambda h: 0)
+
+    with pytest.raises(ValueError, match="non-finite"):
+        cur.executemany("INSERT INTO t VALUES (?)", data)
+
+
+def test_gh745_compute_column_type_rejects_non_finite():
+    """_compute_column_type must reject NaN before exponent comparisons."""
+    cur = _make_bare_cursor()
+    with pytest.raises(ValueError, match="non-finite"):
+        cur._compute_column_type([decimal.Decimal("1.0"), decimal.Decimal("NaN")])
 
 
 def test_executemany_numeric_override_needed():
@@ -16811,6 +17999,7 @@ def test_executemany_decimal_numeric_override_coverage(monkeypatch):
     from mssql_python.cursor import Cursor
 
     cur = Cursor.__new__(Cursor)
+    cur.json_output = "text"
     cur._inputsizes = None
     cur._timeout = 0
     cur.closed = False
@@ -16820,6 +18009,7 @@ def test_executemany_decimal_numeric_override_coverage(monkeypatch):
     cur._connection = MagicMock()
     cur._connection._encoding = "utf-8"
     cur._connection._conn = MagicMock()
+    _initialize_mock_query_operation(cur, monkeypatch)
     captured = {}
 
     def fake_sql_execute_many(hstmt, op, col_params, param_types, row_count, enc):

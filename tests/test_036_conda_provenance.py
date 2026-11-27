@@ -362,7 +362,8 @@ def test_public_wheel_controls_use_actual_metadata_ownership_and_hashes(
         "missing-core",
         "missing-private-driver",
         "missing-receipt",
-        "wrong-transport",
+        "wrong-index",
+        "stable-rs-override",
         "missing-selected-wheel",
         "wrong-selected-wheel",
         "wrong-wheel-tags",
@@ -407,12 +408,14 @@ def test_source_bound_release_components(tmp_path, monkeypatch, capsys, problem,
     selected = f"mssql_python_rs-0.2.0-{rs_tag}-win_amd64.whl"
     receipt = {
         "distribution_version": "0.2.0",
-        "transport_version": "0.2.0-dev.transport",
-        "feed_url": inputs.DEFAULT_FEED,
-        "package_id": inputs.PACKAGE_ID,
-        "package_sha256": "a" * 64,
+        "index_url": inputs.DEFAULT_INDEX,
+        "version_override": False,
         "wheel_sha256": {selected: "b" * 64},
     }
+    if problem == "wrong-index":
+        receipt["index_url"] = inputs.DEV_INDEX
+    elif problem == "stable-rs-override":
+        receipt["version_override"] = True
     if with_rs:
         files[rs_prefix + "conda-wheel-source.txt"] = (selected + "\n").encode()
     if "-alias-" in problem:
@@ -517,14 +520,6 @@ def test_source_bound_release_components(tmp_path, monkeypatch, capsys, problem,
     monkeypatch.setenv(
         "RELEASE_VERSIONS", json.dumps(versions) if problem != "missing-version-env" else ""
     )
-    monkeypatch.setenv(
-        "RS_TRANSPORT_VERSION",
-        (
-            "wrong"
-            if problem == "wrong-transport"
-            else "0.2.0-dev.transport" if "mssql-python-rs" in versions else ""
-        ),
-    )
     result = cli.main(
         [
             "validate",
@@ -541,9 +536,14 @@ def test_source_bound_release_components(tmp_path, monkeypatch, capsys, problem,
             "--release-versions",
         ]
     )
+    output = capsys.readouterr()
     assert result == (
         0 if problem in {"legacy", "rs", "rs-extra-owned", "rs-pyc-owned"} else 1
-    ), capsys.readouterr()
+    ), output
+    if problem == "stable-rs-override":
+        assert "RS version overrides are not eligible for Conda release." in output.err
+        assert "COMPONENT_INPUT_OK" not in output.out
+        assert "release-ready" not in output.out
 
 
 @pytest.mark.parametrize(
@@ -701,11 +701,66 @@ def chain(release_sources):
     producer_run["resources"]["pipelines"] = {
         "buildPipeline": {"pipeline": {"id": 173176}, "version": "26250.2"}
     }
+    wheel["reason"] = "manual"
+    wheel_run["templateParameters"] = {
+        "oneBranchType": "Official",
+        "runSdlTasks": True,
+        "signWindowsBinaries": True,
+        "windowsConfigs": [{"pyVer": "312", "arch": "x64"}, {"pyVer": "312", "arch": "arm64"}],
+        "macosConfigs": [{"pyVer": "312"}],
+        "linuxConfigs": [{"tag": "manylinux_2_28", "arch": "aarch64"}],
+    }
+    timeline = []
+    for identifier in (
+        "Win_py312_x64.BuildWheel.__default",
+        "Win_py312_arm64.BuildWheel.__default",
+        "MacOS_py312.BuildWheel.__default",
+        "Linux_manylinux_2_28_aarch64.BuildWheels.__default",
+        "ODBC_BuildAll.BuildWheel.__default",
+    ):
+        timeline.append(
+            {
+                "id": identifier,
+                "identifier": identifier,
+                "type": "Job",
+                "state": "completed",
+                "result": "succeeded",
+                "attempt": 1,
+            }
+        )
+        label = "ODBC" if identifier.startswith("ODBC_") else "Python"
+        tasks = [
+            (f"ESRP MalwareScanning - {label} Wheels (Official)", "EsrpMalwareScanning"),
+            ("Component Governance Detection", "ComponentGovernanceComponentDetection"),
+        ]
+        if identifier.startswith("Win_"):
+            tasks.extend(
+                [
+                    ("ESRP MalwareScanning - Native extension", "EsrpMalwareScanning"),
+                    ("ESRP CodeSigning - Native extension (.pyd)", "EsrpCodeSigning"),
+                    ("Verify Authenticode signature (native extension)", "PowerShell"),
+                    ("Verify signed .pyd inside built wheel", "PowerShell"),
+                ]
+            )
+        timeline.extend(
+            {
+                "id": f"{identifier}-{index}",
+                "parentId": identifier,
+                "type": "Task",
+                "name": name,
+                "task": {"name": task},
+                "state": "completed",
+                "result": "succeeded",
+                "attempt": 1,
+            }
+            for index, (name, task) in enumerate(tasks)
+        )
     records = {
         "build/builds/174195?api-version=7.1": producer,
         "pipelines/2318/runs/174195?api-version=7.1": producer_run,
         "build/builds/173176?api-version=7.1": wheel,
         "pipelines/2199/runs/173176?api-version=7.1": wheel_run,
+        "build/builds/173176/timeline?api-version=7.1": {"records": timeline},
     }
     records.update(_source_record(path, content) for path, content in release_sources.items())
     return records
@@ -735,6 +790,172 @@ def test_exact_recorded_wheel_run_is_verified_not_packaging_mode_or_build_number
     }
     assert result["producer"]["commit"] == "a" * 40  # Recipe and wheel commits can differ.
     assert result["versions"] == {"mssql-python": "1.15.0", "mssql-python-odbc": "18.6.2.1"}
+
+
+@pytest.mark.parametrize("selection", ["all", "x64"])
+@pytest.mark.parametrize("problem", [None, "missing-job", "missing-scan"])
+def test_sharded_linux_matrix_requires_each_selected_jobs_security(chain, selection, problem):
+    yaml = pytest.importorskip("yaml")
+    pipeline = yaml.safe_load(
+        (_PATH.parents[2] / "OneBranchPipelines/build-release-package-pipeline.yml").read_text(
+            encoding="utf-8"
+        )
+    )
+    configs = next(p["default"] for p in pipeline["parameters"] if p["name"] == "linuxConfigs")
+    if selection == "x64":
+        configs = [c for c in configs if c["arch"] == "x86_64"]
+    chain["pipelines/2199/runs/173176?api-version=7.1"]["templateParameters"][
+        "linuxConfigs"
+    ] = configs
+    timeline = chain["build/builds/173176/timeline?api-version=7.1"]["records"]
+    legacy = "Linux_manylinux_2_28_aarch64.BuildWheels.__default"
+    linux_records = [r for r in timeline if r.get("id") == legacy or r.get("parentId") == legacy]
+    timeline[:] = [r for r in timeline if r not in linux_records]
+    for config in configs:
+        identifier = (
+            f"Linux_{config['tag']}_{config['arch']}_{config['shard']}.BuildWheels.__default"
+        )
+        timeline.extend(
+            {
+                key: (
+                    value.replace(legacy, identifier)
+                    if key in {"id", "identifier", "parentId"}
+                    else value
+                )
+                for key, value in record.items()
+            }
+            for record in linux_records
+        )
+    if problem:
+        timeline.remove(
+            next(
+                r
+                for r in timeline
+                if (
+                    r.get("id") == identifier
+                    if problem == "missing-job"
+                    else r.get("parentId") == identifier
+                )
+            )
+        )
+        with pytest.raises(ValueError, match="missing or did not succeed|lacks completed"):
+            _verify(chain)
+    else:
+        assert _verify(chain)["productionEligible"] is True
+
+
+@pytest.mark.parametrize("shard", [None, "", "invalid-shard", 1])
+def test_invalid_linux_shard_is_not_treated_as_legacy(chain, shard):
+    chain["pipelines/2199/runs/173176?api-version=7.1"]["templateParameters"]["linuxConfigs"][0][
+        "shard"
+    ] = shard
+    with pytest.raises(ValueError, match="linuxConfigs evidence is invalid"):
+        _verify(chain)
+
+
+def test_duplicate_linux_shards_are_rejected(chain):
+    configs = chain["pipelines/2199/runs/173176?api-version=7.1"]["templateParameters"][
+        "linuxConfigs"
+    ]
+    configs[0]["shard"] = "py310_312"
+    configs.append(dict(configs[0]))
+    with pytest.raises(ValueError, match="linuxConfigs contains duplicate jobs"):
+        _verify(chain)
+
+
+@pytest.mark.parametrize(
+    "problem",
+    [
+        "nonofficial",
+        "missing-parameters",
+        "sdl-disabled",
+        "signing-disabled",
+        "empty-matrix",
+        "missing-timeline",
+        "missing-job",
+        "missing-wheel-scan",
+        "missing-odbc-scan",
+        "missing-signing",
+        "missing-signature-verification",
+        "failed-task",
+        "skipped-task",
+        "wrong-task-kind",
+        "wrong-job",
+        "previous-attempt",
+    ],
+)
+def test_wheel_security_evidence_required_for_production(chain, problem):
+    run = chain["pipelines/2199/runs/173176?api-version=7.1"]
+    timeline = chain["build/builds/173176/timeline?api-version=7.1"]["records"]
+    params = run["templateParameters"]
+    scan = next(
+        record
+        for record in timeline
+        if record.get("name") == "ESRP MalwareScanning - Python Wheels (Official)"
+        and record["parentId"].startswith("Win_py312_arm64.")
+    )
+    if problem == "nonofficial":
+        params["oneBranchType"] = "NonOfficial"
+    elif problem == "missing-parameters":
+        del run["templateParameters"]
+    elif problem == "sdl-disabled":
+        params["runSdlTasks"] = False
+    elif problem == "signing-disabled":
+        params["signWindowsBinaries"] = False
+    elif problem == "empty-matrix":
+        params["windowsConfigs"] = []
+    elif problem == "missing-timeline":
+        timeline.clear()
+    elif problem == "missing-job":
+        timeline[:] = [record for record in timeline if record.get("id") != scan["parentId"]]
+    elif problem == "missing-wheel-scan":
+        timeline.remove(scan)
+    elif problem in {"missing-odbc-scan", "missing-signing", "missing-signature-verification"}:
+        label = {
+            "missing-odbc-scan": "ESRP MalwareScanning - ODBC Wheels (Official)",
+            "missing-signing": "ESRP CodeSigning - Native extension (.pyd)",
+            "missing-signature-verification": "Verify signed .pyd inside built wheel",
+        }[problem]
+        timeline.remove(next(record for record in timeline if record.get("name") == label))
+    elif problem in {"failed-task", "skipped-task"}:
+        scan["result"] = problem.removesuffix("-task")
+    elif problem == "wrong-task-kind":
+        scan["task"]["name"] = "CmdLine"
+    elif problem == "wrong-job":
+        scan["parentId"] = "unrelated-job"
+    elif problem == "previous-attempt":
+        next(record for record in timeline if record["id"] == scan["parentId"])["attempt"] = 2
+    with pytest.raises(ValueError, match="Production publication is ineligible"):
+        _verify(chain)
+    result = _verify(chain, publish=False)
+    assert result["productionEligible"] is False
+    assert result["productionIneligibilityReasons"]
+
+
+@pytest.mark.parametrize("reason", ["schedule", "individualCI", "batchedCI"])
+def test_forced_official_wheel_run_still_requires_completed_security_checks(chain, reason):
+    chain["build/builds/173176?api-version=7.1"]["reason"] = reason
+    chain["pipelines/2199/runs/173176?api-version=7.1"]["templateParameters"][
+        "oneBranchType"
+    ] = "NonOfficial"
+    assert _verify(chain)["productionEligible"] is True
+    chain["build/builds/173176/timeline?api-version=7.1"]["records"].clear()
+    with pytest.raises(ValueError, match="Production publication is ineligible"):
+        _verify(chain)
+
+
+@pytest.mark.parametrize("reason", ["individualCI", "batchedCI"])
+def test_feature_branch_ci_cannot_claim_forced_official_mode(chain, reason):
+    chain["build/builds/173176?api-version=7.1"]["reason"] = reason
+    chain["build/builds/173176?api-version=7.1"]["sourceBranch"] = "refs/heads/feature"
+    chain["pipelines/2199/runs/173176?api-version=7.1"]["templateParameters"][
+        "oneBranchType"
+    ] = "NonOfficial"
+    assert provenance._wheel_security_reasons(
+        chain.__getitem__,
+        chain["build/builds/173176?api-version=7.1"],
+        chain["pipelines/2199/runs/173176?api-version=7.1"],
+    ) == ["wheel producer did not use Official mode"]
 
 
 @pytest.mark.parametrize(
@@ -990,7 +1211,7 @@ def test_provenance_cli_executes_same_chain_in_both_modes(monkeypatch, chain, ca
     output = capsys.readouterr().out
     result = json.loads(output.splitlines()[0].split(": ", 1)[1])
     assert result["wheel"]["run"] == 173176
-    assert ("Validate-only:" in output) == (publish == "false")
+    assert ("Non-publishing run:" in output) == (publish == "false")
     directive = "##vso[task.setvariable variable=releaseVersions;isOutput=true]"
     assert (
         json.loads(
@@ -1000,6 +1221,31 @@ def test_provenance_cli_executes_same_chain_in_both_modes(monkeypatch, chain, ca
         )
         == result["versions"]
     )
+
+
+@pytest.mark.parametrize("publish", ["true", "false"])
+def test_provenance_cli_cannot_promote_unsigned_wheels(
+    monkeypatch, provenance_cli_env, chain, capsys, publish
+):
+    monkeypatch.setenv("PUBLISH_TO_CONDA", publish)
+    monkeypatch.setattr(provenance, "ado_get_json", chain.__getitem__)
+    chain["pipelines/2199/runs/173176?api-version=7.1"]["templateParameters"][
+        "signWindowsBinaries"
+    ] = False
+    status = provenance.cli()
+    output = capsys.readouterr()
+    if publish == "true":
+        assert status == 1
+        assert "Production publication is ineligible" in output.err
+        assert "##vso[task.setvariable" not in output.out
+    else:
+        assert status == 0
+        result = json.loads(output.out.splitlines()[0].split(": ", 1)[1])
+        assert result["productionEligible"] is False
+        assert (
+            "wheel producer signWindowsBinaries was not enabled"
+            in result["productionIneligibilityReasons"]
+        )
 
 
 def test_invalid_publish_flag_is_not_treated_as_dry_run(monkeypatch):
@@ -1162,7 +1408,24 @@ def test_rs_source_contract_reads_distribution_pin_not_transport(release_sources
     ]
 
 
-@pytest.mark.parametrize("version", ["", "0.2.0\n0.3.0", "$(version)", "../0.2.0", "0.2.0;bad"])
+def test_helper_based_setup_source_uses_release_pin_not_consumer_override(
+    release_sources, monkeypatch
+):
+    _source_dependencies(release_sources, '[f"mssql-python-rs=={_read_mssql_python_rs_version()}"]')
+    release_sources["setup.py"] = (
+        "from eng.scripts.mssql_python_rs import resolve_runtime\n"
+        "def _read_mssql_python_rs_version():\n"
+        "    return resolve_runtime(version_file).version\n" + release_sources["setup.py"]
+    )
+    release_sources["eng/versions/mssql-python-rs.version"] = "0.2.0\n"
+    monkeypatch.setenv("MSSQL_PYTHON_RS_VERSION", "0.3.0.dev123")
+    assert inputs.read_release_versions(release_sources.__getitem__)["mssql-python-rs"] == "0.2.0"
+
+
+@pytest.mark.parametrize(
+    "version",
+    ["", "0.2.0\n0.3.0", "$(version)", "../0.2.0", "0.2.0;bad", "0.2.0.dev123", "0.2.0+local"],
+)
 def test_rs_distribution_pin_must_be_present_and_unambiguous(release_sources, version):
     _source_dependencies(release_sources, '[f"mssql-python-rs=={_read_mssql_python_rs_version()}"]')
     release_sources["eng/versions/mssql-python-rs.version"] = version
@@ -1217,10 +1480,6 @@ def test_recorded_rs_source_is_read_only_at_verified_wheel_commit(release_source
         record.pop("content")
     if problem != "missing":
         chain[key] = record
-    transport_key, transport = _source_record(
-        "eng/versions/mssql-python-rs-nuget.version", "0.2.0-dev.transport"
-    )
-    chain[transport_key] = transport
     reads = []
 
     def get_json(path):
@@ -1232,39 +1491,14 @@ def test_recorded_rs_source_is_read_only_at_verified_wheel_commit(release_source
     if problem == "valid":
         result = _verify(chain, get_json=get_json)
         assert result["versions"]["mssql-python-rs"] == "0.2.0"
-        assert result["rsTransportVersion"] == "0.2.0-dev.transport"
-        assert reads[-2:] == [key, transport_key]
+        assert "rsTransportVersion" not in result
+        assert reads[-1] == key
     else:
         with pytest.raises((ValueError, KeyError, HTTPError)):
             _verify(chain, get_json=get_json)
         assert reads[-1] == key
-    assert len(reads) == (9 if problem == "valid" else 8)
-
-
-@pytest.mark.parametrize("problem", ["missing", "wrong-commit", "invalid", "forbidden"])
-def test_rs_transport_source_cannot_fall_back_to_distribution_version(
-    release_sources, chain, problem
-):
-    _source_dependencies(release_sources, '[f"mssql-python-rs=={_read_mssql_python_rs_version()}"]')
-    chain.update([_source_record("setup.py", release_sources["setup.py"])])
-    chain.update([_source_record("eng/versions/mssql-python-rs.version", "0.2.0")])
-    key, record = _source_record(
-        "eng/versions/mssql-python-rs-nuget.version", "0.2.0-dev.transport"
-    )
-    if problem == "wrong-commit":
-        record["commitId"] = "c" * 40
-    elif problem == "invalid":
-        record["content"] = "0.2.0\n0.3.0"
-    if problem != "missing":
-        chain[key] = record
-
-    def get_json(path):
-        if path == key and problem == "forbidden":
-            raise HTTPError("https://dev.azure.com", 403, "Forbidden", {}, None)
-        return chain[path]
-
-    with pytest.raises((ValueError, KeyError, HTTPError)):
-        _verify(chain, get_json=get_json)
+    assert reads[4] == "build/builds/173176/timeline?api-version=7.1"
+    assert len(reads) == 9
 
 
 @pytest.mark.parametrize(
@@ -1273,10 +1507,10 @@ def test_rs_transport_source_cannot_fall_back_to_distribution_version(
         "valid",
         "absent",
         "distribution",
-        "transport",
-        "feed",
-        "package",
-        "package-hash",
+        "index",
+        "override-absent",
+        "override-nonbool",
+        "legacy-transport",
         "empty-wheels",
         "wheel-hash",
         "wheel-version",
@@ -1286,25 +1520,29 @@ def test_rs_transport_source_cannot_fall_back_to_distribution_version(
 def test_rs_transport_receipt_is_source_bound_without_inferred_producer_id(problem):
     receipt = {
         "distribution_version": "0.2.0",
-        "transport_version": "0.2.0-dev.transport",
-        "feed_url": (
-            "https://pkgs.dev.azure.com/sqlclientdrivers/public/"
-            "_packaging/mssql-rs_Public/nuget/v3/index.json"
-        ),
-        "package_id": "mssql-python-rs-wheels",
-        "package_sha256": "a" * 64,
+        "index_url": inputs.DEFAULT_INDEX,
+        "version_override": False,
         "wheel_sha256": {"mssql_python_rs-0.2.0-cp313-cp313-win_amd64.whl": "b" * 64},
-        "nuspec_description": "InternalBuild; no independently verified numeric producer ID",
     }
     fields = {
         "distribution": "distribution_version",
-        "transport": "transport_version",
-        "feed": "feed_url",
-        "package": "package_id",
-        "package-hash": "package_sha256",
+        "index": "index_url",
     }
     if problem in fields:
         receipt[fields[problem]] = "wrong"
+    elif problem == "override-absent":
+        receipt.pop("version_override")
+    elif problem == "override-nonbool":
+        receipt["version_override"] = "false"
+    elif problem == "legacy-transport":
+        receipt.pop("index_url")
+        receipt.pop("version_override")
+        receipt.update(
+            transport_version="0.2.0-dev.transport",
+            feed_url="https://example.test/nuget/v3/index.json",
+            package_id="mssql-python-rs-wheels",
+            package_sha256="a" * 64,
+        )
     elif problem == "absent":
         receipt = None
     elif problem == "empty-wheels":
@@ -1318,7 +1556,7 @@ def test_rs_transport_receipt_is_source_bound_without_inferred_producer_id(probl
         else:
             name = "../" + name
         receipt["wheel_sha256"] = {name: digest}
-    arguments = (receipt, {"mssql-python-rs": "0.2.0"}, "0.2.0-dev.transport")
+    arguments = (receipt, {"mssql-python-rs": "0.2.0"})
     if problem == "valid":
         inputs.validate_rs_transport(*arguments)
     else:
@@ -1327,11 +1565,38 @@ def test_rs_transport_receipt_is_source_bound_without_inferred_producer_id(probl
 
 
 def test_verified_legacy_transport_absence_is_not_a_new_producer_fallback():
-    inputs.validate_rs_transport(None, {"mssql-python": "1.15.0"}, "")
+    inputs.validate_rs_transport(None, {"mssql-python": "1.15.0"})
     with pytest.raises(ValueError, match="embedded-core"):
-        inputs.validate_rs_transport({}, {"mssql-python": "1.15.0"}, "")
+        inputs.validate_rs_transport({}, {"mssql-python": "1.15.0"})
     with pytest.raises(ValueError, match="recorded"):
-        inputs.validate_rs_transport(None, {"mssql-python-rs": "0.2.0"}, "")
+        inputs.validate_rs_transport(None, {"mssql-python-rs": "0.2.0"})
+
+
+@pytest.mark.parametrize(
+    ("version", "index", "override", "valid"),
+    [
+        ("0.2.0", inputs.DEFAULT_INDEX, False, True),
+        ("0.2.0", inputs.DEFAULT_INDEX, True, True),
+        ("0.2.0", inputs.DEV_INDEX, False, False),
+        ("0.2.0.dev123", inputs.DEV_INDEX, True, True),
+        ("0.2.0.dev123", inputs.DEFAULT_INDEX, True, False),
+        ("0.2.0.dev123", inputs.DEV_INDEX, False, False),
+    ],
+)
+def test_rs_index_receipt_cannot_switch_release_and_development_sources(
+    version, index, override, valid
+):
+    receipt = {
+        "distribution_version": version,
+        "index_url": index,
+        "version_override": override,
+        "wheel_sha256": {f"mssql_python_rs-{version}-cp310-abi3-win_amd64.whl": "a" * 64},
+    }
+    if valid:
+        inputs.validate_rs_transport(receipt, {"mssql-python-rs": version})
+    else:
+        with pytest.raises(ValueError, match="distribution pin/index"):
+            inputs.validate_rs_transport(receipt, {"mssql-python-rs": version})
 
 
 @pytest.mark.parametrize(

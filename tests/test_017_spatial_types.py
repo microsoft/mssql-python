@@ -926,14 +926,14 @@ def test_large_udt_parameters(db_connection, udt_table, method, monkeypatch):
         params = [payload] if method == "execute" else [(payload,), (payload,)]
         sizes = cursor._inputsizes
         observed_sizes = []
-        execute = cursor.execute
+        execute = cursor._execute
 
-        def record_overrides(operation, parameters):
+        def record_overrides(operation, parameters, **kwargs):
             observed_sizes.append(cursor._inputsizes)
-            return execute(operation, parameters)
+            return execute(operation, parameters, **kwargs)
 
         with monkeypatch.context() as patch:
-            patch.setattr(cursor, "execute", record_overrides)
+            patch.setattr(cursor, "_execute", record_overrides)
             getattr(cursor, method)(sql, params)
         expected_rows = 1 if method == "execute" else 2
         assert observed_sizes == [sizes] * expected_rows

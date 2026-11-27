@@ -22,4 +22,19 @@ inline py::object from_utf16_native(const char* data, Py_ssize_t size) {
     return result;
 }
 
+// Preserve the established batch decoder, which differs from strict fetchone.
+inline PyObject* decode_batch_utf16_native(const char* data, Py_ssize_t size) {
+#if defined(__APPLE__) || defined(__linux__)
+    PyObject* result = decode_utf16_native(data, size);
+    if (result)
+        return result;
+    PyErr_Clear();
+    result = PyUnicode_FromStringAndSize("", 0);
+#else
+    PyObject* result = PyUnicode_FromWideChar(
+        reinterpret_cast<const wchar_t*>(data), size / sizeof(wchar_t));
+#endif
+    return result ? result : Py_NewRef(Py_None);
+}
+
 }  // namespace FetchText

@@ -35,33 +35,30 @@ PyBind11 provides:
 - Memory-safe bindings
 - Clean and Pythonic API, while performance-critical logic remains in robust, maintainable C++.
  
-## What's new in v1.16.0
+## What's new in v1.18.0
 
 ### Enhancements
 
-- **Python 3.15 Support** - Release wheels and validation now cover Python 3.15 across supported platforms (#817).
-- **Dictionary-Style Row Access** - `row._mapping` provides a read-only mapping view with dictionary conversion, keys, values, items, membership checks, and stable column metadata (#613).
-- **External Rust Runtime Dependency** - `mssql-python` now depends on the exact compatible `mssql-python-rs` package instead of embedding its files (#768).
-- **Optional `mssql-odbc` Provider** - Customers can opt into the Rust-based provider distributed with `mssql-python-rs` by setting `MSSQL_PYTHON_NATIVE_PROVIDER=mssql-odbc` or `mssql_python.native_provider = "mssql-odbc"` before the first connection; Microsoft ODBC Driver 18 (`msodbcsql18`) remains the default (#730, #804, via `mssql-python-rs`).
-- **Stable-ABI Rust Runtime Wheels** - The Rust runtime now uses CPython's stable ABI and `mssql-python-rs` 0.3.0, eliminating Python-version-specific wheel variants while retaining separate wheels for each supported OS and architecture (#804, via `mssql-python-rs`).
-- **Updated ODBC Runtime Package** - `mssql-python` now pins `mssql-python-odbc==18.6.2.2`, whose Linux wheels separate glibc and musl payloads while retaining the same ODBC Driver 18.6 binaries (#798, #807).
-- **Faster Row Construction and Batch Fetching** - Optimized native Row construction and cursor bookkeeping reduce Python-side overhead in `fetchone()`, `fetchmany()`, and `fetchall()` (#558).
-- **Faster Temporal Fetch Conversion** - DATE, TIME, and TIMESTAMP values use checked CPython constructors to reduce object-construction overhead (#795).
-- **Reusable Result-Set Metadata** - Stable native column metadata is reused within a result set instead of being repeatedly described (#796).
-- **Reduced Fetch Diagnostic Overhead** - Fetch diagnostics are captured once and reused instead of being redundantly rescanned after clean fetches (#809).
-- **Faster Integer Row Indexing** - Exact integer indexes use a direct fast path while preserving existing behavior for booleans, subclasses, slices, and column names (#822).
-- **Lower `fetchval()` Logging Overhead** - Disabled debug logging no longer dispatches unnecessary log calls from `fetchval()` (#823).
+- **Custom Application Names** - Connection strings accept `APP` and `Application Name`, sharing the effective name across synchronous, async, and bulk-copy paths. The async and bulk-copy default changes from `mssql-python` to `MSSQL-Python`; exact-name telemetry filters may need updating (#884).
+- **Faster Row-to-Dictionary Conversion** - Reuse row-mapping metadata to reduce the overhead of converting fetched rows to dictionaries (#847).
+- **Faster Single-Row Fetching** - Reuse cursor-scoped native state for eligible `fetchone()`, `fetchmany(1)`, `fetchval()`, and iteration paths while retaining Python fallbacks (#858).
+- **Faster Output-Converter Batching** - Reduce conversion and row-construction overhead when fetching batches with output converters (#852).
+- **Faster Size-One Text Fetches** - Avoid repeating text-fetch preparation for `fetchmany(1)` without prefetching rows (#891).
+- **Faster Pyformat Conversion** - Convert pyformat placeholders in a single pass and cache converted statements for repeated execution (#888).
+- **Prepared Statement Reuse** - Compatible re-executions of the same parameterized SQL retain parameter bindings so drivers can reuse the prepared statement (#886).
+- **Faster Rust-Backed Execution** - Reduce SQL-text processing and RPC parameter-serialization overhead in Rust-backed execution paths (#896) *(via `mssql-python-rs`)*.
+- **macOS Strict TLS Improvements** - Rust-backed Strict connections can negotiate TLS 1.3, with post-quantum key exchange on supported macOS versions (#896) *(via `mssql-python-rs`)*.
+- **Rust ODBC Table-Valued Parameters** - Add table-valued parameter support in the opt-in Rust ODBC provider (#896) *(via `mssql-python-rs`)*.
 
 ### Bug Fixes
 
-- **Reliable Windows Shutdown** - Late ODBC environment cleanup no longer causes process-exit access violations after Python finalization (#783).
-- **Preserved Leading BOM-Like Characters** - Bounded UTF-16 text keeps leading U+FEFF and U+FFFE code points as data across fetch paths (#793).
-- **Clean Pooled Connection State** - Connections are rolled back and restored to autocommit before returning to the pool, preventing retained empty transactions (#777).
-- **Safe Native Logging of Dynamic Metadata** - Server-controlled Arrow column metadata can no longer be interpreted as a native format string (#791).
-- **UDT Parameter Binding** - SQL Server UDT parameter identities are resolved before scalar or array binding, including typed NULLs and statement reuse (#818).
-- **Visible Unsupported Encoding Requests** - `setencoding()` now warns when a valid encoding request cannot be applied instead of silently ignoring it (#828).
-- **Bounded Bulk Copy Timeouts** - Positive sub-second bulk-copy timeouts no longer become infinite and are rounded to one second (#804, via `mssql-python-rs`).
-- **Safe Bulk Copy Identifiers** - Bulk-copy destinations, columns, and collations are parsed, quoted, and validated consistently (#804, via `mssql-python-rs`).
+- **Synapse Pooled Connection Close** - Avoid an unsupported isolation-level reset when closing autocommit-on pooled connections to Azure Synapse dedicated SQL pools (#889).
+- **Explicit Pooled Checkout Timeouts** - Respect an explicit positive connection timeout during pooled checkout and restore the original timeout after successful validation (#897).
+- **Arrow Reader Cross-Thread Shutdown** - Coordinate reader close and cancellation with batch operations to prevent races and protect subsequent cursor results (#892).
+- **Correct Pyformat Placeholder Handling** - Preserve placeholder-like text inside SQL literals, quoted identifiers, and comments, and handle escaped percent signs consistently (#888).
+- **Rust-Backed Connection Reliability** - Fix connection-timeout handling, prepared-statement lifetime and cancellation, isolation-change cursor preservation, and connection stack overflow on small stacks (#896) *(via `mssql-python-rs`)*.
+- **Rust ODBC Streaming Order** - Stream data-at-execution values in their bound parameter order in the opt-in Rust ODBC provider (#896) *(via `mssql-python-rs`)*.
+- **SQL_VARIANT Length Validation** - Reject malformed oversized scalar payload lengths instead of truncating them during Rust-backed decoding (#896) *(via `mssql-python-rs`)*.
 
 For more information, please visit the project link on Github: https://github.com/microsoft/mssql-python
  
