@@ -116,7 +116,7 @@ void Connection::connect(const py::dict& attrs_before) {
 
 void Connection::disconnect(bool rollbackBeforeDisconnect) {
     PERF_TIMER("Connection::disconnect");
-    clearResultMetadata();
+    clearResultMetadata(true);
     // Determine GIL state once, up front. disconnect() runs both from
     // pybind11-bound methods (GIL held) and from GIL-less destructor / shutdown
     // paths: Connection::~Connection() dropping the last shared_ptr, or teardown
@@ -260,7 +260,8 @@ void Connection::checkError(SQLRETURN ret) const {
     }
 }
 
-void Connection::clearResultMetadata() {
+void Connection::clearResultMetadata(bool discardPendingRows,
+                                     std::optional<int64_t> requestedAutocommit) {
     std::vector<SqlHandlePtr> handles;
     {
         std::lock_guard<std::mutex> lock(_childHandlesMutex);
@@ -271,10 +272,21 @@ void Connection::clearResultMetadata() {
             }
         }
     }
+    // Pool checkout and setters without pending rows need no extra ODBC probe.
+    if (requestedAutocommit &&
+        std::any_of(handles.begin(), handles.end(),
+                    [](const auto& handle) { return bool(handle->pendingArrowRows()); })) {
+        const SQLINTEGER currentMode = getAutocommit() ? SQL_AUTOCOMMIT_ON : SQL_AUTOCOMMIT_OFF;
+        discardPendingRows = *requestedAutocommit != currentMode;
+    }
     // Releasing the last handle can acquire the connection cleanup gate.
     // Keep that destruction outside the child-list lock.
     for (const auto& handle : handles) {
-        handle->resultMetadata.clear();
+        if (discardPendingRows) {
+            handle->clearResult();
+        } else {
+            handle->resultMetadata.clear();
+        }
     }
 }
 
@@ -287,7 +299,7 @@ void Connection::commit() {
     }
     updateLastUsed();
     LOG("Committing transaction");
-    clearResultMetadata();
+    clearResultMetadata(true);
     SQLRETURN ret;
     {
         // Release the GIL during the blocking SQLEndTran network round-trip.
@@ -306,7 +318,7 @@ void Connection::rollback() {
     }
     updateLastUsed();
     LOG("Rolling back transaction");
-    clearResultMetadata();
+    clearResultMetadata(true);
     SQLRETURN ret;
     {
         // Release the GIL during the blocking SQLEndTran network round-trip.
@@ -325,14 +337,15 @@ void Connection::setAutocommit(bool enable, bool force) {
     if (!_dbcHandle) {
         ThrowStdException("Connection handle not allocated");
     }
-    clearResultMetadata();
     // Only successful native sanitation with no retained statement/raw handle
     // aliases proves ON. A new login or _autocommit alone is not proof.
     if (!force && enable && _dbcHandle->get() && _poolClean && !_poolProofDisabled) {
+        clearResultMetadata();
         _autocommit = true;
         return;
     }
     SQLINTEGER value = enable ? SQL_AUTOCOMMIT_ON : SQL_AUTOCOMMIT_OFF;
+    clearResultMetadata(true, value);
     LOG("Setting autocommit=%d", enable);
     SQLRETURN ret;
     {
@@ -445,7 +458,7 @@ SQLRETURN Connection::setAttribute(SQLINTEGER attribute, py::object value, bool&
     if (!scalarLoginTimeout) {
         _poolProofDisabled = true;
     }
-    clearResultMetadata();
+    clearResultMetadata(attribute == SQL_ATTR_RESET_CONNECTION);
     LOG("Setting SQL attribute=%d", attribute);
     // SQLPOINTER ptr = nullptr;
     // SQLINTEGER length = 0;
@@ -485,6 +498,9 @@ SQLRETURN Connection::setAttribute(SQLINTEGER attribute, py::object value, bool&
             (longValue < 0 ||
              static_cast<uint64_t>(longValue) > std::numeric_limits<SQLUINTEGER>::max())) {
             _poolProofDisabled = true;
+        }
+        if (attribute == SQL_ATTR_AUTOCOMMIT) {
+            clearResultMetadata(true, longValue);
         }
 
         SQLRETURN ret;
@@ -673,7 +689,7 @@ bool Connection::reset(unsigned int timeoutSeconds, bool autocommit) {
         return false;
     }
     const bool sessionClean = _poolClean && _poolSessionReset && !_poolProofDisabled;
-    clearResultMetadata();
+    clearResultMetadata(true);
     // Login and statement timeouts do not bound connection-attribute calls.
     // Keep a finite connection timeout through reset and lease configuration;
     // retain it on failure so discarding the candidate is bounded too (#854).

@@ -868,8 +868,10 @@ def test_fetch_drains_diagnostics_independent_of_final_status(
 
 
 @pytest.mark.skipif(
-    sys.platform == "win32",
-    reason="Windows does not export the native diagnostic function-pointer globals",
+    sys.platform == "win32"
+    and "SQLGetDiagField_ptr"
+    not in getattr(mssql_python.ddbc_bindings.module, "_arrow_test_pointer_addresses", {}),
+    reason="Windows requires compiled native diagnostic interposition controls",
 )
 @pytest.mark.parametrize("mode", ("available", "missing", "error", "info", "unterminated"))
 def test_native_mixed_fetch_diagnostics(conn_str, mode):
@@ -904,12 +906,18 @@ def _check_native_mixed_fetch_diagnostics(mode, expected_native):
     native = Path(mssql_python.ddbc_bindings.module.__file__).resolve()
     assert native == Path(expected_native)
     library = ctypes.CDLL(str(native))
-    rec_pointer = ctypes.c_void_p.in_dll(library, "SQLGetDiagRec_ptr")
-    field_pointer = ctypes.c_void_p.in_dll(library, "SQLGetDiagField_ptr")
+    if sys.platform == "win32":
+        addresses = mssql_python.ddbc_bindings.module._arrow_test_pointer_addresses
+        rec_pointer = ctypes.c_void_p.from_address(addresses["SQLGetDiagRec_ptr"])
+        field_pointer = ctypes.c_void_p.from_address(addresses["SQLGetDiagField_ptr"])
+    else:
+        rec_pointer = ctypes.c_void_p.in_dll(library, "SQLGetDiagRec_ptr")
+        field_pointer = ctypes.c_void_p.in_dll(library, "SQLGetDiagField_ptr")
+    callback_type = ctypes.WINFUNCTYPE if sys.platform == "win32" else ctypes.CFUNCTYPE
     smallint = ctypes.c_short
     wchar_pointer = ctypes.POINTER(ctypes.c_uint16)
     smallint_pointer = ctypes.POINTER(smallint)
-    rec_type = ctypes.CFUNCTYPE(
+    rec_type = callback_type(
         smallint,
         smallint,
         ctypes.c_void_p,
@@ -920,7 +928,7 @@ def _check_native_mixed_fetch_diagnostics(mode, expected_native):
         smallint,
         smallint_pointer,
     )
-    field_type = ctypes.CFUNCTYPE(
+    field_type = callback_type(
         smallint,
         smallint,
         ctypes.c_void_p,
@@ -1078,9 +1086,11 @@ def _check_native_mixed_fetch_diagnostics(mode, expected_native):
             assert header_calls == ([] if mode == "missing" else [0])
             assert field_calls == ([] if mode == "missing" else [1, 2, 3, 4, 5, 6])
             if mode == "available":
-                assert rec_calls == [1, 3, 5]
+                assert rec_calls == [1, 3, 5], rec_calls
             else:
-                assert rec_calls == list(range(1, 7 if mode in ("missing", "error") else 6))
+                assert rec_calls == list(
+                    range(1, 7 if mode in ("missing", "error") else 6)
+                ), rec_calls
 
             rec_calls.clear()
             field_calls.clear()

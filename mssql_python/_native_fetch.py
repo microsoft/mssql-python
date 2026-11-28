@@ -318,7 +318,7 @@ class _Policy:
             or type(data.get("_cached_char_encoding")) is not str
             or type(data.get("_cached_wchar_encoding")) is not str
             or type(data.get("_cached_char_ctype")) is not int
-            or type(data.get("arraysize")) is not int
+            or type(data.get("_arraysize")) is not int
             or type(data.get("hstmt")) is not ddbc_bindings.SqlHandle
         ):
             return None
@@ -337,7 +337,7 @@ class _Policy:
             data["_cached_char_encoding"],
             data["_cached_wchar_encoding"],
             data["_cached_char_ctype"],
-            data["arraysize"],
+            data["_arraysize"],
             self.row_type._fast_create,
             type(connection),
             query_state._native,

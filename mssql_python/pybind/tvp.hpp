@@ -62,7 +62,7 @@ struct TableParamState {
             // ApplyInputSizeOverride preserves decimal coefficients (no float or
             // decimal-context arithmetic) and fractional time via isoformat.
             ParamInfo converted;
-            ApplyInputSizeOverride(row.ptr(), sizes[i].ptr(), i, converted);
+            ApplyInputSizeOverride(row.ptr(), sizes[i].ptr(), i, converted, "utf-8");
             converted.isDAE = false;
             data[i] = nullptr;
             lengths[i] = 0;
