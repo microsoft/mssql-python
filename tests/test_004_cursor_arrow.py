@@ -7,6 +7,11 @@ These tests require pyarrow to be installed; they are skipped otherwise.
 import pytest
 import decimal
 import io
+import os
+from pathlib import Path
+import subprocess
+import sys
+import textwrap
 from typing import Generator
 from unittest.mock import Mock
 from datetime import datetime, date, time, timezone
@@ -22,6 +27,745 @@ except ImportError:
 
 # Skip the entire module if pyarrow is not available
 pytestmark = pytest.mark.skipif(pa is None, reason="pyarrow is not installed")
+
+
+_ARROW_BUDGET_SCRIPT = """
+import gc
+import os
+import sys
+from datetime import date
+from decimal import Decimal
+from uuid import UUID
+import mssql_python
+import pyarrow.compute as pc
+
+def wide_query(sql_type, columns, count=8192, identifiers=False, extra=""):
+    payload = ", ".join(
+        f"CAST(REPLICATE(N'A', 4000) AS {sql_type}) AS c{i}" for i in range(columns)
+    )
+    return f'''
+        WITH digits(d) AS (
+            SELECT d FROM (VALUES (0),(1),(2),(3),(4),(5),(6),(7),(8),(9)) v(d)
+        ), numbers AS (
+            SELECT TOP ({count})
+                ROW_NUMBER() OVER (ORDER BY a.d,b.d,c.d,d.d) AS id
+            FROM digits a CROSS JOIN digits b CROSS JOIN digits c CROSS JOIN digits d
+        )
+        SELECT {"id," if identifiers else ""} {payload} {extra}
+        FROM numbers ORDER BY id
+    '''
+
+def check_payload(value, columns, offset=0):
+    for column in range(offset, offset + columns):
+        assert pc.all(pc.equal(value.column(column), "A" * 4000)).as_py()
+
+"""
+
+
+def _run_arrow_budget_script(conn_str, script, *args):
+    env = os.environ.copy()
+    env["DB_CONNECTION_STRING"] = str(conn_str)
+    result = subprocess.run(
+        [sys.executable, "-c", _ARROW_BUDGET_SCRIPT + textwrap.dedent(script), *args],
+        cwd=Path(__file__).resolve().parents[1],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=180,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_wide_lob_probe_respects_native_budget(conn_str):
+    from mssql_python import ddbc_bindings as ddbc
+
+    if not hasattr(ddbc.module, "_arrow_test_pointer_addresses"):
+        if os.environ.get("MSSQL_ARROW_TEST_INTERPOSITION", "").upper() in ("1", "ON"):
+            pytest.fail("Arrow test interposition was requested but is not compiled")
+        pytest.skip("Requires an Arrow test-interposition build")
+    _run_arrow_budget_script(
+        conn_str,
+        """
+        import ctypes
+        from mssql_python import ddbc_bindings as ddbc
+
+        callback = ctypes.WINFUNCTYPE if os.name == "nt" else ctypes.CFUNCTYPE
+        get_data_type = callback(
+            ctypes.c_short, ctypes.c_void_p, ctypes.c_ushort, ctypes.c_short,
+            ctypes.c_void_p, ctypes.c_ssize_t, ctypes.POINTER(ctypes.c_ssize_t),
+        )
+        with mssql_python.connect(os.environ["DB_CONNECTION_STRING"]) as conn:
+            pointer = ctypes.c_void_p.from_address(
+                ddbc.module._arrow_test_pointer_addresses["SQLGetData_ptr"]
+            )
+            original = pointer.value
+            calls = 0
+
+            @get_data_type
+            def get_data(stmt, column, ctype, buffer, length, indicator):
+                global calls
+                calls += 1
+                if calls == 1 and ctype == -2 and length == 0:
+                    indicator[0] = 128 * 1024 * 1024
+                    return 0
+                return -1
+
+            with conn.cursor() as cur:
+                cur.execute("SELECT CAST('x' AS VARCHAR(MAX)) AS value")
+                try:
+                    pointer.value = ctypes.cast(get_data, ctypes.c_void_p).value
+                    try:
+                        cur.fetchone()
+                    except RuntimeError as exc:
+                        assert "256 MiB allocation limit" in str(exc), str(exc)
+                    else:
+                        raise AssertionError("Oversized UTF-16 LOB probe was accepted")
+                    assert calls == 1, calls
+                finally:
+                    pointer.value = original
+        """,
+    )
+
+
+@pytest.mark.parametrize("sql_type", ["nvarchar(4000)", "nvarchar(max)"])
+@pytest.mark.parametrize("method", ["arrow", "arrow_batch"])
+@pytest.mark.parametrize("columns", [7, 9])
+def test_arrow_native_budget_lossless_batches(conn_str, sql_type, method, columns):
+    """Fitting results stay whole; oversized batches return every row without loss."""
+    _run_arrow_budget_script(
+        conn_str,
+        """
+        sql_type, method, columns = sys.argv[1], sys.argv[2], int(sys.argv[3])
+        with mssql_python.connect(os.environ["DB_CONNECTION_STRING"]) as conn:
+            with conn.cursor() as cur:
+                cur.execute(wide_query(sql_type, columns))
+                if method == "arrow":
+                    value = cur.arrow()
+                    assert value.num_rows == 8192
+                    check_payload(value, columns)
+                    if columns == 7:
+                        assert value.nbytes == 229841920
+                    else:
+                        assert value.nbytes > 256 * 1024 * 1024
+                        assert len(value.column(0).chunks) > 1
+                    del value
+                else:
+                    total = 0
+                    total_bytes = 0
+                    first = True
+                    while True:
+                        value = cur.arrow_batch(8192)
+                        count = value.num_rows
+                        if first:
+                            assert count == 8192 if columns == 7 else 0 < count < 8192
+                            first = False
+                        if not count:
+                            break
+                        check_payload(value, columns)
+                        total += count
+                        total_bytes += value.nbytes
+                        assert value.nbytes <= 256 * 1024 * 1024
+                        assert cur.rownumber == total - 1
+                        del value
+                    assert total == 8192
+                    if columns == 7:
+                        assert total_bytes == 229841920
+                    else:
+                        assert total_bytes > 256 * 1024 * 1024
+                assert cur.fetchone() is None
+        """,
+        sql_type,
+        method,
+        str(columns),
+    )
+
+
+@pytest.mark.parametrize("sql_type", ["nvarchar(4000)", "nvarchar(max)"])
+@pytest.mark.parametrize("remaining", ["mixed", "fetchall", "arrow_reader"])
+def test_arrow_native_budget_pending_mixed_fetches(conn_str, sql_type, remaining):
+    """A quota boundary preserves the overflow row and the rest of its native rowset."""
+    _run_arrow_budget_script(
+        conn_str,
+        """
+        sql_type = sys.argv[1]
+        remaining = sys.argv[2]
+        row_count = 8192
+        extra = '''
+            , CAST('123.45' AS DECIMAL(10,2)) amount
+            , CAST('2025-01-02' AS DATE) day
+            , CAST('58185E0D-3A91-44D8-BC46-7107217E0A6D' AS UNIQUEIDENTIFIER) guid
+            , CAST(0x010203 AS VARBINARY(3)) binary_value
+            , CAST(NULL AS INT) null_value
+            , CAST(1 AS BIT) flag
+        '''
+        def check_row(row, expected):
+            assert row[0] == expected
+            assert all(value == "A" * 4000 for value in row[1:10])
+            assert row[10] == Decimal("123.45")
+            assert row[11] == date(2025, 1, 2)
+            assert row[12] == UUID("58185E0D-3A91-44D8-BC46-7107217E0A6D")
+            assert row[13] == b"\\x01\\x02\\x03"
+            assert row[14] is None
+            assert row[15] is True
+
+        with mssql_python.connect(os.environ["DB_CONNECTION_STRING"]) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    wide_query(sql_type, 9, count=row_count, identifiers=True, extra=extra)
+                )
+                first = cur.arrow_batch(8192)
+                n = first.num_rows
+                assert 0 < n < row_count
+                assert first.column(0).to_pylist() == list(range(1, n + 1))
+                del first
+                assert cur.arrow_batch(0).num_rows == 0
+                from mssql_python import ddbc_bindings
+                from mssql_python.constants import ConstantsDDBC
+                # Updating the timeout invalidates metadata, not pending result rows.
+                assert ddbc_bindings.DDBCSQLSetStmtAttr(
+                    cur.hstmt, ConstantsDDBC.SQL_ATTR_QUERY_TIMEOUT.value, 0
+                ) in (0, 1)
+                assert ddbc_bindings.DDBCSQLSetStmtAttr(
+                    cur.hstmt, ConstantsDDBC.SQL_ATTR_ROW_ARRAY_SIZE.value, 1
+                ) in (0, 1)
+                if remaining == "mixed":
+                    check_row(cur.fetchone(), n + 1)
+                    n += 1
+                    rows = cur.fetchmany(5)
+                    assert len(rows) == 5
+                    for i, row in enumerate(rows, n + 1):
+                        check_row(row, i)
+                    n += 5
+                    small = cur.arrow_batch(1)
+                    assert small.column(0).to_pylist() == [n + 1]
+                    n += 1
+                    del small, rows
+                    rows = cur.fetchmany(100)
+                    assert 0 < len(rows) <= 100
+                    for i, row in enumerate(rows, n + 1):
+                        check_row(row, i)
+                    n += len(rows)
+                    del rows
+                    rest = cur.arrow()
+                    assert rest.column(0).to_pylist() == list(range(n + 1, row_count + 1))
+                    del rest
+                elif remaining == "fetchall":
+                    rows = cur.fetchall()
+                    assert len(rows) == row_count - n
+                    for i, row in enumerate(rows, n + 1):
+                        check_row(row, i)
+                    del rows
+                else:
+                    with cur.arrow_reader() as reader:
+                        for batch in reader:
+                            count = batch.num_rows
+                            assert batch.column(0).to_pylist() == list(
+                                range(n + 1, n + count + 1)
+                            )
+                            n += count
+                            del batch
+                    assert n == row_count
+                if remaining != "arrow_reader":
+                    assert cur.rownumber == row_count - 1
+                    assert cur.fetchone() is None
+            gc.collect()
+        """,
+        sql_type,
+        remaining,
+    )
+
+
+@pytest.mark.parametrize("sql_type", ["nvarchar(4000)", "nvarchar(max)"])
+def test_arrow_native_budget_pending_scroll_skip(conn_str, sql_type):
+    """Forward skips consume logical pending rows before advancing the driver."""
+    _run_arrow_budget_script(
+        conn_str,
+        """
+        sql_type = sys.argv[1]
+        with mssql_python.connect(os.environ["DB_CONNECTION_STRING"]) as conn:
+            with conn.cursor() as cur:
+                cur.execute(wide_query(sql_type, 9, identifiers=True))
+                first = cur.arrow_batch(8192)
+                position = first.num_rows
+                assert 0 < position < 8192
+                del first
+                cur.scroll(0)
+                cur.skip(0)
+                assert cur.rownumber == position - 1
+                for value, mode in ((-1, "relative"), (0, "absolute"), (1, "absolute")):
+                    try:
+                        cur.scroll(value, mode)
+                    except mssql_python.NotSupportedError:
+                        pass
+                    else:
+                        raise AssertionError("Unsupported Python scroll was accepted")
+                assert cur.rownumber == position - 1
+                cur.scroll(1)
+                position += 1
+                assert cur.fetchone()[0] == position + 1
+                position += 1
+                cur.skip(3)
+                position += 3
+                batch = cur.arrow_batch(1)
+                assert batch.column(0).to_pylist() == [position + 1]
+                position += 1
+                del batch
+                # Cross the retained 64-row bound rowset (or the one-row LOB state).
+                offset = 67 if sql_type == "nvarchar(4000)" else 3
+                cur.scroll(offset)
+                position += offset
+                rows = cur.fetchmany(2)
+                assert [row[0] for row in rows] == [position + 1, position + 2]
+                position += 2
+                del rows
+                assert cur.rownumber == position - 1
+                cur.skip(8192 - position)
+                assert cur.rownumber == 8191
+                assert cur.fetchone() is None
+                try:
+                    cur.scroll(1)
+                except IndexError:
+                    pass
+                else:
+                    raise AssertionError("Skipping beyond EOF did not raise")
+                assert cur.fetchone() is None
+                assert cur.execute("SELECT 42").fetchone()[0] == 42
+        """,
+        sql_type,
+    )
+
+
+@pytest.mark.parametrize("sql_type", ["nvarchar(4000)", "nvarchar(max)"])
+def test_arrow_native_budget_pending_raw_fetches(conn_str, sql_type):
+    """Raw Fetch/FetchScroll select rows; GetData reads the selected cached row."""
+    _run_arrow_budget_script(
+        conn_str,
+        """
+        from mssql_python import ddbc_bindings as ddbc
+        from mssql_python.constants import ConstantsDDBC as C
+        sql_type = sys.argv[1]
+        row_count = 8192
+        unsupported = (
+            (C.SQL_FETCH_RELATIVE.value, 0), (C.SQL_FETCH_RELATIVE.value, 1),
+            (C.SQL_FETCH_RELATIVE.value, 67), (C.SQL_FETCH_RELATIVE.value, -1),
+            (C.SQL_FETCH_ABSOLUTE.value, 0), (C.SQL_FETCH_ABSOLUTE.value, 1),
+            (C.SQL_FETCH_ABSOLUTE.value, -1), (C.SQL_FETCH_FIRST.value, 0),
+            (C.SQL_FETCH_LAST.value, 0), (C.SQL_FETCH_PRIOR.value, 0),
+        )
+        def get_data(cur, count):
+            row = []
+            assert ddbc.DDBCSQLGetData(
+                cur.hstmt, count, row, "utf-16le", "utf-16le", C.SQL_WCHAR.value
+            ) in (0, 1)
+            return row
+        with mssql_python.connect(os.environ["DB_CONNECTION_STRING"]) as conn:
+            with conn.cursor() as cur:
+                cur.execute(wide_query(sql_type, 9, count=row_count, identifiers=True))
+                first = cur.arrow_batch(8192)
+                position = first.num_rows
+                assert 0 < position < row_count
+                del first
+                try:
+                    get_data(cur, 1)
+                except RuntimeError as exc:
+                    assert "requires a successful DDBCSQLFetch" in str(exc)
+                else:
+                    raise AssertionError("GetData consumed an unselected pending row")
+                for orientation, offset in unsupported:
+                    try:
+                        ddbc.DDBCSQLFetchScroll(cur.hstmt, orientation, offset, [])
+                    except RuntimeError as exc:
+                        assert "Only SQL_FETCH_NEXT" in str(exc)
+                    else:
+                        raise AssertionError("Unsupported scroll advanced pending data")
+                assert ddbc.DDBCSQLFetch(cur.hstmt) in (0, 1)
+                position += 1
+                cur.scroll(0)
+                cur.skip(0)
+                assert get_data(cur, 0) == []
+                assert get_data(cur, 1) == [position]
+                for orientation, offset in unsupported:
+                    try:
+                        ddbc.DDBCSQLFetchScroll(cur.hstmt, orientation, offset, [])
+                    except RuntimeError as exc:
+                        assert "Only SQL_FETCH_NEXT" in str(exc)
+                    else:
+                        raise AssertionError("Unsupported scroll discarded the selected row")
+                assert get_data(cur, 1) == [position]
+                assert cur.arrow_batch(0).num_rows == 0
+                assert ddbc.DDBCSQLSetStmtAttr(
+                    cur.hstmt, C.SQL_ATTR_QUERY_TIMEOUT.value, 0
+                ) in (0, 1)
+                assert get_data(cur, 3) == [position, "A" * 4000, "A" * 4000]
+                try:
+                    get_data(cur, 11)
+                except RuntimeError as exc:
+                    assert "Column count exceeds" in str(exc)
+                else:
+                    raise AssertionError("Invalid prefix count was accepted")
+                row = get_data(cur, 10)
+                assert row[0] == position
+                assert row[1:] == ["A" * 4000] * 9
+                del row
+                row = []
+                assert ddbc.DDBCSQLFetchScroll(
+                    cur.hstmt, C.SQL_FETCH_NEXT.value, 0, row
+                ) in (0, 1)
+                position += 1
+                assert row[0] == position
+                assert row[1:] == ["A" * 4000] * 9
+                del row
+                assert cur.fetchone()[0] == position + 1
+                position += 1
+                assert ddbc.DDBCSQLFetch(cur.hstmt) in (0, 1)
+                position += 1
+                assert get_data(cur, 1) == [position]
+                rows = cur.fetchmany(2)
+                assert [row[0] for row in rows] == [position + 1, position + 2]
+                position += 2
+                del rows
+                # A raw fetch without GetData still consumes exactly one logical row.
+                assert ddbc.DDBCSQLFetch(cur.hstmt) in (0, 1)
+                position += 1
+                batch = cur.arrow_batch(1)
+                assert batch.column(0).to_pylist() == [position + 1]
+                position += 1
+                del batch
+                row = []
+                assert ddbc.DDBCSQLFetchScroll(
+                    cur.hstmt, C.SQL_FETCH_NEXT.value, 0, row
+                ) in (0, 1)
+                position += 1
+                assert row[0] == position
+                assert row[1:] == ["A" * 4000] * 9
+                del row
+                # NEXT ignores its offset, and a nonempty output suppresses materialization.
+                for offset in (0, 1, 67, -1, 123):
+                    row = ["unchanged"]
+                    assert ddbc.DDBCSQLFetchScroll(
+                        cur.hstmt, C.SQL_FETCH_NEXT.value, offset, row
+                    ) in (0, 1)
+                    position += 1
+                    assert row == ["unchanged"]
+                    assert get_data(cur, 1) == [position]
+                while True:
+                    if position % 2 == 0:
+                        ret = ddbc.DDBCSQLFetchScroll(
+                            cur.hstmt, C.SQL_FETCH_NEXT.value, 0, ["no materialization"]
+                        )
+                    else:
+                        ret = ddbc.DDBCSQLFetch(cur.hstmt)
+                    if ret == C.SQL_NO_DATA.value:
+                        break
+                    assert ret in (0, 1)
+                    position += 1
+                    assert get_data(cur, 1) == [position]
+                assert position == row_count
+                row = []
+                assert ddbc.DDBCSQLFetchScroll(
+                    cur.hstmt, C.SQL_FETCH_NEXT.value, 0, row
+                ) == C.SQL_NO_DATA.value
+                assert row == []
+                assert cur.fetchone() is None
+        """,
+        sql_type,
+    )
+
+
+@pytest.mark.parametrize("sql_type", ["nvarchar(4000)", "nvarchar(max)"])
+def test_arrow_native_budget_pending_fetchall_after_raw_fetch(conn_str, sql_type):
+    """Fetchall resumes after a raw fetch selects a pending row."""
+    _run_arrow_budget_script(
+        conn_str,
+        """
+        from mssql_python import ddbc_bindings as ddbc
+        from mssql_python.constants import ConstantsDDBC as C
+        sql_type = sys.argv[1]
+        row_count = 8192
+        with mssql_python.connect(os.environ["DB_CONNECTION_STRING"]) as conn:
+            with conn.cursor() as cur:
+                cur.execute(wide_query(sql_type, 9, count=row_count, identifiers=True))
+                first = cur.arrow_batch(8192)
+                position = first.num_rows
+                assert 0 < position < row_count
+                del first
+                assert ddbc.DDBCSQLFetch(cur.hstmt) in (0, 1)
+                position += 1
+                row = []
+                assert ddbc.DDBCSQLGetData(
+                    cur.hstmt, 1, row, "utf-16le", "utf-16le", C.SQL_WCHAR.value
+                ) in (0, 1)
+                assert row == [position]
+                rows = cur.fetchall()
+                assert [row[0] for row in rows] == list(range(position + 1, row_count + 1))
+                assert all(all(value == "A" * 4000 for value in row[1:]) for row in rows)
+                del rows
+                assert cur.fetchone() is None
+        """,
+        sql_type,
+    )
+
+
+def test_arrow_native_budget_native_scroll_orientations(conn_str):
+    """Driver-rejected forward-only orientations raise and leave the result untouched."""
+    _run_arrow_budget_script(
+        conn_str,
+        """
+        from mssql_python import ddbc_bindings as ddbc
+        from mssql_python.constants import ConstantsDDBC as C
+        unsupported = (
+            (C.SQL_FETCH_RELATIVE.value, 0), (C.SQL_FETCH_RELATIVE.value, 1),
+            (C.SQL_FETCH_RELATIVE.value, 67), (C.SQL_FETCH_RELATIVE.value, -1),
+            (C.SQL_FETCH_ABSOLUTE.value, 0), (C.SQL_FETCH_ABSOLUTE.value, 1),
+            (C.SQL_FETCH_ABSOLUTE.value, -1), (C.SQL_FETCH_FIRST.value, 0),
+            (C.SQL_FETCH_LAST.value, 0), (C.SQL_FETCH_PRIOR.value, 0),
+        )
+        with mssql_python.connect(os.environ["DB_CONNECTION_STRING"]) as conn:
+            for orientation, offset in unsupported:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT id FROM (VALUES (1),(2),(3)) v(id) ORDER BY id")
+                    row = []
+                    try:
+                        ddbc.DDBCSQLFetchScroll(cur.hstmt, orientation, offset, row)
+                    except mssql_python.Error:
+                        pass
+                    else:
+                        raise AssertionError("Unsupported native scroll did not raise")
+                    assert row == []
+                    assert cur.fetchone()[0] == 1
+            for offset in (0, 1, 67, -1):
+                with conn.cursor() as cur:
+                    cur.execute("SELECT id FROM (VALUES (1),(2),(3)) v(id) ORDER BY id")
+                    row = []
+                    assert ddbc.DDBCSQLFetchScroll(
+                        cur.hstmt, C.SQL_FETCH_NEXT.value, offset, row
+                    ) in (0, 1)
+                    assert row == [1]
+                    assert cur.fetchone()[0] == 2
+        """,
+    )
+
+
+@pytest.mark.parametrize("recovery", ["arrow_batch", "fetchone", "raw_fetch"])
+def test_arrow_native_budget_resumes_partial_lob(conn_str, recovery):
+    """Resume SQLGetData when source growth, rather than Arrow growth, hits the budget."""
+    _run_arrow_budget_script(
+        conn_str,
+        """
+        recovery = sys.argv[1]
+        query = wide_query("nvarchar(max)", 7, count=6002, identifiers=True)
+        query = query.replace(
+            "CAST(REPLICATE(N'A', 4000) AS nvarchar(max)) AS c0",
+            "CASE WHEN id = 6001 THEN REPLICATE(CAST(N'A' AS nvarchar(max)), "
+            "40 * 1024 * 1024) ELSE CAST(REPLICATE(N'A', 4000) AS nvarchar(max)) END AS c0"
+        )
+        with mssql_python.connect(os.environ["DB_CONNECTION_STRING"]) as conn:
+            with conn.cursor() as cur:
+                cur.execute(query)
+                first = cur.arrow_batch(8192)
+                assert first.num_rows == 6000
+                del first
+                if recovery != "arrow_batch":
+                    if recovery == "raw_fetch":
+                        from mssql_python import ddbc_bindings as ddbc
+                        from mssql_python.constants import ConstantsDDBC as C
+                        assert ddbc.DDBCSQLFetch(cur.hstmt) in (0, 1)
+                        prefix = []
+                        assert ddbc.DDBCSQLGetData(
+                            cur.hstmt, 1, prefix, "utf-16le", "utf-16le", C.SQL_WCHAR.value
+                        ) in (0, 1)
+                        assert prefix == [6001]
+                        row = []
+                        assert ddbc.DDBCSQLGetData(
+                            cur.hstmt, 8, row, "utf-16le", "utf-16le", C.SQL_WCHAR.value
+                        ) in (0, 1)
+                    else:
+                        row = cur.fetchone()
+                    assert row[0] == 6001
+                    assert len(row[1]) == 40 * 1024 * 1024
+                    assert row[1].count("A") == len(row[1])
+                    assert all(value == "A" * 4000 for value in row[2:])
+                    del row
+                    assert cur.fetchone()[0] == 6002
+                else:
+                    batch = cur.arrow_batch(8192)
+                    assert batch.column(0).to_pylist() == [6001, 6002]
+                    value = batch.column(1)[0].as_py()
+                    assert len(value) == 40 * 1024 * 1024
+                    assert value.count("A") == len(value)
+                    del value, batch
+                assert cur.fetchone() is None
+        """,
+        recovery,
+    )
+
+
+def test_arrow_native_budget_single_row_recovery(conn_str):
+    """A row that cannot coexist with its Arrow output stays available to row-wise fetches."""
+    _run_arrow_budget_script(
+        conn_str,
+        """
+        with mssql_python.connect(os.environ["DB_CONNECTION_STRING"]) as conn:
+            with conn.cursor() as cur:
+                cur.execute('''
+                    SELECT CASE WHEN id = 1
+                        THEN REPLICATE(CAST(NCHAR(20013) AS NVARCHAR(MAX)), 56 * 1024 * 1024)
+                        ELSE N'end' END AS value
+                    FROM (VALUES (1),(2)) v(id) ORDER BY id
+                ''')
+                initial_position = cur.rownumber
+                for _ in range(2):
+                    try:
+                        cur.arrow_batch(8192)
+                    except RuntimeError as exc:
+                        assert "row remains pending" in str(exc)
+                    else:
+                        raise AssertionError("Oversized Arrow row did not raise")
+                assert cur.rownumber == initial_position
+                assert cur.arrow_batch(0).num_rows == 0
+                row = cur.fetchone()
+                assert len(row[0]) == 56 * 1024 * 1024
+                assert row[0].count(chr(20013)) == len(row[0])
+                del row
+                assert cur.fetchmany(2)[0][0] == "end"
+                assert cur.fetchone() is None
+                cur.execute('''
+                    SELECT CASE WHEN id = 1
+                        THEN REPLICATE(CAST(N'Z' AS NVARCHAR(MAX)), 140 * 1024 * 1024)
+                        ELSE N'end' END AS value
+                    FROM (VALUES (1),(2)) v(id) ORDER BY id
+                ''')
+                for method in ("arrow_batch", "fetchone", "arrow_batch"):
+                    try:
+                        getattr(cur, method)()
+                    except RuntimeError as exc:
+                        assert "256 MiB" in str(exc)
+                    else:
+                        raise AssertionError("A row exceeding the source budget was dropped")
+                cur.skip(1)
+                assert cur.fetchone()[0] == "end"
+                assert cur.fetchone() is None
+                assert cur.execute("SELECT 42").fetchone()[0] == 42
+        """,
+    )
+
+
+@pytest.mark.parametrize("sql_type", ["nvarchar(4000)", "nvarchar(max)"])
+@pytest.mark.parametrize(
+    "operation", ["execute", "nextset", "close", "reader_close", "connection_close"]
+)
+def test_arrow_native_budget_pending_reset_cleanup(conn_str, sql_type, operation):
+    _run_arrow_budget_script(
+        conn_str,
+        """
+        sql_type = sys.argv[1]
+        operation = sys.argv[2]
+        row_count = 8192
+        with mssql_python.connect(os.environ["DB_CONNECTION_STRING"]) as conn:
+            with conn.cursor() as cur:
+                cur.execute(wide_query(sql_type, 9, count=row_count) + "; SELECT 42 AS answer")
+                first = cur.arrow_batch(8192)
+                assert 0 < first.num_rows < row_count
+                del first
+                from mssql_python import ddbc_bindings
+                assert ddbc_bindings.DDBCSQLFetch(cur.hstmt) in (0, 1)
+                if operation == "nextset":
+                    assert cur.nextset()
+                    assert cur.fetchone()[0] == 42
+                    assert cur.fetchone() is None
+                elif operation == "execute":
+                    assert cur.execute("SELECT 42").fetchone()[0] == 42
+                elif operation == "reader_close":
+                    reader = cur.arrow_reader()
+                    reader.close()
+                    assert cur.execute("SELECT 42").fetchone()[0] == 42
+                elif operation == "close":
+                    cur.close()
+                    with conn.cursor() as fresh:
+                        assert fresh.execute("SELECT 42").fetchone()[0] == 42
+                else:
+                    conn.close()
+        gc.collect()
+        """,
+        sql_type,
+        operation,
+    )
+
+
+@pytest.mark.parametrize("sql_type", ["nvarchar(4000)", "nvarchar(max)"])
+@pytest.mark.parametrize("autocommit", [0, 1])
+def test_arrow_native_budget_pending_set_attr_autocommit(conn_str, sql_type, autocommit):
+    """Generic autocommit assignments match the dedicated setter."""
+    _run_arrow_budget_script(
+        conn_str,
+        """
+        from mssql_python.constants import ConstantsDDBC
+
+        sql_type, autocommit = sys.argv[1], int(sys.argv[2])
+        def fetch_after_change(generic):
+            with mssql_python.connect(os.environ["DB_CONNECTION_STRING"]) as conn:
+                with conn.cursor() as cur:
+                    cur.execute(wide_query(sql_type, 9, identifiers=True))
+                    first = cur.arrow_batch(8192)
+                    assert 0 < first.num_rows < 8192
+                    del first
+                    if generic:
+                        conn._conn.set_attr(
+                            ConstantsDDBC.SQL_ATTR_AUTOCOMMIT.value, autocommit
+                        )
+                    else:
+                        conn.autocommit = bool(autocommit)
+                    try:
+                        row = cur.fetchone()
+                    except mssql_python.ProgrammingError as exc:
+                        result = ("error", str(exc))
+                    else:
+                        result = ("row", None if row is None else row[0])
+                    assert cur.execute("SELECT 42").fetchone()[0] == 42
+                    return result
+
+        expected = fetch_after_change(False)
+        assert fetch_after_change(True) == expected
+        """,
+        sql_type,
+        str(autocommit),
+    )
+
+
+@pytest.mark.parametrize("autocommit", [0, 1])
+def test_arrow_native_budget_idempotent_autocommit_preserves_rows(conn_str, autocommit):
+    _run_arrow_budget_script(
+        conn_str,
+        """
+        from mssql_python.constants import ConstantsDDBC
+
+        autocommit = int(sys.argv[1])
+        with mssql_python.connect(
+            os.environ["DB_CONNECTION_STRING"], autocommit=not bool(autocommit)
+        ) as conn:
+            conn._conn.set_attr(ConstantsDDBC.SQL_ATTR_AUTOCOMMIT.value, autocommit)
+            assert conn.autocommit == bool(autocommit)
+            with conn.cursor() as cur:
+                cur.execute(wide_query("nvarchar(4000)", 9, identifiers=True))
+                first = cur.arrow_batch(8192)
+                count = first.num_rows
+                assert 0 < count < 8192
+                assert first.column(0).to_pylist() == list(range(1, count + 1))
+                del first
+
+                conn.autocommit = conn.autocommit
+                assert cur.fetchone()[0] == count + 1
+                conn._conn.set_attr(
+                    ConstantsDDBC.SQL_ATTR_AUTOCOMMIT.value, int(conn.autocommit)
+                )
+                next_id = count + 2
+                while rows := cur.fetchmany(64):
+                    assert [row[0] for row in rows] == list(range(next_id, next_id + len(rows)))
+                    next_id += len(rows)
+                assert next_id == 8193
+        """,
+        str(autocommit),
+    )
 
 
 def test_arrow_reader_optional_state_after_close() -> None:
@@ -259,11 +1003,25 @@ def test_arrow_empty_fetch(cursor: mssql_python.Cursor):
         _test_arrow_test_data(cursor, [col_data], fetch_length=0)
 
 
+def test_arrow_wide_schema_only_and_single_row_fit_native_buffer_budget(
+    cursor: mssql_python.Cursor,
+):
+    columns = ", ".join(f"CAST(N'x' AS NVARCHAR(4000)) AS col_{index}" for index in range(600))
+    cursor.execute(f"SELECT {columns}")
+
+    schema_batch = cursor.arrow_batch(0)
+    assert schema_batch.num_rows == 0
+    assert schema_batch.num_columns == 600
+
+    data_batch = cursor.arrow_batch(1)
+    assert data_batch.num_rows == 1
+    assert data_batch.num_columns == 600
+
+
 def test_arrow_table_batchsize_negative(cursor: mssql_python.Cursor):
-    tbl = cursor.execute("select 1 a").arrow(batch_size=-42)
-    assert type(tbl) is pa.Table
-    assert tbl.num_rows == 0
-    assert tbl.num_columns == 1
+    cursor.execute("select 1 a")
+    with pytest.raises(ValueError, match="batch_size"):
+        cursor.arrow(batch_size=-42)
     assert cursor.fetchone()[0] == 1
 
 

@@ -16,6 +16,7 @@ from __future__ import annotations
 import decimal
 import logging
 import uuid
+import codecs
 import datetime
 import warnings
 import threading
@@ -82,10 +83,41 @@ else:
 MAX_INLINE_CHAR: int = (
     4000  # NVARCHAR/VARCHAR inline limit; this triggers NVARCHAR(MAX)/VARCHAR(MAX) + DAE
 )
+MAX_INLINE_BINARY: int = 8000
 SMALLMONEY_MIN: decimal.Decimal = decimal.Decimal("-214748.3648")
 SMALLMONEY_MAX: decimal.Decimal = decimal.Decimal("214748.3647")
 MONEY_MIN: decimal.Decimal = decimal.Decimal("-922337203685477.5808")
 MONEY_MAX: decimal.Decimal = decimal.Decimal("922337203685477.5807")
+# Bound each native fetch allocation; Arrow initially reserves 42 bytes per variable-width row.
+MAX_NATIVE_ROW_COUNT: int = 1_000_000
+MAX_NATIVE_PARAMETER_SIZE: int = 256 * 1024 * 1024
+
+
+def _encoded_length_exceeds(value: str, encoding: str, limit: int) -> bool:
+    encoder = codecs.getincrementalencoder(encoding)(errors="strict")
+    total = 0
+    chunk_size = 4096
+    value_length = str.__len__(value)
+    for offset in range(0, value_length, chunk_size):
+        end = min(offset + chunk_size, value_length)
+        chunk = str.__getitem__(value, slice(offset, end))
+        total += len(encoder.encode(chunk, final=end == value_length))
+        if total > limit:
+            return True
+    if value_length == 0:
+        total += len(encoder.encode("", final=True))
+    return total > limit
+
+
+def _utf16_length_exceeds(value: str, limit: int) -> bool:
+    bounded_value = str.__getitem__(value, slice(0, limit + 1))
+    return len(str.encode(bounded_value, "utf-16-le")) // 2 > limit
+
+
+def _binary_length(value: bytes | bytearray) -> int:
+    return bytes.__len__(value) if isinstance(value, bytes) else bytearray.__len__(value)
+
+
 # SQL BIGINT is a signed 64-bit integer. Ints outside this range have no BIGINT
 # encoding and must be rejected at detect time on both paths (see _map_sql_type).
 BIGINT_MIN: int = -(2**63)
@@ -559,9 +591,7 @@ class Cursor:
         self._initialize_cursor()
         self.description: _Description | None = None
         self.rowcount: int = -1
-        self.arraysize: int = (
-            1  # Default number of rows to fetch at a time is 1, user can change it
-        )
+        self.arraysize = 1
         self.buffer_length: int = 1024  # Default buffer length for string data
         self._result_set_empty: bool = False  # Add this initialization
         self.last_executed_stmt: str = ""  # Stores the last statement executed by this cursor
@@ -1142,7 +1172,7 @@ class Cursor:
 
         if isinstance(param, (bytes, bytearray)):
             length = len(param)
-            if length > 8000:  # Use VARBINARY(MAX) for large blobs
+            if length > MAX_INLINE_BINARY:  # Use VARBINARY(MAX) for large blobs
                 return (
                     ddbc_sql_const.SQL_VARBINARY.value,
                     ddbc_sql_const.SQL_C_BINARY.value,
@@ -1406,6 +1436,26 @@ class Cursor:
                 "pyarrow is required for Arrow fetch methods. Please install pyarrow."
             ) from e
 
+    @staticmethod
+    def _validate_native_row_count(value: int, name: str, allow_zero: bool) -> int:
+        minimum = 0 if allow_zero else 1
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise TypeError(f"{name} must be an integer")
+        if value < minimum or value > MAX_NATIVE_ROW_COUNT:
+            raise ValueError(
+                f"{name} must be between {minimum} and {MAX_NATIVE_ROW_COUNT}, got {value}"
+            )
+        return value
+
+    @property
+    def arraysize(self) -> int:
+        """Default fetchmany row count: an integer from 1 to 1,000,000, not bool."""
+        return self._arraysize
+
+    @arraysize.setter
+    def arraysize(self, value: int) -> None:
+        self._arraysize = self._validate_native_row_count(value, "arraysize", allow_zero=False)
+
     def setinputsizes(self, sizes: Sequence[int | tuple[int, ...]] | None) -> None:
         """
         Sets the type information to be used for parameters in execute and executemany.
@@ -1449,6 +1499,13 @@ class Cursor:
         Args:
             sizes: A sequence of tuples, one for each parameter. Each tuple contains
                 (sql_type, size, decimal_digits) where size and decimal_digits are optional.
+                Non-numeric sizes must be integers from 0 to 268,435,456 in the SQL
+                type's size units; booleans and negative sizes/scales are rejected.
+                Numeric precision/scale hints retain normalization to SQL Server's
+                supported precision (up to 38), rather than being byte lengths.
+                Array-bound executemany buffers across all columns must fit within
+                256 MiB, including NULL slots and length indicators. Reduce batch
+                sizes or excessive size hints if this native allocation limit is hit.
         """
 
         # Get valid SQL types from centralized constants
@@ -1471,7 +1528,11 @@ class Cursor:
                         sql_type, column_size, decimal_digits = size_info
 
                     # Validate SQL type
-                    if not isinstance(sql_type, int) or sql_type not in valid_sql_types:
+                    if (
+                        isinstance(sql_type, bool)
+                        or not isinstance(sql_type, int)
+                        or sql_type not in valid_sql_types
+                    ):
                         raise ValueError(
                             f"Invalid SQL type: {sql_type}. Must be a valid SQL type constant."
                         )
@@ -1479,12 +1540,29 @@ class Cursor:
                     sql_type = ODBC3_TEMPORAL_SQL_TYPES.get(sql_type, sql_type)
 
                     # Validate size and precision
-                    if not isinstance(column_size, int) or column_size < 0:
+                    if (
+                        isinstance(column_size, bool)
+                        or not isinstance(column_size, int)
+                        or column_size < 0
+                        or (
+                            sql_type
+                            not in (
+                                ddbc_sql_const.SQL_DECIMAL.value,
+                                ddbc_sql_const.SQL_NUMERIC.value,
+                            )
+                            and column_size > MAX_NATIVE_PARAMETER_SIZE
+                        )
+                    ):
                         raise ValueError(
-                            f"Invalid column size: {column_size}. Must be a non-negative integer."
+                            f"Invalid column size: {column_size}. Must be a non-negative integer "
+                            f"no greater than {MAX_NATIVE_PARAMETER_SIZE}."
                         )
 
-                    if not isinstance(decimal_digits, int) or decimal_digits < 0:
+                    if (
+                        isinstance(decimal_digits, bool)
+                        or not isinstance(decimal_digits, int)
+                        or decimal_digits < 0
+                    ):
                         raise ValueError(
                             f"Invalid decimal digits: {decimal_digits}. "
                             f"Must be a non-negative integer."
@@ -1503,7 +1581,11 @@ class Cursor:
                     sql_type = size_info
 
                     # Validate SQL type
-                    if not isinstance(sql_type, int) or sql_type not in valid_sql_types:
+                    if (
+                        isinstance(sql_type, bool)
+                        or not isinstance(sql_type, int)
+                        or sql_type not in valid_sql_types
+                    ):
                         raise ValueError(
                             f"Invalid SQL type: {sql_type}. Must be a valid SQL type constant."
                         )
@@ -2857,8 +2939,13 @@ class Cursor:
         Args:
             operation: SQL query or command.
             seq_of_parameters: Sequence of sequences or mappings of parameters.
+                Native array binding supports at most 1,000,000 parameter sets and
+                256 MiB of parameter buffers per call, depending on column widths
+                and length indicators (including NULL slots). Split larger inputs
+                into smaller calls. These limits do not bound total process memory.
         Raises:
             Error: If the operation fails.
+            ValueError: If formatted DECIMAL/NUMERIC text exceeds 4000 UTF-16 code units.
         """
         logger.debug(
             "executemany: Starting - operation_length=%d, batch_count=%d",
@@ -2936,6 +3023,7 @@ class Cursor:
         param_count = len(sample_row)
         param_info = ddbc_bindings.ParamInfo
         parameters_type = []
+        encoding_settings = self._get_encoding_settings()
         json_columns: list[int] = []
         requires_rowwise = False
 
@@ -2972,6 +3060,7 @@ class Cursor:
 
         with perf_phase("py::executemany::param_type_detection"):
             for col_index in range(param_count):
+                requires_row_fallback = False
                 column = (
                     [row[col_index] for row in seq_of_parameters]
                     if hasattr(seq_of_parameters, "__getitem__")
@@ -3032,12 +3121,47 @@ class Cursor:
                     ):
                         c_type = ddbc_sql_const.SQL_C_CHAR.value
 
-                    # Check if this should be a DAE (data at execution) parameter based on column size
-                    if sample_value is not None:
-                        if isinstance(sample_value, str) and column_size > MAX_INLINE_CHAR:
-                            is_dae = True
-                        elif isinstance(sample_value, (bytes, bytearray)) and column_size > 8000:
-                            is_dae = True
+                    # Text values stay on the driver's wide binding path. Bytes supplied
+                    # for narrow SQL text types use real SQL_C_CHAR in scalar execution.
+                    narrow_text_type = sql_type in (
+                        ddbc_sql_const.SQL_CHAR.value,
+                        ddbc_sql_const.SQL_VARCHAR.value,
+                        ddbc_sql_const.SQL_LONGVARCHAR.value,
+                    )
+                    wide_text_type = sql_type in (
+                        ddbc_sql_const.SQL_WCHAR.value,
+                        ddbc_sql_const.SQL_WVARCHAR.value,
+                        ddbc_sql_const.SQL_WLONGVARCHAR.value,
+                        ddbc_sql_const.SQL_SS_XML.value,
+                    )
+                    if narrow_text_type or wide_text_type:
+                        text_values = [value for value in column if isinstance(value, str)]
+                        binary_values = [
+                            value for value in column if isinstance(value, (bytes, bytearray))
+                        ]
+                        if c_type == ddbc_sql_const.SQL_CHAR.value:
+                            text_is_large = any(
+                                _encoded_length_exceeds(
+                                    value,
+                                    encoding_settings["encoding"],
+                                    MAX_INLINE_CHAR,
+                                )
+                                for value in text_values
+                            )
+                        else:
+                            text_is_large = any(
+                                _utf16_length_exceeds(value, MAX_INLINE_CHAR)
+                                for value in text_values
+                            )
+                        binary_is_large = narrow_text_type and any(
+                            _binary_length(value) > MAX_INLINE_BINARY for value in binary_values
+                        )
+                        requires_row_fallback = bool(
+                            narrow_text_type and text_values and binary_values
+                        )
+                        if narrow_text_type and binary_values and not text_values:
+                            c_type = ddbc_sql_const.SQL_CHAR.value
+                        is_dae = text_is_large or binary_is_large
 
                     # Sanitize precision/scale for numeric types
                     if sql_type in (
@@ -3052,22 +3176,27 @@ class Cursor:
                         ddbc_sql_const.SQL_BINARY.value,
                         ddbc_sql_const.SQL_VARBINARY.value,
                         ddbc_sql_const.SQL_LONGVARBINARY.value,
+                        ddbc_sql_const.SQL_SS_UDT.value,
                     ):
                         # Find the maximum size needed for any row's binary data
                         max_binary_size = 0
                         for row in seq_of_parameters:
                             value = row[col_index]
                             if value is not None and isinstance(value, (bytes, bytearray)):
-                                max_binary_size = max(max_binary_size, len(value))
+                                max_binary_size = max(max_binary_size, _binary_length(value))
 
                         # For SQL Server VARBINARY(MAX), we need to use large object binding
-                        if column_size > 8000 or max_binary_size > 8000:
-                            sql_type = ddbc_sql_const.SQL_LONGVARBINARY.value
+                        if max_binary_size > MAX_INLINE_BINARY:
+                            if sql_type != ddbc_sql_const.SQL_SS_UDT.value:
+                                sql_type = ddbc_sql_const.SQL_LONGVARBINARY.value
                             is_dae = True
 
                         # Update column_size to actual maximum size if it's larger
                         # Always ensure at least a minimum size of 1 for empty strings
                         column_size = max(max_binary_size, 1)
+
+                    if is_dae:
+                        column_size = 0
 
                     paraminfo = param_info()
                     paraminfo.paramCType = c_type
@@ -3183,10 +3312,10 @@ class Cursor:
                         for row in seq_of_parameters:
                             value = row[col_index]
                             if value is not None and isinstance(value, (bytes, bytearray)):
-                                max_binary_size = max(max_binary_size, len(value))
+                                max_binary_size = max(max_binary_size, _binary_length(value))
 
                         # For SQL Server VARBINARY(MAX), we need to use large object binding
-                        if max_binary_size > 8000:
+                        if max_binary_size > MAX_INLINE_BINARY:
                             paraminfo.paramSQLType = ddbc_sql_const.SQL_LONGVARBINARY.value
                             paraminfo.isDAE = True
 
@@ -3195,7 +3324,7 @@ class Cursor:
                         paraminfo.columnSize = max(max_binary_size, 1)
 
                     parameters_type.append(paraminfo)
-                if paraminfo.isDAE:
+                if paraminfo.isDAE or requires_row_fallback:
                     requires_rowwise = True
 
         if requires_rowwise:
@@ -3270,6 +3399,8 @@ class Cursor:
                         ddbc_sql_const.SQL_NUMERIC.value,
                     ):
                         processed_row[i] = _format_numeric_batch_parameter(val, row_index, i)
+                        if _utf16_length_exceeds(processed_row[i], MAX_INLINE_CHAR):
+                            raise ValueError("numeric parameter text is too large")
                         parameters_type[i].arrayBufferSize = max(
                             parameters_type[i].arrayBufferSize, len(processed_row[i])
                         )
@@ -3284,9 +3415,6 @@ class Cursor:
             columnwise_params, row_count = self._transpose_rowwise_to_columnwise(
                 processed_parameters
             )
-
-        # Get encoding settings
-        encoding_settings = self._get_encoding_settings()
 
         # Debug logging: emit batch metadata only. Never log parameter values or
         # row representations here -- rows may contain PII (SSNs, emails,
@@ -3490,7 +3618,15 @@ class Cursor:
         Fetch the next set of rows of a query result.
 
         Args:
-            size: Number of rows to fetch at a time.
+            size: Integer from 0 to 1,000,000, not bool. None uses arraysize.
+                Zero returns an empty list without fetching. Native fetch buffers
+                must also fit within 256 MiB; reduce size for wide columns.
+                When recovering pending Arrow rows, a call may return fewer than
+                size rows before the result is exhausted. Continue until empty.
+
+        Raises:
+            TypeError: If size is a boolean or another non-integer.
+            ValueError: If size is negative or exceeds 1,000,000.
 
         Returns:
             List of Row objects.
@@ -3501,8 +3637,10 @@ class Cursor:
 
         if size is None:
             size = self.arraysize
+        else:
+            size = self._validate_native_row_count(size, "size", allow_zero=True)
 
-        if size <= 0:
+        if size == 0:
             return []
 
         procedure_rows: deque[list[Any]] | None = getattr(self, "_procedure_rows", None)
@@ -3750,11 +3888,17 @@ class Cursor:
 
     def arrow_batch(self, batch_size: int = 8192) -> "pyarrow.RecordBatch":
         """
-        Fetch a single pyarrow Record Batch of the specified size from the
+        Fetch a single pyarrow Record Batch of up to the specified size from the
         query result set.
 
         Args:
-            batch_size: Maximum number of rows to fetch in the Record Batch.
+            batch_size: Maximum rows, an integer from 0 to 1,000,000, not bool.
+                Zero returns schema only, without advancing the result set.
+                Native fetch buffers must fit within 256 MiB. A batch may be
+                shorter to stay within this budget; subsequent fetches resume
+                without losing rows. This does not bound total process memory.
+                If one row cannot fit, an error leaves it pending for recovery
+                by a row-wise fetch when its source buffers fit the budget.
 
         Returns:
             A pyarrow RecordBatch object containing up to batch_size rows.
@@ -3768,6 +3912,7 @@ class Cursor:
         self, batch_size: int, reader_state: ddbc_bindings._ArrowReaderState | None = None
     ) -> Optional["pyarrow.RecordBatch"]:
         self._check_closed()  # Check if the cursor is closed
+        batch_size = self._validate_native_row_count(batch_size, "batch_size", allow_zero=True)
         if getattr(self, "_procedure_rows", None) is not None or any(
             column[1] is Vector for column in (self.description or ())
         ):
@@ -3784,7 +3929,7 @@ class Cursor:
         char_decoding = self._get_decoding_settings(ddbc_sql_const.SQL_CHAR.value)
         char_c_type = char_decoding.get("ctype", ddbc_sql_const.SQL_WCHAR.value)
         ret = ddbc_bindings.DDBCSQLFetchArrowBatch(
-            self.hstmt, capsules, max(batch_size, 0), char_c_type, self.messages, reader_state
+            self.hstmt, capsules, batch_size, char_c_type, self.messages, reader_state
         )
         check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
         if reader_state is not None and ret == _SQL_NO_DATA:
@@ -3811,7 +3956,10 @@ class Cursor:
         Fetch the entire result as a pyarrow Table.
 
         Args:
-            batch_size: Size of the Record Batches which make up the Table.
+            batch_size: Maximum rows per Record Batch, from 0 to 1,000,000, not bool.
+                Zero returns schema only. Each batch is subject to the native
+                fetch buffer budget described by arrow_batch; the complete
+                Table's memory consumption is not bounded by that budget.
 
         Returns:
             A pyarrow Table containing all remaining rows from the result set.
@@ -3822,7 +3970,7 @@ class Cursor:
         batches: list["pyarrow.RecordBatch"] = []
         while True:
             batch = self.arrow_batch(batch_size)
-            if batch.num_rows < batch_size or batch_size <= 0:
+            if batch.num_rows == 0 or batch_size <= 0:
                 if not batches or batch.num_rows > 0:
                     batches.append(batch)
                 break
@@ -3832,7 +3980,7 @@ class Cursor:
     def arrow_reader(self, batch_size: int = 8192) -> "_ArrowReader":
         """
         Fetch the result as a pyarrow-compatible RecordBatchReader, which
-        yields Record Batches of the specified size until the current result
+        yields Record Batches of up to the specified size until the current result
         set is exhausted.
 
         The returned object is an ``_ArrowReader`` wrapper that behaves like
@@ -3856,7 +4004,10 @@ class Cursor:
         the pending server-side resources.
 
         Args:
-            batch_size: Size of the Record Batches produced by the reader.
+            batch_size: Maximum rows per Record Batch, from 0 to 1,000,000, not bool.
+                Zero yields no data batches. Validation occurs when reading.
+                Each batch uses the native fetch budget described by arrow_batch;
+                retaining batches can still grow total process memory.
 
         Returns:
             A pyarrow-compatible RecordBatchReader for the result set.
@@ -4229,12 +4380,14 @@ class Cursor:
             logger.error("bulkcopy: Invalid table_name parameter")
             raise ValueError("table_name must be a non-empty string")
 
-        if not isinstance(batch_size, int):
+        if not isinstance(batch_size, int) or isinstance(batch_size, bool):
             raise TypeError(
                 f"batch_size must be a non-negative integer, got {type(batch_size).__name__}"
             )
-        if batch_size < 0:
-            raise ValueError(f"batch_size must be non-negative, got {batch_size}")
+        if batch_size < 0 or batch_size > MAX_NATIVE_ROW_COUNT:
+            raise ValueError(
+                f"batch_size must be between 0 and {MAX_NATIVE_ROW_COUNT}, got {batch_size}"
+            )
 
         if not isinstance(timeout, int) or isinstance(timeout, bool):
             raise TypeError(f"timeout must be a non-negative integer, got {type(timeout).__name__}")
@@ -4300,7 +4453,9 @@ class Cursor:
                 - The number of values in each row must match the number of columns
                   in the target table
 
-            batch_size: Number of rows to send per batch. Default 0 uses server optimal.
+            batch_size: Rows per batch/commit, an integer from 0 to 1,000,000,
+                not bool. Default 0 uses native core defaults. This does not
+                limit the total number of input rows or total process memory.
 
             timeout: Operation timeout in seconds. Default is 30. 0 disables the
                 bulk copy operation timeout.
@@ -4521,7 +4676,9 @@ class Cursor:
         Args:
             table_name: Target table name (may include schema, e.g. 'dbo.MyTable').
             source: Arrow source (see above).
-            batch_size: Rows per TDS commit. Default 0 uses server optimal.
+            batch_size: Rows per TDS commit, an integer from 0 to 1,000,000,
+                not bool. Default 0 uses native core defaults. This does not
+                limit the total source rows or total process memory.
             timeout: Operation timeout in seconds. Default 30. 0 disables the
                 bulk copy operation timeout.
             column_mappings: Same two formats as :meth:`bulkcopy`. When omitted,
@@ -4756,7 +4913,7 @@ class Cursor:
         self, value: int, mode: str = "relative"
     ) -> None:  # pylint: disable=too-many-branches
         """
-        Scroll using SQLFetchScroll only, matching test semantics:
+        Advance a forward-only cursor without materializing skipped rows:
           - relative(N>0): consume N rows; rownumber = previous + N;
             next fetch returns the following row.
           - absolute(-1): before first (rownumber = -1), no data consumed.
@@ -4803,8 +4960,6 @@ class Cursor:
                 f"Cannot move backward by {value} rows on a forward-only cursor",
             )
 
-        row_data: list[Any] = []
-
         # Absolute positioning not supported with forward-only cursors
         if mode == "absolute":
             raise NotSupportedError(
@@ -4828,12 +4983,10 @@ class Cursor:
                     for _ in range(value):
                         procedure_rows.popleft()
                 else:
-                    # For forward-only cursors, use multiple SQL_FETCH_NEXT calls
-                    # This matches pyodbc's approach for skip operations
+                    # Select logical rows without materializing pending Arrow payloads.
                     for i in range(value):
-                        ret = ddbc_bindings.DDBCSQLFetchScroll(
-                            self.hstmt, ddbc_sql_const.SQL_FETCH_NEXT.value, 0, row_data
-                        )
+                        ret = ddbc_bindings.DDBCSQLFetch(self.hstmt)
+                        check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
                         if ret == ddbc_sql_const.SQL_NO_DATA.value:
                             raise IndexError(
                                 "Cannot scroll to specified position: end of result set reached"

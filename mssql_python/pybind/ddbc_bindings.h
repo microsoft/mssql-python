@@ -344,6 +344,7 @@ struct ConnectionCleanupState {
     std::atomic<bool> childFreeFailed{false};  // Sticky for this physical connection.
 };
 
+struct PendingArrowRows;
 struct ErrorInfo;
 
 class SqlHandle {
@@ -396,7 +397,36 @@ class SqlHandle {
     // thread-safe by spec (same assumption as the rest of the driver).
     std::unordered_map<int, DescribedParamInfo> describeCache;
     void clearDescribeCache() { describeCache.clear(); }
+    // A failed DAE reset retains native binding storage until unbind or handle release.
+    // The row guard removes Python references before leaving it here.
+    std::shared_ptr<void> retainedDaeBindings;
     ResultMetadataCache resultMetadata;
+    std::shared_ptr<PendingArrowRows> pendingArrowRows() const {
+        std::lock_guard<std::mutex> lock(_pendingRowsMutex);
+        return _pendingArrowRows;
+    }
+    std::pair<uint64_t, std::shared_ptr<PendingArrowRows>> pendingArrowSnapshot() const {
+        std::lock_guard<std::mutex> lock(_pendingRowsMutex);
+        return {_pendingRowsGeneration, _pendingArrowRows};
+    }
+    bool publishPendingArrowRows(uint64_t generation, std::shared_ptr<PendingArrowRows> rows) {
+        std::lock_guard<std::mutex> lock(_pendingRowsMutex);
+        if (generation != _pendingRowsGeneration) {
+            return false;
+        }
+        _pendingArrowRows = std::move(rows);
+        return true;
+    }
+    void setPendingArrowRows(std::shared_ptr<PendingArrowRows> rows) {
+        std::lock_guard<std::mutex> lock(_pendingRowsMutex);
+        _pendingArrowRows = std::move(rows);
+    }
+    void clearResult() {
+        resultMetadata.clear();
+        std::lock_guard<std::mutex> lock(_pendingRowsMutex);
+        ++_pendingRowsGeneration;
+        _pendingArrowRows.reset();
+    }
     // Only fetch calls under the GIL access this flag. Batch bindings are
     // invalidated before installation and become reusable only after unbinding.
     bool fetchColumnsUnbound = false;
@@ -424,6 +454,9 @@ class SqlHandle {
     bool cursorAttrsApplied = false;
 
   private:
+    mutable std::mutex _pendingRowsMutex;
+    uint64_t _pendingRowsGeneration = 0;
+    std::shared_ptr<PendingArrowRows> _pendingArrowRows;
     // The caller must release the GIL before waiting for native cleanup.
     std::unique_lock<std::mutex> lockForCleanup() const;
     SQLSMALLINT _type;
@@ -642,6 +675,26 @@ struct ColumnBuffers {
           indicators(numCols, std::vector<SQLLEN>(fetchSize)) {}
 };
 
+// No Python objects: cancellation and connection cleanup can release this without the GIL.
+struct PendingArrowRows {
+    ColumnBuffers buffers;
+    int fetchSize;
+    int charCtype;
+    bool hasLobs;
+    SQLULEN count = 0;
+    SQLULEN next = 0;
+    SQLULEN selectedRow = 0;
+    bool hasSelectedRow = false;
+    size_t reservedBytes = 0;
+    SQLUSMALLINT lobColumn = 0;
+    size_t lobStart = 0;
+    size_t lobRequired = 0;
+
+    PendingArrowRows(SQLSMALLINT columns, int fetchSize, int charCtype, bool hasLobs)
+        : buffers(columns, fetchSize), fetchSize(fetchSize), charCtype(charCtype),
+          hasLobs(hasLobs) {}
+};
+
 // Performance: Column processor function type for fast type conversion
 // Using function pointers eliminates switch statement overhead in the hot loop
 typedef void (*ColumnProcessor)(PyObject* row, ColumnBuffers& buffers, const void* colInfo,
@@ -813,6 +866,9 @@ inline void ProcessChar(PyObject* row, ColumnBuffers& buffers, const void* colIn
     }
 
     if (colInfo->useWideChar) {
+        if (dataLen % sizeof(SQLWCHAR) != 0) {
+            ThrowStdException("Wide-character data has an invalid byte length");
+        }
         // Wide-char path: data was bound as SQL_C_WCHAR, lives in wcharBuffers
         uint64_t numCharsInData = dataLen / sizeof(SQLWCHAR);
         if (!colInfo->isLob && numCharsInData < colInfo->fetchBufferSize) {
@@ -935,6 +991,9 @@ inline void ProcessWChar(PyObject* row, ColumnBuffers& buffers, const void* colI
     }
 
     uint64_t numCharsInData = dataLen / sizeof(SQLWCHAR);
+    if (dataLen % sizeof(SQLWCHAR) != 0) {
+        ThrowStdException("Wide-character data has an invalid byte length");
+    }
     // Fast path: Data fits in buffer (not LOB or truncated)
     // fetchBufferSize includes null-terminator, numCharsInData doesn't. Hence
     // '<'

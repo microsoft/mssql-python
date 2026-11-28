@@ -14,13 +14,14 @@ import pytest
 from mssql_python import SQL_CHAR, SQL_WCHAR
 
 
-def test_native_zero_size_wide_fetch_preserves_pending_rows(db_connection):
+def test_native_invalid_size_wide_fetch_preserves_pending_rows(db_connection):
     from mssql_python import ddbc_bindings
 
     with db_connection.cursor() as cursor:
         cursor.execute("SELECT CAST(N'pending' AS nvarchar(4000))")
         rows = []
-        assert ddbc_bindings.DDBCSQLFetchMany(cursor.hstmt, rows, 0) == 0
+        with pytest.raises(RuntimeError, match="Fetch size must be between 1 and 1000000"):
+            ddbc_bindings.DDBCSQLFetchMany(cursor.hstmt, rows, 0)
         assert rows == []
         assert [tuple(row) for row in cursor.fetchall()] == [("pending",)]
 

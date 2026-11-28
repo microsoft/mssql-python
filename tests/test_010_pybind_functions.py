@@ -17,6 +17,10 @@ import pytest
 import platform
 import threading
 import os
+from pathlib import Path
+import subprocess
+import sys
+import textwrap
 
 # Import ddbc_bindings with error handling
 try:
@@ -35,6 +39,523 @@ from mssql_python.exceptions import (
     OperationalError,
     DataError,
 )
+
+
+@pytest.mark.skipif(not DDBC_AVAILABLE, reason="ddbc_bindings not available")
+@pytest.mark.parametrize("data_type", [2, 3])
+@pytest.mark.parametrize("indicator", [0, -4, 64, 65])
+def test_bound_decimal_rejects_malformed_indicator(data_type, indicator):
+    with pytest.raises(RuntimeError, match="Decimal data exceeds|Unexpected negative data length"):
+        ddbc._test_bound_decimal_rows(data_type, indicator)
+
+
+@pytest.mark.skipif(not DDBC_AVAILABLE, reason="ddbc_bindings not available")
+@pytest.mark.parametrize("data_type", [2, 3])
+@pytest.mark.parametrize("indicator", [-1, 1, 63])
+def test_bound_decimal_preserves_null_and_valid_lengths(data_type, indicator):
+    from decimal import Decimal
+
+    expected = None if indicator == -1 else Decimal(0)
+    assert ddbc._test_bound_decimal_rows(data_type, indicator) == [[expected]]
+
+
+@pytest.mark.skipif(not DDBC_AVAILABLE, reason="ddbc_bindings not available")
+def test_arrow_decimal_rejects_malformed_bound_indicators(conn_str):
+    if not hasattr(ddbc.module, "_arrow_test_pointer_addresses"):
+        if os.environ.get("MSSQL_ARROW_TEST_INTERPOSITION", "").upper() in ("1", "ON"):
+            pytest.fail("Arrow test interposition was requested but is not compiled")
+        pytest.skip("Requires an Arrow test-interposition build")
+    env = os.environ.copy()
+    env["DB_CONNECTION_STRING"] = str(conn_str)
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            textwrap.dedent("""
+                import ctypes
+                import os
+                import mssql_python
+                from mssql_python import ddbc_bindings as ddbc
+
+                callback = ctypes.WINFUNCTYPE if os.name == "nt" else ctypes.CFUNCTYPE
+                bind_type = callback(
+                    ctypes.c_short, ctypes.c_void_p, ctypes.c_ushort,
+                    ctypes.c_short, ctypes.c_void_p, ctypes.c_ssize_t,
+                    ctypes.POINTER(ctypes.c_ssize_t),
+                )
+                fetch_type = callback(ctypes.c_short, ctypes.c_void_p)
+                with mssql_python.connect(os.environ["DB_CONNECTION_STRING"]) as conn:
+                    addresses = ddbc.module._arrow_test_pointer_addresses
+                    pointers = {
+                        name: ctypes.c_void_p.from_address(addresses[name])
+                        for name in ("SQLBindCol_ptr", "SQLFetch_ptr")
+                    }
+                    original = {name: pointer.value for name, pointer in pointers.items()}
+                    real_bind = bind_type(original["SQLBindCol_ptr"])
+                    real_fetch = fetch_type(original["SQLFetch_ptr"])
+                    bound_indicator = None
+                    injected_indicator = 0
+
+                    @bind_type
+                    def bind(stmt, col, ctype, data, capacity, indicator):
+                        global bound_indicator
+                        bound_indicator = indicator
+                        return real_bind(stmt, col, ctype, data, capacity, indicator)
+
+                    @fetch_type
+                    def fetch(stmt):
+                        ret = real_fetch(stmt)
+                        if ret in (0, 1):
+                            bound_indicator[0] = injected_indicator
+                        return ret
+
+                    try:
+                        pointers["SQLBindCol_ptr"].value = ctypes.cast(bind, ctypes.c_void_p).value
+                        pointers["SQLFetch_ptr"].value = ctypes.cast(fetch, ctypes.c_void_p).value
+                        for sql_type in ("DECIMAL", "NUMERIC"):
+                            for injected_indicator in (0, -4, 64, 65):
+                                with conn.cursor() as cur:
+                                    cur.execute(f"SELECT CAST(1.25 AS {sql_type}(10,2)) AS value")
+                                    try:
+                                        cur.arrow_batch(2)
+                                    except RuntimeError as exc:
+                                        assert (
+                                            "Decimal data exceeds" in str(exc)
+                                            or "Unexpected negative data length" in str(exc)
+                                        ), str(exc)
+                                    else:
+                                        raise AssertionError((sql_type, injected_indicator))
+                    finally:
+                        for name, value in original.items():
+                            pointers[name].value = value
+            """),
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.skipif(not DDBC_AVAILABLE, reason="ddbc_bindings not available")
+@pytest.mark.parametrize("fetch_size", [-1, 1_000_001, True])
+def test_fetchmany_rejects_unsafe_size_before_handle_access(fetch_size):
+    with pytest.raises(RuntimeError, match="Fetch size"):
+        ddbc.DDBCSQLFetchMany(None, [], fetch_size)
+
+
+@pytest.mark.skipif(not DDBC_AVAILABLE, reason="ddbc_bindings not available")
+@pytest.mark.parametrize("batch_size", [-1, 1_000_001, True])
+def test_arrow_batch_rejects_unsafe_size_before_handle_access(batch_size):
+    with pytest.raises(RuntimeError, match="Arrow batch size"):
+        ddbc.DDBCSQLFetchArrowBatch(None, [], batch_size, 0)
+
+
+@pytest.mark.skipif(not DDBC_AVAILABLE, reason="ddbc_bindings not available")
+@pytest.mark.parametrize(
+    ("scenario", "message"),
+    [
+        ("oversized_rows", "more rows than the allocated fetch buffers"),
+        ("rows_without_columns", "result set with no columns"),
+        ("zero_rows", "successful fetch with zero rows"),
+        ("odd_wchar", "invalid byte length"),
+        ("odd_char_as_wchar", "invalid byte length"),
+        ("oversized_indicator", "exceeds the allocated fetch buffer"),
+        ("short_fixed_indicator", "does not match the bound buffer size"),
+        ("oversized_fixed_indicator", "does not match the bound buffer size"),
+        ("short_direct_fixed_indicator", "does not match the bound buffer size"),
+        ("oversized_direct_decimal_indicator", "Decimal data exceeds"),
+        ("zero_decimal_indicator", "Decimal data exceeds"),
+        ("decimal_missing_indicator", "Unexpected negative data length"),
+        ("zero_arrow_rows", "successful Arrow fetch with zero rows"),
+        ("oversized_arrow_fetch", "more rows than the allocated Arrow buffers"),
+        ("oversized_arrow_batch", "more rows than the allocated Arrow buffers"),
+        ("char_terminator_indicator", "exceeds the Arrow text payload capacity"),
+        ("wchar_terminator_indicator", "exceeds the Arrow text payload capacity"),
+        ("truncation_no_progress", "truncation made no progress"),
+        ("first_call_no_data", "no data before making progress"),
+        ("oversized_decimal_indicator", "Decimal data exceeds the allocated fetch buffer"),
+        ("odd_streamed_wchar", "invalid byte length"),
+        ("unexpected_lob_indicator", "Unexpected negative LOB data indicator"),
+        ("lob_truncation_no_progress", "LOB fetch truncation made no progress"),
+        ("oversized_lob_success", "LOB data indicator exceeds the fetch buffer capacity"),
+        ("lob_unrelated_warning_oversized", "LOB data indicator exceeds the fetch buffer capacity"),
+        ("lob_unrelated_warning_no_total", "SQL_NO_TOTAL requires a truncation diagnostic"),
+        ("lob_first_call_no_data", "no data before making progress"),
+        ("lob_missing_indicator", "Unexpected negative LOB data indicator"),
+        ("lob_missing_probe_indicator", "invalid UTF-16 LOB source length"),
+        ("variable_missing_indicator", "Unexpected negative variable-length data indicator"),
+        ("diagnostic_read_failure", "Failed to read truncation diagnostics"),
+        ("variant_missing_probe_indicator", "did not write the sql_variant probe indicator"),
+        ("fixed_no_total", "Fixed-width data indicator cannot be SQL_NO_TOTAL"),
+        ("unrelated_warning_oversized", "data indicator exceeds the fetch buffer capacity"),
+        ("odd_direct_wchar", "invalid byte length"),
+        ("odd_lob_wchar", "invalid byte length"),
+        ("underfilled_text_chunk", "truncation made no progress"),
+    ],
+)
+def test_driver_fetch_validation_rejects_malformed_lengths(scenario, message):
+    with pytest.raises(RuntimeError, match=message):
+        ddbc._test_fetch_validation(scenario)
+
+
+@pytest.mark.skipif(not DDBC_AVAILABLE, reason="ddbc_bindings not available")
+def test_sql_no_total_fetch_makes_progress_in_isolated_process():
+    code = """
+import mssql_python.ddbc_bindings as ddbc
+ret, indicator, calls, size = ddbc._test_fetch_validation("sql_no_total_progress")
+assert ret == 0
+assert indicator == 2
+assert calls == 2
+assert size == 2
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=os.path.dirname(os.path.dirname(__file__)),
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.skipif(not DDBC_AVAILABLE, reason="ddbc_bindings not available")
+def test_empty_text_truncation_probe_retries_with_payload_capacity():
+    ret, indicator, calls, size = ddbc._test_fetch_validation("empty_text_probe")
+    assert (ret, indicator, calls, size) == (0, 0, 2, 2)
+
+
+@pytest.mark.skipif(not DDBC_AVAILABLE, reason="ddbc_bindings not available")
+def test_exact_fit_text_chunk_reads_completion_without_discarding_prefix():
+    ret, indicator, calls, size = ddbc._test_fetch_validation("exact_fit_text_chunk")
+    assert (ret, indicator, calls, size) == (0, 7, 4, 9)
+
+
+@pytest.mark.skipif(not DDBC_AVAILABLE, reason="ddbc_bindings not available")
+def test_empty_text_probe_still_rejects_stalled_payload_read():
+    with pytest.raises(RuntimeError, match="truncation made no progress"):
+        ddbc._test_fetch_validation("stalled_empty_text_probe")
+
+
+@pytest.mark.skipif(not DDBC_AVAILABLE, reason="ddbc_bindings not available")
+def test_sql_no_data_ignores_undefined_indicator():
+    ret, indicator, calls, size = ddbc._test_fetch_validation("sql_no_total_no_data")
+    assert ret == 0
+    assert indicator == 1
+    assert calls == 2
+    assert size == 2
+
+
+@pytest.mark.skipif(not DDBC_AVAILABLE, reason="ddbc_bindings not available")
+def test_unrelated_warning_without_growth_is_not_treated_as_truncation():
+    ret, indicator, calls, size = ddbc._test_fetch_validation("unrelated_warning_no_progress")
+    assert ret == 0
+    assert indicator == 0
+    assert calls == 1
+    assert size == 1
+
+
+@pytest.mark.skipif(not DDBC_AVAILABLE, reason="ddbc_bindings not available")
+def test_lob_unrelated_warning_with_progress_completes():
+    size, calls = ddbc._test_fetch_validation("lob_unrelated_warning_progress")
+    assert size == 1
+    assert calls == 1
+
+
+@pytest.mark.skipif(not DDBC_AVAILABLE, reason="ddbc_bindings not available")
+def test_lob_sql_no_total_completes_on_sql_no_data():
+    size, calls = ddbc._test_fetch_validation("lob_sql_no_total_no_data")
+    assert size == 8192
+    assert calls == 2
+
+
+@pytest.mark.skipif(not DDBC_AVAILABLE, reason="ddbc_bindings not available")
+def test_fetch_indicator_reset_clears_only_active_rows():
+    active, inactive = ddbc._test_fetch_validation("stale_indicator_reset")
+    assert active < 0
+    assert inactive == 9
+
+
+@pytest.mark.skipif(not DDBC_AVAILABLE, reason="ddbc_bindings not available")
+def test_variable_width_indicator_allows_sql_no_total():
+    assert ddbc._test_fetch_validation("variable_no_total") is True
+
+
+@pytest.mark.skipif(not DDBC_AVAILABLE, reason="ddbc_bindings not available")
+@pytest.mark.parametrize("scenario", ["lob_narrow_nul_progress", "lob_wide_nul_progress"])
+def test_lob_truncation_preserves_nul_payload(scenario):
+    size, calls = ddbc._test_fetch_validation(scenario)
+    assert size == 1
+    assert calls == 2
+
+
+@pytest.mark.skipif(not DDBC_AVAILABLE, reason="ddbc_bindings not available")
+@pytest.mark.parametrize("param_set_size", [-1, 0, 1_000_001, True])
+def test_executemany_rejects_unsafe_size_before_handle_access(param_set_size):
+    with pytest.raises(RuntimeError, match="Parameter set size"):
+        ddbc.SQLExecuteMany(None, "", [], [], param_set_size, {})
+
+
+@pytest.mark.skipif(not DDBC_AVAILABLE, reason="ddbc_bindings not available")
+@pytest.mark.parametrize(
+    ("c_type", "sql_type", "column_type", "empty"),
+    [
+        (-8, -10, "NVARCHAR(MAX)", ""),
+        (1, -1, "VARCHAR(MAX)", ""),
+        (-2, -4, "VARBINARY(MAX)", b""),
+        (-2, -4, "VARBINARY(MAX)", bytearray()),
+    ],
+)
+def test_native_dae_preserves_empty_and_null(db_connection, c_type, sql_type, column_type, empty):
+    info = ddbc.ParamInfo()
+    info.paramCType = c_type
+    info.paramSQLType = sql_type
+    info.inputOutputType = 1
+    info.columnSize = 10000
+    info.isDAE = True
+    with db_connection.cursor() as cur:
+        cur.execute(f"CREATE TABLE #empty_native_dae (value {column_type})")
+        try:
+            assert ddbc.SQLExecuteMany(
+                cur.hstmt,
+                "INSERT INTO #empty_native_dae VALUES (?)",
+                [[empty, None]],
+                [info],
+                2,
+                {},
+            ) in (0, 1)
+            cur.execute(
+                "SELECT value FROM #empty_native_dae ORDER BY CASE WHEN value IS NULL THEN 1 ELSE 0 END"
+            )
+            expected = bytes(empty) if isinstance(empty, bytearray) else empty
+            assert [tuple(row) for row in cur.fetchall()] == [(expected,), (None,)]
+        finally:
+            cur.execute("DROP TABLE #empty_native_dae")
+
+
+@pytest.mark.skipif(not DDBC_AVAILABLE, reason="ddbc_bindings not available")
+def test_native_dae_checks_column_lengths_once(db_connection):
+    class CountedColumn(list):
+        length_checks = 0
+
+        def __len__(self):
+            self.length_checks += 1
+            return super().__len__()
+
+    texts = ["x" * 5000, None, ""]
+    columns = [CountedColumn(texts), CountedColumn([1, 2, 3])]
+    text_info = ddbc.ParamInfo()
+    text_info.paramCType = -8
+    text_info.paramSQLType = -10
+    text_info.inputOutputType = 1
+    text_info.columnSize = 6000
+    text_info.isDAE = True
+    int_info = ddbc.ParamInfo()
+    int_info.paramCType = 4
+    int_info.paramSQLType = 4
+    int_info.inputOutputType = 1
+    int_info.columnSize = 10
+    with db_connection.cursor() as cur:
+        cur.execute("CREATE TABLE #dae_column_checks (value NVARCHAR(MAX), id INT)")
+        try:
+            assert ddbc.SQLExecuteMany(
+                cur.hstmt,
+                "INSERT INTO #dae_column_checks VALUES (?, ?)",
+                columns,
+                [text_info, int_info],
+                3,
+                {},
+            ) in (0, 1)
+            assert [column.length_checks for column in columns] == [1, 1]
+            cur.execute("SELECT value, id FROM #dae_column_checks ORDER BY id")
+            assert [tuple(row) for row in cur.fetchall()] == list(zip(texts, [1, 2, 3]))
+        finally:
+            cur.execute("DROP TABLE #dae_column_checks")
+
+
+@pytest.mark.skipif(not DDBC_AVAILABLE, reason="ddbc_bindings not available")
+@pytest.mark.parametrize(
+    "failure_stage", ["binding", "binding_without_cancel", "streaming", "completion"]
+)
+def test_native_dae_failure_preserves_error_and_allows_reuse(conn_str, failure_stage):
+    if failure_stage == "binding_without_cancel" and not hasattr(
+        ddbc.module, "_arrow_test_pointer_addresses"
+    ):
+        if os.environ.get("MSSQL_ARROW_TEST_INTERPOSITION", "").upper() in ("1", "ON"):
+            pytest.fail("Arrow test interposition was requested but is not compiled")
+        pytest.skip("Requires an Arrow test-interposition build")
+    env = os.environ.copy()
+    env["DB_CONNECTION_STRING"] = str(conn_str)
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            textwrap.dedent("""
+                import gc
+                import os
+                import sys
+                import weakref
+                import mssql_python
+                from mssql_python import ddbc_bindings as ddbc
+
+                class TrackedText(str):
+                    pass
+
+                stage = sys.argv[1]
+                text_info = ddbc.ParamInfo()
+                text_info.paramCType = -8
+                text_info.paramSQLType = -10
+                text_info.inputOutputType = 1
+                text_info.columnSize = 6000
+                text_info.isDAE = True
+                int_info = ddbc.ParamInfo()
+                int_info.paramCType = 4
+                int_info.paramSQLType = 4
+                int_info.inputOutputType = 1
+                int_info.columnSize = 10
+                int_info.isDAE = False
+                infos = [text_info, int_info]
+                query = "INSERT INTO #native_dae_failure VALUES (?, ?)"
+
+                with mssql_python.connect(os.environ["DB_CONNECTION_STRING"]) as conn:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "CREATE TABLE #native_dae_failure "
+                            "(value NVARCHAR(MAX), id INT CHECK (id > 0))"
+                        )
+                        if stage in ("binding", "binding_without_cancel"):
+                            value = TrackedText("x" * 4001)
+                            columns = [[value], [object()]]
+                            error_type, message = RuntimeError, "C type"
+                        elif stage == "streaming":
+                            value = TrackedText("bad\\ud800")
+                            columns = [[value], [1]]
+                            error_type, message = UnicodeEncodeError, "surrogates"
+                        else:
+                            value = TrackedText("x" * 4001)
+                            columns = [[value], [-1]]
+                            error_type, message = mssql_python.IntegrityError, "CHECK constraint"
+                        value_ref = weakref.ref(value)
+                        del value
+                        cancel_pointer = None
+                        if stage == "binding_without_cancel":
+                            import ctypes
+                            cancel_pointer = ctypes.c_void_p.from_address(
+                                ddbc.module._arrow_test_pointer_addresses["SQLCancel_ptr"]
+                            )
+                            original_cancel = cancel_pointer.value
+                            cancel_pointer.value = None
+                        try:
+                            ddbc.SQLExecuteMany(cur.hstmt, query, columns, infos, 1, {})
+                        except error_type as exc:
+                            assert message in str(exc), str(exc)
+                        else:
+                            raise AssertionError("Expected the native DAE call to fail")
+                        finally:
+                            if cancel_pointer is not None:
+                                cancel_pointer.value = original_cancel
+                        del columns
+                        gc.collect()
+                        assert value_ref() is None
+                        assert ddbc.SQLExecuteMany(
+                            cur.hstmt, query, [["safe" * 1500, None], [1, 2]], infos, 2, {}
+                        ) in (0, 1)
+                        cur.execute("SELECT value, id FROM #native_dae_failure ORDER BY id")
+                        assert [tuple(row) for row in cur.fetchall()] == [
+                            ("safe" * 1500, 1), (None, 2)
+                        ]
+            """),
+            failure_stage,
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.skipif(not DDBC_AVAILABLE, reason="ddbc_bindings not available")
+@pytest.mark.parametrize(
+    ("input_sizes", "message"),
+    [
+        ((12, -8, 1, 0), "inputSizes must be None or a list"),
+        ([True], "four-item tuple"),
+        ([(12, -8, 1)], "four-item tuple"),
+        ([(12, -8, True, 0)], "must be integers"),
+        ([(12, -8, -1, 0)], "column size must be non-negative"),
+        ([(12, -8, 2**128, 0)], "column size is out of range"),
+        ([(12, -8, 256 * 1024 * 1024 + 1, 0)], "256 MiB size-unit limit"),
+        ([(12, -8, 2**40, 0)], "256 MiB size-unit limit"),
+        ([(12, -8, 1, 2**128)], "decimal digits are out of range"),
+    ],
+)
+def test_execute_rejects_malformed_input_sizes_before_handle_access(input_sizes, message):
+    with pytest.raises((TypeError, ValueError), match=message):
+        ddbc.DDBCSQLExecute(None, "", [], input_sizes, [False], True, {})
+
+
+@pytest.mark.skipif(not DDBC_AVAILABLE, reason="ddbc_bindings not available")
+@pytest.mark.parametrize(
+    "input_size",
+    [(12, -8, 256 * 1024 * 1024, 0), (3, 1, 10**100, 10**100), (2, 1, 10**100, 10**100)],
+)
+def test_native_input_sizes_allow_limit_and_numeric_normalization(input_size):
+    assert ddbc.DDBCSQLExecute(None, "", [], [input_size], [False], True, {}) == -2
+
+
+@pytest.mark.skipif(not DDBC_AVAILABLE, reason="ddbc_bindings not available")
+def test_native_input_sizes_reject_oversized_metadata_and_allow_reuse(db_connection):
+    with db_connection.cursor() as cur:
+        with pytest.raises(ValueError, match="256 MiB size-unit limit"):
+            ddbc.DDBCSQLExecute(
+                cur.hstmt, "SELECT ?", ["safe"], [(12, -8, 2**40, 0)], [False], True, {}
+            )
+        assert cur.execute("SELECT 42").fetchone()[0] == 42
+
+
+@pytest.mark.skipif(not DDBC_AVAILABLE, reason="ddbc_bindings not available")
+def test_lob_buffer_growth_is_geometric():
+    growth_count, data_size, allocation_size, reserved_bytes = ddbc._test_lob_buffer_growth(
+        64, 64 * 1024
+    )
+    assert data_size == 4 * 1024 * 1024
+    assert allocation_size == data_size
+    assert reserved_bytes == allocation_size
+    assert growth_count == 7
+
+
+@pytest.mark.skipif(not DDBC_AVAILABLE, reason="ddbc_bindings not available")
+def test_lob_buffer_growth_budget_includes_old_and_new_allocations():
+    chunk_size = 64 * 1024 * 1024
+    assert ddbc._test_lob_buffer_growth(2, chunk_size) == (
+        2,
+        2 * chunk_size,
+        2 * chunk_size,
+        2 * chunk_size,
+    )
+    # A 128 -> 256 MiB resize needs 384 MiB while copying, not just 256 MiB.
+    with pytest.raises(RuntimeError, match="256 MiB allocation limit"):
+        ddbc._test_lob_buffer_growth(3, chunk_size)
+
+
+@pytest.mark.skipif(not DDBC_AVAILABLE, reason="ddbc_bindings not available")
+@pytest.mark.parametrize(
+    ("chunk_count", "chunk_size", "message"),
+    [
+        (1_000_001, 1, "chunk count"),
+        (True, 1, "chunk count"),
+        (1, 0, "chunk size"),
+        (1, True, "chunk size"),
+    ],
+)
+def test_lob_buffer_growth_helper_rejects_unsafe_sizes(chunk_count, chunk_size, message):
+    with pytest.raises((RuntimeError, TypeError), match=message):
+        ddbc._test_lob_buffer_growth(chunk_count, chunk_size)
 
 
 @pytest.mark.skipif(not DDBC_AVAILABLE, reason="ddbc_bindings not available")

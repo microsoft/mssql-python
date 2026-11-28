@@ -109,6 +109,53 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
   `connect()` behaves exactly as before.
 
 ### Changed
+- Bound DECIMAL/NUMERIC row and Arrow fetches reject zero, unknown, and oversized
+  data lengths before reading numeric buffers; SQL NULL values remain unchanged.
+- Empty streamed text/binary parameters, including TVP cells, remain distinct
+  from SQL NULL.
+- Failed DAE-row cleanup resets parameter bindings even when the provider omits
+  optional `SQLCancel` support.
+- Idempotent autocommit assignments preserve unread Arrow rows across native
+  quota boundaries in both the dedicated and generic connection setters.
+  Actual autocommit mode changes still invalidate pending rows.
+  Driver-mode reads are limited to setters with pending Arrow rows, preserving
+  the native pool-checkout and empty-setter call sequences.
+- Binary subclass length overrides no longer bypass `executemany()` payload
+  sizing or streaming selection for automatic or explicit input types.
+- Automatically detected time parameters measure their normalized UTF-16
+  payload and select streaming consistently with explicit text input sizing.
+- Variable-length empty text probes retry with payload space before enforcing
+  no-progress checks. Exactly filled converted text chunks also leave room to
+  confirm completion, avoiding false truncation failures with narrow UTF-8 TEXT
+  fetches. Fetch continuation checks reuse diagnostics captured for the same
+  ODBC call instead of enumerating mixed warning records twice.
+- DAE parameter-column lengths are validated once before the row-execution
+  loop instead of repeatedly for every row.
+- Cursor fetch/Arrow batch sizes and bulk-copy batch/commit sizes are now capped
+  at 1,000,000 rows; `arraysize` must be positive. Negative row counts raise
+  `ValueError` and boolean row counts raise `TypeError`. Zero-size fetches remain
+  empty, zero-size Arrow requests are schema-only, and bulk-copy zero retains
+  native default batching. Native array-bound `executemany()` calls are also
+  capped at 1,000,000 parameter sets.
+- Native fetch buffers and parameter-array buffers each have a cumulative
+  256 MiB allocation budget, including probed UTF-16 LOB conversion buffers.
+  Array limits depend on batch size and column widths,
+  including slots for NULLs; reduce batch sizes or oversized `setinputsizes()`
+  hints when a budget is exceeded. Non-numeric hints are capped at 268,435,456
+  size units, while numeric precision/scale normalization is preserved.
+  Negative/boolean size hints are rejected. These are native buffer limits, not
+  process-memory or total-result limits; see the README's cursor-size guidance.
+- Oversized formatted DECIMAL/NUMERIC text is rejected with `ValueError` before
+  native binding on both scalar and array-bound execution paths.
+- Arrow buffer growth is budget-aware. When a batch reaches the native budget,
+  completed rows are returned and overflow/unread fetched rows are retained for
+  subsequent Arrow or row-wise fetches. Short batches no longer imply exhaustion;
+  continue until empty. `arrow()` and `arrow_reader()` handle this automatically.
+  A single over-budget row raises without being skipped and may be recovered
+  row-wise if its source buffers fit. Pending rows are discarded on re-execution,
+  result-set changes, cancellation, close, connection reset, or transaction/
+  autocommit changes, but not metadata-only connection-attribute changes.
+  Total retained-result memory is still not limited by the per-fetch budget.
 - Pooled check-in skips transaction sanitation only after a prior successful
   native rollback/autocommit restore and no subsequent statement allocation or
   uncertain operation. Used connections still roll back explicit transactions
@@ -121,7 +168,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
   result transitions and statement/connection cleanup invalidate this metadata.
   Public descriptions stay fresh, name-validation timing is preserved, and
   `sql_variant` columns retain per-row descriptions and per-value probes.
-  Fetch buffers, decoding settings and converted values are not cached.
+  Apart from pending rows retained by budget-limited Arrow fetches, fetch buffers,
+  decoding settings and converted values are not cached.
 - DATE, TIME, and TIMESTAMP fetch conversion uses checked CPython constructors
   for the standard datetime types, while preserving cached substitute constructors,
   their positional arguments and exceptions, and fractional-second truncation.
