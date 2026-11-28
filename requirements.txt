@@ -4,8 +4,8 @@ pytest-cov
 pytest-asyncio
 pytest-rerunfailures
 PyYAML
-# Python 3.14+ uses compression.zstd; retain the fallback on older interpreters.
-zstandard; python_version < "3.14"
+# Some Linux builds omit compression.zstd even on Python 3.14+.
+zstandard; python_version < "3.14" or platform_system == "Linux"
 coverage
 unittest-xml-reporting
 psutil

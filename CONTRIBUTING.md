@@ -87,10 +87,10 @@ pytest log to distinguish a first-pass success from a recovered failure.
 Collection errors are not retried, and a case that fails all four attempts
 still fails the run. Local pytest runs do not retry by default.
 
-Test dependencies use Python's built-in `compression.zstd` on Python 3.14 and
-later. Older interpreters install `zstandard` as the fallback; newer CI jobs
-avoid compiling that optional dependency from source. Keep both decompression
-paths covered when changing archive tests.
+Test dependencies use Python's built-in `compression.zstd` on Windows and macOS
+with Python 3.14 and later. Older interpreters and all Linux environments install
+`zstandard` as the fallback: some Linux Python builds omit the optional stdlib
+module. Keep both decompression paths covered when changing archive tests.
 
 Timing assertions for queries must include consuming the result, since executing
 a statement can return before the result is ready. Logging tests that need a
