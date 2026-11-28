@@ -14,6 +14,88 @@ import pytest
 from mssql_python import SQL_CHAR, SQL_WCHAR
 
 
+def test_native_invalid_size_wide_fetch_preserves_pending_rows(db_connection):
+    from mssql_python import ddbc_bindings
+
+    with db_connection.cursor() as cursor:
+        cursor.execute("SELECT CAST(N'pending' AS nvarchar(4000))")
+        rows = []
+        with pytest.raises(RuntimeError, match="Fetch size must be between 1 and 1000000"):
+            ddbc_bindings.DDBCSQLFetchMany(cursor.hstmt, rows, 0)
+        assert rows == []
+        assert [tuple(row) for row in cursor.fetchall()] == [("pending",)]
+
+
+@pytest.mark.parametrize("batch_size", [101, 129])
+@pytest.mark.parametrize("narrow", [False, True], ids=["wide", "narrow"])
+def test_dense_fetchmany_growth_preserves_tail_and_converter_storage(
+    db_connection, batch_size, narrow
+):
+    retained = []
+    db_connection.add_output_converter(
+        str, lambda raw: retained.append(raw) or raw.decode("utf-16le")
+    )
+    value = "\u00e9" * (8000 if narrow else 4000)
+    expression = "CAST(? AS varchar(8000))" if narrow else "CAST(? AS nvarchar(4000))"
+    try:
+        with db_connection.cursor() as cursor:
+            cursor.execute(
+                "WITH d(n) AS (SELECT n FROM (VALUES (0),(1),(2),(3),(4),"
+                "(5),(6),(7),(8),(9)) AS v(n)) "
+                f"SELECT n, {', '.join([expression] * 8)} "
+                "FROM (SELECT a.n+10*b.n+100*c.n AS n "
+                "FROM d a CROSS JOIN d b CROSS JOIN d c) v WHERE n < 137 ORDER BY n",
+                (value,) * 8,
+            )
+            first = cursor.fetchmany(batch_size)
+            assert len(first) == batch_size
+            tail = cursor.fetchall()
+            assert [tuple(row) for row in first + tail] == [(n,) + (value,) * 8 for n in range(137)]
+            assert cursor.fetchall() == []
+            cursor.execute("SELECT N'reused'")
+            assert cursor.fetchone()[0] == "reused"
+        assert len(retained) == 137 * 8 + 1
+        assert all(raw == value.encode("utf-16le") for raw in retained[:-1])
+    finally:
+        db_connection.remove_output_converter(str)
+
+
+@pytest.mark.parametrize("dense_first", [False, True])
+@pytest.mark.parametrize("batch_size", [None, 7, 9, 65], ids=["all", "many7", "many9", "many65"])
+def test_reusable_rowsets_preserve_density_transitions(db_connection, dense_first, batch_size):
+    full = "x" * 3998 + "\U0001f642"
+    expression = (
+        f"CAST(CASE WHEN {'n < 16' if dense_first else 'n >= 16'} THEN ? "
+        "WHEN n % 4 = 0 THEN NULL WHEN n % 4 = 1 THEN N'' "
+        "WHEN n % 4 = 2 THEN N'A' + NCHAR(0) + N'B' "
+        "ELSE CAST(0x3DD842DE AS nvarchar(2)) END AS nvarchar(4000))"
+    )
+    sql = (
+        "WITH d(n) AS (SELECT n FROM (VALUES (0),(1),(2),(3),(4),"
+        "(5),(6),(7),(8),(9)) AS v(n)), "
+        "numbers AS (SELECT a.n + 10*b.n + 100*c.n AS n "
+        "FROM d a CROSS JOIN d b CROSS JOIN d c) "
+        f"SELECT n, {', '.join([expression] * 8)} FROM numbers WHERE n < 137 ORDER BY n"
+    )
+    with db_connection.cursor() as cursor:
+        cursor.execute(sql, (full,) * 8)
+        if batch_size is None:
+            rows = cursor.fetchall()
+        else:
+            rows = []
+            while batch := cursor.fetchmany(batch_size):
+                assert len(batch) <= batch_size
+                rows.extend(batch)
+        expected = []
+        for n in range(137):
+            dense = n < 16 if dense_first else n >= 16
+            value = full if dense else (None, "", "A\0B", "\U0001f642")[n % 4]
+            expected.append((n,) + (value,) * 8)
+        assert [tuple(row) for row in rows] == expected
+        assert cursor.fetchmany(9) == []
+        assert cursor.fetchone() is None
+
+
 @pytest.fixture(scope="module")
 def utf8_collation(db_connection):
     with db_connection.cursor() as cursor:
@@ -25,6 +107,51 @@ def utf8_collation(db_connection):
     if row is None:
         pytest.skip("VARCHAR BOM payloads require SQL Server UTF-8 collation support")
     return row[0]
+
+
+def test_reusable_rowset_mixed_native_types_and_nulls(db_connection):
+    from datetime import date, datetime, time
+    from decimal import Decimal
+    from uuid import UUID
+
+    columns = [
+        ("N'wide'", "nvarchar(4000)", "wide"),
+        ("1", "int", 1),
+        ("2", "smallint", 2),
+        ("3", "bigint", 3),
+        ("4", "tinyint", 4),
+        ("1", "bit", True),
+        ("1.5", "real", 1.5),
+        ("2.5", "float", 2.5),
+        ("12.50", "decimal(10,2)", Decimal("12.50")),
+        ("0x0001", "varbinary(2)", b"\0\x01"),
+        ("'2026-01-02'", "date", date(2026, 1, 2)),
+        ("'03:04:05.123456'", "time(6)", time(3, 4, 5, 123456)),
+        (
+            "'2026-01-02T03:04:05.123456'",
+            "datetime2(6)",
+            datetime(2026, 1, 2, 3, 4, 5, 123456),
+        ),
+        (
+            "'2026-01-02T03:04:05.123456+05:30'",
+            "datetimeoffset(6)",
+            datetime.fromisoformat("2026-01-02T03:04:05.123456+05:30"),
+        ),
+        (
+            "'00112233-4455-6677-8899-aabbccddeeff'",
+            "uniqueidentifier",
+            UUID("00112233-4455-6677-8899-aabbccddeeff"),
+        ),
+    ]
+    expressions = [
+        f"CAST(CASE WHEN n = 0 THEN {literal} END AS {sqltype})" for literal, sqltype, _ in columns
+    ]
+    with db_connection.cursor() as cursor:
+        cursor.execute(f"SELECT {', '.join(expressions)} FROM (VALUES (0),(1)) AS v(n) ORDER BY n")
+        assert [tuple(row) for row in cursor.fetchall()] == [
+            tuple(value for _, _, value in columns),
+            (None,) * len(columns),
+        ]
 
 
 def _fetch_rows(cursor, method):
@@ -219,9 +346,10 @@ def test_bounded_nvarchar_strict_decode_error(db_connection, raw, method, forced
     ],
     ids=["explicit-cold", "explicit-warm", "default-cold", "default-warm", "batch", "all"],
 )
-def test_bounded_nvarchar_batch_malformed_fallback(db_connection, raw, method, warmed):
+@pytest.mark.parametrize("width", [64, 4000])
+def test_bounded_nvarchar_batch_malformed_fallback(db_connection, raw, method, warmed, width):
     """Preserve the existing platform-specific batch behavior for unpaired surrogates."""
-    expression = f"CAST(0x{raw} AS nvarchar(64))"
+    expression = f"CAST(0x{raw} AS nvarchar({width}))"
     raw_bytes = bytes.fromhex(raw)
     with db_connection.cursor() as cursor:
         cursor.execute(f"SELECT DATALENGTH({expression}), CAST({expression} AS varbinary(64))")
@@ -261,3 +389,89 @@ def test_bounded_nvarchar_batch_malformed_fallback(db_connection, raw, method, w
         assert cursor.fetchone() is None
         cursor.execute("SELECT CAST(N'recovered' AS nvarchar(64))")
         assert cursor.fetchone()[0] == "recovered"
+
+
+@pytest.mark.parametrize("method", ["fetchall", "fetchmany", "interleave"])
+@pytest.mark.parametrize("converted", [False, True])
+def test_wide_bounded_text_actual_lengths(db_connection, method, converted):
+    payloads = [None, "", "\ufeffA\0B\ufffe", "A\U0001f642Z", "x" * 3998 + "\U0001f642"]
+    cases = " ".join(
+        f"WHEN {i} THEN "
+        + (
+            "NULL"
+            if value is None
+            else f"CAST(0x{value.encode('utf-16le').hex()} AS nvarchar(4000))"
+        )
+        for i, value in enumerate(payloads)
+    )
+    observed = []
+    if converted:
+        db_connection.add_output_converter(
+            str, lambda raw: observed.append(raw) or raw.decode("utf-16le") + "!"
+        )
+        db_connection.add_output_converter(int, lambda value: value + 10000)
+    try:
+        with db_connection.cursor() as cursor:
+            cursor.execute(
+                "WITH d(n) AS (SELECT n FROM (VALUES (0),(1),(2),(3),(4),"
+                "(5),(6),(7),(8),(9)) AS v(n)) "
+                f"SELECT n, CAST(CASE n % 5 {cases} END AS nvarchar(4000)), "
+                "CAST(NCHAR(233) COLLATE Latin1_General_100_BIN2 AS varchar(8000)), "
+                "CAST(0x0001FF AS varbinary(8)), CAST(n AS decimal(10,2)) "
+                "FROM (SELECT a.n+10*b.n+100*c.n AS n FROM d a CROSS JOIN d b CROSS JOIN d c) v "
+                "WHERE n < 207 ORDER BY n"
+            )
+            actual = []
+            if method == "interleave":
+                actual.append(cursor.fetchone())
+            if method == "fetchall":
+                actual.extend(cursor.fetchall())
+            else:
+                while batch := cursor.fetchmany(7):
+                    actual.extend(batch)
+            assert [(row[0], row[1], row[2], row[3], int(row[4])) for row in actual] == [
+                (
+                    n + (10000 if converted else 0),
+                    (
+                        None
+                        if payloads[n % 5] is None
+                        else payloads[n % 5] + ("!" if converted else "")
+                    ),
+                    "\u00e9" + ("!" if converted else ""),
+                    b"\0\x01\xff",
+                    n,
+                )
+                for n in range(207)
+            ]
+            assert cursor.fetchone() is None
+            assert cursor.fetchall() == []
+            if converted:
+                assert observed == [
+                    value.encode("utf-16le")
+                    for n in range(207)
+                    for value in (payloads[n % 5], "\u00e9")
+                    if value is not None
+                ]
+    finally:
+        if converted:
+            db_connection.remove_output_converter(str)
+            db_connection.remove_output_converter(int)
+
+
+@pytest.mark.parametrize("method", ["fetchall", "fetchmany"])
+@pytest.mark.parametrize("sqltype", ["nvarchar(4000)", "varchar(8000)"])
+@pytest.mark.parametrize("offset", [253, 254, 255, 256, 511])
+def test_wide_text_continuation_boundaries(db_connection, utf8_collation, method, sqltype, offset):
+    payload = "a" * offset + "\U0001f642" + "\0" + "\u00e9\u20ac" + "z" * 550
+    expected = ["before", payload, "after"]
+    values = ", ".join(
+        f"({i}, CAST(CAST(0x{value.encode('utf-16le').hex()} AS nvarchar(4000)) "
+        f"COLLATE {utf8_collation} AS {sqltype}))"
+        for i, value in enumerate(expected)
+    )
+    with db_connection.cursor() as cursor:
+        cursor.execute(f"SELECT n, payload FROM (VALUES {values}) v(n, payload) ORDER BY n")
+        rows = cursor.fetchall() if method == "fetchall" else cursor.fetchmany(3)
+        assert [tuple(row) for row in rows] == list(enumerate(expected))
+        assert cursor.messages == []
+        assert cursor.fetchone() is None

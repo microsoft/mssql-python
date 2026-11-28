@@ -4558,6 +4558,14 @@ static inline bool CanUseSingleRowForFetchMany(SQLSMALLINT dataType, SQLULEN col
     }
 }
 
+static size_t CheckedFetchBufferBytes(size_t count, size_t itemSize, size_t terminator);
+
+static bool IsBoundedFetchText(SQLSMALLINT type, SQLULEN size) {
+    return size > 0 && size <= SQL_MAX_LOB_SIZE &&
+           (type == SQL_CHAR || type == SQL_VARCHAR || type == SQL_LONGVARCHAR ||
+            type == SQL_WCHAR || type == SQL_WVARCHAR || type == SQL_WLONGVARCHAR);
+}
+
 static SQLSMALLINT FixedScalarCType(SQLSMALLINT type) {
     switch (type) {
         case SQL_INTEGER: return SQL_C_LONG;
@@ -4638,11 +4646,10 @@ static size_t FetchFixedScalarRun(SQLHSTMT statement, StatementOperation* operat
     return read;
 }
 
-static SQLRETURN GetRowData(
-                            const SqlHandlePtr& StatementHandle, SQLUSMALLINT colCount,
+static SQLRETURN GetRowData(const SqlHandlePtr& StatementHandle, SQLUSMALLINT colCount,
                             py::list& row, const std::string& charEncoding,
-                            const std::string& wcharEncoding, int charCtype,
-                            py::handle messages, const ResultMetadataCache::Snapshot& snapshot,
+                            const std::string& wcharEncoding, int charCtype, py::handle messages,
+                            const ResultMetadataCache::Snapshot& snapshot,
                             bool completeResult = false, py::handle converters = {},
                             bool batchText = false) {
     PERF_TIMER("SQLGetData_wrap");
@@ -4680,7 +4687,8 @@ static SQLRETURN GetRowData(
     }
 
     auto* operation = StatementOperation::current(hStmt);
-    const bool groupScalars = operation && metadata &&
+    const bool groupScalars =
+        operation && metadata &&
         (!converters || converters.is_none() ||
          (PyDict_CheckExact(converters.ptr()) && PyDict_Size(converters.ptr()) == 0));
     for (SQLSMALLINT i = 1; i <= colCount; ++i) {
@@ -5864,6 +5872,17 @@ SQLRETURN SQLBindColums(SQLHSTMT hStmt, ColumnBuffers& buffers, const Metadata& 
     return ret;
 }
 
+static void ValidateBoundCellLength(SQLSMALLINT type, SQLLEN indicator, size_t capacity,
+                                    bool wide) {
+    const bool text = IsBoundedFetchText(type, 1);
+    const bool decimal = type == SQL_DECIMAL || type == SQL_NUMERIC;
+    const size_t terminator = text ? (wide ? sizeof(SQLWCHAR) : 1) : (decimal ? 1 : 0);
+    if (indicator != SQL_NULL_DATA &&
+        (indicator < 0 || static_cast<size_t>(indicator) > capacity - terminator ||
+         (wide && indicator % sizeof(SQLWCHAR))))
+        ThrowStdException("Invalid bounded fetch length");
+}
+
 void ValidateFetchedRowCount(const ColumnBuffers& buffers, SQLUSMALLINT numCols,
                              SQLULEN numRowsFetched) {
     if (numRowsFetched == 0) {
@@ -5892,7 +5911,7 @@ void ValidateArrowFetchedRowCount(SQLULEN numRowsFetched, int currentFetchSize,
 
 // Fetch rows in batches
 // TODO: Move to anonymous namespace, since it is not used outside this file
-template <typename Metadata>
+template <bool strictLengths = false, typename Metadata>
 SQLRETURN ConvertBufferedRows(SQLHSTMT hStmt, ColumnBuffers& buffers, const Metadata& columnNames,
                          py::list& rows, SQLUSMALLINT numCols, SQLULEN& numRowsFetched,
                          const std::vector<SQLUSMALLINT>& lobColumns,
@@ -5910,6 +5929,7 @@ SQLRETURN ConvertBufferedRows(SQLHSTMT hStmt, ColumnBuffers& buffers, const Meta
         SQLULEN columnSize;
         SQLULEN processedColumnSize;
         uint64_t fetchBufferSize;
+        size_t bufferBytes;
         size_t fixedValueSize;
         bool isLob;
     };
@@ -5937,6 +5957,9 @@ SQLRETURN ConvertBufferedRows(SQLHSTMT hStmt, ColumnBuffers& buffers, const Meta
             HandleZeroColumnSizeAtFetch(columnInfos[col].processedColumnSize);
 
             SQLSMALLINT dt = columnInfos[col].dataType;
+            columnInfos[col].bufferBytes =
+                strictLengths ? BoundColumnBufferBytes(dt, columnInfos[col].columnSize, charCtype)
+                              : 0;
             if (dt == SQL_CHAR || dt == SQL_VARCHAR || dt == SQL_LONGVARCHAR ||
                 dt == SQL_WCHAR || dt == SQL_WVARCHAR || dt == SQL_WLONGVARCHAR) {
                 const bool wide = useWideChar ||
@@ -6066,6 +6089,10 @@ SQLRETURN ConvertBufferedRows(SQLHSTMT hStmt, ColumnBuffers& buffers, const Meta
             // functions This eliminates redundant NULL checks inside each
             // processor and improves CPU branch prediction
             SQLLEN dataLen = buffers.indicators[col - 1][i];
+            if constexpr (strictLengths)
+                ValidateBoundCellLength(columnInfos[col - 1].dataType, dataLen,
+                                        columnInfos[col - 1].bufferBytes,
+                                        !buffers.wcharBuffers[col - 1].empty());
             const auto type = columnInfos[col - 1].dataType;
             if (dataLen != SQL_NULL_DATA && (type == SQL_DECIMAL || type == SQL_NUMERIC)) {
                 ValidateDecimalDataLength(dataLen);
@@ -6256,12 +6283,13 @@ static py::list TestBoundDecimalRows(SQLSMALLINT dataType, SQLLEN indicator) {
     return rows;
 }
 
-template <typename Metadata>
+template <bool strictLengths = false, typename Metadata>
 SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, const Metadata& columnNames,
                          py::list& rows, SQLUSMALLINT numCols, SQLULEN& numRowsFetched,
                          const std::vector<SQLUSMALLINT>& lobColumns,
                          const std::string& charEncoding = "utf-16le", int charCtype = SQL_C_WCHAR,
-                         py::handle messages = {}, py::handle converters = {}) {
+                         py::handle messages = {}, py::handle converters = {},
+                         size_t maximumRows = 0) {
     PERF_TIMER("FetchBatchData");
     LOG("FetchBatchData: Fetching data in batches");
     SQLRETURN ret;
@@ -6274,13 +6302,18 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, const Metadata&
     if (!SQL_SUCCEEDED(ret)) {
         return ret;
     }
-    ConvertBufferedRows(hStmt, buffers, columnNames, rows, numCols, numRowsFetched,
+    if constexpr (strictLengths) {
+        if (numRowsFetched == 0 || numRowsFetched > maximumRows)
+            ThrowStdException("Invalid bounded fetch row count");
+    }
+    ConvertBufferedRows<strictLengths>(hStmt, buffers, columnNames, rows, numCols, numRowsFetched,
                          lobColumns, charEncoding, charCtype, messages, converters);
     return ret;
 }
 
-static size_t BoundRowBufferBytes(const py::list& columnNames, SQLUSMALLINT numCols,
-                                 int charCtype) {
+template <typename Metadata>
+static size_t BoundRowBufferBytes(const Metadata& columnNames, SQLUSMALLINT numCols,
+                                  int charCtype) {
     size_t rowSize = 0;
     const size_t limit = static_cast<size_t>(std::numeric_limits<SQLLEN>::max());
     for (SQLUSMALLINT col = 0; col < numCols; ++col) {
@@ -6391,6 +6424,82 @@ struct FetchStateGuard {
     }
 };
 
+// Decode complete cells directly from a small reusable rowset. Python results
+// own actual-length values; no truncated binding or SQLGetData recovery is needed.
+static SQLRETURN FetchReusableTextRows(const SqlHandlePtr& handle, SQLUSMALLINT numCols,
+                                       py::list& rows, size_t limit,
+                                       const std::string& charEncoding,
+                                       const std::string& wcharEncoding, int charCtype,
+                                       py::handle messages, py::handle converters) {
+    PERF_TIMER("FetchReusableTextRows");
+    (void)wcharEncoding;
+    if (limit == 0)
+        return SQL_SUCCESS;
+    const auto metadata = handle->resultMetadata.snapshot().metadata;
+    if (!metadata || metadata->columns.size() != numCols)
+        ThrowStdException("Column metadata count does not match result column count");
+    const auto& columns = metadata->columns;
+    constexpr size_t maximumRows = 1000;
+    constexpr size_t denseBudget = size_t{8} * 1024 * 1024;
+    constexpr size_t bindingBudget = size_t{1} * 1024 * 1024;
+    const size_t boundBytes = BoundRowBufferBytes(columns, numCols, charCtype);
+    const size_t sparseRows =
+        std::min(limit, std::clamp<size_t>(bindingBudget / boundBytes, 1, maximumRows));
+    size_t boundRows = std::min(sparseRows, size_t{100});
+    FetchStateGuard guard(handle, messages, numCols, static_cast<int>(boundRows));
+    SQLHSTMT statement = handle->get();
+    size_t reservedBytes = 0;
+    ReserveNativeFetchBytes(reservedBytes, numCols, boundRows * sizeof(SQLLEN));
+    SQLRETURN ret = SQLBindColums(statement, guard.storage->columns, columns, numCols,
+                                  static_cast<int>(boundRows), reservedBytes, charCtype, messages);
+    guard.observe(ret);
+    guard.configure(boundRows);
+    size_t configuredRows = boundRows;
+    bool dense = false;
+    for (size_t count = 0; count < limit;) {
+        const size_t rowArray = std::min(boundRows, limit - count);
+        if (rowArray != configuredRows) {
+            guard.setRowArraySize(rowArray);
+            configuredRows = rowArray;
+        }
+        ret = FetchBatchData<true>(statement, guard.storage->columns, columns, rows, numCols,
+                             guard.storage->rowsFetched, {}, charEncoding, charCtype, messages,
+                             converters, rowArray);
+        CheckFetchError(handle, ret);
+        if (ret == SQL_NO_DATA)
+            break;
+        if (!SQL_SUCCEEDED(ret))
+            return ret;
+        const size_t fetched = guard.storage->rowsFetched;
+        size_t bytes = 0;
+        if (!dense)
+            for (size_t column = 0; column < numCols; ++column)
+                for (size_t row = 0; row < fetched; ++row)
+                    if (guard.storage->columns.indicators[column][row] >= 0)
+                        bytes +=
+                            static_cast<size_t>(guard.storage->columns.indicators[column][row]);
+        count += fetched;
+        if (!dense && count < limit && fetched == rowArray) {
+            dense = bytes / fetched >= boundBytes / 2;
+            // Dense values benefit from the regular larger rowset budget.
+            const size_t targetRows =
+                dense ? std::clamp<size_t>(denseBudget / boundBytes, 1, maximumRows) : sparseRows;
+            const size_t batchRows = std::min(limit - count, targetRows);
+            if (batchRows <= boundRows)
+                continue;
+            guard.observe(SQLFreeStmt_ptr(statement, SQL_UNBIND));
+            guard.storage->columns = ColumnBuffers(numCols, static_cast<int>(batchRows));
+            reservedBytes = 0;
+            ReserveNativeFetchBytes(reservedBytes, numCols, batchRows * sizeof(SQLLEN));
+            ret = SQLBindColums(statement, guard.storage->columns, columns, numCols,
+                                static_cast<int>(batchRows), reservedBytes, charCtype, messages);
+            guard.observe(ret);
+            boundRows = batchRows;
+        }
+    }
+    guard.close();
+    return SQL_SUCCESS;
+}
 SQLRETURN DrainPendingArrowRows(SqlHandlePtr handle, py::list& rows, SQLULEN limit,
                                  const std::string& charEncoding, py::handle messages,
                                  py::handle converters);
@@ -6472,6 +6581,7 @@ SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, py::handl
 
     std::vector<SQLUSMALLINT> lobColumns;
     bool singleRowEligible = fetchSize == 1;
+    bool dynamicText = false;
     for (SQLSMALLINT i = 0; i < numCols; i++) {
         const auto& column = columnNames.at(i);
         if (IsLobOrVariantColumn(column.dataType, column.columnSize)) {
@@ -6479,6 +6589,18 @@ SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, py::handl
         }
         singleRowEligible = singleRowEligible &&
                             CanUseSingleRowForFetchMany(column.dataType, column.columnSize);
+        dynamicText = dynamicText ||
+                      (IsBoundedFetchText(column.dataType, column.columnSize) &&
+                       column.columnSize > 256);
+    }
+
+    if (dynamicText && lobColumns.empty()) {
+        // Preserve the caller-size limit before selecting smaller reusable batches.
+        size_t requestedBytes = 0;
+        ReserveNativeFetchBytes(requestedBytes, static_cast<size_t>(fetchSize),
+                                BoundRowBufferBytes(columnNames, numCols, charCtype));
+        return FetchReusableTextRows(StatementHandle, numCols, rows, fetchSize, charEncoding,
+                                     wcharEncoding, charCtype, messages, converters);
     }
 
     if (singleRowEligible) {
@@ -8353,6 +8475,7 @@ SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows,
     }
 
     std::vector<SQLUSMALLINT> lobColumns;
+    bool dynamicText = false;
     for (SQLSMALLINT i = 0; i < numCols; i++) {
         auto colMeta = columnNames[i].cast<py::dict>();
         SQLSMALLINT dataType = colMeta["DataType"].cast<SQLSMALLINT>();
@@ -8363,13 +8486,14 @@ SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows,
         if (IsLobOrVariantColumn(dataType, columnSize)) {
             lobColumns.push_back(i + 1);  // 1-based
         }
+        dynamicText = dynamicText ||
+                      (IsBoundedFetchText(dataType, columnSize) && columnSize > 256);
     }
 
     // If we have LOBs → fall back to row-by-row fetch + SQLGetData_wrap
-    if (!lobColumns.empty()) {
-        LOG("FetchAll_wrap: LOB columns detected (%zu columns), using per-row "
-            "SQLGetData path",
-            lobColumns.size());
+    if (!lobColumns.empty() || dynamicText) {
+        LOG("FetchAll_wrap: LOB columns=%zu, reusable bounded text=%d", lobColumns.size(),
+            dynamicText);
         if (numCols < 0 || columnNames.size() != static_cast<size_t>(numCols)) {
             LOG("FetchAll_wrap: Column metadata count does not match result column count");
             ThrowStdException("Column metadata count does not match result column count");
@@ -8388,6 +8512,10 @@ SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows,
                 type == SQL_SS_VARIANT ? 0 : column["ColumnSize"].cast<SQLULEN>()});
         }
         StatementHandle->resultMetadata.publish(metadataSnapshot.generation, std::move(metadata));
+        if (lobColumns.empty())
+            return FetchReusableTextRows(StatementHandle, numCols, rows,
+                                         std::numeric_limits<size_t>::max(), charEncoding,
+                                         wcharEncoding, charCtype, messages, converters);
         while (true) {
             ret = CancellableCall(hStmt, [&] { return SQLFetch_ptr(hStmt); });
             CaptureFetchDiagnostics(hStmt, ret, messages);

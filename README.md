@@ -553,6 +553,26 @@ strings do not require a character-by-character scan.
 Wide-character retrieval of `VARCHAR(MAX)` values uses a non-consuming binary
 length probe to size the conversion buffer, avoiding character loss at truncated
 UTF-16 conversion boundaries while preserving embedded and trailing NULs.
+The experimental bounded-text path uses complete, reusable rowsets for `fetchall()`
+and `fetchmany()` when a text column is wider than 256 declared characters.
+Each bound cell still reserves its complete declared width. Temporary memory
+is reduced by binding fewer rows simultaneously and reusing those buffers,
+not by allocating actual-length native cells.
+Bound storage targets 1 MiB including indicators, with at least one complete row
+and at most 1,000 rows (at most 100 initially). Values are decoded directly into
+actual-length Python results, without a second native copy or per-cell length probes.
+When observed payload occupies at least half the declared row width, storage
+can grow once to the ordinary 8 MiB rowset budget. Every driver fetch retains
+cancellation and diagnostic handling; rebinding preserves cleanup lifetimes.
+Fixed-width and short-text result sets retain rowset batching. Wide-text result
+sets trade smaller rowsets and additional driver calls for lower temporary
+buffer use. They do not change the forward-only cursor type or recover truncated
+multirow bindings with `SQLGetData`. A row larger than either budget remains
+complete; Python results and allocator overhead are outside those targets.
+`fetchmany()` retains the native 256 MiB caller-size guard based on the requested
+row count and declared row width, even when reusable batches would be smaller.
+Result sets containing LOB columns retain their existing streaming path.
+The 256-character cutoff is provisional, not a tuned throughput threshold.
 Explicit `setinputsizes()` SQL types and sizes still take precedence. An explicit
 `VARCHAR` parameter can lose characters outside the database collation's code
 page even when inserting into an `NVARCHAR` destination; use `SQL_WVARCHAR` when

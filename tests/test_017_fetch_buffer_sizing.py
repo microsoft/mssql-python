@@ -23,6 +23,7 @@ _POINTER_NAMES = (
     "SQLDescribeCol_ptr",
     "SQLFreeHandle_ptr",
     "SQLFetch_ptr",
+    "SQLGetData_ptr",
 )
 
 _RETAINED_CASES = (
@@ -76,6 +77,20 @@ def test_checked_fetch_buffer_preconditions(item_size, terminator):
         "parent-cleanup-failure",
         "repeat-cleanup",
         "lob",
+        "compact-wide",
+        "compact-medium",
+        "compact-small-dense",
+        "compact-warning",
+        "compact-dense-rebind-failure",
+        "compact-no-total",
+        "compact-invalid-length",
+        "compact-truncated",
+        "compact-invalid-scalar",
+        "compact-fetch-error",
+        "compact-odd-wide-length",
+        "compact-zero-rows",
+        "compact-excess-rows",
+        "compact-dense-truncated",
     ],
 )
 def test_fetchall_buffer_contract(conn_str, case):
@@ -124,9 +139,13 @@ def _run_case(case):
     bindings = []
     rowsets = []
     fetches = []
+    bound_cells = {}
+    text_reads = []
+    length_probes = []
     events = []
     current_size = 1
     statement = None
+    fetched_pointer = None
     lifetime = None
     persistent = case in _RETAINED_CASES
     sql_len = ct.c_ssize_t
@@ -135,8 +154,17 @@ def _run_case(case):
     count = {"empty": 0, "small": 3, "initial-boundary": 100}.get(case, 1207)
     if case == "oversized-row":
         count = 2
-    if case in ("overflow-cell", "overflow-row", "lob"):
+    if case in ("overflow-cell", "overflow-row", "lob") or case.startswith("compact-"):
         count = 3
+    if case in (
+        "compact-wide",
+        "compact-medium",
+        "compact-dense-truncated",
+        "compact-dense-rebind-failure",
+    ):
+        count = 1207
+    if case == "compact-small-dense":
+        count = 1
 
     def install(name, args, handler):
         pointer = pointers[name]
@@ -151,11 +179,17 @@ def _run_case(case):
         nonlocal statement
         statement = handle
         bindings.append((col, ctype, length))
+        bound_cells[col] = (length, indicator, data)
         events.append("bind")
         if case == "bind-failure" and fetches:
             return -2
         if (
-            case in ("partial-bind-failure", "partial-bind-cleanup-failure")
+            case
+            in (
+                "partial-bind-failure",
+                "partial-bind-cleanup-failure",
+                "compact-dense-rebind-failure",
+            )
             and fetches
             and col == 2
         ):
@@ -163,7 +197,9 @@ def _run_case(case):
         return original(handle, col, ctype, data, length, indicator)
 
     def attr(original, handle, attribute, value, length):
-        nonlocal current_size
+        nonlocal current_size, fetched_pointer
+        if attribute == 26 and value:
+            fetched_pointer = value
         if (
             case in ("persistent-rows-fetched-failure", "arrow-cleanup-failure")
             and attribute == 26
@@ -205,11 +241,40 @@ def _run_case(case):
     def fetch(original, handle, orientation, offset):
         fetches.append(current_size)
         events.append("fetch")
-        return original(handle, orientation, offset)
+        result = original(handle, orientation, offset)
+        if result in (0, 1):
+            if case == "compact-warning" and len(fetches) == 1:
+                return 1  # Valid bound values with SQL_SUCCESS_WITH_INFO.
+            if case in ("compact-zero-rows", "compact-excess-rows"):
+                output_count = ct.cast(fetched_pointer, ct.POINTER(sql_ulen))
+                output_count[0] = 0 if case == "compact-zero-rows" else current_size + 1
+            if case == "compact-fetch-error":
+                return -2
+            column = 1 if case == "compact-invalid-scalar" else 2
+            capacity, indicator, _ = bound_cells[column]
+            output_length = ct.cast(indicator, ct.POINTER(sql_len))
+            if case == "compact-no-total":
+                output_length[0] = -4
+            elif case in ("compact-invalid-length", "compact-invalid-scalar"):
+                output_length[0] = -99
+            elif case == "compact-truncated":
+                output_length[0] = capacity + 2
+            elif case == "compact-odd-wide-length":
+                output_length[0] = 1
+            elif case == "compact-dense-truncated" and len(fetches) > 1:
+                output_length[0] = capacity + 2
+        return result
 
     def arrow_fetch(original, handle):
         fetches.append(current_size)
         return original(handle)
+
+    def getdata(original, handle, col, ctype, data, length, indicator):
+        if ctype == -2 and length == 0:
+            length_probes.append(col)
+        if ctype in (1, -8) and length:
+            text_reads.append((ctype, data, length))
+        return original(handle, col, ctype, data, length, indicator)
 
     def describe(original, handle, col, name, capacity, actual, dtype, size, scale, nullable):
         result = original(handle, col, name, capacity, actual, dtype, size, scale, nullable)
@@ -231,7 +296,7 @@ def _run_case(case):
             connection.setdecoding(ms.SQL_CHAR, encoding="cp1252", ctype=ms.SQL_CHAR)
         columns = ["CAST('x' AS varchar(32))"]
         expected = ["x"]
-        if case in ("wide", "narrow"):
+        if case in ("wide", "narrow", "compact-dense-truncated", "compact-dense-rebind-failure"):
             columns = [
                 "CAST(REPLICATE(CAST(NCHAR(233) AS nvarchar(max)), 8000) "
                 "COLLATE Latin1_General_100_BIN2 AS varchar(8000))"
@@ -271,6 +336,17 @@ def _run_case(case):
         elif case == "lob":
             columns += ["CAST(REPLICATE(CAST(N'y' AS nvarchar(max)), 12000) AS nvarchar(max))"]
             expected += ["y" * 12000]
+        elif case == "compact-wide":
+            columns = ["CAST('x' AS varchar(8000))"] * 8
+            expected = ["x"] * 8
+        elif case == "compact-medium":
+            columns = ["CAST('x' AS varchar(257))"] * 8
+            expected = ["x"] * 8
+        elif case == "compact-small-dense":
+            columns = ["CAST(REPLICATE(N'x', 4000) AS nvarchar(4000))"]
+            expected = ["x" * 4000]
+        elif case.startswith("compact-"):
+            columns = ["CAST('x' AS varchar(8000))"]
         sql = (
             "WITH d(n) AS (SELECT n FROM (VALUES (0),(1),(2),(3),(4),"
             "(5),(6),(7),(8),(9)) AS v(n)) "
@@ -297,6 +373,11 @@ def _run_case(case):
                     install("SQLFetch_ptr", [ct.c_void_p], arrow_fetch)
                 install("SQLFetchScroll_ptr", [ct.c_void_p, ct.c_short, sql_len], fetch)
                 install(
+                    "SQLGetData_ptr",
+                    [ct.c_void_p, ct.c_ushort, ct.c_short, ct.c_void_p, sql_len, ct.c_void_p],
+                    getdata,
+                )
+                install(
                     "SQLDescribeCol_ptr",
                     [
                         ct.c_void_p,
@@ -321,11 +402,38 @@ def _run_case(case):
                         cursor.fetchall()
                     assert not bindings
                     assert not fetches
+                elif case in (
+                    "compact-no-total",
+                    "compact-invalid-length",
+                    "compact-truncated",
+                    "compact-invalid-scalar",
+                    "compact-odd-wide-length",
+                    "compact-dense-truncated",
+                ):
+                    with pytest.raises(RuntimeError, match="Invalid bounded fetch length"):
+                        cursor.fetchall()
+                    if case == "compact-dense-truncated":
+                        assert fetches == rowsets[:2]
+                    else:
+                        assert fetches == [rowsets[0]]
+                elif case in ("compact-zero-rows", "compact-excess-rows"):
+                    with pytest.raises(RuntimeError, match="Invalid bounded fetch row count"):
+                        cursor.fetchall()
+                    assert fetches == [rowsets[0]]
+                elif case == "compact-fetch-error":
+                    with pytest.raises(ms.Error):
+                        cursor.fetchall()
+                    assert fetches == [rowsets[0]]
                 elif case.endswith("-failure"):
                     error = (
                         RuntimeError
                         if case
-                        in ("bind-failure", "partial-bind-failure", "partial-bind-cleanup-failure")
+                        in (
+                            "bind-failure",
+                            "partial-bind-failure",
+                            "partial-bind-cleanup-failure",
+                            "compact-dense-rebind-failure",
+                        )
                         else ms.Error
                     )
                     with pytest.raises(error) as failure:
@@ -339,6 +447,9 @@ def _run_case(case):
                         assert "Failed to bind column" in str(failure.value)
                     if case == "arrow-cleanup-failure":
                         assert fetches == [64]
+                    elif case == "compact-dense-rebind-failure":
+                        assert fetches == [rowsets[0]]
+                        assert bindings[len(columns) + 2][0] == 2
                     elif case not in ("persistent-rows-fetched-failure", "rowset-reset-failure"):
                         assert fetches == [100]
                     if case in ("partial-bind-failure", "partial-bind-cleanup-failure"):
@@ -375,7 +486,42 @@ def _run_case(case):
                         assert tuple(sibling.fetchone()) == (42,)
                 return
 
-            if not case.startswith("overflow-") and case != "lob" and not case.endswith("-failure"):
+            if case.startswith("compact-") or case in (
+                "wide",
+                "narrow",
+                "unicode",
+                "mixed",
+                "oversized-row",
+            ):
+                assert not text_reads and not length_probes
+                ncols = len(columns) + 1
+                first = bindings[:ncols]
+                row_bytes = sum(length + ct.sizeof(sql_len) for _, _, length in first)
+                initial = max(1, min(100, 1024 * 1024 // row_bytes))
+                assert rowsets[0] == initial
+                assert initial * row_bytes <= 1024 * 1024 or initial == 1
+                sparse_narrow = case == "narrow" and sys.platform != "win32"
+                if case in (
+                    "compact-wide",
+                    "compact-small-dense",
+                    "compact-warning",
+                    "mixed",
+                    "oversized-row",
+                ) or (sparse_narrow):
+                    assert all(size == initial for size in fetches)
+                    assert len(fetches) == (count + initial - 1) // initial + 2
+                    assert len(bindings) == 2 * ncols  # Only the two fetchall invocations.
+                elif case in ("wide", "narrow", "unicode", "compact-medium"):
+                    target_budget = 1024 * 1024 if case == "compact-medium" else budget
+                    target = max(1, min(1000, target_budget // row_bytes))
+                    assert fetches[0] == initial
+                    assert all(size == target for size in fetches[1:-1])
+                    assert fetches[-1] == initial  # Exhausted second fetchall.
+                    assert rowsets[1] == target
+                    assert bindings[ncols : 2 * ncols] == first
+            elif (
+                not case.startswith("overflow-") and case != "lob" and not case.endswith("-failure")
+            ):
                 ncols = len(columns) + 1
                 first = bindings[:ncols]
                 row_bytes = sum(length + ct.sizeof(sql_len) for _, _, length in first)
@@ -396,13 +542,6 @@ def _run_case(case):
                 assert fetches[:batches] == [initial] + [subsequent] * (batches - 1)
                 assert len(fetches) == batches + 1
                 assert target * row_bytes <= budget or target == 1
-                if case == "wide":
-                    assert first[1][1:] == (-8, 16002)  # SQL_C_WCHAR, including terminator.
-                elif case == "narrow":
-                    width = 32001 if sys.platform != "win32" else 8001
-                    assert first[1][1:] == (1, width)
-                elif case == "oversized-row":
-                    assert row_bytes > budget and initial == target == 1
             elif case == "lob":
                 assert not bindings and not fetches
             cursor.execute("SELECT 42")

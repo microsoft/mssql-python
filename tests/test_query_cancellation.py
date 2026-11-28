@@ -142,13 +142,16 @@ def test_native_query_guard_preserves_protocol_without_python_owner(operation):
 
 
 @pytest.mark.parametrize("method", ["fetchone", "fetchmany", "fetchall"])
-def test_grouped_scalar_reads_preserve_mixed_values_and_chunk_boundaries(method):
+@pytest.mark.parametrize("text_width", [10, 4000])
+def test_grouped_scalar_reads_preserve_mixed_values_and_chunk_boundaries(method, text_width):
     scalar_types = ("int", "smallint", "bigint", "real", "float")
     columns = [
         f"CAST({index if index % 3 else 'NULL'} AS {scalar_types[index % 5]})"
         for index in range(20)
     ]
-    columns.extend(("CAST('text' AS nvarchar(10))", "CAST(-9 AS int)", "CAST(NULL AS bigint)"))
+    columns.extend(
+        (f"CAST('text' AS nvarchar({text_width}))", "CAST(-9 AS int)", "CAST(NULL AS bigint)")
+    )
     expected = tuple(None if index % 3 == 0 else index for index in range(20)) + (
         "text",
         -9,
@@ -423,12 +426,13 @@ def test_native_cancellation_recovery_allocation_failure_retires_connection():
     _run("_native_recovery_allocation_probe")
 
 
-def test_grouped_scalar_cancel_prevents_later_column_calls():
+@pytest.mark.parametrize("kind", ["scalar", "text"])
+def test_grouped_scalar_cancel_prevents_later_column_calls(kind):
     _pointers()
-    _run("_grouped_scalar_boundary_probe")
+    _run("_grouped_scalar_boundary_probe", kind)
 
 
-def _grouped_scalar_boundary_probe():
+def _grouped_scalar_boundary_probe(kind="scalar"):
     pointers = _pointers()
     callback = ctypes.WINFUNCTYPE if os.name == "nt" else ctypes.CFUNCTYPE
     getdata_type = callback(
@@ -441,12 +445,16 @@ def _grouped_scalar_boundary_probe():
         ctypes.c_void_p,
     )
     cancel_type = callback(ctypes.c_short, ctypes.c_void_p)
+    fetch_type = callback(ctypes.c_short, ctypes.c_void_p, ctypes.c_short, ctypes.c_ssize_t)
     with _connection() as connection, connection.cursor() as cursor:
-        cursor.execute("SELECT 1, 2, 3, 4 FROM (VALUES (1), (2)) AS source(n)")
-        assert tuple(cursor.fetchone()) == (1, 2, 3, 4)
+        value = "CAST(N'text' AS nvarchar(4000))" if kind == "text" else "2"
+        cursor.execute(f"SELECT 1, {value}, 3, 4 FROM (VALUES (1), (2)) AS source(n)")
+        assert tuple(cursor.fetchone()) == (1, "text" if kind == "text" else 2, 3, 4)
         original_getdata = pointers["SQLGetData_ptr"].value
+        original_fetch = pointers["SQLFetchScroll_ptr"].value
         original_cancel = pointers["SQLCancel_ptr"].value
         getdata = getdata_type(original_getdata)
+        fetch = fetch_type(original_fetch)
         reads = []
 
         @getdata_type
@@ -457,6 +465,13 @@ def _grouped_scalar_boundary_probe():
                 cursor.cancel()
             return result
 
+        @fetch_type
+        def cancel_after_first_row(handle, orientation, offset):
+            reads.append("block")
+            result = fetch(handle, orientation, offset)
+            cursor.cancel()
+            return result
+
         @cancel_type
         def cancel(_):
             return 0
@@ -465,21 +480,33 @@ def _grouped_scalar_boundary_probe():
         if profiling is not None:
             profiling.reset()
             profiling.enable()
-        pointers["SQLGetData_ptr"].value = ctypes.cast(
-            cancel_after_second_column, ctypes.c_void_p
-        ).value
+        if kind == "text":
+            pointers["SQLFetchScroll_ptr"].value = ctypes.cast(
+                cancel_after_first_row, ctypes.c_void_p
+            ).value
+        else:
+            pointers["SQLGetData_ptr"].value = ctypes.cast(
+                cancel_after_second_column, ctypes.c_void_p
+            ).value
         pointers["SQLCancel_ptr"].value = ctypes.cast(cancel, ctypes.c_void_p).value
         try:
             with pytest.raises(OperationalError, match="Operation canceled"):
-                cursor.fetchone()
+                if kind == "text":
+                    cursor.fetchall()
+                else:
+                    cursor.fetchone()
         finally:
             pointers["SQLGetData_ptr"].value = original_getdata
+            pointers["SQLFetchScroll_ptr"].value = original_fetch
             pointers["SQLCancel_ptr"].value = original_cancel
             if profiling is not None:
                 profiling.disable()
-        assert reads == [1, 2]
+        assert reads == (["block"] if kind == "text" else [1, 2])
         if profiling is not None:
-            assert profiling.get_stats()["ddbc::SQLGetData::scalar_group"]["calls"] == 1
+            if kind == "scalar":
+                assert profiling.get_stats()["ddbc::SQLGetData::scalar_group"]["calls"] == 1
+            else:
+                assert profiling.get_stats()["ddbc::FetchReusableTextRows"]["calls"] == 1
         assert cursor._query_slot.active is None
         assert not connection._query_state.busy
         assert cursor.execute("SELECT 99").fetchone()[0] == 99
