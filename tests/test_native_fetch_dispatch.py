@@ -917,7 +917,9 @@ def test_native_fetchmany_argument_contract(connection):
                 cursor.__dict__ = original
         assert cursor.fetchmany(size=1)[0][0] == 3
         assert cursor.fetchmany(None)[0][0] == 4
-        assert cursor.fetchmany(True)[0][0] == 5
+        with pytest.raises(TypeError, match="size must be an integer"):
+            cursor.fetchmany(True)
+        assert cursor.fetchmany(1)[0][0] == 5
         assert cursor.fetchmany(0) == []
 
 

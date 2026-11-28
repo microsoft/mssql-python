@@ -734,6 +734,8 @@ inline py::object fetch(PyObject* self, Context* context, Mode mode,
     }
     if (!state || plan->inputs.is_none() || !current(self, context, state, *plan, rt))
         return fallback(self, rt, mode, args, nargs, keywords);
+    if (plan->handle->pendingArrowRows())
+        return fallback(self, rt, mode, args, nargs, keywords);
 
     if (mode == Mode::Many) {
         if (!single_size(*plan, args, nargs, keywords))
@@ -765,7 +767,7 @@ inline py::object fetch(PyObject* self, Context* context, Mode mode,
         // Keep batch decoding (including malformed-text handling), but complete
         // size-one reads here so ordinary counter writes do not invalidate the plan.
         py::list rows;
-        ret = FetchMany_wrap(plan->handle, rows, 1, plan->charEncoding,
+        ret = FetchMany_wrap(plan->handle, rows, py::int_(1), plan->charEncoding,
                              plan->wideEncoding, plan->charCtype, plan->at(Messages));
         if (!current(self, context, state, *plan, rt) ||
             (!SQL_SUCCEEDED(ret) && ret != SQL_NO_DATA))

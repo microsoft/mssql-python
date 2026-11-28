@@ -625,6 +625,53 @@ int main() {
             }
             require(logins == 1, "Empty leases did not reuse the physical connection");
         });
+        for (bool generic : {false, true}) {
+            for (bool autocommit : {false, true}) {
+                run("autocommit setters probe only to preserve or invalidate pending Arrow rows",
+                    [generic, autocommit] {
+                    auto connection = acquire();
+                    const SQLINTEGER mode = autocommit ? SQL_AUTOCOMMIT_ON : SQL_AUTOCOMMIT_OFF;
+                    connection->setAttr(SQL_ATTR_AUTOCOMMIT, py::int_(mode));
+                    auto statement = connection->allocStatementHandle();
+                    auto pending = std::make_shared<PendingArrowRows>(0, 1, SQL_C_CHAR, false);
+                    pending->count = 1;
+                    statement->setPendingArrowRows(pending);
+                    const auto generation = statement->pendingArrowSnapshot().first;
+                    calls.clear();
+                    if (generic) {
+                        connection->setAttr(SQL_ATTR_AUTOCOMMIT, py::int_(mode));
+                    } else {
+                        connection->setAutocommit(autocommit);
+                    }
+                    if (autocommit) {
+                        expectCalls({"get", "on"});
+                    } else {
+                        expectCalls({"get", "off"});
+                    }
+                    require(statement->pendingArrowRows() == pending &&
+                                statement->pendingArrowSnapshot().first == generation,
+                            "Idempotent setter discarded pending Arrow rows");
+                    calls.clear();
+                    if (generic) {
+                        connection->setAttr(SQL_ATTR_AUTOCOMMIT,
+                                            py::int_(autocommit ? SQL_AUTOCOMMIT_OFF
+                                                               : SQL_AUTOCOMMIT_ON));
+                    } else {
+                        connection->setAutocommit(!autocommit);
+                    }
+                    if (autocommit) {
+                        expectCalls({"get", "off"});
+                    } else {
+                        expectCalls({"get", "on"});
+                    }
+                    require(!statement->pendingArrowRows() &&
+                                statement->pendingArrowSnapshot().first == generation + 1,
+                            "Changed autocommit mode retained pending Arrow rows");
+                    statement.reset();
+                    connection->close();
+                });
+            }
+        }
         run("new login and repeated setters do not establish clean proof", [] {
             auto connection = acquire();
             calls.clear();
