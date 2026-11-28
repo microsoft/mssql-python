@@ -2752,11 +2752,36 @@ def test_constructor_timeout_does_not_become_query_timeout(conn_str):
         # OperationalError 'Query timeout expired'.
         start = time.monotonic()
         cursor.execute("WAITFOR DELAY '00:00:05'; SELECT 1")
-        elapsed = time.monotonic() - start
         assert cursor.fetchval() == 1, "Long query must complete; login timeout must not abort it"
+        elapsed = time.monotonic() - start
         assert elapsed >= 4.0, f"Query returned too early ({elapsed:.2f}s); WAITFOR not honored"
     finally:
         conn.close()
+
+
+def test_constructor_timeout_measurement_includes_result_consumption(monkeypatch):
+    from types import SimpleNamespace
+
+    fetched = False
+    closed = False
+
+    def fetchval():
+        nonlocal fetched
+        fetched = True
+        return 1
+
+    def close():
+        nonlocal closed
+        closed = True
+
+    cursor = SimpleNamespace(execute=lambda sql: None, fetchval=fetchval)
+    connection = SimpleNamespace(timeout=0, cursor=lambda: cursor, close=close)
+    monkeypatch.setattr(__name__ + ".connect", lambda conn_str, timeout: connection)
+    monkeypatch.setattr(time, "monotonic", lambda: 5.0 if fetched else 0.0)
+
+    test_constructor_timeout_does_not_become_query_timeout("unused")
+
+    assert fetched and closed
 
 
 def test_constructor_timeout_respects_explicit_attrs_before(conn_str):

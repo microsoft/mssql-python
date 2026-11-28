@@ -8,7 +8,8 @@ import os
 import logging
 import tempfile
 import shutil
-from mssql_python import connect
+import socket
+from mssql_python import connect, OperationalError
 from mssql_python.logging import setup_logging, logger
 
 # Skip all tests if no database connection string available
@@ -61,6 +62,14 @@ def cleanup_logger():
 def conn_str():
     """Get connection string from environment"""
     return os.getenv("DB_CONNECTION_STRING")
+
+
+@pytest.fixture
+def unresponsive_server():
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        yield f"Server=127.0.0.1,{listener.getsockname()[1]};Database=test;Encrypt=no"
 
 
 class TestConnectionLogging:
@@ -178,13 +187,15 @@ class TestCursorLogging:
 class TestErrorLogging:
     """Test error logging and exception raising"""
 
-    def test_connection_error_logs_and_raises(self, cleanup_logger, temp_log_dir):
+    def test_connection_error_logs_and_raises(
+        self, cleanup_logger, temp_log_dir, unresponsive_server
+    ):
         """Connection error should log ERROR and raise exception"""
         log_file = os.path.join(temp_log_dir, "error_test.log")
         setup_logging(log_file_path=log_file)
 
-        with pytest.raises(Exception):  # Will raise some connection error
-            conn = connect("Server=invalid_server;Database=test")
+        with pytest.raises(OperationalError):
+            connect(unresponsive_server, timeout=1)
 
         with open(log_file, "r") as f:
             content = f.read()
@@ -363,16 +374,18 @@ class TestDDBCLogging:
 class TestPasswordSanitizationIntegration:
     """Test password sanitization with real connection strings"""
 
-    def test_connection_string_passwords_sanitized(self, cleanup_logger, temp_log_dir):
+    def test_connection_string_passwords_sanitized(
+        self, cleanup_logger, temp_log_dir, unresponsive_server
+    ):
         """Passwords in connection strings should be sanitized in logs"""
         log_file = os.path.join(temp_log_dir, "sanitize_test.log")
         setup_logging(log_file_path=log_file)
 
-        # Use an invalid connection string with a fake password
-        try:
-            conn = connect("Server=localhost;Database=test;PWD=MySecretPassword123")
-        except Exception:
-            pass  # Expected to fail
+        with pytest.raises(OperationalError):
+            connect(
+                unresponsive_server + ";UID=testuser;PWD=MySecretPassword123",
+                timeout=1,
+            )
 
         with open(log_file, "r") as f:
             content = f.read()
