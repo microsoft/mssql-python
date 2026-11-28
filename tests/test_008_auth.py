@@ -6,8 +6,11 @@ Tests for the auth module.
 
 import pytest
 import collections
+import os
 import platform
+import subprocess
 import sys
+import textwrap
 import threading
 import warnings
 from concurrent.futures import ThreadPoolExecutor
@@ -39,6 +42,144 @@ from mssql_python.exceptions import InterfaceError, OperationalError
 import secrets
 
 SAMPLE_TOKEN = secrets.token_hex(44)
+
+
+@pytest.mark.parametrize("route", ["public", "native", "native_factory"])
+@pytest.mark.parametrize(
+    "token, malformed",
+    [
+        pytest.param(b"", True, id="empty-bytes"),
+        pytest.param(bytearray(), True, id="empty-bytearray"),
+        pytest.param(b"a" * 3, True, id="truncated-header"),
+        pytest.param(b"a" * 16, True, id="reported-16-bytes"),
+        pytest.param(b"x" * 64, True, id="reported-64-bytes"),
+        pytest.param(bytearray(b"a" * 16), True, id="malformed-bytearray"),
+        pytest.param(b"\x00\x00\x00\x00", True, id="empty-payload"),
+        pytest.param(b"\x06\x00\x00\x00a\x00", True, id="overclaimed-payload"),
+        pytest.param(b"\x01\x00\x00\x00a", True, id="odd-payload"),
+        pytest.param(b"\x02\x00\x00\x00a\x00b\x00", True, id="trailing-payload"),
+        pytest.param(AADAuth.get_token_struct("opaque-not-a-jwt"), False, id="packed-opaque"),
+        pytest.param(AADAuth.get_token_struct("a"), False, id="packed-one-character"),
+        pytest.param(
+            bytearray(AADAuth.get_token_struct("opaque-not-a-jwt")), False, id="packed-bytearray"
+        ),
+    ],
+)
+def test_access_token_structure_in_subprocess(conn_str, route, token, malformed):
+    """Exercise the real native boundary without letting a regression crash pytest."""
+    _run_access_token_probe(conn_str, route, token, malformed)
+
+
+@pytest.mark.parametrize("route", ["public", "native"])
+@pytest.mark.parametrize("token", [b"", bytearray()], ids=["bytes", "bytearray"])
+def test_empty_access_token_rejected_before_pool_checkout(conn_str, route, token):
+    """An explicitly empty token must not reuse a token-free pooled connection."""
+    _run_access_token_probe(conn_str, "pooled_" + route, token, True)
+
+
+@pytest.mark.parametrize("route", ["native", "pooled_native"])
+@pytest.mark.parametrize("token", ["not-binary", 1256, None], ids=["str", "int", "none"])
+def test_native_non_binary_access_token_rejected_before_checkout(conn_str, route, token):
+    """Bypass Python's type guard and exercise native rejection before acquisition."""
+    _run_access_token_probe(
+        conn_str,
+        route,
+        token,
+        True,
+        expected_error="SQL_COPT_SS_ACCESS_TOKEN must be supplied as bytes or bytearray.",
+    )
+
+
+def _run_access_token_probe(
+    conn_str,
+    route,
+    token,
+    malformed,
+    expected_error="Invalid SQL_COPT_SS_ACCESS_TOKEN structure",
+):
+    if not conn_str:
+        pytest.skip("DB_CONNECTION_STRING is required for native token probes")
+    pooled = route.startswith("pooled_")
+    route = route.removeprefix("pooled_")
+    body = textwrap.dedent(f"""
+        import logging
+        import os
+        import mssql_python as ms
+        from mssql_python import ddbc_bindings
+        from mssql_python.connection import Connection
+        from mssql_python.connection_string_parser import _ConnectionStringParser
+        from mssql_python.connection_string_builder import _ConnectionStringBuilder
+        from mssql_python.logging import logger
+        from mssql_python.odbc_provider import ProviderManager
+
+        logging.disable(logging.CRITICAL)
+        logger.disabled = True
+        pooled = {pooled!r}
+        if pooled:
+            ms.pooling(max_size=1, idle_timeout=30)
+        else:
+            ms.pooling = False
+        parser = _ConnectionStringParser(validate_keywords=True)
+        params = parser._normalize_params(parser._parse(os.environ["DB_CONNECTION_STRING"]))
+        # The token-free pool must warm with the endpoint's normal authentication.
+        removed_keys = ("Driver",) if pooled else (
+            "Driver", "UID", "PWD", "Authentication", "Trusted_Connection"
+        )
+        for key in removed_keys:
+            params.pop(key, None)
+        connection_string = _ConnectionStringBuilder(params).build()
+        assert parser._normalize_params(parser._parse(connection_string)) == params
+        if pooled:
+            with ms.connect(connection_string, timeout=5) as warm:
+                with warm.cursor() as cursor:
+                    cursor.execute("SELECT 1")
+                    assert cursor.fetchone()[0] == 1
+        attrs = {{1256: {token!r}, ms.SQL_ATTR_LOGIN_TIMEOUT: 5}}
+        route = {route!r}
+        malformed = {malformed!r}
+        try:
+            if route == "public":
+                conn = ms.connect(connection_string, attrs_before=attrs, timeout=5)
+            else:
+                ddbc_bindings._set_odbc_provider(ProviderManager.ensure_available())
+                native_string, _ = Connection.__new__(Connection)._construct_connection_string(
+                    connection_string
+                )
+                factory = (lambda: (attrs, None)) if route == "native_factory" else None
+                conn = ddbc_bindings.Connection(
+                    native_string, pooled, {{}} if factory else attrs, "", factory
+                )
+        except (ms.Error, ms.Warning, RuntimeError) as exc:
+            validation_error = {expected_error!r} in str(exc)
+            assert validation_error == malformed, type(exc).__name__
+            if malformed:
+                expected = ms.OperationalError if route == "public" else RuntimeError
+                assert isinstance(exc, expected), type(exc).__name__
+            else:
+                # A correctly packed opaque credential can be rejected by the endpoint.
+                assert getattr(exc, "sqlstate", None) or "SQLSTATE:" in str(exc)
+        else:
+            conn.close()
+            assert not malformed, "Malformed access token was accepted"
+        if pooled:
+            with ms.connect(connection_string, timeout=5) as healthy:
+                with healthy.cursor() as cursor:
+                    cursor.execute("SELECT 1")
+                    assert cursor.fetchone()[0] == 1
+            ms.pooling(enabled=False)
+        """)
+    env = os.environ.copy()
+    env["DB_CONNECTION_STRING"] = str(conn_str)
+    proc = subprocess.run(
+        [sys.executable, "-X", "faulthandler", "-c", body],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    assert (
+        proc.returncode == 0
+    ), f"Token probe failed with exit code {proc.returncode}\n{proc.stdout}\n{proc.stderr}"
 
 
 @pytest.fixture(autouse=True)
