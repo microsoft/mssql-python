@@ -6594,9 +6594,14 @@ SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, py::handl
                        column.columnSize > 256);
     }
 
-    if (dynamicText && lobColumns.empty())
+    if (dynamicText && lobColumns.empty()) {
+        // Preserve the caller-size limit before selecting smaller reusable batches.
+        size_t requestedBytes = 0;
+        ReserveNativeFetchBytes(requestedBytes, static_cast<size_t>(fetchSize),
+                                BoundRowBufferBytes(columnNames, numCols, charCtype));
         return FetchReusableTextRows(StatementHandle, numCols, rows, fetchSize, charEncoding,
                                      wcharEncoding, charCtype, messages, converters);
+    }
 
     if (singleRowEligible) {
         py::list row;

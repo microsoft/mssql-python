@@ -1780,11 +1780,14 @@ def test_executemany_rejects_text_for_binary_parameter(db_connection):
             cursor.executemany("SELECT CAST(? AS VARBINARY(10))", [("text",)])
 
 
-def test_fetchmany_rejects_excessive_native_buffer(cursor):
-    cursor.execute("SELECT CAST('x' AS VARCHAR(8000))")
+@pytest.mark.parametrize("sql_type", ["VARCHAR(8000)", "NVARCHAR(4000)"])
+@pytest.mark.parametrize("column_count", [1, 8])
+def test_fetchmany_rejects_excessive_native_buffer(cursor, sql_type, column_count):
+    cursor.execute("SELECT " + ", ".join([f"CAST('x' AS {sql_type})"] * column_count))
     with pytest.raises(RuntimeError, match="256 MiB allocation limit"):
         cursor.fetchmany(100_000)
-    assert cursor.fetchone()[0] == "x"
+    assert [tuple(row) for row in cursor.fetchmany(1)] == [("x",) * column_count]
+    assert cursor.fetchone() is None
 
 
 def test_fetchall_clamps_wide_result_batch_to_native_buffer_budget(cursor):
